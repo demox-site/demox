@@ -1,4 +1,3 @@
-// @ts-ignore;
 import React, { useState, useEffect } from "react";
 // @ts-ignore;
 import {
@@ -37,6 +36,7 @@ import {
 import cloudbase from "@cloudbase/js-sdk";
 import env from "../configs/env";
 import { AuthDialog } from "@/components/AuthDialog";
+import { useNavigate } from "react-router-dom";
 
 // 初始化 CloudBase
 const app = cloudbase.init({
@@ -73,6 +73,7 @@ const generateWebsiteId = () => {
 export default function Home(props) {
   const { style } = props;
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
   const [websites, setWebsites] = useState([]);
@@ -146,6 +147,7 @@ export default function Home(props) {
         title: "退出成功",
         description: "您已成功退出登录"
       });
+      navigate("/", { replace: true });
     } catch (error) {
       toast({
         title: "退出失败",
@@ -218,10 +220,7 @@ export default function Home(props) {
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      setWebsites((prev) => [
-        { _id: websiteId, ...websiteData },
-        ...prev
-      ]);
+      setWebsites((prev) => [{ _id: websiteId, ...websiteData }, ...prev]);
       setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
       // 将文件读取为 Base64，交由云函数上传并部署

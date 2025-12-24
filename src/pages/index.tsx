@@ -14,7 +14,7 @@ import {
   Languages
 } from "lucide-react";
 
-type Language = "zh" | "en";
+import { useLanguage } from "../hooks/use-language";
 
 const translations = {
   zh: {
@@ -163,15 +163,11 @@ const translations = {
 
 const CloudHostLanding: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [lang, setLang] = useState<Language>("zh");
+  const { language: lang, toggleLanguage: toggleLang } = useLanguage();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const navigate = useNavigate();
 
   const t = translations[lang];
-
-  const toggleLang = () => {
-    setLang((prev) => (prev === "zh" ? "en" : "zh"));
-  };
 
   const handleLoginSuccess = () => {
     navigate("/home");
@@ -179,7 +175,6 @@ const CloudHostLanding: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white">
-      {/* Navbar */}
       <nav className="fixed top-0 left-0 right-0 z-50 border-b border-zinc-800 bg-black/50 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
@@ -193,12 +188,12 @@ const CloudHostLanding: React.FC = () => {
             </div>
 
             <div className="hidden md:flex items-center gap-8">
-              <a
-                href="#"
+              <button
+                onClick={() => navigate("/pricing")}
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
               >
                 {t.navbar.pricing}
-              </a>
+              </button>
               <a
                 href="#"
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
@@ -238,16 +233,15 @@ const CloudHostLanding: React.FC = () => {
           </div>
         </div>
 
-        {/* Mobile Menu */}
         {isMobileMenuOpen && (
           <div className="md:hidden border-b border-zinc-800 bg-black">
             <div className="px-4 py-4 space-y-4">
-              <a
-                href="#"
-                className="block text-sm text-zinc-400 hover:text-zinc-100"
+              <button
+                onClick={() => navigate("/pricing")}
+                className="block text-sm text-zinc-400 hover:text-zinc-100 w-full text-left"
               >
                 {t.navbar.pricing}
-              </a>
+              </button>
               <a
                 href="#"
                 className="block text-sm text-zinc-400 hover:text-zinc-100"
@@ -265,9 +259,7 @@ const CloudHostLanding: React.FC = () => {
         )}
       </nav>
 
-      {/* Hero Section */}
       <section className="pt-32 pb-20 md:pt-48 md:pb-32 px-4 relative overflow-hidden">
-        {/* Background Grid Effect */}
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#18181b_1px,transparent_1px),linear-gradient(to_bottom,#18181b_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10" />
 
         <div className="max-w-4xl mx-auto text-center">
@@ -304,7 +296,6 @@ const CloudHostLanding: React.FC = () => {
             </button>
           </div>
 
-          {/* Terminal Demo */}
           <div className="max-w-2xl mx-auto rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 shadow-2xl relative group">
             <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 bg-zinc-900/50">
               <div className="flex gap-1.5">
@@ -347,13 +338,11 @@ const CloudHostLanding: React.FC = () => {
               </div>
             </div>
 
-            {/* Glow effect */}
             <div className="absolute inset-0 bg-gradient-to-t from-zinc-900/20 to-transparent pointer-events-none" />
           </div>
         </div>
       </section>
 
-      {/* Features Grid */}
       <section className="py-24 px-4 border-t border-zinc-900 bg-zinc-950/30">
         <div className="max-w-7xl mx-auto">
           <div className="grid md:grid-cols-3 gap-6">
@@ -391,7 +380,6 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      {/* How it works */}
       <section className="py-24 px-4 bg-black relative">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-16">
@@ -402,7 +390,6 @@ const CloudHostLanding: React.FC = () => {
           </div>
 
           <div className="relative">
-            {/* Connecting Line (Desktop) */}
             <div className="hidden md:block absolute top-12 left-0 w-full h-[2px] bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 z-0"></div>
 
             <div className="grid md:grid-cols-3 gap-12 relative z-10">
@@ -445,7 +432,6 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      {/* CTA Section */}
       <section className="py-24 px-4 border-t border-zinc-900">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-4xl font-bold mb-6">{t.cta.title}</h2>
@@ -461,7 +447,6 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      {/* Footer */}
       <footer className="py-12 px-4 border-t border-zinc-900 bg-zinc-950">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-2">
