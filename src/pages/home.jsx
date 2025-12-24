@@ -213,39 +213,33 @@ export default function Home(props) {
   };
   const loadWebsites = async () => {
     try {
-      const result = await $w.cloud.callDataSource({
-        dataSourceName: 'websites',
-        methodName: 'wedaGetRecordsV2',
-        params: {
-          filter: {
-            where: {
-              userId: {
-                $eq: user?.userId || ''
-              }
-            }
-          },
-          select: {
-            $master: true
-          },
-          orderBy: [{
-            createdAt: 'desc'
-          }],
-          getCount: true,
-          pageSize: 50,
-          pageNumber: 1
+      const result = await app.callFunction({
+        name: 'deploy-website',
+        data: {
+          action: 'list',
+          userId: user?.userId || ''
         }
       });
-      setWebsites(result.records || []);
+
+      if (result.result && result.result.success) {
+        // 适配数据格式，确保包含 UI 所需字段
+        const mappedWebsites = (result.result.files || []).map(item => ({
+          ...item,
+          status: 'deployed', // 从 resource-game 获取的都是已部署成功的
+          // 如果需要保留原始 Weda ID，可以使用 item.websiteId，但这里主要用 _id 操作
+          // item._id 是 resource-game 的文档 ID
+        }));
+        setWebsites(mappedWebsites);
+      } else {
+        throw new Error(result.result?.message || '加载列表失败');
+      }
     } catch (error) {
       console.error('加载网站列表失败:', error);
-      // 如果数据源不存在，提示用户
-      if (error.code === 'PERMISSION_DENIED' || error.message.includes('数据源不存在')) {
-        toast({
-          title: "数据源未配置",
-          description: "请联系管理员创建 websites 数据模型",
-          variant: "destructive"
-        });
-      }
+      toast({
+        title: "加载失败",
+        description: error.message || "无法获取网站列表",
+        variant: "destructive"
+      });
     }
   };
   const handleFileUpload = async event => {
@@ -370,34 +364,29 @@ export default function Home(props) {
       const website = websites.find(w => w._id === websiteId);
       if (!website) return;
 
-      // 删除云存储文件
-      if (website.fileId) {
-        await app.deleteFile({
-          fileList: [website.fileId]
-        });
-      }
-
-      // 删除数据库记录
-      await $w.cloud.callDataSource({
-        dataSourceName: 'Websites',
-        methodName: 'wedaDeleteV2',
-        params: {
-          filter: {
-            where: {
-              _id: {
-                $eq: websiteId
-              }
-            }
-          }
+      // 调用云函数删除资源 (包括 COS 文件和数据库记录)
+      const result = await app.callFunction({
+        name: 'deploy-website',
+        data: {
+          action: 'delete',
+          key: website.path,
+          userId: website.userId,
+          websiteId: website.websiteId,
+          fileName: website.fileName
         }
       });
-      toast({
-        title: "删除成功",
-        description: "网站已成功删除"
-      });
 
-      // 从本地状态中移除
-      setWebsites(prev => prev.filter(w => w._id !== websiteId));
+      if (result.result && result.result.success) {
+        toast({
+          title: "删除成功",
+          description: "网站已成功删除"
+        });
+
+        // 从本地状态中移除
+        setWebsites(prev => prev.filter(w => w._id !== websiteId));
+      } else {
+        throw new Error(result.result?.message || '删除失败');
+      }
     } catch (error) {
       toast({
         title: "删除失败",
