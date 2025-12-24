@@ -128,7 +128,6 @@ export default function Home(props) {
           }
           // Remove duplicates
           candidateRoles = [...new Set(candidateRoles)];
-          console.log(candidateRoles)
           // Use Cloud Function to fetch role limits to avoid ACL issues
           const limitFnRes = await app.callFunction({
             name: "getRoleLimits",
