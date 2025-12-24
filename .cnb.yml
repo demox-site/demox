@@ -1,0 +1,25 @@
+# 分支名
+master:
+  # 事件名
+  push:
+    # 要执行的任务
+    - stages:
+        - name: 打包项目
+          script: |
+            npm install --legacy-peer-deps
+            npm run build
+            
+        - name: 查看目录
+          script: |
+            ls -a
+            pwd
+          
+        - name: coscli 上传文件
+          image: tencentcom/coscli
+          imports: 
+            - https://cnb.cool/hacker_and_painter/secret_key/-/blob/main/env.yml
+            - env.yml
+          commands: |
+            coscli config set --secret_id $TC_SECRET_ID --secret_key $TC_SECRET_KEY 
+            coscli config add --init-skip=true -b $COS_BUCKET -r $COS_REGION
+            coscli cp ./dist/ cos://${COS_BUCKET}/ -r
