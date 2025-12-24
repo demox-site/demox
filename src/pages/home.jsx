@@ -40,12 +40,38 @@ import { AuthDialog } from "@/components/AuthDialog";
 
 // 初始化 CloudBase
 const app = cloudbase.init({
-  env: env.env
+  env: env.env,
+  region: "ap-shanghai"
 });
 const auth = app.auth();
 
+/**
+ * sanitizeFileName
+ * 对文件名进行安全清洗，替换云存储不支持的字符，避免上传失败
+ */
+const sanitizeFileName = (name) =>
+  String(name).replace(/[^0-9a-zA-Z/_\-\.\s\u4e00-\u9fa5]/g, "_");
+
+/**
+ * generateWebsiteId
+ * 生成 8 位由大写字母与数字组成的随机字符串，满足域名片段要求
+ */
+const generateWebsiteId = () => {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+};
+
+/**
+ * Home
+ * 用户登录、上传、部署、列表、删除的主页面
+ * 剔除 Weda 相关依赖，统一通过云函数与后端交互
+ */
 export default function Home(props) {
-  const { $w, style } = props;
+  const { style } = props;
   const { toast } = useToast();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
@@ -65,16 +91,16 @@ export default function Home(props) {
     }
   }, [isLoggedIn]);
 
+  /**
+   * checkAuthStatus
+   * 检查 CloudBase 登录态；允许匿名登录，保持统一的用户对象结构
+   */
   const checkAuthStatus = async () => {
     try {
       const loginState = await auth.getLoginState();
 
-      // 只有在明确已登录且不是匿名登录的情况下才认为是已登录
-      if (
-        loginState &&
-        loginState.user &&
-        loginState.loginType !== "ANONYMOUS"
-      ) {
+      // 允许匿名登录，统一将登录态视为有效
+      if (loginState && loginState.user) {
         // 使用 CloudBase SDK 的用户对象，适配 Weda 字段
         const user = {
           ...loginState.user,
@@ -86,10 +112,6 @@ export default function Home(props) {
         setIsLoggedIn(true);
         setUser(user);
       } else {
-        // 如果是匿名登录，强制退出
-        if (loginState && loginState.loginType === "ANONYMOUS") {
-          await auth.signOut();
-        }
         setIsLoggedIn(false);
         setUser(null);
       }
@@ -132,46 +154,34 @@ export default function Home(props) {
       });
     }
   };
+  /**
+   * 加载当前用户的站点列表（从 resource-game 集合）
+   */
   const loadWebsites = async () => {
     try {
-      const result = await $w.cloud.callDataSource({
-        dataSourceName: "websites",
-        methodName: "wedaGetRecordsV2",
-        params: {
-          filter: {
-            where: {
-              userId: {
-                $eq: user?.userId || ""
-              }
-            }
-          },
-          select: {
-            $master: true
-          },
-          orderBy: [
-            {
-              createdAt: "desc"
-            }
-          ],
-          getCount: true,
-          pageSize: 50,
-          pageNumber: 1
+      const result = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "list",
+          userId: user?.userId || ""
         }
       });
-      setWebsites(result.records || []);
+      if (result.result && result.result.success) {
+        const mapped = (result.result.files || []).map((item) => ({
+          ...item,
+          status: "deployed"
+        }));
+        setWebsites(mapped);
+      } else {
+        throw new Error(result.result?.message || "加载列表失败");
+      }
     } catch (error) {
       console.error("加载网站列表失败:", error);
-      // 如果数据源不存在，提示用户
-      if (
-        error.code === "PERMISSION_DENIED" ||
-        error.message.includes("数据源不存在")
-      ) {
-        toast({
-          title: "数据源未配置",
-          description: "请联系管理员创建 websites 数据模型",
-          variant: "destructive"
-        });
-      }
+      toast({
+        title: "加载失败",
+        description: error.message || "无法获取网站列表",
+        variant: "destructive"
+      });
     }
   };
   const handleFileUpload = async (event) => {
@@ -188,61 +198,55 @@ export default function Home(props) {
     setUploading(true);
     setUploadProgress(0);
     try {
-      // 上传文件到云存储
-      const uploadResult = await app.uploadFile({
-        cloudPath: `websites/${user.userId}/${Date.now()}_${file.name}`,
-        filePath: file,
-        onUploadProgress: (progress) => {
-          setUploadProgress(
-            Math.round((progress.loaded / progress.total) * 100)
-          );
-        }
-      });
+      // 确保存在登录态；若无则使用匿名登录
+      const state = await auth.getLoginState();
+      if (!state || !state.user) {
+        await auth.signInAnonymously();
+        await checkAuthStatus();
+      }
 
-      // 保存网站信息到数据库
+      const safeFileName = sanitizeFileName(file.name);
+      const cloudPath = `websites/${user.userId}/${Date.now()}_${safeFileName}`;
+
+      // 生成 websiteId，并先更新本地状态
+      const websiteId = generateWebsiteId();
       const websiteData = {
         userId: user.userId,
         userName: user.nickName || user.name,
-        fileName: file.name,
-        fileId: uploadResult.fileID,
+        fileName: safeFileName,
         status: "processing",
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      const createResult = await $w.cloud.callDataSource({
-        dataSourceName: "websites",
-        methodName: "wedaCreateV2",
-        params: {
-          data: websiteData
-        }
-      });
-      const websiteId = createResult.id;
-
-      // 更新本地状态
       setWebsites((prev) => [
-        {
-          _id: websiteId,
-          ...websiteData
-        },
+        { _id: websiteId, ...websiteData },
         ...prev
       ]);
-      toast({
-        title: "上传成功",
-        description: "文件已上传，正在处理部署..."
-      });
+      setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
-      // 调用云函数处理部署
-      setDeploying((prev) => ({
-        ...prev,
-        [websiteId]: true
-      }));
+      // 将文件读取为 Base64，交由云函数上传并部署
+      const toBase64 = (f) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = String(reader.result || "");
+            const base64 = res.includes(",") ? res.split(",")[1] : res;
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+      const fileContentBase64 = await toBase64(file);
+
       const deployResult = await app.callFunction({
         name: "deploy-website",
         data: {
-          fileId: uploadResult.fileID,
+          action: "upload_and_deploy",
+          cloudPath,
+          fileContentBase64,
           userId: user.userId,
           websiteId: websiteId,
-          fileName: file.name
+          fileName: safeFileName
         }
       });
       setDeploying((prev) => ({
@@ -250,27 +254,7 @@ export default function Home(props) {
         [websiteId]: false
       }));
       if (deployResult.result && deployResult.result.success) {
-        // 更新数据库中的部署信息
-        await $w.cloud.callDataSource({
-          dataSourceName: "Websites",
-          methodName: "wedaUpdateV2",
-          params: {
-            filter: {
-              where: {
-                _id: {
-                  $eq: websiteId
-                }
-              }
-            },
-            data: {
-              status: "deployed",
-              url: deployResult.result.url,
-              websitePath: deployResult.result.websitePath,
-              deployedAt: Date.now(),
-              updatedAt: Date.now()
-            }
-          }
-        });
+        // 部署成功后直接刷新列表（从 resource-game 集合查询）
         toast({
           title: "部署成功",
           description: "网站已成功部署并可以访问"
@@ -301,34 +285,28 @@ export default function Home(props) {
       const website = websites.find((w) => w._id === websiteId);
       if (!website) return;
 
-      // 删除云存储文件
-      if (website.fileId) {
-        await app.deleteFile({
-          fileList: [website.fileId]
-        });
-      }
-
-      // 删除数据库记录
-      await $w.cloud.callDataSource({
-        dataSourceName: "Websites",
-        methodName: "wedaDeleteV2",
-        params: {
-          filter: {
-            where: {
-              _id: {
-                $eq: websiteId
-              }
-            }
-          }
+      // 使用云函数删除整站资源（COS + 数据库）
+      const result = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "delete",
+          userId: website.userId,
+          websiteId: website.websiteId || website._id,
+          fileName: website.fileName,
+          key: website.path // 直接传递数据库中的 path，提高删除准确性
         }
       });
-      toast({
-        title: "删除成功",
-        description: "网站已成功删除"
-      });
 
-      // 从本地状态中移除
-      setWebsites((prev) => prev.filter((w) => w._id !== websiteId));
+      if (result.result && result.result.success) {
+        toast({
+          title: "删除成功",
+          description: "网站已成功删除"
+        });
+        // 从本地状态中移除
+        setWebsites((prev) => prev.filter((w) => w._id !== websiteId));
+      } else {
+        throw new Error(result.result?.message || "删除失败");
+      }
     } catch (error) {
       toast({
         title: "删除失败",
@@ -337,6 +315,9 @@ export default function Home(props) {
       });
     }
   };
+  /**
+   * 重新部署站点（重新触发 deploy 云函数）
+   */
   const handleRedeploy = async (website) => {
     try {
       setDeploying((prev) => ({
@@ -357,34 +338,13 @@ export default function Home(props) {
         [website._id]: false
       }));
       if (deployResult.result && deployResult.result.success) {
-        // 更新数据库中的部署信息
-        await $w.cloud.callDataSource({
-          dataSourceName: "Websites",
-          methodName: "wedaUpdateV2",
-          params: {
-            filter: {
-              where: {
-                _id: {
-                  $eq: website._id
-                }
-              }
-            },
-            data: {
-              status: "deployed",
-              url: deployResult.result.url,
-              websitePath: deployResult.result.websitePath,
-              deployedAt: Date.now(),
-              updatedAt: Date.now()
-            }
-          }
-        });
         toast({
-          title: "重新部署成功",
-          description: "网站已重新部署"
+          title: "部署成功",
+          description: "网站已成功部署并可以访问"
         });
+
+        // 重新加载网站列表
         loadWebsites();
-      } else {
-        throw new Error(deployResult.result?.message || "重新部署失败");
       }
     } catch (error) {
       setDeploying((prev) => ({
@@ -398,6 +358,10 @@ export default function Home(props) {
       });
     }
   };
+
+  /**
+   * 根据状态渲染状态徽章
+   */
   const getStatusBadge = (status) => {
     switch (status) {
       case "deployed":
