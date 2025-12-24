@@ -12,7 +12,7 @@
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\""
   },
   "dependencies": {
-    "@cloudbase/js-sdk": "^2.17.3",
+    "@cloudbase/js-sdk": "~2.8.35",
     "@cloudbase/weda-client": "^1.1.33",
     "@cloudbase/weda-cloud-sdk": "^1.0.106",
     "@hookform/resolvers": "^3.9.0",
@@ -45,7 +45,7 @@
     "@radix-ui/react-tooltip": "^1.1.4",
     "@tanstack/react-query": "^5.56.2",
     "@tcwd/weapps-sdk": "1.2.14-rc.1",
-    "@zxing/library": "^0.21.3",
+    "@zxing/library": "^0.18.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
