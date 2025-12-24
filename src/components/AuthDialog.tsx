@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
-import cloudbase from "@cloudbase/js-sdk";
-import env from "../configs/env";
+import { app, auth } from "../cloudbase";
 import {
   Button,
   Dialog,
@@ -12,13 +11,6 @@ import {
   Label,
   useToast
 } from "@/components/ui";
-
-// Initialize CloudBase
-// Note: In a real app, this might be a singleton exported from a lib
-const app = cloudbase.init({
-  env: env.env
-});
-const auth = app.auth();
 
 interface AuthDialogProps {
   isOpen: boolean;

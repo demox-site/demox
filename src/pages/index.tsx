@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { auth } from "../cloudbase";
 import { AuthDialog } from "../components/AuthDialog";
 import {
   Terminal,
@@ -11,7 +12,10 @@ import {
   CheckCircle2,
   Menu,
   X,
-  Languages
+  Languages,
+  User,
+  LogOut,
+  LayoutDashboard
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
@@ -21,7 +25,9 @@ const translations = {
     navbar: {
       pricing: "价格",
       blog: "博客",
-      login: "登录"
+      login: "登录",
+      console: "控制台",
+      logout: "退出"
     },
     hero: {
       version: "v2.0 现已发布",
@@ -92,7 +98,9 @@ const translations = {
     navbar: {
       pricing: "Pricing",
       blog: "Blog",
-      login: "Login"
+      login: "Login",
+      console: "Console",
+      logout: "Logout"
     },
     hero: {
       version: "v2.0 is now live",
@@ -165,12 +173,32 @@ const CloudHostLanding: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { language: lang, toggleLanguage: toggleLang } = useLanguage();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [user, setUser] = useState(null);
   const navigate = useNavigate();
 
   const t = translations[lang];
 
-  const handleLoginSuccess = () => {
+  useEffect(() => {
+    const checkLoginState = async () => {
+      const loginState = await auth.getLoginState();
+      if (loginState) {
+        setUser(loginState.user);
+      }
+    };
+    checkLoginState();
+  }, []);
+
+  const handleLoginSuccess = async () => {
+    const loginState = await auth.getLoginState();
+    if (loginState) {
+      setUser(loginState.user);
+    }
     navigate("/home");
+  };
+
+  const handleLogout = async () => {
+    await auth.signOut();
+    setUser(null);
   };
 
   return (
@@ -207,15 +235,47 @@ const CloudHostLanding: React.FC = () => {
                 <Languages size={16} />
                 <span className="text-xs font-mono uppercase">{lang}</span>
               </button>
-              <button
-                onClick={() => setIsLoginOpen(true)}
-                className="px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black hover:border-zinc-100 transition-all duration-300"
-              >
-                {t.navbar.login}
-              </button>
+              
+              {user ? (
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 text-sm text-zinc-300">
+                    <User size={16} />
+                    <span className="max-w-[150px] truncate">{user.nickName || user.email || "User"}</span>
+                  </div>
+                  <button
+                    onClick={() => navigate("/home")}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-800 transition-colors"
+                  >
+                    <LayoutDashboard size={16} />
+                    {t.navbar.console}
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="p-2 text-zinc-400 hover:text-red-400 transition-colors"
+                    title={t.navbar.logout}
+                  >
+                    <LogOut size={18} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsLoginOpen(true)}
+                  className="px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black hover:border-zinc-100 transition-all duration-300"
+                >
+                  {t.navbar.login}
+                </button>
+              )}
             </div>
 
             <div className="md:hidden flex items-center gap-4">
+              {user ? (
+                 <button
+                    onClick={() => navigate("/home")}
+                    className="p-2 text-zinc-400 hover:text-zinc-100"
+                  >
+                    <LayoutDashboard size={20} />
+                  </button>
+              ) : null}
               <button
                 onClick={toggleLang}
                 className="text-zinc-400 hover:text-zinc-100 flex items-center gap-1"
@@ -248,12 +308,34 @@ const CloudHostLanding: React.FC = () => {
               >
                 {t.navbar.blog}
               </a>
-              <button
-                onClick={() => setIsLoginOpen(true)}
-                className="w-full px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black transition-colors"
-              >
-                {t.navbar.login}
-              </button>
+              
+              {user ? (
+                <>
+                  <div className="flex items-center gap-2 py-2 text-sm text-zinc-300">
+                    <User size={16} />
+                    <span>{user.nickName || user.email || "User"}</span>
+                  </div>
+                  <button
+                    onClick={() => navigate("/home")}
+                    className="block w-full text-left px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-800 transition-colors"
+                  >
+                    {t.navbar.console}
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="block w-full text-left px-4 py-2 text-sm font-medium border border-red-900/50 text-red-400 rounded-md hover:bg-red-950/30 transition-colors"
+                  >
+                    {t.navbar.logout}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setIsLoginOpen(true)}
+                  className="w-full px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black transition-colors"
+                >
+                  {t.navbar.login}
+                </button>
+              )}
             </div>
           </div>
         )}

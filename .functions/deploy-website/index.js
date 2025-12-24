@@ -1,6 +1,7 @@
 const tcb = require('@cloudbase/node-sdk');
 const AdmZip = require('adm-zip');
 const COS = require('cos-nodejs-sdk-v5');
+const path = require('path');
 
 exports.main = async (event, context) => {
   const { action = 'deploy', fileId, userId, websiteId, fileName } = event;
@@ -20,6 +21,96 @@ exports.main = async (event, context) => {
 
   const app = tcb.init();
   const db = app.database();
+
+  /**
+   * getUserLimits
+   * 获取用户角色的文件数量限制
+   */
+  const getUserLimits = async (targetUserId) => {
+      try {
+        // 1. 获取用户角色
+        const userRoleRes = await db.collection('ai_builder_user_roles').doc(targetUserId).get();
+        let roles = ['user'];
+        if (userRoleRes.data && userRoleRes.data.length > 0 && userRoleRes.data[0].role) {
+            roles = userRoleRes.data[0].role;
+        }
+        
+        // 确保 'user' 角色存在于候选列表中
+        if (!roles.includes('user')) {
+            roles.push('user');
+        }
+
+        // 2. 查询角色配置
+        const _ = db.command;
+        const limitsRes = await db.collection('ai_builder_roles')
+            .where({
+                _id: _.in(roles)
+            })
+            .get();
+        
+        if (!limitsRes.data || limitsRes.data.length === 0) {
+             console.warn(`未找到用户 ${targetUserId} 的任何角色配置 (roles: ${roles})`);
+             return null; 
+        }
+
+        // 3. 按优先级排序取最高者
+        const sorted = limitsRes.data.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        const effectiveRole = sorted[0];
+        
+        console.log(`用户 ${targetUserId} 生效角色: ${effectiveRole.name || effectiveRole._id}, 配置: ${JSON.stringify(effectiveRole)}`);
+        return effectiveRole;
+    } catch (e) {
+        console.warn('获取用户角色配置失败:', e);
+        return null;
+    }
+  };
+
+  /**
+   * getContentType
+   * 根据文件扩展名返回合理的 Content-Type
+   */
+  const getContentType = (key) => {
+    const ext = (path.extname(key) || '').toLowerCase();
+    switch (ext) {
+      case '.html': return 'text/html; charset=utf-8';
+      case '.css': return 'text/css; charset=utf-8';
+      case '.js': return 'application/javascript; charset=utf-8';
+      case '.mjs': return 'application/javascript; charset=utf-8';
+      case '.json': return 'application/json; charset=utf-8';
+      case '.svg': return 'image/svg+xml';
+      case '.png': return 'image/png';
+      case '.jpg':
+      case '.jpeg': return 'image/jpeg';
+      case '.gif': return 'image/gif';
+      case '.webp': return 'image/webp';
+      case '.ico': return 'image/x-icon';
+      case '.woff': return 'font/woff';
+      case '.woff2': return 'font/woff2';
+      case '.ttf': return 'font/ttf';
+      case '.mp4': return 'video/mp4';
+      case '.txt': return 'text/plain; charset=utf-8';
+      default: return undefined;
+    }
+  };
+
+  /**
+   * getCacheHeaders
+   * 返回适合的缓存控制头：HTML 不缓存；静态资源长缓存
+   */
+  const getCacheHeaders = (key) => {
+    const ext = (path.extname(key) || '').toLowerCase();
+    if (ext === '.html') {
+      return {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0'
+      };
+    }
+    // 其它静态资源按一年不可变缓存
+    return {
+      'Cache-Control': 'public, max-age=31536000, immutable'
+    };
+  };
 
   /**
    * normalizeWebsiteId
@@ -295,6 +386,44 @@ exports.main = async (event, context) => {
             if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
             return true;
         });
+
+        // 检查文件数量限制和扩展名限制
+        const roleConfig = await getUserLimits(userId);
+        
+        if (roleConfig) {
+            // 1. 检查文件数量
+            const limit = roleConfig.max_file_count;
+            if (limit !== null && limit !== undefined) {
+                if (validEntries.length > limit) {
+                    return {
+                        success: false,
+                        message: `文件数量超出限制！当前上传包含 ${validEntries.length} 个文件，您的角色限制为 ${limit} 个文件。`
+                    };
+                }
+            }
+
+            // 2. 检查文件扩展名
+            if (roleConfig.allowed_extensions && Array.isArray(roleConfig.allowed_extensions)) {
+                const invalidFiles = [];
+                const allowedExts = roleConfig.allowed_extensions.map(ext => ext.toLowerCase());
+
+                for (const entry of validEntries) {
+                    const ext = (path.extname(entry.entryName) || '').toLowerCase();
+                    if (!allowedExts.includes(ext)) {
+                        invalidFiles.push(entry.entryName);
+                    }
+                }
+
+                if (invalidFiles.length > 0) {
+                    const showList = invalidFiles.slice(0, 5).join(', ');
+                    const more = invalidFiles.length > 5 ? ` 等 ${invalidFiles.length} 个文件` : '';
+                    return {
+                        success: false,
+                        message: `包含不支持的文件类型！仅允许: ${allowedExts.join(' ')}。发现非法文件: ${showList}${more}`
+                    };
+                }
+            }
+        }
     
         // 检测并剥离顶层目录
         let commonPrefix = '';
@@ -327,12 +456,21 @@ exports.main = async (event, context) => {
           // 添加上传任务
           uploadPromises.push(() => {
             return new Promise((resolve, reject) => {
-                cos.putObject({
-                    Bucket: hostingBucket,
-                    Region: region,
-                    Key: key,
-                    Body: entry.getData()
-                }, function(err, data) {
+                const headers = getCacheHeaders(key);
+                const contentType = getContentType(key);
+                const putParams = {
+                  Bucket: hostingBucket,
+                  Region: region,
+                  Key: key,
+                  Body: entry.getData()
+                };
+                if (contentType) {
+                  putParams.ContentType = contentType;
+                }
+                if (headers) {
+                  putParams.Headers = headers;
+                }
+                cos.putObject(putParams, function(err, data) {
                     if (err) {
                         console.error(`上传文件失败: ${entryName}`, err);
                         reject(err);
@@ -351,7 +489,7 @@ exports.main = async (event, context) => {
     
         // 4. 获取访问 URL
         const defaultDomain = 'ai-builder.aigc.sx.cn';
-        const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html`;
+        const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
     
         console.log('网站部署成功:', {
           websiteId,
@@ -437,6 +575,44 @@ exports.main = async (event, context) => {
             return true;
         });
 
+        // --- 检查文件数量限制和扩展名限制 ---
+        const roleConfig = await getUserLimits(userId);
+        
+        if (roleConfig) {
+            // 1. 检查文件数量
+            const limit = roleConfig.max_file_count;
+            if (limit !== null && limit !== undefined) {
+                if (validEntries.length > limit) {
+                    return {
+                        success: false,
+                        message: `文件数量超出限制！当前上传包含 ${validEntries.length} 个文件，您的角色限制为 ${limit} 个文件。`
+                    };
+                }
+            }
+
+            // 2. 检查文件扩展名
+            if (roleConfig.allowed_extensions && Array.isArray(roleConfig.allowed_extensions)) {
+                const invalidFiles = [];
+                const allowedExts = roleConfig.allowed_extensions.map(ext => ext.toLowerCase());
+
+                for (const entry of validEntries) {
+                    const ext = (path.extname(entry.entryName) || '').toLowerCase();
+                    if (!allowedExts.includes(ext)) {
+                        invalidFiles.push(entry.entryName);
+                    }
+                }
+
+                if (invalidFiles.length > 0) {
+                    const showList = invalidFiles.slice(0, 5).join(', ');
+                    const more = invalidFiles.length > 5 ? ` 等 ${invalidFiles.length} 个文件` : '';
+                    return {
+                        success: false,
+                        message: `包含不支持的文件类型！仅允许: ${allowedExts.join(' ')}。发现非法文件: ${showList}${more}`
+                    };
+                }
+            }
+        }
+
         // 检测并剥离顶层目录
         let commonPrefix = '';
         if (validEntries.length > 0) {
@@ -460,12 +636,21 @@ exports.main = async (event, context) => {
             const key = `${targetPrefix}/${entryName}`;
             uploadTasks.push(() => {
                 return new Promise((resolve, reject) => {
-                    cos.putObject({
-                        Bucket: hostingBucket,
-                        Region: region,
-                        Key: key,
-                        Body: entry.getData()
-                    }, function(err, data) {
+                    const headers = getCacheHeaders(key);
+                    const contentType = getContentType(key);
+                    const putParams = {
+                      Bucket: hostingBucket,
+                      Region: region,
+                      Key: key,
+                      Body: entry.getData()
+                    };
+                    if (contentType) {
+                      putParams.ContentType = contentType;
+                    }
+                    if (headers) {
+                      putParams.Headers = headers;
+                    }
+                    cos.putObject(putParams, function(err, data) {
                         if (err) {
                             console.error(`上传文件失败: ${entryName}`, err);
                             reject(err);
@@ -483,7 +668,7 @@ exports.main = async (event, context) => {
 
         // 4. 获取访问 URL
         const defaultDomain = 'ai-builder.aigc.sx.cn';
-        const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html`;
+        const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
 
         // 5. 写入/更新数据库（不保存 fileId，仅记录路径与 URL）
         try {

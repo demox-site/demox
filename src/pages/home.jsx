@@ -33,17 +33,8 @@ import {
   AlertCircle,
   RefreshCw
 } from "lucide-react";
-import cloudbase from "@cloudbase/js-sdk";
-import env from "../configs/env";
-import { AuthDialog } from "@/components/AuthDialog";
-import { useNavigate } from "react-router-dom";
-
-// 初始化 CloudBase
-const app = cloudbase.init({
-  env: env.env,
-  region: "ap-shanghai"
-});
-const auth = app.auth();
+import { app, auth, db } from "../cloudbase";
+import { useNavigate, Navigate } from "react-router-dom";
 
 /**
  * sanitizeFileName
@@ -74,13 +65,14 @@ export default function Home(props) {
   const { style } = props;
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [isLoading, setIsLoading] = useState(true);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
   const [websites, setWebsites] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [deploying, setDeploying] = useState({});
-  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [roleLimits, setRoleLimits] = useState(null);
   const fileInputRef = React.useRef(null);
   useEffect(() => {
     checkAuthStatus();
@@ -96,12 +88,15 @@ export default function Home(props) {
    * checkAuthStatus
    * 检查 CloudBase 登录态；允许匿名登录，保持统一的用户对象结构
    */
-  const checkAuthStatus = async () => {
+  const checkAuthStatus = async (retry = true) => {
+    console.log("Checking auth status...");
     try {
       const loginState = await auth.getLoginState();
+      console.log("Login state:", loginState);
 
       // 允许匿名登录，统一将登录态视为有效
       if (loginState && loginState.user) {
+        console.log("User logged in:", loginState.user);
         // 使用 CloudBase SDK 的用户对象，适配 Weda 字段
         const user = {
           ...loginState.user,
@@ -110,20 +105,105 @@ export default function Home(props) {
           nickName: loginState.user.nickName,
           email: loginState.user.email
         };
+
+        // 查询用户身份 (user_roles)
+        try {
+          const roleRes = await db
+            .collection("ai_builder_user_roles")
+            .doc(loginState.user.uid)
+            .get();
+          
+          if (roleRes.data && roleRes.data.length > 0) {
+            // 数据库中保存的是 role: ['admin', 'vip']
+            user.roles = roleRes.data[0].role;
+          } else {
+            user.roles = ["user"]; // 未查到则赋予普通用户角色
+          }
+
+          // Fetch role limits
+          // Default to 'user' role
+          let candidateRoles = ["user"];
+          if (user.roles && user.roles.length > 0) {
+            candidateRoles = [...candidateRoles, ...user.roles];
+          }
+          // Remove duplicates
+          candidateRoles = [...new Set(candidateRoles)];
+          console.log(candidateRoles)
+          // Use Cloud Function to fetch role limits to avoid ACL issues
+          const limitFnRes = await app.callFunction({
+            name: "getRoleLimits",
+            data: {
+              roles: candidateRoles
+            }
+          });
+          
+          let limitRes = { data: [] };
+          if (limitFnRes.result && limitFnRes.result.code === 0) {
+             limitRes.data = limitFnRes.result.data;
+          } else {
+             console.warn("Cloud function getRoleLimits failed:", limitFnRes.result);
+          }
+
+          if (limitRes.data && limitRes.data.length > 0) {
+            // Sort by priority descending
+            const sortedRoles = limitRes.data.sort(
+              (a, b) => (b.priority || 0) - (a.priority || 0)
+            );
+            // Use the highest priority role
+            const effectiveRole = sortedRoles[0];
+            setRoleLimits(effectiveRole);
+            user.role_name = effectiveRole.name || "普通用户";
+          } else {
+            console.warn("No role limits found in database");
+            // 禁止默认设置，仅设置角色名称
+            user.role_name = "普通用户";
+          }
+        } catch (roleError) {
+          console.warn("Fetch user roles failed:", roleError);
+          // 忽略错误，降级为普通用户，并尝试获取普通用户限额
+          user.roles = ["user"];
+          user.role_name = "普通用户";
+          
+          try {
+            const userLimitFnRes = await app.callFunction({
+                name: "getRoleLimits",
+                data: { roles: ["user"] }
+            });
+            
+            if (userLimitFnRes.result && userLimitFnRes.result.code === 0 && userLimitFnRes.result.data.length > 0) {
+                setRoleLimits(userLimitFnRes.result.data[0]);
+                user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
+            }
+          } catch (limitError) {
+            console.warn("Fallback fetch 'user' role limit failed:", limitError);
+          }
+        }
+
         setIsLoggedIn(true);
         setUser(user);
+        setIsLoading(false);
       } else {
+        if (retry) {
+            console.log("No user found, retrying in 500ms...");
+            setTimeout(() => checkAuthStatus(false), 500);
+            return;
+        }
+        console.warn("No user found in login state");
         setIsLoggedIn(false);
         setUser(null);
+        setIsLoading(false);
       }
     } catch (e) {
       console.warn("Auth check failed:", e);
+      if (retry) {
+          console.log("Auth check error, retrying in 500ms...");
+          setTimeout(() => checkAuthStatus(false), 500);
+          return;
+      }
       setIsLoggedIn(false);
       setUser(null);
+      setIsLoading(false);
     }
-  };
-  const handleLogin = () => {
-    setIsLoginOpen(true);
   };
 
   const handleLogout = async () => {
@@ -197,21 +277,57 @@ export default function Home(props) {
       });
       return;
     }
+
+    // Check limits
+    if (roleLimits) {
+      if (
+        roleLimits.deployment_limit !== null &&
+        websites.length >= roleLimits.deployment_limit
+      ) {
+        toast({
+          title: "达到部署限制",
+          description: `您当前角色的部署上限为 ${roleLimits.deployment_limit} 个`,
+          variant: "destructive"
+        });
+        return;
+      }
+      if (
+        roleLimits.max_file_size !== null &&
+        file.size > roleLimits.max_file_size
+      ) {
+        toast({
+          title: "文件大小超出限制",
+          description: `文件大小不能超过 ${Math.round(
+            roleLimits.max_file_size / 1024 / 1024
+          )}MB`,
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
     setUploading(true);
     setUploadProgress(0);
+    let websiteId = null;
+
     try {
-      // 确保存在登录态；若无则使用匿名登录
+      // 确保存在登录态；若无则跳转回首页
       const state = await auth.getLoginState();
       if (!state || !state.user) {
-        await auth.signInAnonymously();
-        await checkAuthStatus();
+        toast({
+            title: "登录已过期",
+            description: "请重新登录",
+            variant: "destructive"
+        });
+        navigate("/");
+        return;
       }
 
       const safeFileName = sanitizeFileName(file.name);
       const cloudPath = `websites/${user.userId}/${Date.now()}_${safeFileName}`;
 
       // 生成 websiteId，并先更新本地状态
-      const websiteId = generateWebsiteId();
+      websiteId = generateWebsiteId();
       const websiteData = {
         userId: user.userId,
         userName: user.nickName || user.name,
@@ -266,6 +382,23 @@ export default function Home(props) {
       }
     } catch (error) {
       console.error("部署失败:", error);
+      
+      if (websiteId) {
+        // 更新状态为失败
+        setWebsites((prev) => 
+          prev.map(w => 
+            w._id === websiteId 
+              ? { ...w, status: "failed" } 
+              : w
+          )
+        );
+        
+        setDeploying((prev) => ({
+          ...prev,
+          [websiteId]: false
+        }));
+      }
+
       toast({
         title: "部署失败",
         description: error.message || "部署过程中出现错误，请重试",
@@ -314,49 +447,7 @@ export default function Home(props) {
       });
     }
   };
-  /**
-   * 重新部署站点（重新触发 deploy 云函数）
-   */
-  const handleRedeploy = async (website) => {
-    try {
-      setDeploying((prev) => ({
-        ...prev,
-        [website._id]: true
-      }));
-      const deployResult = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          fileId: website.fileId,
-          userId: website.userId,
-          websiteId: website._id,
-          fileName: website.fileName
-        }
-      });
-      setDeploying((prev) => ({
-        ...prev,
-        [website._id]: false
-      }));
-      if (deployResult.result && deployResult.result.success) {
-        toast({
-          title: "部署成功",
-          description: "网站已成功部署并可以访问"
-        });
 
-        // 重新加载网站列表
-        loadWebsites();
-      }
-    } catch (error) {
-      setDeploying((prev) => ({
-        ...prev,
-        [website._id]: false
-      }));
-      toast({
-        title: "重新部署失败",
-        description: error.message,
-        variant: "destructive"
-      });
-    }
-  };
 
   /**
    * 根据状态渲染状态徽章
@@ -393,85 +484,27 @@ export default function Home(props) {
         );
     }
   };
-  if (!isLoggedIn) {
+
+  if (isLoading) {
     return (
       <div
         style={style}
-        className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white"
+        className="min-h-screen bg-black text-zinc-100 font-sans flex items-center justify-center"
       >
-        <div className="container mx-auto px-4 py-16">
-          <div className="max-w-4xl mx-auto text-center">
-            <div className="mb-8">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-zinc-800 bg-zinc-900/50 mb-8">
-                <span className="flex h-2 w-2 rounded-full bg-zinc-400 animate-pulse"></span>
-                <span className="text-xs font-mono text-zinc-400">
-                  CloudHost v2.0
-                </span>
-              </div>
-              <h1 className="text-5xl md:text-7xl font-bold tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-zinc-100 to-zinc-500">
-                Deploy Static Sites.
-                <br />
-                <span className="text-white">Instantly.</span>
-              </h1>
-              <p className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed">
-                Drag, drop, global CDN. No config required. Designed for
-                developers who want speed without the hassle.
-              </p>
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-6 text-left mb-16">
-              {[
-                {
-                  icon: <User className="text-zinc-100" size={24} />,
-                  title: "1. Register & Login",
-                  desc: "Quick sign up to start your cloud journey."
-                },
-                {
-                  icon: <Upload className="text-zinc-100" size={24} />,
-                  title: "2. Upload Code",
-                  desc: "Upload your static website zip file."
-                },
-                {
-                  icon: <Globe className="text-zinc-100" size={24} />,
-                  title: "3. Visit Instantly",
-                  desc: "Get a public URL and go live immediately."
-                }
-              ].map((item, i) => (
-                <div
-                  key={i}
-                  className="p-6 rounded-lg border border-zinc-900 bg-zinc-950/50 hover:border-zinc-700 transition-colors group"
-                >
-                  <div className="w-12 h-12 rounded-lg bg-zinc-900 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                    {item.icon}
-                  </div>
-                  <h3 className="text-xl font-semibold mb-2 text-zinc-100">
-                    {item.title}
-                  </h3>
-                  <p className="text-zinc-400 leading-relaxed">{item.desc}</p>
-                </div>
-              ))}
-            </div>
-
-            <Button
-              onClick={handleLogin}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
-            >
-              Login to Deploy
-            </Button>
-
-            <AuthDialog
-              isOpen={isLoginOpen}
-              onOpenChange={setIsLoginOpen}
-              onLoginSuccess={checkAuthStatus}
-            />
-          </div>
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
+          <span className="text-zinc-500 font-mono text-sm animate-pulse">
+            Loading...
+          </span>
         </div>
-
-        {/* Background Grid Effect */}
-        <div className="fixed inset-0 bg-[linear-gradient(to_right,#18181b_1px,transparent_1px),linear-gradient(to_bottom,#18181b_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10 pointer-events-none" />
       </div>
     );
   }
+
+  if (!isLoggedIn) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <div
       style={style}
@@ -490,7 +523,7 @@ export default function Home(props) {
           </div>
           <div className="flex items-center space-x-6">
             <div className="flex items-center space-x-3 bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-800">
-              <Avatar className="w-6 h-6">
+              <Avatar className="w-8 h-8">
                 <AvatarImage src={user?.avatarUrl} />
                 <AvatarFallback className="bg-zinc-700 text-zinc-300 text-xs">
                   {(user?.nickName ||
@@ -499,9 +532,14 @@ export default function Home(props) {
                     "U")[0].toUpperCase()}
                 </AvatarFallback>
               </Avatar>
-              <span className="text-zinc-300 text-sm font-mono">
-                {user?.nickName || user?.email || user?.name || "User"}
-              </span>
+              <div className="flex flex-col text-left">
+                <span className="text-zinc-300 text-sm font-mono leading-tight">
+                  {user?.nickName || user?.email || user?.name || "User"}
+                </span>
+                <span className="text-[10px] text-zinc-500 font-mono font-bold leading-tight mt-0.5">
+                  {user?.role_name || "普通用户"}
+                </span>
+              </div>
             </div>
             <Button
               onClick={handleLogout}
@@ -521,6 +559,19 @@ export default function Home(props) {
             <CardTitle className="text-zinc-100 flex items-center gap-2">
               <Upload className="w-5 h-5 text-zinc-400" />
               Deploy New Project
+              {roleLimits && (
+                <span className="text-xs text-zinc-500 font-mono ml-2 font-normal">
+                  (最大:{" "}
+                  {roleLimits.max_file_size
+                    ? Math.round(roleLimits.max_file_size / 1024 / 1024) + "MB"
+                    : "无限"}
+                  , 文件数:{" "}
+                  {roleLimits.max_file_count
+                    ? roleLimits.max_file_count
+                    : "无限"}
+                  )
+                </span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-8">
@@ -577,6 +628,15 @@ export default function Home(props) {
               <div className="flex items-center gap-2">
                 <Globe className="w-5 h-5 text-zinc-400" />
                 Deployments
+                {roleLimits && (
+                  <span className="text-sm text-zinc-500 font-mono ml-2">
+                    ({websites.length}/
+                    {(roleLimits.deployment_limit === null || roleLimits.deployment_limit === undefined)
+                      ? "∞"
+                      : roleLimits.deployment_limit}
+                    )
+                  </span>
+                )}
               </div>
               <Button
                 size="sm"
@@ -659,17 +719,7 @@ export default function Home(props) {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {website.status === "failed" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRedeploy(website)}
-                          className="border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:border-zinc-600 bg-transparent"
-                          disabled={deploying[website._id]}
-                        >
-                          <RefreshCw className="w-4 h-4" />
-                        </Button>
-                      )}
+
                       <Button
                         variant="ghost"
                         size="sm"
