@@ -4,8 +4,10 @@ master:
   push:
     # 要执行的任务
     - stages:
-        - name: 打包项目
-          script: |
+        - name: 安装 npm 依赖
+          image: node:20
+          commands: |
+            # 安装项目依赖并打包
             npm install --legacy-peer-deps
             npm run build
             
