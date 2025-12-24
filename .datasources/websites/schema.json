@@ -1,0 +1,86 @@
+
+{
+  "name": "websites",
+  "description": "用户部署的网站信息",
+  "fields": [
+    {
+      "name": "userId",
+      "type": "string",
+      "description": "用户ID",
+      "required": true
+    },
+    {
+      "name": "userName",
+      "type": "string", 
+      "description": "用户名称",
+      "required": true
+    },
+    {
+      "name": "fileName",
+      "type": "string",
+      "description": "上传的文件名",
+      "required": true
+    },
+    {
+      "name": "fileId",
+      "type": "string",
+      "description": "云存储文件ID",
+      "required": true
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "description": "部署状态",
+      "required": true,
+      "defaultValue": "processing",
+      "enum": ["processing", "deployed", "failed"]
+    },
+    {
+      "name": "url",
+      "type": "string",
+      "description": "网站访问URL",
+      "required": false
+    },
+    {
+      "name": "websitePath",
+      "type": "string",
+      "description": "网站在托管中的路径",
+      "required": false
+    },
+    {
+      "name": "createdAt",
+      "type": "datetime",
+      "description": "创建时间",
+      "required": true
+    },
+    {
+      "name": "updatedAt",
+      "type": "datetime", 
+      "description": "更新时间",
+      "required": true
+    },
+    {
+      "name": "deployedAt",
+      "type": "datetime",
+      "description": "部署时间",
+      "required": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "user_index",
+      "fields": ["userId"],
+      "unique": false
+    },
+    {
+      "name": "status_index", 
+      "fields": ["status"],
+      "unique": false
+    },
+    {
+      "name": "created_index",
+      "fields": ["createdAt"],
+      "unique": false
+    }
+  ]
+}

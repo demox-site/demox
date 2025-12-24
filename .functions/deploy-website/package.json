@@ -1,0 +1,11 @@
+{
+  "name": "deploy-website",
+  "version": "1.0.0",
+  "description": "Deploy static website from zip file",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "latest",
+    "adm-zip": "^0.5.10",
+    "cos-nodejs-sdk-v5": "^2.12.4"
+  }
+}
