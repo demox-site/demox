@@ -115,6 +115,89 @@ exports.main = async (event, context) => {
   };
 
   /**
+   * resolveExistingPath
+   * 返回已有站点的部署路径前缀，如果不存在则返回 null
+   */
+  const resolveExistingPath = async (uid, wid) => {
+    try {
+      let doc = null;
+      if (wid) {
+        const resById = await db.collection('resource-game').doc(wid).get();
+        doc = resById.data && resById.data[0] ? resById.data[0] : null;
+      }
+      if (!doc && uid && wid) {
+        const resByFields = await db.collection('resource-game').where({ userId: uid, websiteId: wid }).limit(1).get();
+        doc = resByFields.data && resByFields.data[0] ? resByFields.data[0] : null;
+      }
+      return doc && doc.path ? String(doc.path) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * deployZipToTarget
+   * 将 zipEntries 部署到指定目标前缀，覆盖同名文件
+   */
+  const deployZipToTarget = async (zipEntries, targetPrefix) => {
+    const validEntries = zipEntries.filter(entry => {
+      if (entry.isDirectory) return false;
+      const name = entry.entryName;
+      if (name.includes('..')) return false;
+      if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
+      return true;
+    });
+
+    let commonPrefix = '';
+    if (validEntries.length > 0) {
+      const firstEntry = validEntries[0];
+      const parts = firstEntry.entryName.split('/');
+      if (parts.length > 1) {
+        const potentialPrefix = parts[0] + '/';
+        const allMatch = validEntries.every(e => e.entryName.startsWith(potentialPrefix));
+        if (allMatch) {
+          commonPrefix = potentialPrefix;
+        }
+      }
+    }
+
+    const uploadTasks = [];
+    for (const entry of validEntries) {
+      let entryName = entry.entryName;
+      if (commonPrefix && entryName.startsWith(commonPrefix)) {
+        entryName = entryName.slice(commonPrefix.length);
+      }
+      const key = `${targetPrefix}/${entryName}`;
+      uploadTasks.push(() => {
+        return new Promise((resolve, reject) => {
+          const headers = getCacheHeaders(key);
+          const contentType = getContentType(key);
+          const putParams = {
+            Bucket: hostingBucket,
+            Region: region,
+            Key: key,
+            Body: entry.getData()
+          };
+          if (contentType) {
+            putParams.ContentType = contentType;
+          }
+          if (headers) {
+            putParams.Headers = headers;
+          }
+          cos.putObject(putParams, function(err, data) {
+            if (err) {
+              reject(err);
+            } else {
+              resolve(data);
+            }
+          });
+        });
+      });
+    }
+
+    await Promise.all(uploadTasks.map(p => p()));
+  };
+  /**
    * normalizeWebsiteId
    * 将传入的 websiteId 规范为 8 位大写字母与数字的字符串
    * 若入参不符合规则，则生成新的随机 ID
@@ -128,6 +211,19 @@ exports.main = async (event, context) => {
       out += chars[Math.floor(Math.random() * chars.length)];
     }
     return out;
+  };
+
+  /**
+   * normalizeFileNameNoExt
+   * 从文件名取不带扩展名的段，若包含非英文字母和数字，则返回 'dist'
+   */
+  const normalizeFileNameNoExt = (name) => {
+    try {
+      const base = String(name || '').replace(/\.[^/.]+$/, '').toLowerCase();
+      return /^[a-z0-9]+$/.test(base) ? base : 'dist';
+    } catch {
+      return 'dist';
+    }
   };
 
   /**
@@ -611,210 +707,7 @@ exports.main = async (event, context) => {
         };
     }
 
-    // --- 功能 3: 原有部署逻辑 (action === 'deploy') ---
-    if (action === 'deploy') {
-      // 当部署参数缺失时，回退为统计信息，避免直接报错
-      if (!fileId || !userId || !websiteId) {
-        const sites = await sumSites();
-        const traffic = await fetchCosTraffic();
-        return {
-          success: true,
-          sitesBytes: sites.bytes,
-          sitesCount: sites.count,
-          bucketTrafficInBytes: traffic.inBytes,
-          bucketTrafficOutBytes: traffic.outBytes,
-          message: '缺少部署参数，已返回桶统计信息'
-        };
-      }
-      console.log(`开始部署: websiteId=${websiteId}, fileId=${fileId}`);
-        
-        // 1. 下载上传的文件
-        console.log('正在下载文件...');
-        const fileResult = await app.downloadFile({
-          fileID: fileId
-        });
-        
-        if (!fileResult.fileContent) {
-            throw new Error('文件下载失败，内容为空');
-        }
-    
-        // 2. 解压文件
-        console.log('正在解压文件...');
-        const zip = new AdmZip(fileResult.fileContent);
-        const zipEntries = zip.getEntries();
-        
-        console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
-        
-        // 生成目标路径前缀
-        const fileNameNoExt = (fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist").toLowerCase();
-        const wId = normalizeWebsiteId(websiteId);
-        // 仅将 fileNameNoExt 小写，保持 userId 与 wId 原始大小写
-        const targetPrefix = `sites/${userId}/${wId}/${fileNameNoExt}`;
-        const urlPrefix = `sites-${userId}-${wId}-${fileNameNoExt}`;
-        
-        const uploadPromises = [];
-        
-        // 过滤出有效文件
-        const validEntries = zipEntries.filter(entry => {
-            if (entry.isDirectory) return false;
-            const name = entry.entryName;
-            if (name.includes('..')) return false;
-            if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
-            return true;
-        });
-
-        // 检查文件数量限制和扩展名限制
-        const roleConfig = await getUserLimits(userId);
-        
-        if (roleConfig) {
-            // 1. 检查文件数量
-            const limit = roleConfig.max_file_count;
-            if (limit !== null && limit !== undefined) {
-                if (validEntries.length > limit) {
-                    return {
-                        success: false,
-                        message: `文件数量超出限制！当前上传包含 ${validEntries.length} 个文件，您的角色限制为 ${limit} 个文件。`
-                    };
-                }
-            }
-
-            // 2. 检查文件扩展名
-            if (roleConfig.allowed_extensions && Array.isArray(roleConfig.allowed_extensions)) {
-                const invalidFiles = [];
-                const allowedExts = roleConfig.allowed_extensions.map(ext => ext.toLowerCase());
-
-                for (const entry of validEntries) {
-                    const ext = (path.extname(entry.entryName) || '').toLowerCase();
-                    if (!allowedExts.includes(ext)) {
-                        invalidFiles.push(entry.entryName);
-                    }
-                }
-
-                if (invalidFiles.length > 0) {
-                    const showList = invalidFiles.slice(0, 5).join(', ');
-                    const more = invalidFiles.length > 5 ? ` 等 ${invalidFiles.length} 个文件` : '';
-                    return {
-                        success: false,
-                        message: `包含不支持的文件类型！仅允许: ${allowedExts.join(' ')}。发现非法文件: ${showList}${more}`
-                    };
-                }
-            }
-        }
-    
-        // 检测并剥离顶层目录
-        let commonPrefix = '';
-        if (validEntries.length > 0) {
-            const firstEntry = validEntries[0];
-            const parts = firstEntry.entryName.split('/');
-            // 只有当有子目录时才检测
-            if (parts.length > 1) {
-                const potentialPrefix = parts[0] + '/';
-                // 检查是否所有文件都以该目录开头
-                const allMatch = validEntries.every(e => e.entryName.startsWith(potentialPrefix));
-                if (allMatch) {
-                    commonPrefix = potentialPrefix;
-                    console.log(`检测到顶层目录 ${commonPrefix}，将自动剥离`);
-                }
-            }
-        }
-    
-        // 遍历 zip 包中的文件
-        for (const entry of validEntries) {
-          let entryName = entry.entryName;
-          
-          // 剥离顶层目录
-          if (commonPrefix && entryName.startsWith(commonPrefix)) {
-              entryName = entryName.slice(commonPrefix.length);
-          }
-    
-          const key = `${targetPrefix}/${entryName}`;
-          
-          // 添加上传任务
-          uploadPromises.push(() => {
-            return new Promise((resolve, reject) => {
-                const headers = getCacheHeaders(key);
-                const contentType = getContentType(key);
-                const putParams = {
-                  Bucket: hostingBucket,
-                  Region: region,
-                  Key: key,
-                  Body: entry.getData()
-                };
-                if (contentType) {
-                  putParams.ContentType = contentType;
-                }
-                if (headers) {
-                  putParams.Headers = headers;
-                }
-                cos.putObject(putParams, function(err, data) {
-                    if (err) {
-                        console.error(`上传文件失败: ${entryName}`, err);
-                        reject(err);
-                    } else {
-                        resolve(data);
-                    }
-                });
-            });
-          });
-        }
-        
-        // 并发执行上传
-        console.log(`开始上传 ${uploadPromises.length} 个文件到 Bucket: ${hostingBucket}`);
-        await Promise.all(uploadPromises.map(p => p()));
-        console.log('所有文件上传完成');
-    
-        // 4. 获取访问 URL
-        const defaultDomain = 'ai-builder.aigc.sx.cn';
-        const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
-    
-        console.log('网站部署成功:', {
-          websiteId,
-          userId,
-          url: finalUrl,
-          fileName,
-          targetPrefix
-        });
-
-        // 5. 同步写入数据库
-        try {
-            console.log('正在同步部署信息到数据库...');
-            const countRes = await db.collection('resource-game').where({ path: targetPrefix }).count();
-            
-            if (countRes.total > 0) {
-                await db.collection('resource-game').where({ path: targetPrefix }).update({
-                    userId, 
-                    websiteId, 
-                    fileName, 
-                    url: finalUrl, 
-                    updatedAt: db.serverDate(),
-                    fileId
-                });
-                console.log('数据库记录更新成功');
-            } else {
-                await db.collection('resource-game').add({
-                    userId,
-                    websiteId,
-                    fileName,
-                    path: targetPrefix,
-                    url: finalUrl,
-                    createdAt: db.serverDate(),
-                    updatedAt: db.serverDate(),
-                    fileId
-                });
-                console.log('数据库记录创建成功');
-            }
-        } catch (dbError) {
-            console.error('同步数据库失败:', dbError);
-            // 部署已经成功，这里仅记录错误，不抛出异常影响主流程
-        }
-    
-        return {
-          success: true,
-          url: finalUrl,
-          message: '网站部署成功',
-          websitePath: urlPrefix
-        };
-    }
+    // 原 deploy 动作已移除
 
     // --- 新增功能 5: 前端直接上传内容并部署 (action === 'upload_and_deploy') ---
     if (action === 'upload_and_deploy') {
@@ -824,124 +717,70 @@ exports.main = async (event, context) => {
       }
 
         console.log(`开始上传并部署: websiteId=${websiteId}, cloudPath=${cloudPath}, fileName=${fileName}`);
+        
+        const roleConfigForEnable2 = await getUserLimits(userId);
+        if (roleConfigForEnable2 && roleConfigForEnable2.enabled === false) {
+          return {
+            success: false,
+            message: '当前服务繁忙，请稍后再试，或联系开发者~'
+          };
+        }
 
-        // 将 Base64 转 Buffer
         const buffer = Buffer.from(String(fileContentBase64), 'base64');
-
-        // 1. 直接解压文件（不进行中间云存储）
-        console.log('正在解压文件...');
         const zip = new AdmZip(buffer);
         const zipEntries = zip.getEntries();
         console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
 
-        // 生成目标路径前缀
-        const fileNameNoExt = (fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist").toLowerCase();
-        const wId = normalizeWebsiteId(websiteId);
-        // 仅将 fileNameNoExt 小写，保持 userId 与 wId 原始大小写
-        const targetPrefix = `sites/${userId}/${wId}/${fileNameNoExt}`;
-        const urlPrefix = `sites-${userId}-${wId}-${fileNameNoExt}`;
-
-        const uploadTasks = [];
-
-        // 过滤有效文件
-        const validEntries = zipEntries.filter(entry => {
-            if (entry.isDirectory) return false;
-            const name = entry.entryName;
-            if (name.includes('..')) return false;
-            if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
-            return true;
-        });
+        const existingPath = await resolveExistingPath(userId, websiteId);
+        let targetPrefix, urlPrefix, effectiveFileNameNoExt, wId;
+        if (existingPath) {
+          const parts = existingPath.split('/');
+          effectiveFileNameNoExt = (parts[3] || 'dist').toLowerCase();
+          wId = parts[2] || normalizeWebsiteId(websiteId);
+          targetPrefix = existingPath;
+          urlPrefix = `sites-${userId}-${wId}-${effectiveFileNameNoExt}`;
+        } else {
+          effectiveFileNameNoExt = normalizeFileNameNoExt(fileName);
+          wId = normalizeWebsiteId(websiteId);
+          targetPrefix = `sites/${userId}/${wId}/${effectiveFileNameNoExt}`;
+          urlPrefix = `sites-${userId}-${wId}-${effectiveFileNameNoExt}`;
+        }
 
         // --- 检查文件数量限制和扩展名限制 ---
         const roleConfig = await getUserLimits(userId);
         
         if (roleConfig) {
-            // 1. 检查文件数量
-            const limit = roleConfig.max_file_count;
-            if (limit !== null && limit !== undefined) {
-                if (validEntries.length > limit) {
-                    return {
-                        success: false,
-                        message: `文件数量超出限制！当前上传包含 ${validEntries.length} 个文件，您的角色限制为 ${limit} 个文件。`
-                    };
-                }
+          const validEntriesForCheck = zipEntries.filter(e => !e.isDirectory && !e.entryName.includes('..') && !e.entryName.includes('__MACOSX') && !e.entryName.includes('.DS_Store'));
+          const limit = roleConfig.max_file_count;
+          if (limit !== null && limit !== undefined) {
+            if (validEntriesForCheck.length > limit) {
+              return {
+                success: false,
+                message: `文件数量超出限制！当前上传包含 ${validEntriesForCheck.length} 个文件，您的角色限制为 ${limit} 个文件。`
+              };
             }
-
-            // 2. 检查文件扩展名
-            if (roleConfig.allowed_extensions && Array.isArray(roleConfig.allowed_extensions)) {
-                const invalidFiles = [];
-                const allowedExts = roleConfig.allowed_extensions.map(ext => ext.toLowerCase());
-
-                for (const entry of validEntries) {
-                    const ext = (path.extname(entry.entryName) || '').toLowerCase();
-                    if (!allowedExts.includes(ext)) {
-                        invalidFiles.push(entry.entryName);
-                    }
-                }
-
-                if (invalidFiles.length > 0) {
-                    const showList = invalidFiles.slice(0, 5).join(', ');
-                    const more = invalidFiles.length > 5 ? ` 等 ${invalidFiles.length} 个文件` : '';
-                    return {
-                        success: false,
-                        message: `包含不支持的文件类型！仅允许: ${allowedExts.join(' ')}。发现非法文件: ${showList}${more}`
-                    };
-                }
+          }
+          if (roleConfig.allowed_extensions && Array.isArray(roleConfig.allowed_extensions)) {
+            const invalidFiles = [];
+            const allowedExts = roleConfig.allowed_extensions.map(ext => ext.toLowerCase());
+            for (const entry of validEntriesForCheck) {
+              const ext = (path.extname(entry.entryName) || '').toLowerCase();
+              if (!allowedExts.includes(ext)) {
+                invalidFiles.push(entry.entryName);
+              }
             }
+            if (invalidFiles.length > 0) {
+              const showList = invalidFiles.slice(0, 5).join(', ');
+              const more = invalidFiles.length > 5 ? ` 等 ${invalidFiles.length} 个文件` : '';
+              return {
+                success: false,
+                message: `包含不支持的文件类型！仅允许: ${allowedExts.join(' ')}。发现非法文件: ${showList}${more}`
+              };
+            }
+          }
         }
 
-        // 检测并剥离顶层目录
-        let commonPrefix = '';
-        if (validEntries.length > 0) {
-            const firstEntry = validEntries[0];
-            const parts = firstEntry.entryName.split('/');
-            if (parts.length > 1) {
-                const potentialPrefix = parts[0] + '/';
-                const allMatch = validEntries.every(e => e.entryName.startsWith(potentialPrefix));
-                if (allMatch) {
-                    commonPrefix = potentialPrefix;
-                    console.log(`检测到顶层目录 ${commonPrefix}，将自动剥离`);
-                }
-            }
-        }
-
-        for (const entry of validEntries) {
-            let entryName = entry.entryName;
-            if (commonPrefix && entryName.startsWith(commonPrefix)) {
-                entryName = entryName.slice(commonPrefix.length);
-            }
-            const key = `${targetPrefix}/${entryName}`;
-            uploadTasks.push(() => {
-                return new Promise((resolve, reject) => {
-                    const headers = getCacheHeaders(key);
-                    const contentType = getContentType(key);
-                    const putParams = {
-                      Bucket: hostingBucket,
-                      Region: region,
-                      Key: key,
-                      Body: entry.getData()
-                    };
-                    if (contentType) {
-                      putParams.ContentType = contentType;
-                    }
-                    if (headers) {
-                      putParams.Headers = headers;
-                    }
-                    cos.putObject(putParams, function(err, data) {
-                        if (err) {
-                            console.error(`上传文件失败: ${entryName}`, err);
-                            reject(err);
-                        } else {
-                            resolve(data);
-                        }
-                    });
-                });
-            });
-        }
-
-        console.log(`开始上传 ${uploadTasks.length} 个文件到 Bucket: ${hostingBucket}`);
-        await Promise.all(uploadTasks.map(p => p()));
-        console.log('所有文件上传完成');
+        await deployZipToTarget(zipEntries, targetPrefix);
 
         // 4. 获取访问 URL
         const defaultDomain = 'ai-builder.aigc.sx.cn';
@@ -958,7 +797,6 @@ exports.main = async (event, context) => {
                     url: finalUrl,
                     updatedAt: db.serverDate()
                 });
-                console.log('数据库记录更新成功');
             } else {
                 await db.collection('resource-game').add({
                     userId,
@@ -969,7 +807,6 @@ exports.main = async (event, context) => {
                     createdAt: db.serverDate(),
                     updatedAt: db.serverDate()
                 });
-                console.log('数据库记录创建成功');
             }
         } catch (dbError) {
             console.error('同步数据库失败:', dbError);
@@ -978,7 +815,7 @@ exports.main = async (event, context) => {
         return {
             success: true,
             url: finalUrl,
-            message: '上传并部署成功',
+            message: existingPath ? '重新部署成功' : '上传并部署成功',
             websitePath: urlPrefix
         };
     }

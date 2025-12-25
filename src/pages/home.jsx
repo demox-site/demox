@@ -14,7 +14,12 @@ import {
   AvatarImage,
   Progress,
   Badge,
-  useToast
+  useToast,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription
 } from "@/components/ui";
 // @ts-ignore;
 import {
@@ -57,6 +62,15 @@ const generateWebsiteId = () => {
 };
 
 /**
+ * getWebsiteDisplayName
+ * 站点显示名称优先使用 websiteId（wid），其次使用文档 _id，最后回退为文件名
+ */
+const getWebsiteDisplayName = (w) => {
+  if (!w) return "";
+  return w.websiteId || w._id || w.fileName || "";
+};
+
+/**
  * Home
  * 用户登录、上传、部署、列表、删除的主页面
  * 剔除 Weda 相关依赖，统一通过云函数与后端交互
@@ -74,6 +88,9 @@ export default function Home(props) {
   const [deploying, setDeploying] = useState({});
   const [roleLimits, setRoleLimits] = useState(null);
   const fileInputRef = React.useRef(null);
+  const [redeployOpen, setRedeployOpen] = useState(false);
+  const [redeployWebsite, setRedeployWebsite] = useState(null);
+  const [redeployFile, setRedeployFile] = useState(null);
   useEffect(() => {
     checkAuthStatus();
   }, []);
@@ -277,6 +294,16 @@ export default function Home(props) {
       return;
     }
 
+    // 若角色未启用，禁止进行部署相关操作
+    if (roleLimits && roleLimits.enabled === false) {
+      toast({
+        title: "服务暂不可用",
+        description: "请联系开发者",
+        variant: "destructive"
+      });
+      return;
+    }
+
     // Check limits
     if (roleLimits) {
       if (
@@ -442,6 +469,139 @@ export default function Home(props) {
       toast({
         title: "删除失败",
         description: error.message,
+        variant: "destructive"
+      });
+    }
+  };
+
+  /**
+   * openRedeployDialog
+   * 打开重新部署弹窗并设置目标站点
+   */
+  const openRedeployDialog = (website) => {
+    setRedeployWebsite(website);
+    setRedeployFile(null);
+    setRedeployOpen(true);
+  };
+
+  /**
+   * handleRedeployFileChange
+   * 处理重新部署弹窗中的文件选择
+   */
+  const handleRedeployFileChange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    setRedeployFile(f || null);
+  };
+
+  /**
+   * submitRedeploy
+   * 使用所选 .zip 文件对目标站点进行覆盖式重新部署
+   */
+  const submitRedeploy = async () => {
+    if (!redeployWebsite || !redeployFile) return;
+    const website = redeployWebsite;
+    const file = redeployFile;
+
+    if (!file.name.endsWith(".zip")) {
+      toast({
+        title: "文件格式错误",
+        description: "请上传 .zip 格式的压缩包",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (roleLimits && roleLimits.enabled === false) {
+      toast({
+        title: "服务暂不可用",
+        description: "请联系开发者",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (roleLimits && roleLimits.max_file_size !== null && file.size > roleLimits.max_file_size) {
+      toast({
+        title: "文件大小超出限制",
+        description: `文件大小不能超过 ${Math.round(roleLimits.max_file_size / 1024 / 1024)}MB`,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      // 立即关闭弹窗并返回主页，同时将对应站点状态置为 Deploying
+      setRedeployOpen(false);
+      setRedeployFile(null);
+      setRedeployWebsite(null);
+      setWebsites((prev) =>
+        prev.map((w) =>
+          w._id === website._id ? { ...w, status: "processing" } : w
+        )
+      );
+      setDeploying((prev) => ({ ...prev, [website._id]: true }));
+      navigate("/home");
+
+      const state = await auth.getLoginState();
+      if (!state || !state.user) {
+        toast({
+          title: "登录已过期",
+          description: "请重新登录",
+          variant: "destructive"
+        });
+        navigate("/");
+        return;
+      }
+
+      const safeFileName = sanitizeFileName(file.name);
+      const cloudPath = `websites/${user.userId}/redeploy_${Date.now()}_${safeFileName}`;
+
+      const toBase64 = (f) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = String(reader.result || "");
+            const base64 = res.includes(",") ? res.split(",")[1] : res;
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+      const fileContentBase64 = await toBase64(file);
+
+      const deployResult = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "upload_and_deploy",
+          cloudPath,
+          fileContentBase64,
+          userId: user.userId,
+          websiteId: website.websiteId || website._id,
+          fileName: safeFileName
+        }
+      });
+
+      setDeploying((prev) => ({ ...prev, [website._id]: false }));
+
+      if (deployResult.result && deployResult.result.success) {
+        toast({
+          title: "重新部署成功",
+          description: deployResult.result.message || "站点已成功重新部署"
+        });
+        loadWebsites();
+      } else {
+        throw new Error(deployResult.result?.message || "重新部署失败");
+      }
+    } catch (error) {
+      setDeploying((prev) => ({ ...prev, [website._id]: false }));
+      setWebsites((prev) =>
+        prev.map((w) =>
+          w._id === website._id ? { ...w, status: "failed" } : w
+        )
+      );
+      toast({
+        title: "重新部署失败",
+        description: error.message || "重新部署过程中出现错误",
         variant: "destructive"
       });
     }
@@ -669,7 +829,7 @@ export default function Home(props) {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3 mb-2">
                         <h3 className="text-zinc-100 font-bold truncate">
-                          {website.fileName}
+                          {getWebsiteDisplayName(website)}
                         </h3>
                         {getStatusBadge(website.status)}
                         {deploying[website._id] && (
@@ -718,6 +878,15 @@ export default function Home(props) {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openRedeployDialog(website)}
+                        className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
+                      >
+                        <Upload className="w-4 h-4 mr-2" />
+                        Redeploy
+                      </Button>
 
                       <Button
                         variant="ghost"
@@ -734,6 +903,66 @@ export default function Home(props) {
             )}
           </CardContent>
         </Card>
+
+        <Dialog open={redeployOpen} onOpenChange={setRedeployOpen}>
+          <DialogContent className="bg-zinc-900 border-zinc-800">
+            <DialogHeader>
+              <DialogTitle className="text-zinc-100">重新部署</DialogTitle>
+              <DialogDescription className="text-zinc-400">
+                请选择要重新部署的 .zip 文件，上传后将覆盖原有站点文件
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-6">
+              <div className="border-2 border-dashed border-zinc-800 rounded-lg p-12 text-center hover:border-zinc-600 transition-colors bg-zinc-900/20">
+                <input
+                  id="redeploy-file-input"
+                  type="file"
+                  accept=".zip"
+                  onChange={handleRedeployFileChange}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="redeploy-file-input"
+                  className="cursor-pointer"
+                >
+                  <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6 border border-zinc-800">
+                    <FolderOpen className="w-8 h-8 text-zinc-400" />
+                  </div>
+                  <h3 className="text-xl font-bold text-zinc-100 mb-2">
+                    {redeployFile ? "已选择文件" : "请选择 .zip 文件"}
+                  </h3>
+                  <p className="text-zinc-500 mb-6 max-w-sm mx-auto">
+                    {redeployFile ? redeployFile.name : "支持 .zip 压缩包，根目录需包含 index.html"}
+                  </p>
+                  <span className="px-6 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
+                    {redeployFile ? "更改文件" : "选择文件"}
+                  </span>
+                </label>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                  onClick={() => {
+                    setRedeployOpen(false);
+                    setRedeployFile(null);
+                    setRedeployWebsite(null);
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant="outline"
+                  className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                  disabled={!redeployFile}
+                  onClick={submitRedeploy}
+                >
+                  确认上传
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Background Grid Effect */}
         <div className="fixed inset-0 bg-[linear-gradient(to_right,#18181b_1px,transparent_1px),linear-gradient(to_bottom,#18181b_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10 pointer-events-none" />
