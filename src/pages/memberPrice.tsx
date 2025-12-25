@@ -50,10 +50,10 @@ const MemberPrice = () => {
                 价格
               </button>
               <button
-                onClick={() => navigate("/")} // Assuming blog is not real yet
+                onClick={() => navigate("/log")}
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
               >
-                博客
+                日志
               </button>
               <button className="px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black hover:border-zinc-100 transition-all duration-300">
                 登录
@@ -83,10 +83,10 @@ const MemberPrice = () => {
                 价格
               </button>
               <button
-                onClick={() => navigate("/")}
+                onClick={() => navigate("/log")}
                 className="block text-sm text-zinc-400 hover:text-zinc-100 w-full text-left"
               >
-                博客
+                Log 日志
               </button>
               <button className="w-full px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black transition-colors">
                 登录

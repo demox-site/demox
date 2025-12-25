@@ -24,7 +24,7 @@ const translations = {
   zh: {
     navbar: {
       pricing: "价格",
-      blog: "博客",
+      log: "日志",
       login: "登录",
       console: "控制台",
       logout: "退出"
@@ -97,7 +97,7 @@ const translations = {
   en: {
     navbar: {
       pricing: "Pricing",
-      blog: "Blog",
+      log: "Log",
       login: "Login",
       console: "Console",
       logout: "Logout"
@@ -222,12 +222,12 @@ const CloudHostLanding: React.FC = () => {
               >
                 {t.navbar.pricing}
               </button>
-              <a
-                href="#"
+              <button
+                onClick={() => navigate("/log")}
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
               >
-                {t.navbar.blog}
-              </a>
+                {t.navbar.log}
+              </button>
               <button
                 onClick={toggleLang}
                 className="text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1"
@@ -235,12 +235,14 @@ const CloudHostLanding: React.FC = () => {
                 <Languages size={16} />
                 <span className="text-xs font-mono uppercase">{lang}</span>
               </button>
-              
+
               {user ? (
                 <div className="flex items-center gap-4">
                   <div className="flex items-center gap-2 text-sm text-zinc-300">
                     <User size={16} />
-                    <span className="max-w-[150px] truncate">{user.nickName || user.email || "User"}</span>
+                    <span className="max-w-[150px] truncate">
+                      {user.nickName || user.email || "User"}
+                    </span>
                   </div>
                   <button
                     onClick={() => navigate("/home")}
@@ -269,12 +271,12 @@ const CloudHostLanding: React.FC = () => {
 
             <div className="md:hidden flex items-center gap-4">
               {user ? (
-                 <button
-                    onClick={() => navigate("/home")}
-                    className="p-2 text-zinc-400 hover:text-zinc-100"
-                  >
-                    <LayoutDashboard size={20} />
-                  </button>
+                <button
+                  onClick={() => navigate("/home")}
+                  className="p-2 text-zinc-400 hover:text-zinc-100"
+                >
+                  <LayoutDashboard size={20} />
+                </button>
               ) : null}
               <button
                 onClick={toggleLang}
@@ -302,13 +304,13 @@ const CloudHostLanding: React.FC = () => {
               >
                 {t.navbar.pricing}
               </button>
-              <a
-                href="#"
-                className="block text-sm text-zinc-400 hover:text-zinc-100"
+              <button
+                onClick={() => navigate("/log")}
+                className="block text-sm text-zinc-400 hover:text-zinc-100 w-full text-left"
               >
-                {t.navbar.blog}
-              </a>
-              
+                {t.navbar.log}
+              </button>
+
               {user ? (
                 <>
                   <div className="flex items-center gap-2 py-2 text-sm text-zinc-300">
