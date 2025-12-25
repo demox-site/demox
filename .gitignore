@@ -26,3 +26,6 @@ dist-ssr
 # webpack
 webpack.config.js
 project.zip
+
+.trae
+.datasources
