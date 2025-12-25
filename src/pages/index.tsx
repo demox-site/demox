@@ -3,6 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { auth } from "../cloudbase";
 import { AuthDialog } from "../components/AuthDialog";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "../components/ui/tooltip";
+import {
   Terminal,
   Zap,
   Globe,
@@ -34,8 +39,9 @@ const translations = {
       title_start: "部署静态网站，",
       title_end: "即刻完成。",
       desc: "拖拽，上传，全球 CDN 分发。无需配置。专为追求速度的开发者设计。",
-      start_btn: "开始部署",
-      install_cmd: "npm install -g cloudhost"
+      start_btn: "试试这个空项目",
+      install_cmd: "npm install -g cloudhost",
+      install_tooltip: "太麻烦了，我们不兴这个。"
     },
     terminal: {
       title: "bash — 80x24",
@@ -83,8 +89,8 @@ const translations = {
     cta: {
       title: "准备好发布了吗？",
       subtitle: "加入 10,000+ 开发者，共同构建未来的 Web。",
-      start_btn: "免费开始",
-      contact_btn: "联系销售"
+      start_btn: "立即白嫖",
+      contact_btn: "查看昂贵的套餐"
     },
     footer: {
       copyright: "CloudHost © 2024",
@@ -107,7 +113,7 @@ const translations = {
       title_start: "Deploy Static Sites.",
       title_end: "Instantly.",
       desc: "Drag, drop, global CDN. No config required. Designed for developers who want speed without the hassle.",
-      start_btn: "Start Deploying",
+      start_btn: "Try this empty project",
       install_cmd: "npm install -g cloudhost"
     },
     terminal: {
@@ -371,13 +377,23 @@ const CloudHostLanding: React.FC = () => {
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-            <button className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]">
+            <button
+              onClick={() => (user ? navigate("/home") : setIsLoginOpen(true))}
+              className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
+            >
               {t.hero.start_btn}
             </button>
-            <button className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-300 rounded-md hover:border-zinc-600 hover:text-zinc-100 transition-colors font-mono text-sm flex items-center justify-center gap-2 group">
-              <Terminal size={16} />
-              {t.hero.install_cmd}
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-500 rounded-md transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-zinc-500 opacity-50">
+                  <Terminal size={16} />
+                  {t.hero.install_cmd}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{t.hero.install_tooltip}</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           <div className="max-w-2xl mx-auto rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 shadow-2xl relative group">
@@ -521,10 +537,16 @@ const CloudHostLanding: React.FC = () => {
           <h2 className="text-4xl font-bold mb-6">{t.cta.title}</h2>
           <p className="text-zinc-400 mb-8">{t.cta.subtitle}</p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <button className="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold rounded-md hover:bg-zinc-200 transition-colors">
+            <button
+              onClick={() => (user ? navigate("/home") : setIsLoginOpen(true))}
+              className="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold rounded-md hover:bg-zinc-200 transition-colors"
+            >
               {t.cta.start_btn}
             </button>
-            <button className="w-full sm:w-auto px-8 py-3 bg-zinc-900 text-white font-medium rounded-md border border-zinc-800 hover:bg-zinc-800 transition-colors">
+            <button
+              onClick={() => navigate("/pricing")}
+              className="w-full sm:w-auto px-8 py-3 bg-zinc-900 text-white font-medium rounded-md border border-zinc-800 hover:bg-zinc-800 transition-colors"
+            >
               {t.cta.contact_btn}
             </button>
           </div>
