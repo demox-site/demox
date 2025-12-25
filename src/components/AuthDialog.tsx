@@ -20,11 +20,29 @@ interface AuthDialogProps {
 
 export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogProps) {
   const { toast } = useToast();
+  interface VerificationInfo {
+    verification_id: string;
+    expires_in?: number;
+    is_user?: boolean;
+  }
+  /**
+   * 提取错误消息
+   */
+  function getErrorMessage(e: unknown): string {
+    if (e instanceof Error) return e.message;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return String(e);
+    }
+  }
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isRegister, setIsRegister] = useState(false);
+  const [loginWithCode, setLoginWithCode] = useState(true);
   const [verificationCode, setVerificationCode] = useState("");
   const [verificationId, setVerificationId] = useState("");
+  const [verificationInfo, setVerificationInfo] = useState<VerificationInfo | null>(null);
   const [countdown, setCountdown] = useState(0);
 
   useEffect(() => {
@@ -48,44 +66,74 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
     }
   }, [isOpen]);
 
+  /**
+   * 发送验证码
+   * - 注册模式：仅向未注册邮箱发送验证码（target: 'NOT_USER'）
+   * - 登录模式：仅向已注册邮箱发送验证码（target: 'USER'）
+   */
   const handleSendCode = async () => {
     if (!email) {
-      toast({ title: "Please enter email", variant: "destructive" });
+      toast({ title: "请输入邮箱", variant: "destructive" });
       return;
     }
     try {
-      const result = await auth.getVerification({ email });
+      const result = await auth.getVerification({
+        email,
+        target: isRegister ? "NOT_USER" : "USER"
+      });
+      if (typeof result?.is_user === "boolean") {
+        if (isRegister && result.is_user) {
+          toast({ title: "该邮箱已注册，无法发送验证码", variant: "destructive" });
+          return;
+        }
+        if (!isRegister && !result.is_user) {
+          toast({ title: "该邮箱尚未注册，无法发送验证码登录", variant: "destructive" });
+          return;
+        }
+      }
       if (result && result.verification_id) {
         setVerificationId(result.verification_id);
-        toast({ title: "Verification code sent", description: "Please check your email" });
+        setVerificationInfo(result);
+        toast({ title: "验证码已发送", description: "请前往邮箱查收" });
         setCountdown(60);
       } else {
-        toast({ title: "Request sent", description: "Please check your email" });
+        setVerificationInfo(result);
+        toast({ title: "请求已发送", description: "请前往邮箱查收" });
         setCountdown(60);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
       toast({
-        title: "Failed to send",
-        description: error.message || "Please try again later",
+        title: "发送失败",
+        description: getErrorMessage(error) || "请稍后重试",
         variant: "destructive"
       });
     }
   };
 
+  /**
+   * 邮箱登录/注册
+   * - 登录（密码）：username+password
+   * - 登录（验证码）：signInWithEmail(verificationInfo, verificationCode, email)
+   * - 注册（验证码+密码）：verify -> signUp
+   */
   const handleEmailAuth = async () => {
-    if (!email || !password) {
-      toast({ title: "Please enter email and password", variant: "destructive" });
+    if (!email) {
+      toast({ title: "请输入邮箱", variant: "destructive" });
+      return;
+    }
+    if (!isRegister && !loginWithCode && !password) {
+      toast({ title: "请输入密码", variant: "destructive" });
       return;
     }
     try {
       if (isRegister) {
         if (!verificationCode) {
-          toast({ title: "Please enter verification code", variant: "destructive" });
+          toast({ title: "请输入验证码", variant: "destructive" });
           return;
         }
         if (!verificationId) {
-          toast({ title: "Please send verification code first", variant: "destructive" });
+          toast({ title: "请先发送验证码", variant: "destructive" });
           return;
         }
 
@@ -96,7 +144,7 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
         });
 
         if (!verifyResult || !verifyResult.verification_token) {
-          throw new Error("Verification failed, no token received");
+          throw new Error("验证码校验失败");
         }
 
         // 2. Register with token
@@ -107,48 +155,50 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
         });
 
         toast({
-          title: "Registration successful",
-          description: "Logged in automatically"
+          title: "注册成功",
+          description: "已自动登录"
         });
-
-        // Registration successful, usually auto-login happens, or we sign in explicitly?
-        // The original code assumes auto-login or calls checkAuthStatus.
-        // Let's ensure we are signed in. signUp usually doesn't sign in automatically in all SDKs, 
-        // but the original code says "Logged in automatically" then calls checkAuthStatus.
-        // Wait, original code:
-        // await auth.signUp(...)
-        // await checkAuthStatus()
-        
-        // If signUp doesn't auto-login, we might need signIn. 
-        // CloudBase documentation says signUp creates user. 
-        // Often you need to signIn after. 
-        // But original code didn't signIn after signUp. 
-        // Let's assume it works as original.
         
         onLoginSuccess();
         onOpenChange(false);
         setIsRegister(false);
       } else {
-        // Login flow
-        await auth.signIn({
-          username: email,
-          password
-        });
+        if (loginWithCode) {
+          if (!verificationCode) {
+            toast({ title: "请输入验证码", variant: "destructive" });
+            return;
+          }
+          if (!verificationInfo || !verificationInfo.verification_id) {
+            toast({ title: "请先发送验证码", variant: "destructive" });
+            return;
+          }
+          await auth.signInWithEmail({
+            verificationInfo,
+            verificationCode,
+            email
+          });
+        } else {
+          await auth.signIn({
+            username: email,
+            password
+          });
+        }
 
         onLoginSuccess();
         onOpenChange(false);
-        toast({ title: "Login successful" });
+        toast({ title: "登录成功" });
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(error);
-      let errorMsg = error.message;
-      if (error.code === "CHECK_LOGIN_FAILED" || error.code === "INVALID_USERNAME_OR_PASSWORD") {
-        errorMsg = "Invalid email or password";
+      let errorMsg = getErrorMessage(error);
+      const errCode = (error as unknown as Record<string, unknown>)["code"];
+      if (errCode === "CHECK_LOGIN_FAILED" || errCode === "INVALID_USERNAME_OR_PASSWORD") {
+        errorMsg = "邮箱或密码错误";
       }
 
       toast({
-        title: isRegister ? "Registration failed" : "Login failed",
-        description: errorMsg || "Please check your information",
+        title: isRegister ? "注册失败" : "登录失败",
+        description: errorMsg || "请检查输入信息",
         variant: "destructive"
       });
     }
@@ -159,15 +209,15 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
       <DialogContent className="sm:max-w-[425px] bg-black border border-zinc-800 text-zinc-100">
         <DialogHeader>
           <DialogTitle className="text-zinc-100">
-            {isRegister ? 'Create Account' : 'Welcome Back'}
+            {isRegister ? '创建账户' : '欢迎回来'}
           </DialogTitle>
           <DialogDescription className="text-zinc-400">
-            {isRegister ? 'Enter your email, password and verification code to register.' : 'Enter your email and password to login.'}
+            {isRegister ? '输入邮箱、密码和验证码进行注册' : (loginWithCode ? '输入邮箱与验证码进行登录' : '输入邮箱与密码进行登录')}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2 text-left">
-            <Label htmlFor="email" className="text-zinc-300">Email</Label>
+            <Label htmlFor="email" className="text-zinc-300">邮箱</Label>
             <Input
               id="email"
               placeholder="name@example.com"
@@ -176,23 +226,25 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
               className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
             />
           </div>
-          <div className="grid gap-2 text-left">
-            <Label htmlFor="password" className="text-zinc-300">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500"
-            />
-          </div>
-          {isRegister && (
+          {!loginWithCode && (
             <div className="grid gap-2 text-left">
-              <Label htmlFor="code" className="text-zinc-300">Verification Code</Label>
+              <Label htmlFor="password" className="text-zinc-300">密码</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500"
+              />
+            </div>
+          )}
+          {(isRegister || loginWithCode) && (
+            <div className="grid gap-2 text-left">
+              <Label htmlFor="code" className="text-zinc-300">验证码</Label>
               <div className="flex gap-2">
                 <Input
                   id="code"
-                  placeholder="6-digit code"
+                  placeholder="6位验证码"
                   value={verificationCode}
                   onChange={(e) => setVerificationCode(e.target.value)}
                   className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
@@ -204,7 +256,7 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
                     type="button"
                     className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
                 >
-                    {countdown > 0 ? `${countdown}s` : 'Send'}
+                    {countdown > 0 ? `${countdown}s` : '发送验证码'}
                 </Button>
               </div>
             </div>
@@ -212,19 +264,31 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
         </div>
         <div className="flex flex-col gap-4">
           <Button onClick={handleEmailAuth} className="w-full bg-zinc-100 text-black hover:bg-zinc-200">
-            {isRegister ? 'Register' : 'Login'}
+            {isRegister ? '注册' : '登录'}
           </Button>
           <div className="text-center text-sm">
             <span className="text-zinc-500">
-              {isRegister ? 'Already have an account?' : 'Don\'t have an account?'}
+              {isRegister ? '已有账户？' : '没有账户？'}
             </span>
             <Button
               variant="link"
               className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
               onClick={() => setIsRegister(!isRegister)}
             >
-              {isRegister ? 'Login' : 'Register'}
+              {isRegister ? '去登录' : '去注册'}
             </Button>
+            {!isRegister && (
+              <>
+                <span className="text-zinc-500 mx-1">·</span>
+                <Button
+                  variant="link"
+                  className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
+                  onClick={() => setLoginWithCode(!loginWithCode)}
+                >
+                  {loginWithCode ? '使用密码登录' : '使用验证码登录'}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </DialogContent>
