@@ -3,6 +3,7 @@ import CloudHostLanding from "../pages";
 import NotFoundPage from "../pages/404";
 import MemberPrice from "../pages/memberPrice";
 import AdminDashboard from "../pages/AdminDashboard";
+import LogPage from "../pages/log";
 
 export const routers = [
   {
@@ -17,6 +18,10 @@ export const routers = [
   {
     id: "pricing",
     component: MemberPrice
+  },
+  {
+    id: "log",
+    component: LogPage
   },
   {
     id: "home",
