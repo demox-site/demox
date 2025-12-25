@@ -563,12 +563,20 @@ const CloudHostLanding: React.FC = () => {
           </div>
 
           <div className="flex gap-8">
-            <a href="#" className="text-zinc-500 hover:text-zinc-300 text-sm">
+            <button
+              type="button"
+              onClick={() => navigate("/terms")}
+              className="text-zinc-500 hover:text-zinc-300 text-sm"
+            >
               {t.footer.terms}
-            </a>
-            <a href="#" className="text-zinc-500 hover:text-zinc-300 text-sm">
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/privacy")}
+              className="text-zinc-500 hover:text-zinc-300 text-sm"
+            >
               {t.footer.privacy}
-            </a>
+            </button>
             <a href="#" className="text-zinc-500 hover:text-zinc-300 text-sm">
               {t.footer.status}
             </a>

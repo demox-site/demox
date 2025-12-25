@@ -14,7 +14,16 @@ import {
   AvatarImage,
   Progress,
   Badge,
-  useToast
+  useToast,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+  Checkbox
 } from "@/components/ui";
 // @ts-ignore;
 import {
@@ -73,6 +82,9 @@ export default function Home(props) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [deploying, setDeploying] = useState({});
   const [roleLimits, setRoleLimits] = useState(null);
+  const [confirmUploadOpen, setConfirmUploadOpen] = useState(false);
+  const [confirmUploadChecked, setConfirmUploadChecked] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null);
   const fileInputRef = React.useRef(null);
   useEffect(() => {
     checkAuthStatus();
@@ -112,7 +124,7 @@ export default function Home(props) {
             .collection("ai_builder_user_roles")
             .doc(loginState.user.uid)
             .get();
-          
+
           if (roleRes.data && roleRes.data.length > 0) {
             // 数据库中保存的是 role: ['admin', 'vip']
             user.roles = roleRes.data[0].role;
@@ -135,12 +147,15 @@ export default function Home(props) {
               roles: candidateRoles
             }
           });
-          
+
           let limitRes = { data: [] };
           if (limitFnRes.result && limitFnRes.result.code === 0) {
-             limitRes.data = limitFnRes.result.data;
+            limitRes.data = limitFnRes.result.data;
           } else {
-             console.warn("Cloud function getRoleLimits failed:", limitFnRes.result);
+            console.warn(
+              "Cloud function getRoleLimits failed:",
+              limitFnRes.result
+            );
           }
 
           if (limitRes.data && limitRes.data.length > 0) {
@@ -162,19 +177,26 @@ export default function Home(props) {
           // 忽略错误，降级为普通用户，并尝试获取普通用户限额
           user.roles = ["user"];
           user.role_name = "普通用户";
-          
+
           try {
             const userLimitFnRes = await app.callFunction({
-                name: "getRoleLimits",
-                data: { roles: ["user"] }
+              name: "getRoleLimits",
+              data: { roles: ["user"] }
             });
-            
-            if (userLimitFnRes.result && userLimitFnRes.result.code === 0 && userLimitFnRes.result.data.length > 0) {
-                setRoleLimits(userLimitFnRes.result.data[0]);
-                user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
+
+            if (
+              userLimitFnRes.result &&
+              userLimitFnRes.result.code === 0 &&
+              userLimitFnRes.result.data.length > 0
+            ) {
+              setRoleLimits(userLimitFnRes.result.data[0]);
+              user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
             }
           } catch (limitError) {
-            console.warn("Fallback fetch 'user' role limit failed:", limitError);
+            console.warn(
+              "Fallback fetch 'user' role limit failed:",
+              limitError
+            );
           }
         }
 
@@ -183,9 +205,9 @@ export default function Home(props) {
         setIsLoading(false);
       } else {
         if (retry) {
-            console.log("No user found, retrying in 500ms...");
-            setTimeout(() => checkAuthStatus(false), 500);
-            return;
+          console.log("No user found, retrying in 500ms...");
+          setTimeout(() => checkAuthStatus(false), 500);
+          return;
         }
         console.warn("No user found in login state");
         setIsLoggedIn(false);
@@ -195,9 +217,9 @@ export default function Home(props) {
     } catch (e) {
       console.warn("Auth check failed:", e);
       if (retry) {
-          console.log("Auth check error, retrying in 500ms...");
-          setTimeout(() => checkAuthStatus(false), 500);
-          return;
+        console.log("Auth check error, retrying in 500ms...");
+        setTimeout(() => checkAuthStatus(false), 500);
+        return;
       }
       setIsLoggedIn(false);
       setUser(null);
@@ -265,7 +287,7 @@ export default function Home(props) {
       });
     }
   };
-  const handleFileUpload = async (event) => {
+  const handleFileSelected = (event) => {
     const file = event.target.files[0];
     if (!file) return;
     if (!file.name.endsWith(".zip")) {
@@ -274,10 +296,12 @@ export default function Home(props) {
         description: "请上传 .zip 格式的压缩包",
         variant: "destructive"
       });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       return;
     }
 
-    // Check limits
     if (roleLimits) {
       if (
         roleLimits.deployment_limit !== null &&
@@ -288,6 +312,9 @@ export default function Home(props) {
           description: `您当前角色的部署上限为 ${roleLimits.deployment_limit} 个`,
           variant: "destructive"
         });
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         return;
       }
       if (
@@ -301,9 +328,35 @@ export default function Home(props) {
           )}MB`,
           variant: "destructive"
         });
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
         return;
       }
     }
+
+    setPendingFile(file);
+    setConfirmUploadChecked(false);
+    setConfirmUploadOpen(true);
+  };
+
+  const startUpload = async () => {
+    if (!pendingFile) {
+      return;
+    }
+    if (!confirmUploadChecked) {
+      toast({
+        title: "请先确认责任声明",
+        description: "请勾选确认后再继续上传",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const file = pendingFile;
+    setConfirmUploadOpen(false);
+    setPendingFile(null);
+    setConfirmUploadChecked(false);
 
     setUploading(true);
     setUploadProgress(0);
@@ -314,9 +367,9 @@ export default function Home(props) {
       const state = await auth.getLoginState();
       if (!state || !state.user) {
         toast({
-            title: "登录已过期",
-            description: "请重新登录",
-            variant: "destructive"
+          title: "登录已过期",
+          description: "请重新登录",
+          variant: "destructive"
         });
         navigate("/");
         return;
@@ -381,17 +434,15 @@ export default function Home(props) {
       }
     } catch (error) {
       console.error("部署失败:", error);
-      
+
       if (websiteId) {
         // 更新状态为失败
-        setWebsites((prev) => 
-          prev.map(w => 
-            w._id === websiteId 
-              ? { ...w, status: "failed" } 
-              : w
+        setWebsites((prev) =>
+          prev.map((w) =>
+            w._id === websiteId ? { ...w, status: "failed" } : w
           )
         );
-        
+
         setDeploying((prev) => ({
           ...prev,
           [websiteId]: false
@@ -446,7 +497,6 @@ export default function Home(props) {
       });
     }
   };
-
 
   /**
    * 根据状态渲染状态徽章
@@ -579,7 +629,7 @@ export default function Home(props) {
                 ref={fileInputRef}
                 type="file"
                 accept=".zip"
-                onChange={handleFileUpload}
+                onChange={handleFileSelected}
                 className="hidden"
                 id="file-upload"
                 disabled={uploading}
@@ -620,6 +670,66 @@ export default function Home(props) {
           </CardContent>
         </Card>
 
+        <AlertDialog
+          open={confirmUploadOpen}
+          onOpenChange={(open) => {
+            setConfirmUploadOpen(open);
+            if (!open) {
+              setConfirmUploadChecked(false);
+              setPendingFile(null);
+              if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+              }
+            }
+          }}
+        >
+          <AlertDialogContent className="bg-black border border-zinc-800 text-zinc-100">
+            <AlertDialogHeader>
+              <AlertDialogTitle>内容发布合规确认</AlertDialogTitle>
+              <AlertDialogDescription className="text-zinc-400">
+                在将代码上传到 CloudHost 之前，请确认以下内容并承担相应责任。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="mt-4 space-y-3 text-sm text-zinc-300">
+              <p>
+                您上传的代码、静态资源以及生成的站点内容将会被系统自动审核，包括但不限于：
+                色情内容、政治敏感内容、暴力恐怖内容、违法广告内容、低质或不当内容等。
+              </p>
+              <p>
+                审核结果可能导致相关内容被下线、项目被封禁，或您的账号被限制使用。
+              </p>
+              <p>
+                继续上传即表示您同意 CloudHost
+                的《服务条款》和《隐私政策》，并对部署内容承担全部法律责任。
+              </p>
+              <div className="flex items-start gap-2 pt-2">
+                <Checkbox
+                  id="upload-confirm"
+                  checked={confirmUploadChecked}
+                  onCheckedChange={(v) => setConfirmUploadChecked(!!v)}
+                  className="mt-[3px]"
+                />
+                <label
+                  htmlFor="upload-confirm"
+                  className="text-xs text-zinc-400 leading-relaxed"
+                >
+                  You confirm that you have the legal right to publish this
+                  content and take full responsibility for it.
+                </label>
+              </div>
+            </div>
+            <AlertDialogFooter className="mt-6">
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={startUpload}
+                disabled={!confirmUploadChecked || uploading}
+              >
+                同意并上传
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Websites List */}
         <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm">
           <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
@@ -630,7 +740,8 @@ export default function Home(props) {
                 {roleLimits && (
                   <span className="text-sm text-zinc-500 font-mono ml-2">
                     ({websites.length}/
-                    {(roleLimits.deployment_limit === null || roleLimits.deployment_limit === undefined)
+                    {roleLimits.deployment_limit === null ||
+                    roleLimits.deployment_limit === undefined
                       ? "∞"
                       : roleLimits.deployment_limit}
                     )
@@ -718,7 +829,6 @@ export default function Home(props) {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-
                       <Button
                         variant="ghost"
                         size="sm"
