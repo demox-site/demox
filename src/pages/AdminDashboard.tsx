@@ -209,6 +209,36 @@ const AdminDashboard: React.FC = () => {
       return ts;
     }
   };
+  /**
+   * bytesToGB
+   * 将字节转换为 GB（保留两位小数）
+   */
+  const bytesToGB = (bytes: number): number => {
+    const GB = 1024 * 1024 * 1024;
+    return Math.max(0, bytes) / GB;
+  };
+  /**
+   * calcDailyCost
+   * 计算日消费：存储(GB)*0.099 + 外网下行(GB)*0.5
+   * 使用当前 Sites 存储用量与天级流量的最新一天作为估算
+   */
+  const calcDailyCost = (): {
+    storageGB: number;
+    outboundGB: number;
+    storageCost: number;
+    outboundCost: number;
+    total: number;
+  } => {
+    const storageGB = bytesToGB(sitesBytes);
+    const lastOutboundBytes =
+      chartDataDay.length > 0 ? chartDataDay[chartDataDay.length - 1].outbound : 0;
+    const outboundGB = bytesToGB(lastOutboundBytes);
+    const storageCost = storageGB * 0.099;
+    const outboundCost = outboundGB * 0.5;
+    const total = storageCost + outboundCost;
+    return { storageGB, outboundGB, storageCost, outboundCost, total };
+  };
+  const dailyCost = calcDailyCost();
 
   return (
     <div className="min-h-screen bg-black text-zinc-100">
@@ -225,10 +255,10 @@ const AdminDashboard: React.FC = () => {
           <div className="text-sm text-zinc-400">欢迎，{userName}</div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <Card className="bg-zinc-900 border-zinc-800">
             <CardHeader>
-              <CardTitle className="text-zinc-100">Sites 存储用量</CardTitle>
+              <CardTitle className="text-zinc-100">存储用量</CardTitle>
             </CardHeader>
             <CardContent className="text-zinc-400">
               <div className="text-2xl text-zinc-100 mb-2">{formatBytes(sitesBytes)}</div>
@@ -253,6 +283,27 @@ const AdminDashboard: React.FC = () => {
             <CardContent className="text-zinc-400">
               <div className="text-2xl text-zinc-100 mb-2">{projectsCount}</div>
               <div>统计范围：正在运行的项目数量</div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader>
+              <CardTitle className="text-zinc-100">日消费（估算）</CardTitle>
+            </CardHeader>
+            <CardContent className="text-zinc-400">
+              <div className="text-2xl text-zinc-100 mb-2">
+                ￥{dailyCost.total.toFixed(2)}
+              </div>
+              <div className="space-y-1 text-sm">
+                <div>
+                  存储：{dailyCost.storageGB.toFixed(2)} GB × 0.099 = ￥
+                  {dailyCost.storageCost.toFixed(2)}
+                </div>
+                <div>
+                  下行：{dailyCost.outboundGB.toFixed(2)} GB × 0.5 = ￥
+                  {dailyCost.outboundCost.toFixed(2)}
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
