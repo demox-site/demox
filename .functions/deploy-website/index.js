@@ -1,10 +1,12 @@
 const tcb = require('@cloudbase/node-sdk');
 const AdmZip = require('adm-zip');
 const COS = require('cos-nodejs-sdk-v5');
+const tencentcloud = require('tencentcloud-sdk-nodejs');
+const MonitorClient = tencentcloud.monitor.v20180724.Client;
 const path = require('path');
 
 exports.main = async (event, context) => {
-  const { action = 'deploy', fileId, userId, websiteId, fileName } = event;
+  const { action = 'bucket_stats', fileId, userId, websiteId, fileName } = event || {};
   
   // 静态网站托管 Bucket 名称及区域
   const hostingBucket = 'resource-game-1307257815';
@@ -128,6 +130,239 @@ exports.main = async (event, context) => {
     return out;
   };
 
+  /**
+   * sumSites
+   * 统计 sites/ 前缀下对象的体积与数量
+   * @returns {{ bytes: number, count: number }}
+   */
+  const sumSites = async () => {
+      let marker = '';
+      let totalBytes = 0;
+      let totalCount = 0;
+      const prefix = 'sites/';
+      while (true) {
+          const resp = await new Promise((resolve, reject) => {
+              cos.getBucket({
+                  Bucket: hostingBucket,
+                  Region: region,
+                  Prefix: prefix,
+                  Marker: marker,
+                  MaxKeys: 1000
+              }, (err, data) => {
+                  if (err) return reject(err);
+                  resolve(data);
+              });
+          });
+          const contents = resp.Contents || [];
+          for (const item of contents) {
+              totalBytes += Number(item.Size || 0);
+              totalCount += 1;
+          }
+          if (resp.IsTruncated && resp.NextMarker) {
+              marker = resp.NextMarker;
+          } else {
+              break;
+          }
+      }
+      return { bytes: totalBytes, count: totalCount };
+  };
+
+  /**
+   * countUsageStats
+   * 统计在用用户数量（sites 下二级目录数量）与在用项目数量（三级目录数量）
+   * @returns {{ usersCount: number, projectsCount: number }}
+   */
+  const countUsageStats = async () => {
+      /**
+       * listDirsAll
+       * 分页列出某前缀下的所有“目录”（使用 Delimiter='/' 获取 CommonPrefixes）
+       * @param {string} prefix
+       * @returns {Promise<Array<{ Prefix: string }>>}
+       */
+      const listDirsAll = async (prefix) => {
+          let marker = '';
+          const all = [];
+          while (true) {
+              const resp = await new Promise((resolve, reject) => {
+                  cos.getBucket({
+                      Bucket: hostingBucket,
+                      Region: region,
+                      Prefix: prefix,
+                      Delimiter: '/',
+                      Marker: marker,
+                      MaxKeys: 1000
+                  }, (err, data) => {
+                      if (err) return reject(err);
+                      resolve(data);
+                  });
+              });
+              const dirs = resp.CommonPrefixes || [];
+              for (const d of dirs) all.push(d);
+              if (resp.IsTruncated && resp.NextMarker) {
+                  marker = resp.NextMarker;
+              } else {
+                  break;
+              }
+          }
+          return all;
+      };
+      
+      // 用户目录：sites/<userId>/
+      const userDirs = await listDirsAll('sites/');
+      const usersCount = userDirs.length;
+      
+      // 项目目录（三级目录）：sites/<userId>/<websiteId>/<fileNameNoExt>/
+      let projectsCount = 0;
+      for (const u of userDirs) {
+          const webDirs = await listDirsAll(u.Prefix); // 二级：websiteId
+          for (const w of webDirs) {
+              const thirdDirs = await listDirsAll(w.Prefix); // 三级：fileNameNoExt
+              projectsCount += thirdDirs.length;
+          }
+      }
+      
+      return { usersCount, projectsCount };
+  };
+
+  /**
+   * fetchCosTraffic
+   * 拉取 COS 桶流量时间序列（按天/小时）
+   * @param {'day'|'hour'} level 时间维度
+   * @param {number} startMs 开始时间戳（毫秒）
+   * @param {number} endMs 结束时间戳（毫秒）
+   * @returns {{ timestamps: string[], inbound: number[]|null, outbound: number[]|null }}
+   */
+  const fetchCosTraffic = async (level, startMs, endMs) => {
+      try {
+          // 从 bucket 名中提取 APPID（例如 example-1250000000 → 1250000000）
+          const appidMatch = String(hostingBucket).match(/(\d{5,})$/);
+          const appid = appidMatch ? appidMatch[1] : '';
+
+          if (!appid) {
+              console.warn('未能从 Bucket 名中解析 APPID，跳过监控统计');
+              return { inBytes: null, outBytes: null };
+          }
+
+          const secretId = process.env.COS_SECRET_ID || process.env.TENCENTCLOUD_SECRETID;
+          const secretKey = process.env.COS_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY;
+          const sessionToken = process.env.COS_SECRET_KEY ? undefined : process.env.TENCENTCLOUD_SESSIONTOKEN;
+
+          const monitorClient = new MonitorClient({
+              credential: { secretId, secretKey, token: sessionToken },
+              region: 'ap-guangzhou',
+              profile: {
+                  httpProfile: {
+                      endpoint: 'monitor.tencentcloudapi.com'
+                  }
+              }
+          });
+
+          const fmt = (ms) => {
+            const d = new Date(ms);
+            const pad = (n) => String(n).padStart(2, '0');
+            const YYYY = d.getFullYear();
+            const MM = pad(d.getMonth() + 1);
+            const DD = pad(d.getDate());
+            const hh = pad(d.getHours());
+            const mm = pad(d.getMinutes());
+            const ss = pad(d.getSeconds());
+            // 统一使用东八区偏移
+            return `${YYYY}-${MM}-${DD}T${hh}:${mm}:${ss}+08:00`;
+          };
+          const start = fmt(startMs);
+          const end = fmt(endMs);
+          const period = level === 'hour' ? 3600 : 86400;
+
+          const commonParams = {
+              Period: period,
+              StartTime: start,
+              EndTime: end,
+              Instances: [
+                {
+                  Dimensions: [
+                    { Name: 'appid', Value: appid },
+                    { Name: 'bucket', Value: hostingBucket }
+                  ]
+                }
+              ]
+          };
+
+          const tryGet = async (Namespace, MetricName) => {
+              try {
+                  return await monitorClient.GetMonitorData({
+                      ...commonParams,
+                      Namespace,
+                      MetricName
+                  });
+              } catch (e) {
+                  return null;
+              }
+          };
+
+          const seriesFromResponse = (resp) => {
+            try {
+              const dps = resp?.Response?.DataPoints || resp?.DataPoints || [];
+              if (!Array.isArray(dps) || dps.length === 0) return null;
+              const first = dps[0];
+              const timestamps = first.Timestamps || first.TimeStamps || first.Times || [];
+              const values = first.Values || first.Value || first.Data || [];
+              if (!Array.isArray(timestamps) || !Array.isArray(values)) return null;
+              return { timestamps, values };
+            } catch (e) {
+              console.warn('解析监控返回失败:', e);
+              return null;
+            }
+          };
+
+          // 依次尝试不同命名空间与指标名组合
+          const candidates = {
+              in: [
+                  ['QCE/COS', 'InternetTraffic'],
+                  ['qce/cos', 'internet_traffic']
+              ],
+              out: [
+                  ['QCE/COS', 'InternalTraffic'],
+                  ['qce/cos', 'internal_traffic'],
+                  // 备用：仅作为出站备选，不一定符合需求
+                  ['QCE/COS', 'CdnOriginTraffic']
+              ]
+          };
+
+          let inbound = null;
+          for (const [ns, metric] of candidates.in) {
+            const res = await tryGet(ns, metric);
+            if (res) {
+              const parsed = seriesFromResponse(res);
+              if (parsed) {
+                  inbound = parsed;
+                  break;
+              }
+            }
+          }
+
+          let outbound = null;
+          for (const [ns, metric] of candidates.out) {
+            const res = await tryGet(ns, metric);
+            if (res) {
+              const parsed = seriesFromResponse(res);
+              if (parsed) {
+                  outbound = parsed;
+                  break;
+              }
+            }
+          }
+
+          return {
+              timestamps: inbound?.timestamps || outbound?.timestamps || [],
+              inbound: inbound?.values || null,
+              outbound: outbound?.values || null
+          };
+        } catch (err) {
+          console.error('拉取 COS 流量监控失败:', err);
+          return { timestamps: [], inbound: null, outbound: null };
+        }
+  };
+
   try {
     // --- 功能 1: 查询文件列表 ---
     if (action === 'list') {
@@ -149,6 +384,35 @@ exports.main = async (event, context) => {
         };
     }
 
+    // --- 新增功能: COS 统计（sites 目录体积、对象数量、桶流量时间序列） ---
+    if (action === 'bucket_stats') {
+        const { granularity = 'day', startTime, endTime } = event || {};
+        try {
+            const sites = await sumSites();
+            const usage = await countUsageStats();
+            const nowMs = Date.now();
+            const defaultStart = granularity === 'hour'
+              ? nowMs - 24 * 3600 * 1000
+              : nowMs - 7 * 24 * 3600 * 1000;
+            const startMs = startTime ? new Date(startTime).getTime() : defaultStart;
+            const endMs = endTime ? new Date(endTime).getTime() : nowMs;
+            const traffic = await fetchCosTraffic(granularity, startMs, endMs);
+            return {
+                success: true,
+                sitesBytes: sites.bytes,
+                sitesCount: sites.count,
+                usersCount: usage.usersCount,
+                projectsCount: usage.projectsCount,
+                traffic
+            };
+        } catch (e) {
+            return {
+                success: false,
+                message: `统计失败: ${e.message || String(e)}`
+            };
+        }
+    }
+
     // --- 功能 2: 删除文件 ---
     if (action === 'delete') {
         // 支持直接传 key，或者通过 userId + websiteId + fileNameNoExt 拼接；若传入的是文档 _id，则尝试回查数据库
@@ -161,7 +425,7 @@ exports.main = async (event, context) => {
         // 如果没有直接传 key，尝试构造 key
         // 注意：这里需要 websiteId 和 fileName (或者 fileNameNoExt)
         if (!keyToDelete && userId && websiteId && fileName) {
-            fileNameNoExt = fileName.replace(/\.[^/.]+$/, "");
+            fileNameNoExt = fileName.replace(/\.[^/.]+$/, "").toLowerCase();
             const normalized = /^[A-Z0-9]{8}$/.test(websiteId) ? websiteId : null;
             wIdForUrl = normalized || wIdForUrl;
             keyToDelete = `sites/${userId}/${normalized || websiteId}/${fileNameNoExt}`;
@@ -307,7 +571,7 @@ exports.main = async (event, context) => {
                         // 数据库中存储的 path 不包含结尾的斜杠
                         const path = distPrefix.slice(0, -1); 
                         const parts = path.split('/');
-                        const fileNameNoExt = parts[3];
+                        const fileNameNoExt = (parts[3] || '').toLowerCase();
 
                         // 构造 URL
                         const defaultDomain = 'ai-builder.aigc.sx.cn';
@@ -349,6 +613,19 @@ exports.main = async (event, context) => {
 
     // --- 功能 3: 原有部署逻辑 (action === 'deploy') ---
     if (action === 'deploy') {
+      // 当部署参数缺失时，回退为统计信息，避免直接报错
+      if (!fileId || !userId || !websiteId) {
+        const sites = await sumSites();
+        const traffic = await fetchCosTraffic();
+        return {
+          success: true,
+          sitesBytes: sites.bytes,
+          sitesCount: sites.count,
+          bucketTrafficInBytes: traffic.inBytes,
+          bucketTrafficOutBytes: traffic.outBytes,
+          message: '缺少部署参数，已返回桶统计信息'
+        };
+      }
       console.log(`开始部署: websiteId=${websiteId}, fileId=${fileId}`);
         
         // 1. 下载上传的文件
@@ -369,11 +646,10 @@ exports.main = async (event, context) => {
         console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
         
         // 生成目标路径前缀
-        const fileNameNoExt = fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist";
+        const fileNameNoExt = (fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist").toLowerCase();
         const wId = normalizeWebsiteId(websiteId);
-        // 存储路径：使用斜杠分隔，例如 sites/userId/websiteId/dist
+        // 仅将 fileNameNoExt 小写，保持 userId 与 wId 原始大小写
         const targetPrefix = `sites/${userId}/${wId}/${fileNameNoExt}`;
-        // URL 路径：使用连字符分隔，例如 sites-userId-websiteId-dist
         const urlPrefix = `sites-${userId}-${wId}-${fileNameNoExt}`;
         
         const uploadPromises = [];
@@ -559,8 +835,9 @@ exports.main = async (event, context) => {
         console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
 
         // 生成目标路径前缀
-        const fileNameNoExt = fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist";
+        const fileNameNoExt = (fileName ? fileName.replace(/\.[^/.]+$/, "") : "dist").toLowerCase();
         const wId = normalizeWebsiteId(websiteId);
+        // 仅将 fileNameNoExt 小写，保持 userId 与 wId 原始大小写
         const targetPrefix = `sites/${userId}/${wId}/${fileNameNoExt}`;
         const urlPrefix = `sites-${userId}-${wId}-${fileNameNoExt}`;
 
