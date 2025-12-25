@@ -161,6 +161,8 @@ exports.main = async (event, context) => {
       }
     }
 
+    // 此处不处理 update_name 动作；名称更新属于主流程的独立动作
+
     const uploadTasks = [];
     for (const entry of validEntries) {
       let entryName = entry.entryName;
@@ -507,6 +509,42 @@ exports.main = async (event, context) => {
                 message: `统计失败: ${e.message || String(e)}`
             };
         }
+    }
+
+    // --- 功能 3: 更新站点名称 ---
+    /**
+     * update_name
+     * 根据文档 _id 更新 resource-game 记录的 name 字段，需验证归属 userId
+     */
+    if (action === 'update_name') {
+        const { docId, name } = event || {};
+        if (!docId || !userId || typeof name !== 'string') {
+            throw new Error('Missing required parameter: docId/userId/name');
+        }
+        let newName = String(name || '').trim();
+        if (!newName) {
+            throw new Error('名称不能为空');
+        }
+        if (newName.length > 64) {
+            newName = newName.slice(0, 64);
+        }
+        const docRes = await db.collection('resource-game').doc(docId).get();
+        const doc = docRes.data && docRes.data[0];
+        if (!doc) {
+            throw new Error('记录不存在');
+        }
+        if (String(doc.userId) !== String(userId)) {
+            throw new Error('无权限更新该记录');
+        }
+        await db.collection('resource-game').doc(docId).update({
+            name: newName,
+            updatedAt: db.serverDate()
+        });
+        return {
+            success: true,
+            message: '名称已更新',
+            name: newName
+        };
     }
 
     // --- 功能 2: 删除文件 ---

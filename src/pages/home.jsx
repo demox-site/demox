@@ -36,7 +36,8 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Pencil
 } from "lucide-react";
 import { app, auth, db } from "../cloudbase";
 import { useNavigate, Navigate } from "react-router-dom";
@@ -71,6 +72,55 @@ const getWebsiteDisplayName = (w) => {
 };
 
 /**
+ * formatTimestamp
+ * 将时间戳或日期对象格式化为精确到秒的本地时间字符串
+ */
+const formatTimestamp = (ts) => {
+  if (!ts) return "";
+  const d =
+    ts instanceof Date
+      ? ts
+      : typeof ts === "number"
+      ? new Date(ts)
+      : new Date(String(ts));
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+};
+
+/**
+ * getComparableTimestamp
+ * 提取用于排序的时间戳（优先使用 updatedAt，其次 createdAt）
+ */
+const getComparableTimestamp = (w) => {
+  const v = w?.updatedAt || w?.createdAt || 0;
+  const d =
+    v instanceof Date
+      ? v
+      : typeof v === "number"
+      ? new Date(v)
+      : new Date(String(v));
+  return Number(d.getTime() || 0);
+};
+
+/**
+ * getDisplayName
+ * 站点显示名称优先使用数据库中 name；其次使用 websiteId（wid），再其次 _id 或文件名
+ */
+const getDisplayName = (w) => {
+  if (!w) return "";
+  const n = (w.name || "").trim();
+  if (n) return n;
+  return w.websiteId || w._id || w.fileName || "";
+};
+
+/**
  * Home
  * 用户登录、上传、部署、列表、删除的主页面
  * 剔除 Weda 相关依赖，统一通过云函数与后端交互
@@ -91,6 +141,10 @@ export default function Home(props) {
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployWebsite, setRedeployWebsite] = useState(null);
   const [redeployFile, setRedeployFile] = useState(null);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [isRedeployDragActive, setIsRedeployDragActive] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState("");
   useEffect(() => {
     checkAuthStatus();
   }, []);
@@ -269,7 +323,10 @@ export default function Home(props) {
           ...item,
           status: "deployed"
         }));
-        setWebsites(mapped);
+        const sorted = mapped.sort(
+          (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
+        );
+        setWebsites(sorted);
       } else {
         throw new Error(result.result?.message || "加载列表失败");
       }
@@ -282,8 +339,77 @@ export default function Home(props) {
       });
     }
   };
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
+
+  /**
+   * startEditName
+   * 开始编辑站点名称
+   */
+  const startEditName = (website) => {
+    setEditingId(website._id);
+    setEditingName(getDisplayName(website));
+  };
+
+  /**
+   * cancelEditName
+   * 取消编辑站点名称
+   */
+  const cancelEditName = () => {
+    setEditingId(null);
+    setEditingName("");
+  };
+
+  /**
+   * saveEditName
+   * 保存站点名称到 resource-game 文档的 name 字段
+   */
+  const saveEditName = async (website) => {
+    const name = String(editingName || "").trim();
+    if (!name) {
+      toast({
+        title: "名称不能为空",
+        description: "请输入一个有效的名称",
+        variant: "destructive"
+      });
+      return;
+    }
+    try {
+      const res = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "update_name",
+          docId: website._id,
+          userId: user.userId,
+          name
+        }
+      });
+      if (res.result && res.result.success) {
+        setWebsites((prev) =>
+          prev.map((w) =>
+            w._id === website._id ? { ...w, name, updatedAt: Date.now() } : w
+          )
+        );
+        cancelEditName();
+        toast({
+          title: "已保存",
+          description: "站点名称已更新"
+        });
+      } else {
+        throw new Error(res.result?.message || "保存失败");
+      }
+    } catch (error) {
+      toast({
+        title: "保存失败",
+        description: error.message || "更新名称时出现错误",
+        variant: "destructive"
+      });
+    }
+  };
+
+  /**
+   * uploadZipFile
+   * 通用上传入口：支持按钮选择与拖拽区域的 .zip 文件上传
+   */
+  const uploadZipFile = async (file) => {
     if (!file) return;
     if (!file.name.endsWith(".zip")) {
       toast({
@@ -337,13 +463,12 @@ export default function Home(props) {
     let websiteId = null;
 
     try {
-      // 确保存在登录态；若无则跳转回首页
       const state = await auth.getLoginState();
       if (!state || !state.user) {
         toast({
-            title: "登录已过期",
-            description: "请重新登录",
-            variant: "destructive"
+          title: "登录已过期",
+          description: "请重新登录",
+          variant: "destructive"
         });
         navigate("/");
         return;
@@ -352,20 +477,25 @@ export default function Home(props) {
       const safeFileName = sanitizeFileName(file.name);
       const cloudPath = `websites/${user.userId}/${Date.now()}_${safeFileName}`;
 
-      // 生成 websiteId，并先更新本地状态
+      // 生成 websiteId，并先更新本地状态，创建时间记录到秒
       websiteId = generateWebsiteId();
+      const now = Date.now();
       const websiteData = {
         userId: user.userId,
         userName: user.nickName || user.name,
         fileName: safeFileName,
         status: "processing",
-        createdAt: Date.now(),
-        updatedAt: Date.now()
+        createdAt: now,
+        updatedAt: now
       };
-      setWebsites((prev) => [{ _id: websiteId, ...websiteData }, ...prev]);
+      setWebsites((prev) => {
+        const next = [{ _id: websiteId, ...websiteData }, ...prev];
+        return next.sort(
+          (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
+        );
+      });
       setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
-      // 将文件读取为 Base64，交由云函数上传并部署
       const toBase64 = (f) =>
         new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -395,36 +525,27 @@ export default function Home(props) {
         [websiteId]: false
       }));
       if (deployResult.result && deployResult.result.success) {
-        // 部署成功后直接刷新列表（从 resource-game 集合查询）
         toast({
           title: "部署成功",
           description: "网站已成功部署并可以访问"
         });
-
-        // 重新加载网站列表
         loadWebsites();
       } else {
         throw new Error(deployResult.result?.message || "部署失败");
       }
     } catch (error) {
       console.error("部署失败:", error);
-      
       if (websiteId) {
-        // 更新状态为失败
-        setWebsites((prev) => 
-          prev.map(w => 
-            w._id === websiteId 
-              ? { ...w, status: "failed" } 
-              : w
+        setWebsites((prev) =>
+          prev.map((w) =>
+            w._id === websiteId ? { ...w, status: "failed" } : w
           )
         );
-        
         setDeploying((prev) => ({
           ...prev,
           [websiteId]: false
         }));
       }
-
       toast({
         title: "部署失败",
         description: error.message || "部署过程中出现错误，请重试",
@@ -437,6 +558,15 @@ export default function Home(props) {
         fileInputRef.current.value = "";
       }
     }
+  };
+
+  /**
+   * handleFileUpload
+   * 选择文件上传事件处理：委托给 uploadZipFile
+   */
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    await uploadZipFile(file);
   };
   const handleDeleteWebsite = async (websiteId) => {
     try {
@@ -494,6 +624,51 @@ export default function Home(props) {
   };
 
   /**
+   * onRedeployDragEnter
+   * 重新部署弹窗：拖拽进入高亮
+   */
+  const onRedeployDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRedeployDragActive(true);
+  };
+
+  /**
+   * onRedeployDragOver
+   * 重新部署弹窗：拖拽经过保持高亮
+   */
+  const onRedeployDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRedeployDragActive(true);
+  };
+
+  /**
+   * onRedeployDragLeave
+   * 重新部署弹窗：拖拽离开取消高亮
+   */
+  const onRedeployDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRedeployDragActive(false);
+  };
+
+  /**
+   * onRedeployDrop
+   * 重新部署弹窗：拖拽文件释放即选中待上传文件
+   */
+  const onRedeployDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRedeployDragActive(false);
+    const items = e.dataTransfer?.files;
+    const f = items && items.length > 0 ? items[0] : null;
+    if (f) {
+      setRedeployFile(f);
+    }
+  };
+
+  /**
    * submitRedeploy
    * 使用所选 .zip 文件对目标站点进行覆盖式重新部署
    */
@@ -535,9 +710,13 @@ export default function Home(props) {
       setRedeployFile(null);
       setRedeployWebsite(null);
       setWebsites((prev) =>
-        prev.map((w) =>
-          w._id === website._id ? { ...w, status: "processing" } : w
-        )
+        prev
+          .map((w) =>
+            w._id === website._id
+              ? { ...w, status: "processing", updatedAt: Date.now() }
+              : w
+          )
+          .sort((a, b) => getComparableTimestamp(b) - getComparableTimestamp(a))
       );
       setDeploying((prev) => ({ ...prev, [website._id]: true }));
       navigate("/home");
@@ -733,8 +912,37 @@ export default function Home(props) {
               )}
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-8">
-            <div className="border-2 border-dashed border-zinc-800 rounded-lg p-12 text-center hover:border-zinc-600 transition-colors bg-zinc-900/20 group-hover:bg-zinc-900/30">
+        <CardContent className="p-8">
+            <div
+              className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+                isDragActive
+                  ? "border-zinc-600 bg-zinc-900/30"
+                  : "border-zinc-800 bg-zinc-900/20"
+              } group-hover:bg-zinc-900/30`}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(false);
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(false);
+                const items = e.dataTransfer?.files;
+                const file = items && items.length > 0 ? items[0] : null;
+                await uploadZipFile(file);
+              }}
+            >
               <input
                 ref={fileInputRef}
                 type="file"
@@ -827,10 +1035,46 @@ export default function Home(props) {
                     className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-zinc-100 font-bold truncate">
-                          {getWebsiteDisplayName(website)}
-                        </h3>
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="flex items-center gap-2 group">
+                          {editingId === website._id ? (
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={editingName}
+                                onChange={(e) => setEditingName(e.target.value)}
+                                className="bg-zinc-900 border border-zinc-800 text-zinc-100 text-sm rounded px-2 py-1 w-48 focus:outline-none focus:border-zinc-600"
+                              />
+                              <button
+                                onClick={() => saveEditName(website)}
+                                className="text-green-400 hover:text-green-300"
+                                title="保存"
+                              >
+                                <CheckCircle className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={cancelEditName}
+                                className="text-zinc-400 hover:text-zinc-300"
+                                title="取消"
+                              >
+                                <XCircle className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <h3 className="text-zinc-100 font-bold truncate">
+                                {getDisplayName(website)}
+                              </h3>
+                              <button
+                                onClick={() => startEditName(website)}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
+                                title="编辑名称"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                         {getStatusBadge(website.status)}
                         {deploying[website._id] && (
                           <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
@@ -843,12 +1087,12 @@ export default function Home(props) {
                       <div className="flex flex-col sm:flex-row gap-4 text-sm text-zinc-500 font-mono mt-3">
                         <span>
                           Created:{" "}
-                          {new Date(website.createdAt).toLocaleDateString()}
+                          {formatTimestamp(website.createdAt)}
                         </span>
-                        {website.deployedAt && (
+                        {(website.updatedAt || website.deployedAt) && (
                           <span>
                             Deployed:{" "}
-                            {new Date(website.deployedAt).toLocaleDateString()}
+                            {formatTimestamp(website.updatedAt || website.deployedAt)}
                           </span>
                         )}
                       </div>
@@ -913,7 +1157,17 @@ export default function Home(props) {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-6">
-              <div className="border-2 border-dashed border-zinc-800 rounded-lg p-12 text-center hover:border-zinc-600 transition-colors bg-zinc-900/20">
+              <div
+                className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+                  isRedeployDragActive
+                    ? "border-zinc-600 bg-zinc-900/30"
+                    : "border-zinc-800 bg-zinc-900/20"
+                }`}
+                onDragEnter={onRedeployDragEnter}
+                onDragOver={onRedeployDragOver}
+                onDragLeave={onRedeployDragLeave}
+                onDrop={onRedeployDrop}
+              >
                 <input
                   id="redeploy-file-input"
                   type="file"
