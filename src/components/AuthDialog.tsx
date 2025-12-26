@@ -43,7 +43,6 @@ export function AuthDialog({
   }
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isRegister, setIsRegister] = useState(false);
   const [loginWithCode, setLoginWithCode] = useState(true);
   const [verificationCode, setVerificationCode] = useState("");
   const [verificationId, setVerificationId] = useState("");
@@ -67,21 +66,16 @@ export function AuthDialog({
   // Reset state when dialog closes
   useEffect(() => {
     if (!isOpen) {
-      // Optional: reset form fields if desired, but keeping them might be better UX
-      // For now we won't reset email/password to allow user to correct mistakes
-      // But maybe reset mode?
       setAgreed(false);
     }
   }, [isOpen]);
 
   useEffect(() => {
     setAgreed(false);
-  }, [isRegister, loginWithCode]);
+  }, [loginWithCode]);
 
   /**
    * 发送验证码
-   * - 注册模式：仅向未注册邮箱发送验证码（target: 'NOT_USER'）
-   * - 登录模式：仅向已注册邮箱发送验证码（target: 'USER'）
    */
   const handleSendCode = async () => {
     if (!email) {
@@ -90,25 +84,9 @@ export function AuthDialog({
     }
     try {
       const result = await auth.getVerification({
-        email,
-        target: isRegister ? "NOT_USER" : "USER"
+        email
       });
-      if (typeof result?.is_user === "boolean") {
-        if (isRegister && result.is_user) {
-          toast({
-            title: "该邮箱已注册，无法发送验证码",
-            variant: "destructive"
-          });
-          return;
-        }
-        if (!isRegister && !result.is_user) {
-          toast({
-            title: "该邮箱尚未注册，无法发送验证码登录",
-            variant: "destructive"
-          });
-          return;
-        }
-      }
+      
       if (result && result.verification_id) {
         setVerificationId(result.verification_id);
         setVerificationInfo(result);
@@ -131,9 +109,6 @@ export function AuthDialog({
 
   /**
    * 邮箱登录/注册
-   * - 登录（密码）：username+password
-   * - 登录（验证码）：signInWithEmail(verificationInfo, verificationCode, email)
-   * - 注册（验证码+密码）：verify -> signUp
    */
   const handleEmailAuth = async () => {
     if (!email) {
@@ -148,17 +123,17 @@ export function AuthDialog({
       });
       return;
     }
-    if (!isRegister && !loginWithCode && !password) {
+    if (!loginWithCode && !password) {
       toast({ title: "请输入密码", variant: "destructive" });
       return;
     }
     try {
-      if (isRegister) {
+      if (loginWithCode) {
         if (!verificationCode) {
           toast({ title: "请输入验证码", variant: "destructive" });
           return;
         }
-        if (!verificationId) {
+        if (!verificationInfo || !verificationId) {
           toast({ title: "请先发送验证码", variant: "destructive" });
           return;
         }
@@ -173,47 +148,37 @@ export function AuthDialog({
           throw new Error("验证码校验失败");
         }
 
-        // 2. Register with token
-        await auth.signUp({
-          email,
-          password,
-          verification_token: verifyResult.verification_token
-        });
-
-        toast({
-          title: "注册成功",
-          description: "已自动登录"
-        });
-
-        onLoginSuccess();
-        onOpenChange(false);
-        setIsRegister(false);
-      } else {
-        if (loginWithCode) {
-          if (!verificationCode) {
-            toast({ title: "请输入验证码", variant: "destructive" });
-            return;
-          }
-          if (!verificationInfo || !verificationInfo.verification_id) {
-            toast({ title: "请先发送验证码", variant: "destructive" });
-            return;
-          }
-          await auth.signInWithEmail({
-            verificationInfo,
-            verificationCode,
-            email
-          });
+        // 2. Check if user exists and Login or Register
+        if (verificationInfo.is_user) {
+            // User exists: Login
+            await auth.signIn({
+                username: email,
+                verification_token: verifyResult.verification_token
+            });
+            toast({ title: "登录成功" });
         } else {
-          await auth.signIn({
-            username: email,
-            password
-          });
+            // User does not exist: Register
+            await auth.signUp({
+                email,
+                verification_token: verifyResult.verification_token
+            });
+            toast({
+                title: "注册成功",
+                description: "已自动登录"
+            });
         }
-
-        onLoginSuccess();
-        onOpenChange(false);
+      } else {
+        // Password Login
+        await auth.signIn({
+          username: email,
+          password
+        });
         toast({ title: "登录成功" });
       }
+
+      onLoginSuccess();
+      onOpenChange(false);
+      
     } catch (error: unknown) {
       console.error(error);
       let errorMsg = getErrorMessage(error);
@@ -226,7 +191,7 @@ export function AuthDialog({
       }
 
       toast({
-        title: isRegister ? "注册失败" : "登录失败",
+        title: "登录/注册失败",
         description: errorMsg || "请检查输入信息",
         variant: "destructive"
       });
@@ -238,13 +203,11 @@ export function AuthDialog({
       <DialogContent className="sm:max-w-[425px] bg-black border border-zinc-800 text-zinc-100">
         <DialogHeader>
           <DialogTitle className="text-zinc-100">
-            {isRegister ? "创建账户" : "欢迎回来"}
+            登录 / 注册
           </DialogTitle>
           <DialogDescription className="text-zinc-400">
-            {isRegister
-              ? "输入邮箱、密码和验证码进行注册"
-              : loginWithCode
-              ? "输入邮箱与验证码进行登录"
+            {loginWithCode
+              ? "输入邮箱与验证码，未注册将自动创建账户"
               : "输入邮箱与密码进行登录"}
           </DialogDescription>
         </DialogHeader>
@@ -275,7 +238,7 @@ export function AuthDialog({
               />
             </div>
           )}
-          {(isRegister || loginWithCode) && (
+          {loginWithCode && (
             <div className="grid gap-2 text-left">
               <Label htmlFor="code" className="text-zinc-300">
                 验证码
@@ -335,31 +298,16 @@ export function AuthDialog({
             onClick={handleEmailAuth}
             className="w-full bg-zinc-100 text-black hover:bg-zinc-200"
           >
-            {isRegister ? "注册" : "登录"}
+            {loginWithCode ? "登录 / 注册" : "登录"}
           </Button>
           <div className="text-center text-sm">
-            <span className="text-zinc-500">
-              {isRegister ? "已有账户？" : "没有账户？"}
-            </span>
             <Button
               variant="link"
               className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
-              onClick={() => setIsRegister(!isRegister)}
+              onClick={() => setLoginWithCode(!loginWithCode)}
             >
-              {isRegister ? "去登录" : "去注册"}
+              {loginWithCode ? "使用密码登录" : "使用验证码登录 / 注册"}
             </Button>
-            {!isRegister && (
-              <>
-                <span className="text-zinc-500 mx-1">·</span>
-                <Button
-                  variant="link"
-                  className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
-                  onClick={() => setLoginWithCode(!loginWithCode)}
-                >
-                  {loginWithCode ? "使用密码登录" : "使用验证码登录"}
-                </Button>
-              </>
-            )}
           </div>
         </div>
       </DialogContent>
