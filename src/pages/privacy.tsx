@@ -38,7 +38,7 @@ const PrivacyPage: React.FC = () => {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
             Demox 隐私政策
           </h1>
-          <p className="text-sm text-zinc-500">最近更新：2024-12-25</p>
+          <p className="text-sm text-zinc-500">最近更新：2025-12-25</p>
           <p className="text-sm text-zinc-400 leading-relaxed">
             我们非常重视您的隐私与数据安全。本隐私政策旨在说明 Demox
             如何收集、使用、

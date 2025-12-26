@@ -38,7 +38,7 @@ const TermsPage: React.FC = () => {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
             Demox 使用协议与服务条款
           </h1>
-          <p className="text-sm text-zinc-500">最近更新：2024-12-25</p>
+          <p className="text-sm text-zinc-500">最近更新：2025-12-25</p>
           <p className="text-sm text-zinc-400 leading-relaxed">
             使用 Demox
             部署和托管您的代码，即表示您已阅读、理解并同意本使用协议与服务
