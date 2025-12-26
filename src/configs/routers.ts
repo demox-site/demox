@@ -4,6 +4,9 @@ import NotFoundPage from "../pages/404";
 import MemberPrice from "../pages/memberPrice";
 import AdminDashboard from "../pages/AdminDashboard";
 import LogPage from "../pages/log";
+import TermsPage from "../pages/terms";
+import PrivacyPage from "../pages/privacy";
+import LayoutDemo from "../pages/LayoutDemo";
 
 export const routers = [
   {
@@ -18,6 +21,18 @@ export const routers = [
   {
     id: "pricing",
     component: MemberPrice
+  },
+  {
+    id: "layout-demo",
+    component: LayoutDemo
+  },
+  {
+    id: "terms",
+    component: TermsPage
+  },
+  {
+    id: "privacy",
+    component: PrivacyPage
   },
   {
     id: "log",

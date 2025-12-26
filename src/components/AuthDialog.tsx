@@ -9,7 +9,8 @@ import {
   DialogDescription,
   Input,
   Label,
-  useToast
+  useToast,
+  Checkbox
 } from "@/components/ui";
 
 interface AuthDialogProps {
@@ -18,7 +19,11 @@ interface AuthDialogProps {
   onLoginSuccess: () => void;
 }
 
-export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogProps) {
+export function AuthDialog({
+  isOpen,
+  onOpenChange,
+  onLoginSuccess
+}: AuthDialogProps) {
   const { toast } = useToast();
   interface VerificationInfo {
     verification_id: string;
@@ -42,8 +47,10 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
   const [loginWithCode, setLoginWithCode] = useState(true);
   const [verificationCode, setVerificationCode] = useState("");
   const [verificationId, setVerificationId] = useState("");
-  const [verificationInfo, setVerificationInfo] = useState<VerificationInfo | null>(null);
+  const [verificationInfo, setVerificationInfo] =
+    useState<VerificationInfo | null>(null);
   const [countdown, setCountdown] = useState(0);
+  const [agreed, setAgreed] = useState(false);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -63,8 +70,13 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
       // Optional: reset form fields if desired, but keeping them might be better UX
       // For now we won't reset email/password to allow user to correct mistakes
       // But maybe reset mode?
+      setAgreed(false);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    setAgreed(false);
+  }, [isRegister, loginWithCode]);
 
   /**
    * 发送验证码
@@ -83,11 +95,17 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
       });
       if (typeof result?.is_user === "boolean") {
         if (isRegister && result.is_user) {
-          toast({ title: "该邮箱已注册，无法发送验证码", variant: "destructive" });
+          toast({
+            title: "该邮箱已注册，无法发送验证码",
+            variant: "destructive"
+          });
           return;
         }
         if (!isRegister && !result.is_user) {
-          toast({ title: "该邮箱尚未注册，无法发送验证码登录", variant: "destructive" });
+          toast({
+            title: "该邮箱尚未注册，无法发送验证码登录",
+            variant: "destructive"
+          });
           return;
         }
       }
@@ -120,6 +138,14 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
   const handleEmailAuth = async () => {
     if (!email) {
       toast({ title: "请输入邮箱", variant: "destructive" });
+      return;
+    }
+    if (!agreed) {
+      toast({
+        title: "请先勾选协议",
+        description: "请阅读并同意服务条款与隐私政策后再继续",
+        variant: "destructive"
+      });
       return;
     }
     if (!isRegister && !loginWithCode && !password) {
@@ -158,7 +184,7 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
           title: "注册成功",
           description: "已自动登录"
         });
-        
+
         onLoginSuccess();
         onOpenChange(false);
         setIsRegister(false);
@@ -192,7 +218,10 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
       console.error(error);
       let errorMsg = getErrorMessage(error);
       const errCode = (error as unknown as Record<string, unknown>)["code"];
-      if (errCode === "CHECK_LOGIN_FAILED" || errCode === "INVALID_USERNAME_OR_PASSWORD") {
+      if (
+        errCode === "CHECK_LOGIN_FAILED" ||
+        errCode === "INVALID_USERNAME_OR_PASSWORD"
+      ) {
         errorMsg = "邮箱或密码错误";
       }
 
@@ -209,15 +238,21 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
       <DialogContent className="sm:max-w-[425px] bg-black border border-zinc-800 text-zinc-100">
         <DialogHeader>
           <DialogTitle className="text-zinc-100">
-            {isRegister ? '创建账户' : '欢迎回来'}
+            {isRegister ? "创建账户" : "欢迎回来"}
           </DialogTitle>
           <DialogDescription className="text-zinc-400">
-            {isRegister ? '输入邮箱、密码和验证码进行注册' : (loginWithCode ? '输入邮箱与验证码进行登录' : '输入邮箱与密码进行登录')}
+            {isRegister
+              ? "输入邮箱、密码和验证码进行注册"
+              : loginWithCode
+              ? "输入邮箱与验证码进行登录"
+              : "输入邮箱与密码进行登录"}
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2 text-left">
-            <Label htmlFor="email" className="text-zinc-300">邮箱</Label>
+            <Label htmlFor="email" className="text-zinc-300">
+              邮箱
+            </Label>
             <Input
               id="email"
               placeholder="name@example.com"
@@ -228,7 +263,9 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
           </div>
           {!loginWithCode && (
             <div className="grid gap-2 text-left">
-              <Label htmlFor="password" className="text-zinc-300">密码</Label>
+              <Label htmlFor="password" className="text-zinc-300">
+                密码
+              </Label>
               <Input
                 id="password"
                 type="password"
@@ -240,7 +277,9 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
           )}
           {(isRegister || loginWithCode) && (
             <div className="grid gap-2 text-left">
-              <Label htmlFor="code" className="text-zinc-300">验证码</Label>
+              <Label htmlFor="code" className="text-zinc-300">
+                验证码
+              </Label>
               <div className="flex gap-2">
                 <Input
                   id="code"
@@ -249,33 +288,65 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
                   onChange={(e) => setVerificationCode(e.target.value)}
                   className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
                 />
-                <Button 
-                    variant="outline" 
-                    onClick={handleSendCode}
-                    disabled={countdown > 0}
-                    type="button"
-                    className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                <Button
+                  variant="outline"
+                  onClick={handleSendCode}
+                  disabled={countdown > 0}
+                  type="button"
+                  className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
                 >
-                    {countdown > 0 ? `${countdown}s` : '发送验证码'}
+                  {countdown > 0 ? `${countdown}s` : "发送验证码"}
                 </Button>
               </div>
             </div>
           )}
         </div>
         <div className="flex flex-col gap-4">
-          <Button onClick={handleEmailAuth} className="w-full bg-zinc-100 text-black hover:bg-zinc-200">
-            {isRegister ? '注册' : '登录'}
+          <div className="flex items-start gap-2 text-xs text-zinc-500">
+            <Checkbox
+              id="auth-agree"
+              checked={agreed}
+              onCheckedChange={(v) => setAgreed(!!v)}
+              className="mt-[2px]"
+            />
+            <div className="space-y-1">
+              <p>
+                我已阅读并同意{" "}
+                <button
+                  type="button"
+                  className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200"
+                  onClick={() => window.open("#/terms", "_blank")}
+                >
+                  《服务条款》
+                </button>{" "}
+                和{" "}
+                <button
+                  type="button"
+                  className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200"
+                  onClick={() => window.open("#/privacy", "_blank")}
+                >
+                  《隐私政策》
+                </button>
+                ，并知晓上传内容将接受自动审核，审核结果可能导致内容下线或封禁。
+              </p>
+            </div>
+          </div>
+          <Button
+            onClick={handleEmailAuth}
+            className="w-full bg-zinc-100 text-black hover:bg-zinc-200"
+          >
+            {isRegister ? "注册" : "登录"}
           </Button>
           <div className="text-center text-sm">
             <span className="text-zinc-500">
-              {isRegister ? '已有账户？' : '没有账户？'}
+              {isRegister ? "已有账户？" : "没有账户？"}
             </span>
             <Button
               variant="link"
               className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
               onClick={() => setIsRegister(!isRegister)}
             >
-              {isRegister ? '去登录' : '去注册'}
+              {isRegister ? "去登录" : "去注册"}
             </Button>
             {!isRegister && (
               <>
@@ -285,7 +356,7 @@ export function AuthDialog({ isOpen, onOpenChange, onLoginSuccess }: AuthDialogP
                   className="p-0 h-auto ml-1 text-zinc-300 hover:text-zinc-100"
                   onClick={() => setLoginWithCode(!loginWithCode)}
                 >
-                  {loginWithCode ? '使用密码登录' : '使用验证码登录'}
+                  {loginWithCode ? "使用密码登录" : "使用验证码登录"}
                 </Button>
               </>
             )}
