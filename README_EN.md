@@ -4,7 +4,7 @@
 
 > Upload your frontend build and get a public URL instantly.
 
-🚀 **Start using CloudHost** → https://cloudhost.yourdomain.com  
+🚀 **Start using CloudHost** → https://ai-builder.aigc.sx.cn/  
 📦 No config · No server · No CDN setup
 
 ---
@@ -174,4 +174,4 @@ If you simply want to use CloudHost,
 > CloudHost is not about how to deploy frontend code.  
 > It is about **how fast you can deliver a working link**.
 
-🚀 **Start using CloudHost** → https://cloudhost.yourdomain.com
+🚀 **Start using CloudHost** → https://ai-builder.aigc.sx.cn/

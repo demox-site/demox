@@ -4,7 +4,7 @@
 
 > 上传前端构建产物，立刻获得一个公网可访问的网站链接。
 
-🚀 **立即使用 CloudHost** → https://cloudhost.yourdomain.com  
+🚀 **立即使用 CloudHost** → https://ai-builder.aigc.sx.cn/  
 📦 无需配置 · 无需服务器 · 无需 CDN 设置
 
 ---
@@ -174,4 +174,4 @@ CloudHost 的源码是开放的，用于：
 > **CloudHost 解决的不是“怎么部署前端”，  
 而是“如何最快把页面交付出去”。**
 
-🚀 **立即使用** → https://cloudhost.yourdomain.com
+🚀 **立即使用** → https://ai-builder.aigc.sx.cn/
