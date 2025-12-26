@@ -708,7 +708,7 @@ exports.main = async (event, context) => {
                         const fileNameNoExt = (parts[3] || '').toLowerCase();
 
                         // 构造 URL
-                        const defaultDomain = 'ai-builder.aigc.sx.cn';
+                        const defaultDomain = process.env.DEFAULT_DOMAIN;
                         const urlPrefix = `sites-${userId}-${websiteId}-${fileNameNoExt}`;
                         const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html`;
 
@@ -821,7 +821,7 @@ exports.main = async (event, context) => {
         await deployZipToTarget(zipEntries, targetPrefix);
 
         // 4. 获取访问 URL
-        const defaultDomain = 'ai-builder.aigc.sx.cn';
+        const defaultDomain = process.env.DEFAULT_DOMAIN;
         const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
 
         // 5. 写入/更新数据库（不保存 fileId，仅记录路径与 URL）

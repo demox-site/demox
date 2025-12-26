@@ -4,7 +4,7 @@
 
 > Upload your frontend build and get a public URL instantly.
 
-🚀 **Start using Demox** → https://ai-builder.aigc.sx.cn/  
+🚀 **Start using Demox** → https://demox.aigc.sx.cn/  
 📦 No config · No server · No CDN setup
 
 ---
@@ -174,4 +174,4 @@ If you simply want to use Demox,
 > Demox is not about how to deploy frontend code.  
 > It is about **how fast you can deliver a working link**.
 
-🚀 **Start using Demox** → https://ai-builder.aigc.sx.cn/
+🚀 **Start using Demox** → https://demox.aigc.sx.cn/
