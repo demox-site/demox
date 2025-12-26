@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
+import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
 
 const translations = {
@@ -30,7 +31,7 @@ const translations = {
       logout: "退出"
     },
     hero: {
-      version: "v0.5 现已发布",
+      version: `v${siteConfig.version} 现已发布`,
       title_start: "部署，从未如此简单",
       title_end: "",
       desc: "拖拽，上传，全球 CDN 分发。无需配置。专为追求速度的开发者设计。",
@@ -88,7 +89,7 @@ const translations = {
       contact_btn: "查看昂贵的套餐"
     },
     footer: {
-      copyright: "Demox © 2024",
+      copyright: "Demox © 2025",
       terms: "条款",
       privacy: "隐私",
       status: "状态",
@@ -104,7 +105,7 @@ const translations = {
       logout: "Logout"
     },
     hero: {
-      version: "v2.0 is now live",
+      version: `v${siteConfig.version} is now live`,
       title_start: "Deploy Static Sites.",
       title_end: "Instantly.",
       desc: "Drag, drop, global CDN. No config required. Designed for developers who want speed without the hassle.",
@@ -162,7 +163,7 @@ const translations = {
       contact_btn: "Contact Sales"
     },
     footer: {
-      copyright: "Demox © 2024",
+      copyright: "Demox © 2025",
       terms: "Terms",
       privacy: "Privacy",
       status: "Status",

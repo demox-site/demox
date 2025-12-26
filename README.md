@@ -4,7 +4,7 @@
 
 > 上传前端构建产物，立刻获得一个公网可访问的网站链接。
 
-🚀 **立即使用 Demox** → https://ai-builder.aigc.sx.cn/  
+🚀 **立即使用 Demox** → demox.aigc.sx.cn  
 📦 无需配置 · 无需服务器 · 无需 CDN 设置
 
 ---

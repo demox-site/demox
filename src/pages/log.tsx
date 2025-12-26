@@ -52,6 +52,20 @@ const LogPage: React.FC = () => {
               glow="shadow-[0_0_20px_rgba(34,197,94,0.3)]"
             >
               <TimelineItem
+                version="v0.6.0"
+                name="流量密码 (The Traffic Hack)"
+                date="2025-12-26"
+                dateNote="(假装我们在做增长)"
+              >
+                <Feature
+                  tag="SEO"
+                  title="搜索引擎优化"
+                  desc="终于想起来做 SEO 了。Meta 标签、Sitemap、Open Graph 全套安排。虽然大概率还是搜不到，但至少我们给爬虫留了门。"
+                  note="只要关键词够多，我就能上首页（做梦）。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
                 version="v0.5.0"
                 name="认清现实 (The Reality Check)"
                 date="2025-12-26"
@@ -84,6 +98,34 @@ const LogPage: React.FC = () => {
                   tag="Optim"
                   title="上传宽容度"
                   desc="正在教服务器学会翻箱倒柜。以后不管你把 index.html 藏在哪个子文件夹里，我们都能把它揪出来。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version="v0.3.0"
+                name="秩序重建 (Order Restored)"
+                date="2025-12-25"
+                dateNote="(圣诞节的礼物是代码整洁)"
+              >
+                <Feature
+                  tag="Optim"
+                  title="ID 系统大扫除"
+                  desc="优化文件名处理、网站 ID 生成和删除逻辑。之前的 ID 像是乱码生成器，现在终于有了点人类逻辑。"
+                  note="删除逻辑也修复了，现在“删除”真的意味着“消失”。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version="v0.2.0"
+                name="独立日 (Independence Day)"
+                date="2025-12-25"
+                dateNote="(剪断脐带)"
+              >
+                <Feature
+                  tag="Refactor"
+                  title="告别 Weda"
+                  desc="重构网站部署逻辑，移除 Weda 依赖并优化云。我们终于不再依赖外部输血，学会了独立呼吸。"
+                  note="云端资源已优化，服务器松了一口气。"
                 />
               </TimelineItem>
 

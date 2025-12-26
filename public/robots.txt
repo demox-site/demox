@@ -12,3 +12,5 @@ Allow: /
 
 User-agent: *
 Allow: /
+
+Sitemap: https://ai-builder.aigc.sx.cn/sitemap.xml
