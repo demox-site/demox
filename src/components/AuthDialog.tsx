@@ -35,6 +35,12 @@ export function AuthDialog({
    */
   function getErrorMessage(e: unknown): string {
     if (e instanceof Error) return e.message;
+    if (typeof e === "object" && e !== null) {
+      const err = e as any;
+      if (err.message) return err.message;
+      if (err.msg) return err.msg;
+      if (err.error_description) return err.error_description;
+    }
     try {
       return JSON.stringify(e);
     } catch {
@@ -101,7 +107,11 @@ export function AuthDialog({
       console.error(error);
       toast({
         title: "发送失败",
-        description: getErrorMessage(error) || "请稍后重试",
+        description: (
+          <div className="break-all whitespace-pre-wrap">
+            {getErrorMessage(error) || "请稍后重试"}
+          </div>
+        ),
         variant: "destructive"
       });
     }
@@ -192,7 +202,11 @@ export function AuthDialog({
 
       toast({
         title: "登录/注册失败",
-        description: errorMsg || "请检查输入信息",
+        description: (
+          <div className="break-all whitespace-pre-wrap">
+            {errorMsg || "请检查输入信息"}
+          </div>
+        ),
         variant: "destructive"
       });
     }
