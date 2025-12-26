@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { auth } from "@/cloudbase";
 import { AuthDialog } from "@/components/AuthDialog";
 import { useLanguage } from "@/hooks/use-language";
+import logo from "@/assets/logo.png";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -95,12 +96,11 @@ export const MainHeader: React.FC = () => {
               onClick={() => navigate("/index")}
               className="flex items-center gap-2 group"
             >
-              <div className="w-5 h-5 bg-zinc-100 rounded-sm flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                <span className="text-black text-xs font-bold">D</span>
-              </div>
-              <span className="text-lg font-bold tracking-tight text-zinc-100">
-                Demox<span className="animate-pulse text-zinc-400">_</span>
-              </span>
+              <img
+                src={logo}
+                alt="Demox"
+                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300"
+              />
             </button>
 
             {/* Desktop Navigation */}

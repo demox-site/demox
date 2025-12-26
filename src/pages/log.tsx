@@ -52,6 +52,20 @@ const LogPage: React.FC = () => {
               glow="shadow-[0_0_20px_rgba(34,197,94,0.3)]"
             >
               <TimelineItem
+                version="v0.7.0"
+                name="名正言顺 (The Identity)"
+                date="2025-12-26"
+                dateNote="(有了名字就有了灵魂)"
+              >
+                <Feature
+                  tag="Brand"
+                  title="Demox & Logo"
+                  desc="我们产品名定下来了 Demox，还有 Logo。这些真的很重要。"
+                  note="感觉身价倍增。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
                 version="v0.6.0"
                 name="流量密码 (The Traffic Hack)"
                 date="2025-12-26"
