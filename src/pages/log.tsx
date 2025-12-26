@@ -3,7 +3,6 @@ import { motion, useScroll, useTransform } from "framer-motion";
 import {
   CheckCircle2,
   PartyPopper,
-  Construction,
   Hammer,
   Rocket,
   Sparkles,
@@ -75,47 +74,6 @@ const LogPage: React.FC = () => {
                   desc="增加了鉴权与角色校验。现在不是谁都能进来了，虽然我们要防的人可能根本不存在。"
                   note="Role: 'God' 模式开发中。"
                 />
-              </TimelineItem>
-
-              <TimelineItem
-                version="v1.0.0"
-                name="创世纪 (Genesis)"
-                date="2025-12-25"
-                dateNote="(圣诞节还在写代码，你是魔鬼吗？)"
-              >
-                <Feature
-                  tag="Feature"
-                  title="拖拽部署"
-                  desc="支持把 .zip 甩到脸上。因为我们知道你懒得输 scp 命令。"
-                  note="Dev Note: 实际上只支持根目录 index.html，别试探我的底线。"
-                />
-                <Feature
-                  tag="Feature"
-                  title="CLI 命令行"
-                  desc="npm install -g demox。在星巴克敲这个命令，以此证明你是个黑客，而不是在写 PPT。"
-                />
-                <Feature
-                  tag="Style"
-                  title="暗黑模式"
-                  desc="默认全黑。为了保护你的视网膜，也为了省点电费。"
-                />
-              </TimelineItem>
-            </Section>
-
-            <Section
-              title="Fixing My Stupid Mistakes"
-              subtitle="正在施工"
-              icon={<Construction className="text-black" size={20} />}
-              color="bg-yellow-500"
-              lineColor="border-yellow-500"
-              glow="shadow-[0_0_20px_rgba(234,179,8,0.3)]"
-              isBlinking
-            >
-              <TimelineItem
-                version="v1.1.0"
-                name="强迫症修复补丁 (The OCD Patch)"
-                date="Coming Soon..."
-              >
                 <Feature
                   tag="Fix"
                   title="导航栏精神分裂症"
@@ -128,6 +86,26 @@ const LogPage: React.FC = () => {
                   desc="正在教服务器学会翻箱倒柜。以后不管你把 index.html 藏在哪个子文件夹里，我们都能把它揪出来。"
                 />
               </TimelineItem>
+
+              <TimelineItem
+                version="v0.1.0"
+                name="创世纪 (Genesis)"
+                date="2025-12-25"
+                dateNote="(圣诞节还在写代码，你是魔鬼吗？)"
+              >
+                <Feature
+                  tag="Feature"
+                  title="拖拽部署"
+                  desc="支持把 .zip 甩到脸上。因为我们知道你懒得输 scp 命令。"
+                  note="Dev Note: 实际上只支持根目录 index.html，别试探我的底线。"
+                />
+
+                <Feature
+                  tag="Style"
+                  title="暗黑模式"
+                  desc="默认全黑。为了保护你的视网膜，也为了省点电费。"
+                />
+              </TimelineItem>
             </Section>
 
             <Section
@@ -138,7 +116,31 @@ const LogPage: React.FC = () => {
               lineColor="border-dashed border-zinc-700"
               ghost
             >
-              <TimelineItem version="v2.0" name="项目的诞生 (Projectization)">
+              <TimelineItem
+                version="Soon™"
+                name="下周一定 (Next Week for Sure)"
+                date="Coming..."
+              >
+                <Feature
+                  tag="Refactor"
+                  title="控制台整容手术"
+                  desc="目前的控制台丑得像是我用脚写的 CSS。我们将进行一次彻底的整容，争取让它看起来不像是一个后端工程师的业余作品。"
+                  note="设计师已经提刀在路上了。"
+                />
+                <Feature
+                  tag="Copywriting"
+                  title="尝试说人话"
+                  desc="首页现在的文案充满了‘赋能’、‘抓手’这种黑话。我们要把它改成人类能看懂的语言，停止假装我们在改变世界。"
+                />
+                <Feature
+                  tag="Open Source"
+                  title="代码开源 (公开处刑)"
+                  desc="我们要把这一坨代码传到 GitHub 上了。链接即将更新，届时欢迎大家来 Review (Roast) 我的代码。"
+                  note="请轻喷，我也知道写得很烂。"
+                />
+              </TimelineItem>
+
+              <TimelineItem version="v1.0" name="项目的诞生 (Projectization)">
                 <Feature
                   tag="New"
                   title="项目归档"
@@ -172,11 +174,6 @@ const LogPage: React.FC = () => {
           </div>
 
           <footer className="mt-32 pb-10 text-center space-y-4">
-            <p className="text-zinc-500 font-mono text-sm">
-              Made with <span className="text-red-500">❤️</span> and ☕ by [Your
-              Name]. <br />
-              No servers were harmed in the making of this site (yet).
-            </p>
             <p className="text-zinc-600 text-xs">
               本站由 Demox 强力驱动（禁止套娃部署本站）
             </p>
