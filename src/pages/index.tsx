@@ -14,16 +14,11 @@ import {
   Lock,
   Cpu,
   Command,
-  CheckCircle2,
-  Menu,
-  X,
-  Languages,
-  User,
-  LogOut,
-  LayoutDashboard
+  CheckCircle2
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
+import { MainLayout } from "@/layouts/MainLayout";
 
 const translations = {
   zh: {
@@ -35,24 +30,24 @@ const translations = {
       logout: "退出"
     },
     hero: {
-      version: "v2.0 现已发布",
-      title_start: "部署静态网站，",
-      title_end: "即刻完成。",
+      version: "v0.5 现已发布",
+      title_start: "部署，从未如此简单",
+      title_end: "",
       desc: "拖拽，上传，全球 CDN 分发。无需配置。专为追求速度的开发者设计。",
       start_btn: "试试这个空项目",
-      install_cmd: "npm install -g cloudhost",
+      install_cmd: "npm install -g demox",
       install_tooltip: "太麻烦了，我们不兴这个。"
     },
     terminal: {
       title: "bash — 80x24",
-      cmd: "cloudhost deploy",
+      cmd: "demox deploy",
       init: "初始化部署引擎...",
       bundling: "打包资源...",
       bundling_done: "完成 (0.4s)",
       uploading: "上传至边缘网络...",
       uploading_done: "完成 (1.2s)",
       success: "成功！已部署至：",
-      url: "https://project-gamma.cloudhost.app"
+      url: "https://project-gamma.demox.app"
     },
     features: [
       {
@@ -93,7 +88,7 @@ const translations = {
       contact_btn: "查看昂贵的套餐"
     },
     footer: {
-      copyright: "CloudHost © 2024",
+      copyright: "Demox © 2024",
       terms: "条款",
       privacy: "隐私",
       status: "状态",
@@ -114,18 +109,19 @@ const translations = {
       title_end: "Instantly.",
       desc: "Drag, drop, global CDN. No config required. Designed for developers who want speed without the hassle.",
       start_btn: "Try this empty project",
-      install_cmd: "npm install -g cloudhost"
+      install_cmd: "npm install -g demox",
+      install_tooltip: "Too much trouble. We don't do this."
     },
     terminal: {
       title: "bash — 80x24",
-      cmd: "cloudhost deploy",
+      cmd: "demox deploy",
       init: "Initializing deployment engine...",
       bundling: "Bundling assets...",
       bundling_done: "Done (0.4s)",
       uploading: "Uploading to Edge Network...",
       uploading_done: "Done (1.2s)",
       success: "Success! Deployed to:",
-      url: "https://project-gamma.cloudhost.app"
+      url: "https://project-gamma.demox.app"
     },
     features: [
       {
@@ -166,7 +162,7 @@ const translations = {
       contact_btn: "Contact Sales"
     },
     footer: {
-      copyright: "CloudHost © 2024",
+      copyright: "Demox © 2024",
       terms: "Terms",
       privacy: "Privacy",
       status: "Status",
@@ -176,8 +172,7 @@ const translations = {
 };
 
 const CloudHostLanding: React.FC = () => {
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const { language: lang, toggleLanguage: toggleLang } = useLanguage();
+  const { language: lang } = useLanguage();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [user, setUser] = useState(null);
   const navigate = useNavigate();
@@ -202,154 +197,9 @@ const CloudHostLanding: React.FC = () => {
     navigate("/home");
   };
 
-  const handleLogout = async () => {
-    await auth.signOut();
-    setUser(null);
-  };
-
   return (
-    <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white">
-      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-zinc-800 bg-black/50 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 bg-zinc-100 rounded-sm flex items-center justify-center">
-                <span className="text-black text-xs font-bold">C</span>
-              </div>
-              <span className="text-lg font-bold tracking-tight">
-                CloudHost<span className="animate-pulse">_</span>
-              </span>
-            </div>
-
-            <div className="hidden md:flex items-center gap-8">
-              <button
-                onClick={() => navigate("/pricing")}
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
-              >
-                {t.navbar.pricing}
-              </button>
-              <button
-                onClick={() => navigate("/log")}
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
-              >
-                {t.navbar.log}
-              </button>
-              <button
-                onClick={toggleLang}
-                className="text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1"
-              >
-                <Languages size={16} />
-                <span className="text-xs font-mono uppercase">{lang}</span>
-              </button>
-
-              {user ? (
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2 text-sm text-zinc-300">
-                    <User size={16} />
-                    <span className="max-w-[150px] truncate">
-                      {user.nickName || user.email || "User"}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => navigate("/home")}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-800 transition-colors"
-                  >
-                    <LayoutDashboard size={16} />
-                    {t.navbar.console}
-                  </button>
-                  <button
-                    onClick={handleLogout}
-                    className="p-2 text-zinc-400 hover:text-red-400 transition-colors"
-                    title={t.navbar.logout}
-                  >
-                    <LogOut size={18} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setIsLoginOpen(true)}
-                  className="px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black hover:border-zinc-100 transition-all duration-300"
-                >
-                  {t.navbar.login}
-                </button>
-              )}
-            </div>
-
-            <div className="md:hidden flex items-center gap-4">
-              {user ? (
-                <button
-                  onClick={() => navigate("/home")}
-                  className="p-2 text-zinc-400 hover:text-zinc-100"
-                >
-                  <LayoutDashboard size={20} />
-                </button>
-              ) : null}
-              <button
-                onClick={toggleLang}
-                className="text-zinc-400 hover:text-zinc-100 flex items-center gap-1"
-              >
-                <Languages size={20} />
-                <span className="text-xs font-mono uppercase">{lang}</span>
-              </button>
-              <button
-                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="text-zinc-400 hover:text-zinc-100"
-              >
-                {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {isMobileMenuOpen && (
-          <div className="md:hidden border-b border-zinc-800 bg-black">
-            <div className="px-4 py-4 space-y-4">
-              <button
-                onClick={() => navigate("/pricing")}
-                className="block text-sm text-zinc-400 hover:text-zinc-100 w-full text-left"
-              >
-                {t.navbar.pricing}
-              </button>
-              <button
-                onClick={() => navigate("/log")}
-                className="block text-sm text-zinc-400 hover:text-zinc-100 w-full text-left"
-              >
-                {t.navbar.log}
-              </button>
-
-              {user ? (
-                <>
-                  <div className="flex items-center gap-2 py-2 text-sm text-zinc-300">
-                    <User size={16} />
-                    <span>{user.nickName || user.email || "User"}</span>
-                  </div>
-                  <button
-                    onClick={() => navigate("/home")}
-                    className="block w-full text-left px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-800 transition-colors"
-                  >
-                    {t.navbar.console}
-                  </button>
-                  <button
-                    onClick={handleLogout}
-                    className="block w-full text-left px-4 py-2 text-sm font-medium border border-red-900/50 text-red-400 rounded-md hover:bg-red-950/30 transition-colors"
-                  >
-                    {t.navbar.logout}
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setIsLoginOpen(true)}
-                  className="w-full px-4 py-2 text-sm font-medium border border-zinc-700 rounded-md hover:bg-zinc-100 hover:text-black transition-colors"
-                >
-                  {t.navbar.login}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-      </nav>
-
-      <section className="pt-32 pb-20 md:pt-48 md:pb-32 px-4 relative overflow-hidden">
+    <MainLayout>
+      <section className="pt-24 pb-20 md:pt-32 md:pb-32 px-4 relative overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#18181b_1px,transparent_1px),linear-gradient(to_bottom,#18181b_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10" />
 
         <div className="max-w-4xl mx-auto text-center">
@@ -367,9 +217,15 @@ const CloudHostLanding: React.FC = () => {
                 : "text-5xl md:text-7xl"
             }`}
           >
-            {t.hero.title_start}
-            {lang === "en" ? <br /> : " "}
-            <span className="text-white">{t.hero.title_end}</span>
+            {lang === "zh" ? (
+              t.hero.title_start
+            ) : (
+              <>
+                {t.hero.title_start}
+                <br />
+                <span className="text-white">{t.hero.title_end}</span>
+              </>
+            )}
           </h1>
 
           <p className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed">
@@ -553,46 +409,12 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <footer className="py-12 px-4 border-t border-zinc-900 bg-zinc-950">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-zinc-800 rounded-sm"></div>
-            <span className="text-zinc-400 font-medium">
-              {t.footer.copyright}
-            </span>
-          </div>
-
-          <div className="flex gap-8">
-            <button
-              type="button"
-              onClick={() => navigate("/terms")}
-              className="text-zinc-500 hover:text-zinc-300 text-sm"
-            >
-              {t.footer.terms}
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("/privacy")}
-              className="text-zinc-500 hover:text-zinc-300 text-sm"
-            >
-              {t.footer.privacy}
-            </button>
-            <a href="#" className="text-zinc-500 hover:text-zinc-300 text-sm">
-              {t.footer.status}
-            </a>
-            <a href="#" className="text-zinc-500 hover:text-zinc-300 text-sm">
-              {t.footer.twitter}
-            </a>
-          </div>
-        </div>
-      </footer>
-
       <AuthDialog
         isOpen={isLoginOpen}
         onOpenChange={setIsLoginOpen}
         onLoginSuccess={handleLoginSuccess}
       />
-    </div>
+    </MainLayout>
   );
 };
 

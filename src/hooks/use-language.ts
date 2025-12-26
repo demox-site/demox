@@ -1,10 +1,22 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 
 export type Language = "zh" | "en";
 
 const STORAGE_KEY = "app_language";
 
-export function useLanguage() {
+interface LanguageContextValue {
+  language: Language;
+  setLanguage: React.Dispatch<React.SetStateAction<Language>>;
+  toggleLanguage: () => void;
+}
+
+const LanguageContext = React.createContext<LanguageContextValue | undefined>(
+  undefined
+);
+
+export const LanguageProvider: React.FC<React.PropsWithChildren> = ({
+  children,
+}) => {
   const [language, setLanguage] = useState<Language>(() => {
     // 1. 尝试从 localStorage 获取
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -37,5 +49,18 @@ export function useLanguage() {
     setLanguage((prev) => (prev === "zh" ? "en" : "zh"));
   };
 
-  return { language, setLanguage, toggleLanguage };
+  const value = React.useMemo(
+    () => ({ language, setLanguage, toggleLanguage }),
+    [language]
+  );
+
+  return React.createElement(LanguageContext.Provider, { value }, children);
+};
+
+export function useLanguage() {
+  const context = React.useContext(LanguageContext);
+  if (!context) {
+    throw new Error("useLanguage must be used within a LanguageProvider");
+  }
+  return context;
 }

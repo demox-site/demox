@@ -1,28 +1,28 @@
-# CloudHost
+# Demox
 
 [中文版 README](./README.md)
 
 > Upload your frontend build and get a public URL instantly.
 
-🚀 **Start using CloudHost** → https://ai-builder.aigc.sx.cn/  
+🚀 **Start using Demox** → https://ai-builder.aigc.sx.cn/  
 📦 No config · No server · No CDN setup
 
 ---
 
-## What is CloudHost?
+## What is Demox?
 
-**CloudHost is a production-ready static site deployment platform.**
+**Demox is a production-ready static site deployment platform.**
 
 It solves a simple but common problem for frontend developers:
 
 > Your frontend is already built.  
 > You just need a link that works.
 
-With CloudHost, you don’t need to care about servers, object storage,
+With Demox, you don’t need to care about servers, object storage,
 CDN configuration, HTTPS, or cache headers.
 
 Just upload a `.zip` file.  
-CloudHost handles everything else.
+Demox handles everything else.
 
 ---
 
@@ -31,7 +31,7 @@ CloudHost handles everything else.
 1. Build your frontend project locally  
    (for example, `npm run build`, producing a `dist/` folder)
 2. Zip the build output
-3. Upload the `.zip` to CloudHost
+3. Upload the `.zip` to Demox
 4. **Get a publicly accessible URL instantly**
 
 No configuration files.  
@@ -39,12 +39,12 @@ No DevOps knowledge required.
 
 ---
 
-## 🎯 When should you use CloudHost?
+## 🎯 When should you use Demox?
 
-> CloudHost is not a replacement for Netlify or Vercel —
+> Demox is not a replacement for Netlify or Vercel —
 > it’s what you use when you just need a working link, now.
 
-CloudHost focuses on **fast delivery**, not complex pipelines.
+Demox focuses on **fast delivery**, not complex pipelines.
 
 It is ideal for:
 
@@ -58,7 +58,7 @@ If your goal is simply:
 
 > **“Give someone a link they can open”**
 
-CloudHost is the fastest way.
+Demox is the fastest way.
 
 ---
 
@@ -80,7 +80,7 @@ But in practice, this means:
 - More maintenance
 - More things that can break
 
-**CloudHost solves these operational problems upfront.**
+**Demox solves these operational problems upfront.**
 
 Out of the box, you get:
 
@@ -93,25 +93,25 @@ Out of the box, you get:
 - 📊 Basic traffic and cost awareness
 
 You focus on frontend development.  
-CloudHost handles the rest.
+Demox handles the rest.
 
 ---
 
-## 👥 Who is CloudHost for?
+## 👥 Who is Demox for?
 
 - Frontend developers (React, Vue, or any static site)
 - Indie hackers and solo builders
 - Teams that want fast previews
 - Anyone who doesn’t want to manage servers
 
-CloudHost is not trying to replace full CI/CD systems.  
+Demox is not trying to replace full CI/CD systems.  
 It makes **publishing a frontend page trivial**.
 
 ---
 
 ## 🔐 Stability & Security
 
-CloudHost is not a demo project.  
+Demox is not a demo project.  
 It is a fully engineered platform:
 
 - All deployments and deletions happen on the server
@@ -125,9 +125,9 @@ This is a service designed for long-term use.
 
 ---
 
-## 🧠 How CloudHost works (optional reading)
+## 🧠 How Demox works (optional reading)
 
-CloudHost is built on Tencent Cloud infrastructure:
+Demox is built on Tencent Cloud infrastructure:
 
 - **CloudBase** for authentication, cloud functions, and database
 - **COS** for static asset storage
@@ -147,7 +147,7 @@ This is a real production system, not a sample project.
 
 ## 📦 About open source
 
-CloudHost is open-sourced for transparency and learning purposes.
+Demox is open-sourced for transparency and learning purposes.
 
 However:
 
@@ -156,7 +156,7 @@ However:
 It deeply depends on Tencent Cloud services
 (CloudBase, COS, EdgeOne, IAM configuration).
 
-If you simply want to use CloudHost,
+If you simply want to use Demox,
 **the hosted platform is the recommended way.**
 
 ---
@@ -171,7 +171,7 @@ If you simply want to use CloudHost,
 
 ## ✨ In short
 
-> CloudHost is not about how to deploy frontend code.  
+> Demox is not about how to deploy frontend code.  
 > It is about **how fast you can deliver a working link**.
 
-🚀 **Start using CloudHost** → https://ai-builder.aigc.sx.cn/
+🚀 **Start using Demox** → https://ai-builder.aigc.sx.cn/

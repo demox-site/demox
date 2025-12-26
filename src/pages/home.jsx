@@ -29,7 +29,6 @@ import {
   Trash2,
   ExternalLink,
   Plus,
-  LogOut,
   User,
   FolderOpen,
   Clock,
@@ -41,6 +40,121 @@ import {
 } from "lucide-react";
 import { app, auth, db } from "../cloudbase";
 import { useNavigate, Navigate } from "react-router-dom";
+import { MainLayout } from "@/layouts/MainLayout";
+import { useLanguage } from "@/hooks/use-language";
+
+const translations = {
+  zh: {
+    pageTitle: "部署控制台",
+    pageSubtitlePrefix: "当前角色：",
+    pageSubtitleFallback: "管理你的静态站点部署。",
+    statusDeployed: "已部署",
+    statusProcessing: "部署中",
+    statusFailed: "失败",
+    statusUnknown: "未知",
+    loading: "加载中...",
+    uploadCardTitle: "部署新项目",
+    uploadLimitPrefix: "最大:",
+    uploadLimitFilesPrefix: "文件数:",
+    uploadLimitUnlimited: "无限",
+    uploadTitleUploading: "上传中...",
+    uploadTitleIdle: "将你的项目拖拽到此处",
+    uploadDesc: "支持包含根目录 index.html 的 .zip 压缩包。",
+    uploadButton: "选择文件",
+    uploadProgressLabel: "上传中",
+    deploymentsTitle: "部署记录",
+    refresh: "刷新",
+    emptyTitle: "暂无部署记录",
+    emptyDesc: "上传你的第一个项目以开始使用。",
+    createdAt: "创建时间：",
+    deployedAt: "部署时间：",
+    processingBadge: "处理中",
+    redeployButton: "重新部署",
+    toastInvalidFileTitle: "文件格式错误",
+    toastInvalidFileDesc: "请上传 .zip 格式的压缩包",
+    toastServiceDisabledTitle: "服务暂不可用",
+    toastServiceDisabledDesc: "请联系开发者",
+    toastLimitReachedTitle: "达到部署限制",
+    toastLimitReachedDesc: (limit) => `您当前角色的部署上限为 ${limit} 个`,
+    toastFileTooLargeTitle: "文件大小超出限制",
+    toastFileTooLargeDesc: (sizeMb) => `文件大小不能超过 ${sizeMb}MB`,
+    toastExpiredTitle: "登录已过期",
+    toastExpiredDesc: "请重新登录",
+    toastDeploySuccessTitle: "部署成功",
+    toastDeploySuccessDesc: "网站已成功部署并可以访问",
+    toastDeployFailedTitle: "部署失败",
+    toastDeployFailedDesc: "部署过程中出现错误，请重试",
+    toastDeleteSuccessTitle: "删除成功",
+    toastDeleteSuccessDesc: "网站已成功删除",
+    toastDeleteFailedTitle: "删除失败",
+    toastRedeployTitle: "重新部署",
+    toastRedeployDesc: "请选择要重新部署的 .zip 文件，上传后将覆盖原有站点文件",
+    redeploySelectedTitle: "已选择文件",
+    redeploySelectPrompt: "请选择 .zip 文件",
+    redeployFileDesc: "支持 .zip 压缩包，根目录需包含 index.html",
+    redeployChangeFile: "更改文件",
+    redeployChooseFile: "选择文件",
+    cancel: "取消",
+    confirmUpload: "确认上传"
+  },
+  en: {
+    pageTitle: "Deploy Console",
+    pageSubtitlePrefix: "Current role: ",
+    pageSubtitleFallback: "Manage your static site deployments.",
+    statusDeployed: "Deployed",
+    statusProcessing: "Deploying",
+    statusFailed: "Failed",
+    statusUnknown: "Unknown",
+    loading: "Loading...",
+    uploadCardTitle: "Deploy New Project",
+    uploadLimitPrefix: "Max:",
+    uploadLimitFilesPrefix: "Files:",
+    uploadLimitUnlimited: "Unlimited",
+    uploadTitleUploading: "Uploading...",
+    uploadTitleIdle: "Drop your project here",
+    uploadDesc:
+      "Supports .zip files containing an index.html in the root directory.",
+    uploadButton: "Select File",
+    uploadProgressLabel: "UPLOADING",
+    deploymentsTitle: "Deployments",
+    refresh: "Refresh",
+    emptyTitle: "No deployments yet",
+    emptyDesc: "Upload your first project to get started.",
+    createdAt: "Created: ",
+    deployedAt: "Deployed: ",
+    processingBadge: "Processing",
+    redeployButton: "Redeploy",
+    toastInvalidFileTitle: "Invalid file format",
+    toastInvalidFileDesc: "Please upload a .zip archive.",
+    toastServiceDisabledTitle: "Service unavailable",
+    toastServiceDisabledDesc: "Please contact the developer.",
+    toastLimitReachedTitle: "Deployment limit reached",
+    toastLimitReachedDesc: (limit) =>
+      `Your current role allows up to ${limit} deployments.`,
+    toastFileTooLargeTitle: "File size exceeded",
+    toastFileTooLargeDesc: (sizeMb) => `File size must not exceed ${sizeMb}MB.`,
+    toastExpiredTitle: "Session expired",
+    toastExpiredDesc: "Please sign in again.",
+    toastDeploySuccessTitle: "Deployment successful",
+    toastDeploySuccessDesc: "Your site has been deployed and is now live.",
+    toastDeployFailedTitle: "Deployment failed",
+    toastDeployFailedDesc: "An error occurred during deployment. Please retry.",
+    toastDeleteSuccessTitle: "Deleted",
+    toastDeleteSuccessDesc: "The site has been deleted.",
+    toastDeleteFailedTitle: "Delete failed",
+    toastRedeployTitle: "Redeploy",
+    toastRedeployDesc:
+      "Choose a .zip file to redeploy. It will overwrite existing files.",
+    redeploySelectedTitle: "File selected",
+    redeploySelectPrompt: "Choose a .zip file",
+    redeployFileDesc:
+      "Supports .zip archives with an index.html in the root directory.",
+    redeployChangeFile: "Change file",
+    redeployChooseFile: "Choose file",
+    cancel: "Cancel",
+    confirmUpload: "Confirm upload"
+  }
+};
 
 /**
  * sanitizeFileName
@@ -129,6 +243,7 @@ export default function Home(props) {
   const { style } = props;
   const { toast } = useToast();
   const navigate = useNavigate();
+  const { language: lang } = useLanguage();
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
@@ -145,6 +260,7 @@ export default function Home(props) {
   const [isRedeployDragActive, setIsRedeployDragActive] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState("");
+  const t = translations[lang];
   useEffect(() => {
     checkAuthStatus();
   }, []);
@@ -183,7 +299,7 @@ export default function Home(props) {
             .collection("ai_builder_user_roles")
             .doc(loginState.user.uid)
             .get();
-          
+
           if (roleRes.data && roleRes.data.length > 0) {
             // 数据库中保存的是 role: ['admin', 'vip']
             user.roles = roleRes.data[0].role;
@@ -206,12 +322,15 @@ export default function Home(props) {
               roles: candidateRoles
             }
           });
-          
+
           let limitRes = { data: [] };
           if (limitFnRes.result && limitFnRes.result.code === 0) {
-             limitRes.data = limitFnRes.result.data;
+            limitRes.data = limitFnRes.result.data;
           } else {
-             console.warn("Cloud function getRoleLimits failed:", limitFnRes.result);
+            console.warn(
+              "Cloud function getRoleLimits failed:",
+              limitFnRes.result
+            );
           }
 
           if (limitRes.data && limitRes.data.length > 0) {
@@ -233,19 +352,26 @@ export default function Home(props) {
           // 忽略错误，降级为普通用户，并尝试获取普通用户限额
           user.roles = ["user"];
           user.role_name = "普通用户";
-          
+
           try {
             const userLimitFnRes = await app.callFunction({
-                name: "getRoleLimits",
-                data: { roles: ["user"] }
+              name: "getRoleLimits",
+              data: { roles: ["user"] }
             });
-            
-            if (userLimitFnRes.result && userLimitFnRes.result.code === 0 && userLimitFnRes.result.data.length > 0) {
-                setRoleLimits(userLimitFnRes.result.data[0]);
-                user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
+
+            if (
+              userLimitFnRes.result &&
+              userLimitFnRes.result.code === 0 &&
+              userLimitFnRes.result.data.length > 0
+            ) {
+              setRoleLimits(userLimitFnRes.result.data[0]);
+              user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
             }
           } catch (limitError) {
-            console.warn("Fallback fetch 'user' role limit failed:", limitError);
+            console.warn(
+              "Fallback fetch 'user' role limit failed:",
+              limitError
+            );
           }
         }
 
@@ -254,9 +380,9 @@ export default function Home(props) {
         setIsLoading(false);
       } else {
         if (retry) {
-            console.log("No user found, retrying in 500ms...");
-            setTimeout(() => checkAuthStatus(false), 500);
-            return;
+          console.log("No user found, retrying in 500ms...");
+          setTimeout(() => checkAuthStatus(false), 500);
+          return;
         }
         console.warn("No user found in login state");
         setIsLoggedIn(false);
@@ -266,9 +392,9 @@ export default function Home(props) {
     } catch (e) {
       console.warn("Auth check failed:", e);
       if (retry) {
-          console.log("Auth check error, retrying in 500ms...");
-          setTimeout(() => checkAuthStatus(false), 500);
-          return;
+        console.log("Auth check error, retrying in 500ms...");
+        setTimeout(() => checkAuthStatus(false), 500);
+        return;
       }
       setIsLoggedIn(false);
       setUser(null);
@@ -413,8 +539,8 @@ export default function Home(props) {
     if (!file) return;
     if (!file.name.endsWith(".zip")) {
       toast({
-        title: "文件格式错误",
-        description: "请上传 .zip 格式的压缩包",
+        title: t.toastInvalidFileTitle,
+        description: t.toastInvalidFileDesc,
         variant: "destructive"
       });
       return;
@@ -423,8 +549,8 @@ export default function Home(props) {
     // 若角色未启用，禁止进行部署相关操作
     if (roleLimits && roleLimits.enabled === false) {
       toast({
-        title: "服务暂不可用",
-        description: "请联系开发者",
+        title: t.toastServiceDisabledTitle,
+        description: t.toastServiceDisabledDesc,
         variant: "destructive"
       });
       return;
@@ -437,8 +563,8 @@ export default function Home(props) {
         websites.length >= roleLimits.deployment_limit
       ) {
         toast({
-          title: "达到部署限制",
-          description: `您当前角色的部署上限为 ${roleLimits.deployment_limit} 个`,
+          title: t.toastLimitReachedTitle,
+          description: t.toastLimitReachedDesc(roleLimits.deployment_limit),
           variant: "destructive"
         });
         return;
@@ -448,10 +574,10 @@ export default function Home(props) {
         file.size > roleLimits.max_file_size
       ) {
         toast({
-          title: "文件大小超出限制",
-          description: `文件大小不能超过 ${Math.round(
-            roleLimits.max_file_size / 1024 / 1024
-          )}MB`,
+          title: t.toastFileTooLargeTitle,
+          description: t.toastFileTooLargeDesc(
+            Math.round(roleLimits.max_file_size / 1024 / 1024)
+          ),
           variant: "destructive"
         });
         return;
@@ -466,8 +592,8 @@ export default function Home(props) {
       const state = await auth.getLoginState();
       if (!state || !state.user) {
         toast({
-          title: "登录已过期",
-          description: "请重新登录",
+          title: t.toastExpiredTitle,
+          description: t.toastExpiredDesc,
           variant: "destructive"
         });
         navigate("/");
@@ -526,8 +652,8 @@ export default function Home(props) {
       }));
       if (deployResult.result && deployResult.result.success) {
         toast({
-          title: "部署成功",
-          description: "网站已成功部署并可以访问"
+          title: t.toastDeploySuccessTitle,
+          description: t.toastDeploySuccessDesc
         });
         loadWebsites();
       } else {
@@ -547,8 +673,8 @@ export default function Home(props) {
         }));
       }
       toast({
-        title: "部署失败",
-        description: error.message || "部署过程中出现错误，请重试",
+        title: t.toastDeployFailedTitle,
+        description: error.message || t.toastDeployFailedDesc,
         variant: "destructive"
       });
     } finally {
@@ -587,8 +713,8 @@ export default function Home(props) {
 
       if (result.result && result.result.success) {
         toast({
-          title: "删除成功",
-          description: "网站已成功删除"
+          title: t.toastDeleteSuccessTitle,
+          description: t.toastDeleteSuccessDesc
         });
         // 从本地状态中移除
         setWebsites((prev) => prev.filter((w) => w._id !== websiteId));
@@ -597,7 +723,7 @@ export default function Home(props) {
       }
     } catch (error) {
       toast({
-        title: "删除失败",
+        title: t.toastDeleteFailedTitle,
         description: error.message,
         variant: "destructive"
       });
@@ -695,10 +821,16 @@ export default function Home(props) {
       return;
     }
 
-    if (roleLimits && roleLimits.max_file_size !== null && file.size > roleLimits.max_file_size) {
+    if (
+      roleLimits &&
+      roleLimits.max_file_size !== null &&
+      file.size > roleLimits.max_file_size
+    ) {
       toast({
         title: "文件大小超出限制",
-        description: `文件大小不能超过 ${Math.round(roleLimits.max_file_size / 1024 / 1024)}MB`,
+        description: `文件大小不能超过 ${Math.round(
+          roleLimits.max_file_size / 1024 / 1024
+        )}MB`,
         variant: "destructive"
       });
       return;
@@ -733,7 +865,9 @@ export default function Home(props) {
       }
 
       const safeFileName = sanitizeFileName(file.name);
-      const cloudPath = `websites/${user.userId}/redeploy_${Date.now()}_${safeFileName}`;
+      const cloudPath = `websites/${
+        user.userId
+      }/redeploy_${Date.now()}_${safeFileName}`;
 
       const toBase64 = (f) =>
         new Promise((resolve, reject) => {
@@ -786,7 +920,6 @@ export default function Home(props) {
     }
   };
 
-
   /**
    * 根据状态渲染状态徽章
    */
@@ -796,28 +929,28 @@ export default function Home(props) {
         return (
           <Badge className="bg-green-500/10 text-green-500 border-green-500/20 border">
             <CheckCircle className="w-3 h-3 mr-1" />
-            Deployed
+            {t.statusDeployed}
           </Badge>
         );
       case "processing":
         return (
           <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20 border">
             <Clock className="w-3 h-3 mr-1" />
-            Deploying
+            {t.statusProcessing}
           </Badge>
         );
       case "failed":
         return (
           <Badge className="bg-red-500/10 text-red-500 border-red-500/20 border">
             <XCircle className="w-3 h-3 mr-1" />
-            Failed
+            {t.statusFailed}
           </Badge>
         );
       default:
         return (
           <Badge className="bg-zinc-500/10 text-zinc-500 border-zinc-500/20 border">
             <AlertCircle className="w-3 h-3 mr-1" />
-            Unknown
+            {t.statusUnknown}
           </Badge>
         );
     }
@@ -825,17 +958,16 @@ export default function Home(props) {
 
   if (isLoading) {
     return (
-      <div
-        style={style}
-        className="min-h-screen bg-black text-zinc-100 font-sans flex items-center justify-center"
-      >
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
-          <span className="text-zinc-500 font-mono text-sm animate-pulse">
-            Loading...
-          </span>
+      <MainLayout>
+        <div style={style} className="flex items-center justify-center py-24">
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
+            <span className="text-zinc-500 font-mono text-sm animate-pulse">
+              {t.loading}
+            </span>
+          </div>
         </div>
-      </div>
+      </MainLayout>
     );
   }
 
@@ -844,383 +976,364 @@ export default function Home(props) {
   }
 
   return (
-    <div
-      style={style}
-      className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white"
-    >
-      <div className="container mx-auto px-4 py-8 relative z-10">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-12 border-b border-zinc-800 pb-6">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-zinc-100 rounded-sm flex items-center justify-center">
-              <span className="text-black text-sm font-bold">C</span>
-            </div>
-            <span className="text-xl font-bold tracking-tight">
-              CloudHost<span className="animate-pulse">_</span>
-            </span>
+    <MainLayout>
+      <div style={style} className="relative z-10">
+        <div className="container mx-auto px-4 py-8">
+          <div className="mb-10">
+            <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
+              {t.pageTitle}
+            </h1>
+            <p className="text-sm text-zinc-500 mt-2">
+              {user?.role_name
+                ? `${t.pageSubtitlePrefix}${user.role_name}`
+                : t.pageSubtitleFallback}
+            </p>
           </div>
-          <div className="flex items-center space-x-6">
-            <div className="flex items-center space-x-3 bg-zinc-900/50 px-4 py-2 rounded-full border border-zinc-800">
-              <Avatar className="w-8 h-8">
-                <AvatarImage src={user?.avatarUrl} />
-                <AvatarFallback className="bg-zinc-700 text-zinc-300 text-xs">
-                  {(user?.nickName ||
-                    user?.email ||
-                    user?.name ||
-                    "U")[0].toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex flex-col text-left">
-                <span className="text-zinc-300 text-sm font-mono leading-tight">
-                  {user?.nickName || user?.email || user?.name || "User"}
-                </span>
-                <span className="text-[10px] text-zinc-500 font-mono font-bold leading-tight mt-0.5">
-                  {user?.role_name || "普通用户"}
-                </span>
-              </div>
-            </div>
-            <Button
-              onClick={handleLogout}
-              variant="ghost"
-              className="text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"
-            >
-              <LogOut className="w-4 h-4 mr-2" />
-              Logout
-            </Button>
-          </div>
-        </div>
 
-        {/* Upload Section */}
-        <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm mb-12 overflow-hidden relative group">
-          <div className="absolute inset-0 bg-gradient-to-r from-zinc-900/20 to-transparent pointer-events-none" />
-          <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
-            <CardTitle className="text-zinc-100 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-zinc-400" />
-              Deploy New Project
-              {roleLimits && (
-                <span className="text-xs text-zinc-500 font-mono ml-2 font-normal">
-                  (最大:{" "}
-                  {roleLimits.max_file_size
-                    ? Math.round(roleLimits.max_file_size / 1024 / 1024) + "MB"
-                    : "无限"}
-                  , 文件数:{" "}
-                  {roleLimits.max_file_count
-                    ? roleLimits.max_file_count
-                    : "无限"}
-                  )
-                </span>
-              )}
-            </CardTitle>
-          </CardHeader>
-        <CardContent className="p-8">
-            <div
-              className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-                isDragActive
-                  ? "border-zinc-600 bg-zinc-900/30"
-                  : "border-zinc-800 bg-zinc-900/20"
-              } group-hover:bg-zinc-900/30`}
-              onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDragActive(true);
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDragActive(true);
-              }}
-              onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDragActive(false);
-              }}
-              onDrop={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDragActive(false);
-                const items = e.dataTransfer?.files;
-                const file = items && items.length > 0 ? items[0] : null;
-                await uploadZipFile(file);
-              }}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".zip"
-                onChange={handleFileUpload}
-                className="hidden"
-                id="file-upload"
-                disabled={uploading}
-              />
-              <label
-                htmlFor="file-upload"
-                className={`cursor-pointer ${
-                  uploading ? "opacity-50 cursor-not-allowed" : ""
-                }`}
-              >
-                <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6 border border-zinc-800 group-hover:scale-110 transition-transform duration-300">
-                  <FolderOpen className="w-8 h-8 text-zinc-400" />
-                </div>
-                <h3 className="text-xl font-bold text-zinc-100 mb-2">
-                  {uploading ? "Uploading..." : "Drop your project here"}
-                </h3>
-                <p className="text-zinc-500 mb-6 max-w-sm mx-auto">
-                  Support .zip file containing an index.html in the root
-                  directory.
-                </p>
-                {!uploading && (
-                  <span className="px-6 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
-                    Select File
-                  </span>
-                )}
-              </label>
-            </div>
-
-            {uploading && (
-              <div className="mt-8 max-w-xl mx-auto">
-                <div className="flex justify-between text-xs font-mono text-zinc-400 mb-2">
-                  <span>UPLOADING</span>
-                  <span>{uploadProgress}%</span>
-                </div>
-                <Progress value={uploadProgress} className="bg-zinc-900 h-2" />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Websites List */}
-        <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm">
-          <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
-            <CardTitle className="text-zinc-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Globe className="w-5 h-5 text-zinc-400" />
-                Deployments
+          {/* Upload Section */}
+          <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm mb-12 overflow-hidden relative group">
+            <div className="absolute inset-0 bg-gradient-to-r from-zinc-900/20 to-transparent pointer-events-none" />
+            <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
+              <CardTitle className="text-zinc-100 flex items中心 gap-2">
+                <Upload className="w-5 h-5 text-zinc-400" />
+                {t.uploadCardTitle}
                 {roleLimits && (
-                  <span className="text-sm text-zinc-500 font-mono ml-2">
-                    ({websites.length}/
-                    {(roleLimits.deployment_limit === null || roleLimits.deployment_limit === undefined)
-                      ? "∞"
-                      : roleLimits.deployment_limit}
+                  <span className="text-xs text-zinc-500 font-mono ml-2 font-normal">
+                    ({t.uploadLimitPrefix}{" "}
+                    {roleLimits.max_file_size
+                      ? Math.round(roleLimits.max_file_size / 1024 / 1024) +
+                        "MB"
+                      : t.uploadLimitUnlimited}
+                    , {t.uploadLimitFilesPrefix}{" "}
+                    {roleLimits.max_file_count
+                      ? roleLimits.max_file_count
+                      : t.uploadLimitUnlimited}
                     )
                   </span>
                 )}
-              </div>
-              <Button
-                size="sm"
-                onClick={loadWebsites}
-                variant="outline"
-                className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-8">
+              <div
+                className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+                  isDragActive
+                    ? "border-zinc-600 bg-zinc-900/30"
+                    : "border-zinc-800 bg-zinc-900/20"
+                } group-hover:bg-zinc-900/30`}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(true);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(false);
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragActive(false);
+                  const items = e.dataTransfer?.files;
+                  const file = items && items.length > 0 ? items[0] : null;
+                  await uploadZipFile(file);
+                }}
               >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh
-              </Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {websites.length === 0 ? (
-              <div className="text-center py-16">
-                <div className="w-16 h-16 rounded-full bg-zinc-900/50 flex items-center justify-center mx-auto mb-4 border border-zinc-800">
-                  <Globe className="w-8 h-8 text-zinc-600" />
-                </div>
-                <p className="text-zinc-400 font-medium">No deployments yet</p>
-                <p className="text-zinc-600 text-sm mt-2">
-                  Upload your first project to get started.
-                </p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  id="file-upload"
+                  disabled={uploading}
+                />
+                <label
+                  htmlFor="file-upload"
+                  className={`cursor-pointer ${
+                    uploading ? "opacity-50 cursor-not-allowed" : ""
+                  }`}
+                >
+                  <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6 border border-zinc-800 group-hover:scale-110 transition-transform duration-300">
+                    <FolderOpen className="w-8 h-8 text-zinc-400" />
+                  </div>
+                  <h3 className="text-xl font-bold text-zinc-100 mb-2">
+                    {uploading ? t.uploadTitleUploading : t.uploadTitleIdle}
+                  </h3>
+                  <p className="text-zinc-500 mb-6 max-w-sm mx-auto">
+                    {t.uploadDesc}
+                  </p>
+                  {!uploading && (
+                    <span className="px-6 py-2 bg-zinc-100 text黑 text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
+                      {t.uploadButton}
+                    </span>
+                  )}
+                </label>
               </div>
-            ) : (
-              <div className="divide-y divide-zinc-900">
-                {websites.map((website) => (
-                  <div
-                    key={website._id}
-                    className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
-                  >
-                    <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                        <div className="flex items-center gap-2 group">
-                          {editingId === website._id ? (
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className="bg-zinc-900 border border-zinc-800 text-zinc-100 text-sm rounded px-2 py-1 w-48 focus:outline-none focus:border-zinc-600"
-                              />
-                              <button
-                                onClick={() => saveEditName(website)}
-                                className="text-green-400 hover:text-green-300"
-                                title="保存"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={cancelEditName}
-                                className="text-zinc-400 hover:text-zinc-300"
-                                title="取消"
-                              >
-                                <XCircle className="w-4 h-4" />
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <h3 className="text-zinc-100 font-bold truncate">
-                                {getDisplayName(website)}
-                              </h3>
-                              <button
-                                onClick={() => startEditName(website)}
-                                className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
-                                title="编辑名称"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                            </>
+
+              {uploading && (
+                <div className="mt-8 max-w-xl mx-auto">
+                  <div className="flex justify-between text-xs font-mono text-zinc-400 mb-2">
+                    <span>{t.uploadProgressLabel}</span>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <Progress
+                    value={uploadProgress}
+                    className="bg-zinc-900 h-2"
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Websites List */}
+          <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm">
+            <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
+              <CardTitle className="text-zinc-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Globe className="w-5 h-5 text-zinc-400" />
+                  {t.deploymentsTitle}
+                  {roleLimits && (
+                    <span className="text-sm text-zinc-500 font-mono ml-2">
+                      ({websites.length}/
+                      {roleLimits.deployment_limit === null ||
+                      roleLimits.deployment_limit === undefined
+                        ? "∞"
+                        : roleLimits.deployment_limit}
+                      )
+                    </span>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  onClick={loadWebsites}
+                  variant="outline"
+                  className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  {t.refresh}
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {websites.length === 0 ? (
+                <div className="text-center py-16">
+                  <div className="w-16 h-16 rounded-full bg-zinc-900/50 flex items-center justify-center mx-auto mb-4 border border-zinc-800">
+                    <Globe className="w-8 h-8 text-zinc-600" />
+                  </div>
+                  <p className="text-zinc-400 font-medium">{t.emptyTitle}</p>
+                  <p className="text-zinc-600 text-sm mt-2">{t.emptyDesc}</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-zinc-900">
+                  {websites.map((website) => (
+                    <div
+                      key={website._id}
+                      className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className="flex items-center gap-2 group">
+                            {editingId === website._id ? (
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={editingName}
+                                  onChange={(e) =>
+                                    setEditingName(e.target.value)
+                                  }
+                                  className="bg-zinc-900 border border-zinc-800 text-zinc-100 text-sm rounded px-2 py-1 w-48 focus:outline-none focus:border-zinc-600"
+                                />
+                                <button
+                                  onClick={() => saveEditName(website)}
+                                  className="text-green-400 hover:text-green-300"
+                                  title="保存"
+                                >
+                                  <CheckCircle className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={cancelEditName}
+                                  className="text-zinc-400 hover:text-zinc-300"
+                                  title="取消"
+                                >
+                                  <XCircle className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <h3 className="text-zinc-100 font-bold truncate">
+                                  {getDisplayName(website)}
+                                </h3>
+                                <button
+                                  onClick={() => startEditName(website)}
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
+                                  title="编辑名称"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                          {getStatusBadge(website.status)}
+                          {deploying[website._id] && (
+                            <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+                              <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
+                              处理中
+                            </Badge>
                           )}
                         </div>
-                        {getStatusBadge(website.status)}
-                        {deploying[website._id] && (
-                          <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
-                            <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
-                            Processing
-                          </Badge>
-                        )}
-                      </div>
 
-                      <div className="flex flex-col sm:flex-row gap-4 text-sm text-zinc-500 font-mono mt-3">
-                        <span>
-                          Created:{" "}
-                          {formatTimestamp(website.createdAt)}
-                        </span>
-                        {(website.updatedAt || website.deployedAt) && (
+                        <div className="flex flex-col sm:flex-row gap-4 text-sm text-zinc-500 font-mono mt-3">
                           <span>
-                            Deployed:{" "}
-                            {formatTimestamp(website.updatedAt || website.deployedAt)}
+                            {t.createdAt}
+                            {formatTimestamp(website.createdAt)}
                           </span>
-                        )}
-                      </div>
+                          {(website.updatedAt || website.deployedAt) && (
+                            <span>
+                              {t.deployedAt}
+                              {formatTimestamp(
+                                website.updatedAt || website.deployedAt
+                              )}
+                            </span>
+                          )}
+                        </div>
 
-                      {website.url && (
-                        <div className="flex items-center gap-2 mt-3">
-                          <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 max-w-full">
-                            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                        {website.url && (
+                          <div className="flex items-center gap-2 mt-3">
+                            <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 max-w-full">
+                              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                              <a
+                                href={website.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-zinc-300 hover:text-white text-sm font-mono truncate hover:underline underline-offset-4 decoration-zinc-600"
+                              >
+                                {website.url}
+                              </a>
+                            </div>
                             <a
                               href={website.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-zinc-300 hover:text-white text-sm font-mono truncate hover:underline underline-offset-4 decoration-zinc-600"
+                              className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors"
                             >
-                              {website.url}
+                              <ExternalLink className="w-4 h-4" />
                             </a>
                           </div>
-                          <a
-                            href={website.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors"
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openRedeployDialog(website)}
-                        className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
-                      >
-                        <Upload className="w-4 h-4 mr-2" />
-                        Redeploy
-                      </Button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openRedeployDialog(website)}
+                          className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
+                        >
+                          <Upload className="w-4 h-4 mr-2" />
+                          {t.redeployButton}
+                        </Button>
 
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDeleteWebsite(website._id)}
-                        className="text-zinc-500 hover:text-red-400 hover:bg-red-950/30"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteWebsite(website._id)}
+                          className="text-zinc-500 hover:text-red-400 hover:bg-red-950/30"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-        <Dialog open={redeployOpen} onOpenChange={setRedeployOpen}>
-          <DialogContent className="bg-zinc-900 border-zinc-800">
-            <DialogHeader>
-              <DialogTitle className="text-zinc-100">重新部署</DialogTitle>
-              <DialogDescription className="text-zinc-400">
-                请选择要重新部署的 .zip 文件，上传后将覆盖原有站点文件
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-6">
-              <div
-                className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-                  isRedeployDragActive
-                    ? "border-zinc-600 bg-zinc-900/30"
-                    : "border-zinc-800 bg-zinc-900/20"
-                }`}
-                onDragEnter={onRedeployDragEnter}
-                onDragOver={onRedeployDragOver}
-                onDragLeave={onRedeployDragLeave}
-                onDrop={onRedeployDrop}
-              >
-                <input
-                  id="redeploy-file-input"
-                  type="file"
-                  accept=".zip"
-                  onChange={handleRedeployFileChange}
-                  className="hidden"
-                />
-                <label
-                  htmlFor="redeploy-file-input"
-                  className="cursor-pointer"
+          <Dialog open={redeployOpen} onOpenChange={setRedeployOpen}>
+            <DialogContent className="bg-zinc-900 border-zinc-800">
+              <DialogHeader>
+                <DialogTitle className="text-zinc-100">
+                  {t.toastRedeployTitle}
+                </DialogTitle>
+                <DialogDescription className="text-zinc-400">
+                  {t.toastRedeployDesc}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-6">
+                <div
+                  className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+                    isRedeployDragActive
+                      ? "border-zinc-600 bg-zinc-900/30"
+                      : "border-zinc-800 bg-zinc-900/20"
+                  }`}
+                  onDragEnter={onRedeployDragEnter}
+                  onDragOver={onRedeployDragOver}
+                  onDragLeave={onRedeployDragLeave}
+                  onDrop={onRedeployDrop}
                 >
-                  <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6 border border-zinc-800">
-                    <FolderOpen className="w-8 h-8 text-zinc-400" />
-                  </div>
-                  <h3 className="text-xl font-bold text-zinc-100 mb-2">
-                    {redeployFile ? "已选择文件" : "请选择 .zip 文件"}
-                  </h3>
-                  <p className="text-zinc-500 mb-6 max-w-sm mx-auto">
-                    {redeployFile ? redeployFile.name : "支持 .zip 压缩包，根目录需包含 index.html"}
-                  </p>
-                  <span className="px-6 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
-                    {redeployFile ? "更改文件" : "选择文件"}
-                  </span>
-                </label>
+                  <input
+                    id="redeploy-file-input"
+                    type="file"
+                    accept=".zip"
+                    onChange={handleRedeployFileChange}
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="redeploy-file-input"
+                    className="cursor-pointer"
+                  >
+                    <div className="w-16 h-16 rounded-full bg-zinc-900 flex items-center justify-center mx-auto mb-6 border border-zinc-800">
+                      <FolderOpen className="w-8 h-8 text-zinc-400" />
+                    </div>
+                    <h3 className="text-xl font-bold text-zinc-100 mb-2">
+                      {redeployFile
+                        ? t.redeploySelectedTitle
+                        : t.redeploySelectPrompt}
+                    </h3>
+                    <p className="text-zinc-500 mb-6 max-w-sm mx-auto">
+                      {redeployFile ? redeployFile.name : t.redeployFileDesc}
+                    </p>
+                    <span className="px-6 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
+                      {redeployFile
+                        ? t.redeployChangeFile
+                        : t.redeployChooseFile}
+                    </span>
+                  </label>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                    onClick={() => {
+                      setRedeployOpen(false);
+                      setRedeployFile(null);
+                      setRedeployWebsite(null);
+                    }}
+                  >
+                    {t.cancel}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                    disabled={!redeployFile}
+                    onClick={submitRedeploy}
+                  >
+                    {t.confirmUpload}
+                  </Button>
+                </div>
               </div>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => {
-                    setRedeployOpen(false);
-                    setRedeployFile(null);
-                    setRedeployWebsite(null);
-                  }}
-                >
-                  取消
-                </Button>
-                <Button
-                  variant="outline"
-                  className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-                  disabled={!redeployFile}
-                  onClick={submitRedeploy}
-                >
-                  确认上传
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
+        </div>
 
         {/* Background Grid Effect */}
         <div className="fixed inset-0 bg-[linear-gradient(to_right,#18181b_1px,transparent_1px),linear-gradient(to_bottom,#18181b_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10 pointer-events-none" />
       </div>
-    </div>
+    </MainLayout>
   );
 }

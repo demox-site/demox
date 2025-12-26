@@ -14,10 +14,10 @@ const PrivacyPage: React.FC = () => {
               className="flex items-center gap-2 focus:outline-none"
             >
               <div className="w-5 h-5 bg-zinc-100 rounded-sm flex items-center justify-center">
-                <span className="text-black text-xs font-bold">C</span>
+                <span className="text-black text-xs font-bold">D</span>
               </div>
               <span className="text-lg font-bold tracking-tight">
-                CloudHost<span className="animate-pulse">_</span>
+                Demox<span className="animate-pulse">_</span>
               </span>
             </button>
             <button
@@ -36,14 +36,13 @@ const PrivacyPage: React.FC = () => {
             Privacy Policy
           </p>
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
-            CloudHost 隐私政策
+            Demox 隐私政策
           </h1>
-          <p className="text-sm text-zinc-500">
-            最近更新：2024-12-25
-          </p>
+          <p className="text-sm text-zinc-500">最近更新：2024-12-25</p>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            我们非常重视您的隐私与数据安全。本隐私政策旨在说明 CloudHost 如何收集、
-            使用、存储和保护您的个人信息，以及与内容审核相关的数据处理方式。
+            我们非常重视您的隐私与数据安全。本隐私政策旨在说明 Demox
+            如何收集、使用、
+            存储和保护您的个人信息，以及与内容审核相关的数据处理方式。
           </p>
         </header>
 
@@ -57,16 +56,16 @@ const PrivacyPage: React.FC = () => {
               账号信息：用于注册和登录的邮箱地址、密码（以不可逆形式存储）、验证码等。
             </li>
             <li>
-              使用信息：包括登录时间、登录 IP、基础设备信息、操作日志等，用于安全审计
-              与服务质量分析。
+              使用信息：包括登录时间、登录
+              IP、基础设备信息、操作日志等，用于安全审计 与服务质量分析。
             </li>
             <li>
-              部署信息：您上传的代码压缩包、静态资源文件名称（例如 zip 文件名）、项目
-              元数据、部署时间、访问统计等。
+              部署信息：您上传的代码压缩包、静态资源文件名称（例如 zip
+              文件名）、项目 元数据、部署时间、访问统计等。
             </li>
             <li>
-              内容审核相关信息：为实现自动审核功能而提取的特征信息，如图像特征、OCR 文
-              本、识别到的 LOGO 或二维码等。
+              内容审核相关信息：为实现自动审核功能而提取的特征信息，如图像特征、OCR
+              文 本、识别到的 LOGO 或二维码等。
             </li>
           </ul>
         </section>
@@ -100,8 +99,8 @@ const PrivacyPage: React.FC = () => {
               审核对象包括：上传的代码包、静态资源文件以及对外提供访问的页面内容。
             </li>
             <li>
-              审核技术包括但不限于：图像识别、OCR 文本识别、LOGO 检测、二维码/条形码
-              识别、敏感关键词识别等。
+              审核技术包括但不限于：图像识别、OCR 文本识别、LOGO
+              检测、二维码/条形码 识别、敏感关键词识别等。
             </li>
             <li>
               重点审核类别包括：色情内容、政治敏感内容、暴力恐怖内容、违法广告营销、
@@ -114,8 +113,9 @@ const PrivacyPage: React.FC = () => {
             </li>
           </ul>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            使用 CloudHost 即表示您理解并同意：内容会被自动审核，审核结果可能影响内容
-            是否可继续对外访问。
+            使用 Demox
+            即表示您理解并同意：内容会被自动审核，审核结果可能影响内容是否
+            可继续对外访问。
           </p>
         </section>
 
@@ -136,7 +136,9 @@ const PrivacyPage: React.FC = () => {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-xl font-semibold">五、信息共享、转让与公开披露</h2>
+          <h2 className="text-xl font-semibold">
+            五、信息共享、转让与公开披露
+          </h2>
           <p className="text-sm text-zinc-400 leading-relaxed">
             我们不会向任何无关第三方出售您的个人信息。仅在以下情形下，我们可能会共享、
             转让或公开披露相关信息：
@@ -178,9 +180,10 @@ const PrivacyPage: React.FC = () => {
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">七、与第三方服务的关系</h2>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            您在 CloudHost 上部署的站点可能会嵌入第三方服务（如统计工具、第三方脚本、
-            外链资源等）。这些第三方可能会依据其自身的隐私政策收集和处理您的访问者数据，
-            该等行为不由 CloudHost 控制或负责。
+            您在 Demox
+            上部署的站点可能会嵌入第三方服务（如统计工具、第三方脚本、外链
+            资源等）。这些第三方可能会依据其自身的隐私政策收集和处理您的访问者数据，该
+            等行为不由 Demox 控制或负责。
           </p>
           <p className="text-sm text-zinc-400 leading-relaxed">
             我们建议您在部署前仔细阅读相关第三方服务的隐私政策，并在您自建的站点中向您
@@ -191,8 +194,8 @@ const PrivacyPage: React.FC = () => {
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">八、未成年人保护</h2>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            若您为未成年人，请在监护人同意与指导下使用 CloudHost 服务。我们不会在明知
-            为未成年人情况下收集其不必要的个人信息。
+            若您为未成年人，请在监护人同意与指导下使用 Demox
+            服务。我们不会在明知为未 成年人情况下收集其不必要的个人信息。
           </p>
         </section>
 
@@ -218,4 +221,3 @@ const PrivacyPage: React.FC = () => {
 };
 
 export default PrivacyPage;
-

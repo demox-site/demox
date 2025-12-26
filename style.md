@@ -1,6 +1,6 @@
 # 网站设计风格指南 (Style Guide)
 
-本文档基于 `CloudHostLanding.tsx` 页面总结，旨在为整个网站提供统一的视觉风格指导。
+本文档基于首页 Landing 页面（`index.tsx`）总结，旨在为整个网站提供统一的视觉风格指导。
 
 ## 1. 核心设计理念 (Core Design Philosophy)
 

@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { LanguageProvider } from "@/hooks/use-language";
 import {
   unstable_HistoryRouter as BrowserRouter,
   Routes,
@@ -24,38 +25,42 @@ const App: React.FC = () => {
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <Toaster />
-          <Sonner position="top-center" />
-          <BrowserRouter
-            history={history}
-            future={{
-              v7_startTransition: true,
-              v7_relativeSplatPath: true,
-            }}
-          >
-            <Routes>
-              <Route
-                path="/"
-                element={
-                  <Navigate
-                    to={`/${
-                      routers.find((item) => item.isHome)?.id || routers[0].id
-                    }`}
-                    replace
-                  />
-                }
-              />
-              {routers.map((item) => {
-                return (
-                  <Route
-                    key={item.id}
-                    path={`/${item.id}`}
-                    element={<PageWrapper id={item.id} Page={item.component} />}
-                  />
-                );
-              })}
-            </Routes>
-          </BrowserRouter>
+          <LanguageProvider>
+            <Toaster />
+            <Sonner position="top-center" />
+            <BrowserRouter
+              history={history}
+              future={{
+                v7_startTransition: true,
+                v7_relativeSplatPath: true,
+              }}
+            >
+              <Routes>
+                <Route
+                  path="/"
+                  element={
+                    <Navigate
+                      to={`/${
+                        routers.find((item) => item.isHome)?.id || routers[0].id
+                      }`}
+                      replace
+                    />
+                  }
+                />
+                {routers.map((item) => {
+                  return (
+                    <Route
+                      key={item.id}
+                      path={`/${item.id}`}
+                      element={
+                        <PageWrapper id={item.id} Page={item.component} />
+                      }
+                    />
+                  );
+                })}
+              </Routes>
+            </BrowserRouter>
+          </LanguageProvider>
         </TooltipProvider>
       </QueryClientProvider>
     </React.StrictMode>
