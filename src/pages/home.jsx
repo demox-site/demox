@@ -19,7 +19,19 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription
+  DialogDescription,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger
 } from "@/components/ui";
 // @ts-ignore;
 import {
@@ -95,7 +107,40 @@ const translations = {
     redeployChangeFile: "更改文件",
     redeployChooseFile: "选择文件",
     cancel: "取消",
-    confirmUpload: "确认上传"
+    confirmUpload: "确认上传",
+    deleteConfirmTitle: "确认删除？",
+    deleteConfirmDesc: "此操作无法撤销。这将永久删除该站点及其所有资源。",
+    deleteConfirmButton: "确认删除",
+    redeployDisabledTooltip: "耐心点~部署完再点~",
+    funnyMsgSmall1: "稍等片刻，马上就好~",
+    funnyMsgSmall2: "快马加鞭~",
+    funnyMsgSmall3: "就快了！！就快了！！",
+    funnyMsgLarge1: "谁教你整这么大的部署包的？累死我算辣！！！",
+    funnyMsgLarge2: "太大啦！太大啦！快不中啦！！",
+    funnyMsgLarge3: "谢谢您这么看得起我~给我整这么一大坨~~",
+    roleStandard: "普通用户",
+    logoutSuccessTitle: "退出成功",
+    logoutSuccessDesc: "您已成功退出登录",
+    logoutFailedTitle: "退出失败",
+    loadListFailed: "加载列表失败",
+    loadFailedTitle: "加载失败",
+    loadFailedDesc: "无法获取网站列表",
+    nameEmptyTitle: "名称不能为空",
+    nameEmptyDesc: "请输入一个有效的名称",
+    savedTitle: "已保存",
+    savedDesc: "站点名称已更新",
+    saveFailedTitle: "保存失败",
+    saveFailedDesc: "更新名称时出现错误",
+    deployFailed: "部署失败",
+    statusUploading: "正在上传",
+    statusUnzipping: "正在解压",
+    statusDeploying: "正在部署",
+    redeploySuccessTitle: "重新部署成功",
+    redeploySuccessDesc: "站点已成功重新部署",
+    redeployFailedTitle: "重新部署失败",
+    redeployFailedDesc: "重新部署过程中出现错误",
+    save: "保存",
+    editName: "编辑名称",
   },
   en: {
     pageTitle: "Deploy Console",
@@ -152,7 +197,40 @@ const translations = {
     redeployChangeFile: "Change file",
     redeployChooseFile: "Choose file",
     cancel: "Cancel",
-    confirmUpload: "Confirm upload"
+    confirmUpload: "Confirm upload",
+    deleteConfirmTitle: "Are you sure?",
+    deleteConfirmDesc: "This action cannot be undone. This will permanently delete the site and all its resources.",
+    deleteConfirmButton: "Delete",
+    redeployDisabledTooltip: "Patience, please wait for deployment to finish",
+    funnyMsgSmall1: "Just a moment, almost done...",
+    funnyMsgSmall2: "Working on it...",
+    funnyMsgSmall3: "Almost there!! Almost there!!",
+    funnyMsgLarge1: "Who taught you to make such a big package? I'm exhausted!!!",
+    funnyMsgLarge2: "Too big! Too big! I can't take it!!",
+    funnyMsgLarge3: "Thanks for thinking so highly of me~ giving me such a huge chunk~~",
+    roleStandard: "Standard User",
+    logoutSuccessTitle: "Logged out successfully",
+    logoutSuccessDesc: "You have logged out successfully",
+    logoutFailedTitle: "Logout failed",
+    loadListFailed: "Failed to load list",
+    loadFailedTitle: "Load failed",
+    loadFailedDesc: "Unable to fetch website list",
+    nameEmptyTitle: "Name cannot be empty",
+    nameEmptyDesc: "Please enter a valid name",
+    savedTitle: "Saved",
+    savedDesc: "Website name updated",
+    saveFailedTitle: "Save failed",
+    saveFailedDesc: "Error updating name",
+    deployFailed: "Deployment failed",
+    statusUploading: "Uploading",
+    statusUnzipping: "Unzipping",
+    statusDeploying: "Deploying",
+    redeploySuccessTitle: "Redeployment successful",
+    redeploySuccessDesc: "Site successfully redeployed",
+    redeployFailedTitle: "Redeployment failed",
+    redeployFailedDesc: "Error occurred during redeployment",
+    save: "Save",
+    editName: "Edit Name"
   }
 };
 
@@ -260,6 +338,8 @@ export default function Home(props) {
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployWebsite, setRedeployWebsite] = useState(null);
   const [redeployFile, setRedeployFile] = useState(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [websiteToDelete, setWebsiteToDelete] = useState(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const [isRedeployDragActive, setIsRedeployDragActive] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -281,12 +361,12 @@ export default function Home(props) {
       const sizeMB = uploadFileSize / 1024 / 1024;
       let msgs = [];
       if (sizeMB <= 50) {
-        msgs = ["稍等片刻，马上就好~", "快马加鞭~", "就快了！！就快了！！"];
+        msgs = [t.funnyMsgSmall1, t.funnyMsgSmall2, t.funnyMsgSmall3];
       } else {
         msgs = [
-          "谁教你整这么大的部署包的？累死我算辣！！！",
-          "太大啦！太大啦！快不中啦！！",
-          "谢谢您这么看得起我~给我整这么一大坨~~"
+          t.funnyMsgLarge1,
+          t.funnyMsgLarge2,
+          t.funnyMsgLarge3
         ];
       }
 
@@ -303,7 +383,7 @@ export default function Home(props) {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [uploading, uploadFileSize]);
+  }, [uploading, uploadFileSize, t]);
 
   /**
    * checkAuthStatus
@@ -375,17 +455,17 @@ export default function Home(props) {
             // Use the highest priority role
             const effectiveRole = sortedRoles[0];
             setRoleLimits(effectiveRole);
-            user.role_name = effectiveRole.name || "普通用户";
+            user.role_name = effectiveRole.name || t.roleStandard;
           } else {
             console.warn("No role limits found in database");
             // 禁止默认设置，仅设置角色名称
-            user.role_name = "普通用户";
+            user.role_name = t.roleStandard;
           }
         } catch (roleError) {
           console.warn("Fetch user roles failed:", roleError);
           // 忽略错误，降级为普通用户，并尝试获取普通用户限额
           user.roles = ["user"];
-          user.role_name = "普通用户";
+          user.role_name = t.roleStandard;
 
           try {
             const userLimitFnRes = await app.callFunction({
@@ -399,7 +479,7 @@ export default function Home(props) {
               userLimitFnRes.result.data.length > 0
             ) {
               setRoleLimits(userLimitFnRes.result.data[0]);
-              user.role_name = userLimitFnRes.result.data[0].name || "普通用户";
+              user.role_name = userLimitFnRes.result.data[0].name || t.roleStandard;
             }
           } catch (limitError) {
             console.warn(
@@ -454,13 +534,13 @@ export default function Home(props) {
       setUser(null);
       setWebsites([]);
       toast({
-        title: "退出成功",
-        description: "您已成功退出登录"
+        title: t.logoutSuccessTitle,
+        description: t.logoutSuccessDesc
       });
       navigate("/", { replace: true });
     } catch (error) {
       toast({
-        title: "退出失败",
+        title: t.logoutFailedTitle,
         description: error.message,
         variant: "destructive"
       });
@@ -488,13 +568,13 @@ export default function Home(props) {
         );
         setWebsites(sorted);
       } else {
-        throw new Error(result.result?.message || "加载列表失败");
+        throw new Error(result.result?.message || t.loadListFailed);
       }
     } catch (error) {
-      console.error("加载网站列表失败:", error);
+      console.error("Failed to load website list:", error);
       toast({
-        title: "加载失败",
-        description: error.message || "无法获取网站列表",
+        title: t.loadFailedTitle,
+        description: error.message || t.loadFailedDesc,
         variant: "destructive"
       });
     }
@@ -526,8 +606,8 @@ export default function Home(props) {
     const name = String(editingName || "").trim();
     if (!name) {
       toast({
-        title: "名称不能为空",
-        description: "请输入一个有效的名称",
+        title: t.nameEmptyTitle,
+        description: t.nameEmptyDesc,
         variant: "destructive"
       });
       return;
@@ -550,16 +630,16 @@ export default function Home(props) {
         );
         cancelEditName();
         toast({
-          title: "已保存",
-          description: "站点名称已更新"
+          title: t.savedTitle,
+          description: t.savedDesc
         });
       } else {
-        throw new Error(res.result?.message || "保存失败");
+        throw new Error(res.result?.message || t.saveFailedTitle);
       }
     } catch (error) {
       toast({
-        title: "保存失败",
-        description: error.message || "更新名称时出现错误",
+        title: t.saveFailedTitle,
+        description: error.message || t.saveFailedDesc,
         variant: "destructive"
       });
     }
@@ -661,7 +741,7 @@ export default function Home(props) {
 
       // Phase 1: Upload to Cloud Storage
       const totalSizeMB = (file.size / 1024 / 1024).toFixed(2);
-      setUploadStatusText(`正在上传 (0MB / ${totalSizeMB}MB)`);
+      setUploadStatusText(`${t.statusUploading} (0MB / ${totalSizeMB}MB)`);
       
       const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const cloudPath = `tmp_uploads/${user.userId}/${taskId}.zip`;
@@ -674,7 +754,7 @@ export default function Home(props) {
             const loadedMB = (progressEvent.loaded / 1024 / 1024).toFixed(2);
             const totalMB = (progressEvent.total / 1024 / 1024).toFixed(2);
             setUploadProgress(percentCompleted);
-            setUploadStatusText(`正在上传 (${loadedMB}MB / ${totalMB}MB)`);
+            setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalMB}MB)`);
         }
       });
 
@@ -687,13 +767,13 @@ export default function Home(props) {
                 const data = snapshot.docs[0];
                 if (data.status === 'unzipping') {
                      setUploadStage(2);
-                     setUploadStatusText("正在解压");
+                     setUploadStatusText(t.statusUnzipping);
                      setUploadProgress(100); 
                 } else if (data.status === 'uploading') {
                      setUploadStage(3);
                      if (data.total > 0) {
                         const percent = Math.floor((data.current / data.total) * 100);
-                        setUploadStatusText(`正在部署 (${data.current}/${data.total})`);
+                        setUploadStatusText(`${t.statusDeploying} (${data.current}/${data.total})`);
                         setUploadProgress(percent);
                      }
                 }
@@ -727,10 +807,10 @@ export default function Home(props) {
         });
         loadWebsites();
       } else {
-        throw new Error(deployResult.result?.message || "部署失败");
+        throw new Error(deployResult.result?.message || t.deployFailed);
       }
     } catch (error) {
-      console.error("部署失败:", error);
+      console.error("Deployment failed:", error);
       if (websiteId) {
         setWebsites((prev) =>
           prev.map((w) =>
@@ -765,20 +845,33 @@ export default function Home(props) {
     const file = event.target.files[0];
     await uploadZipFile(file);
   };
-  const handleDeleteWebsite = async (websiteId) => {
-    try {
-      const website = websites.find((w) => w._id === websiteId);
-      if (!website) return;
 
+  /**
+   * confirmDeleteWebsite
+   * 触发删除确认弹窗
+   */
+  const confirmDeleteWebsite = (websiteId) => {
+    const website = websites.find((w) => w._id === websiteId);
+    if (website) {
+      setWebsiteToDelete(website);
+      setDeleteConfirmOpen(true);
+    }
+  };
+
+  const executeDeleteWebsite = async () => {
+    if (!websiteToDelete) return;
+    const websiteId = websiteToDelete._id;
+
+    try {
       // 使用云函数删除整站资源（COS + 数据库）
       const result = await app.callFunction({
         name: "deploy-website",
         data: {
           action: "delete",
-          userId: website.userId,
-          websiteId: website.websiteId || website._id,
-          fileName: website.fileName,
-          key: website.path // 直接传递数据库中的 path，提高删除准确性
+          userId: websiteToDelete.userId,
+          websiteId: websiteToDelete.websiteId || websiteToDelete._id,
+          fileName: websiteToDelete.fileName,
+          key: websiteToDelete.path // 直接传递数据库中的 path，提高删除准确性
         }
       });
 
@@ -790,7 +883,7 @@ export default function Home(props) {
         // 从本地状态中移除
         setWebsites((prev) => prev.filter((w) => w._id !== websiteId));
       } else {
-        throw new Error(result.result?.message || "删除失败");
+        throw new Error(result.result?.message || t.toastDeleteFailedTitle);
       }
     } catch (error) {
       toast({
@@ -798,8 +891,12 @@ export default function Home(props) {
         description: error.message,
         variant: "destructive"
       });
+    } finally {
+      setDeleteConfirmOpen(false);
+      setWebsiteToDelete(null);
     }
   };
+
 
   /**
    * openRedeployDialog
@@ -876,8 +973,8 @@ export default function Home(props) {
 
     if (!file.name.endsWith(".zip")) {
       toast({
-        title: "文件格式错误",
-        description: "请上传 .zip 格式的压缩包",
+        title: t.toastInvalidFileTitle,
+        description: t.toastInvalidFileDesc,
         variant: "destructive"
       });
       return;
@@ -885,8 +982,8 @@ export default function Home(props) {
 
     if (roleLimits && roleLimits.enabled === false) {
       toast({
-        title: "服务暂不可用",
-        description: "请联系开发者",
+        title: t.toastServiceDisabledTitle,
+        description: t.toastServiceDisabledDesc,
         variant: "destructive"
       });
       return;
@@ -898,10 +995,10 @@ export default function Home(props) {
       file.size > roleLimits.max_file_size
     ) {
       toast({
-        title: "文件大小超出限制",
-        description: `文件大小不能超过 ${Math.round(
+        title: t.toastFileTooLargeTitle,
+        description: t.toastFileTooLargeDesc(Math.round(
           roleLimits.max_file_size / 1024 / 1024
-        )}MB`,
+        )),
         variant: "destructive"
       });
       return;
@@ -927,8 +1024,8 @@ export default function Home(props) {
       const state = await auth.getLoginState();
       if (!state || !state.user) {
         toast({
-          title: "登录已过期",
-          description: "请重新登录",
+          title: t.toastExpiredTitle,
+          description: t.toastExpiredDesc,
           variant: "destructive"
         });
         navigate("/");
@@ -969,12 +1066,12 @@ export default function Home(props) {
 
       if (deployResult.result && deployResult.result.success) {
         toast({
-          title: "重新部署成功",
-          description: deployResult.result.message || "站点已成功重新部署"
+          title: t.redeploySuccessTitle,
+          description: t.redeploySuccessDesc
         });
         loadWebsites();
       } else {
-        throw new Error(deployResult.result?.message || "重新部署失败");
+        throw new Error(deployResult.result?.message || t.redeployFailedTitle);
       }
     } catch (error) {
       setDeploying((prev) => ({ ...prev, [website._id]: false }));
@@ -984,8 +1081,8 @@ export default function Home(props) {
         )
       );
       toast({
-        title: "重新部署失败",
-        description: error.message || "重新部署过程中出现错误",
+        title: t.redeployFailedTitle,
+        description: error.message || t.redeployFailedDesc,
         variant: "destructive"
       });
     }
@@ -1065,7 +1162,7 @@ export default function Home(props) {
           <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm mb-12 overflow-hidden relative group">
             <div className="absolute inset-0 bg-gradient-to-r from-zinc-900/20 to-transparent pointer-events-none" />
             <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
-              <CardTitle className="text-zinc-100 flex items中心 gap-2">
+              <CardTitle className="text-zinc-100 flex items-center gap-2">
                 <Upload className="w-5 h-5 text-zinc-400" />
                 {t.uploadCardTitle}
                 {roleLimits && (
@@ -1140,7 +1237,7 @@ export default function Home(props) {
                     {t.uploadDesc}
                   </p>
                   {!uploading && (
-                    <span className="px-6 py-2 bg-zinc-100 text黑 text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
+                    <span className="px-6 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:bg-zinc-300 transition-colors">
                       {t.uploadButton}
                     </span>
                   )}
@@ -1192,7 +1289,7 @@ export default function Home(props) {
                   size="sm"
                   onClick={loadWebsites}
                   variant="outline"
-                  className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
+                  className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
                 >
                   <RefreshCw className="w-4 h-4 mr-2" />
                   {t.refresh}
@@ -1231,14 +1328,14 @@ export default function Home(props) {
                                 <button
                                   onClick={() => saveEditName(website)}
                                   className="text-green-400 hover:text-green-300"
-                                  title="保存"
+                                  title={t.save}
                                 >
                                   <CheckCircle className="w-4 h-4" />
                                 </button>
                                 <button
                                   onClick={cancelEditName}
                                   className="text-zinc-400 hover:text-zinc-300"
-                                  title="取消"
+                                  title={t.cancel}
                                 >
                                   <XCircle className="w-4 h-4" />
                                 </button>
@@ -1251,7 +1348,7 @@ export default function Home(props) {
                                 <button
                                   onClick={() => startEditName(website)}
                                   className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
-                                  title="编辑名称"
+                                  title={t.editName}
                                 >
                                   <Pencil className="w-4 h-4" />
                                 </button>
@@ -1262,7 +1359,7 @@ export default function Home(props) {
                           {deploying[website._id] && (
                             <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
                               <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
-                              处理中
+                              {t.processingBadge}
                             </Badge>
                           )}
                         </div>
@@ -1307,20 +1404,40 @@ export default function Home(props) {
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openRedeployDialog(website)}
-                          className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700"
-                        >
-                          <Upload className="w-4 h-4 mr-2" />
-                          {t.redeployButton}
-                        </Button>
+                        <TooltipProvider delayDuration={0}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span tabIndex={-1}>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (website.status === 'processing' || deploying[website._id]) return;
+                                    openRedeployDialog(website);
+                                  }}
+                                  className={`border-zinc-800 bg-zinc-900 text-zinc-400 ${
+                                    (website.status === 'processing' || deploying[website._id]) 
+                                      ? "opacity-50 cursor-not-allowed" 
+                                      : "hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
+                                  }`}
+                                >
+                                  <Upload className="w-4 h-4 mr-2" />
+                                  {t.redeployButton}
+                                </Button>
+                              </span>
+                            </TooltipTrigger>
+                            {(website.status === 'processing' || deploying[website._id]) && (
+                              <TooltipContent className="bg-zinc-100 text-zinc-900 border-zinc-200 font-bold">
+                                <p>{t.redeployDisabledTooltip}</p>
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
+                        </TooltipProvider>
 
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleDeleteWebsite(website._id)}
+                          onClick={() => confirmDeleteWebsite(website._id)}
                           className="text-zinc-500 hover:text-red-400 hover:bg-red-950/30"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1387,7 +1504,7 @@ export default function Home(props) {
                 <div className="flex justify-end gap-2">
                   <Button
                     variant="outline"
-                    className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                    className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
                     onClick={() => {
                       setRedeployOpen(false);
                       setRedeployFile(null);
@@ -1398,7 +1515,7 @@ export default function Home(props) {
                   </Button>
                   <Button
                     variant="outline"
-                    className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                    className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
                     disabled={!redeployFile}
                     onClick={submitRedeploy}
                   >
@@ -1408,6 +1525,29 @@ export default function Home(props) {
               </div>
             </DialogContent>
           </Dialog>
+          
+          <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+            <AlertDialogContent className="bg-zinc-900 border-zinc-800">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-zinc-100">{t.deleteConfirmTitle}</AlertDialogTitle>
+                <AlertDialogDescription className="text-zinc-400">
+                  {t.deleteConfirmDesc}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100">
+                  {t.cancel}
+                </AlertDialogCancel>
+                <AlertDialogAction 
+                  className="bg-red-900/30 text-red-500 border border-red-900 hover:bg-red-900/50 hover:text-red-400"
+                  onClick={executeDeleteWebsite}
+                >
+                  {t.deleteConfirmButton}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
         </div>
 
         {/* Background Grid Effect */}
