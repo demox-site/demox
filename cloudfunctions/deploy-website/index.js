@@ -4,9 +4,12 @@ const COS = require('cos-nodejs-sdk-v5');
 const tencentcloud = require('tencentcloud-sdk-nodejs');
 const MonitorClient = tencentcloud.monitor.v20180724.Client;
 const path = require('path');
+const https = require('https');
+const fs = require('fs');
+const os = require('os');
 
 exports.main = async (event, context) => {
-  const { action = 'bucket_stats', fileId, userId, websiteId, fileName } = event || {};
+  const { action = 'bucket_stats', fileId, userId, websiteId, fileName, taskId } = event || {};
   
   // 静态网站托管 Bucket 名称及区域
   const hostingBucket = 'resource-game-1307257815';
@@ -23,6 +26,27 @@ exports.main = async (event, context) => {
 
   const app = tcb.init();
   const db = app.database();
+
+  /**
+   * updateProgress
+   * 更新任务进度
+   */
+  const updateProgress = async (status, data = {}) => {
+    if (!taskId) return;
+    try {
+      // 使用 set 覆盖或创建，保持最新状态
+      await db.collection('ai_builder_task_progress').doc(taskId).set({
+        _openid: userId, // 显式设置 _openid 以确保前端用户有权限读取（假设默认 ACL 为仅创建者/管理员可读写，设置后用户即为所有者）
+        userId, // 记录归属用户，便于权限控制
+        websiteId,
+        status,
+        ...data,
+        updatedAt: db.serverDate()
+      });
+    } catch (e) {
+      console.warn('Failed to update progress:', e);
+    }
+  };
 
   /**
    * getUserLimits
@@ -139,7 +163,7 @@ exports.main = async (event, context) => {
    * deployZipToTarget
    * 将 zipEntries 部署到指定目标前缀，覆盖同名文件
    */
-  const deployZipToTarget = async (zipEntries, targetPrefix) => {
+  const deployZipToTarget = async (zipEntries, targetPrefix, onProgress) => {
     const validEntries = zipEntries.filter(entry => {
       if (entry.isDirectory) return false;
       const name = entry.entryName;
@@ -164,6 +188,8 @@ exports.main = async (event, context) => {
     // 此处不处理 update_name 动作；名称更新属于主流程的独立动作
 
     const uploadTasks = [];
+    let uploadedCount = 0;
+
     for (const entry of validEntries) {
       let entryName = entry.entryName;
       if (commonPrefix && entryName.startsWith(commonPrefix)) {
@@ -190,6 +216,8 @@ exports.main = async (event, context) => {
             if (err) {
               reject(err);
             } else {
+              uploadedCount++;
+              if (onProgress) onProgress(uploadedCount);
               resolve(data);
             }
           });
@@ -197,6 +225,9 @@ exports.main = async (event, context) => {
       });
     }
 
+    // Concurrency limit could be added here if needed, but for now we use Promise.all
+    // Since Promise.all runs all at once, we might want to use p-limit if files are many
+    // But for simplicity and existing behavior, we keep Promise.all but with tracking
     await Promise.all(uploadTasks.map(p => p()));
   };
   /**
@@ -750,11 +781,11 @@ exports.main = async (event, context) => {
     // --- 新增功能 5: 前端直接上传内容并部署 (action === 'upload_and_deploy') ---
     if (action === 'upload_and_deploy') {
       const { cloudPath, fileContentBase64 } = event;
-      if (!fileContentBase64 || !userId || !websiteId || !fileName) {
-        throw new Error('缺少必要参数: fileContentBase64/userId/websiteId/fileName');
+      if ((!fileContentBase64 && !fileId) || !userId || !websiteId || !fileName) {
+        throw new Error('缺少必要参数: (fileContentBase64 或 fileId)/userId/websiteId/fileName');
       }
 
-        console.log(`开始上传并部署: websiteId=${websiteId}, cloudPath=${cloudPath}, fileName=${fileName}`);
+        console.log(`开始上传并部署: websiteId=${websiteId}, cloudPath=${cloudPath}, fileName=${fileName}, hasFileId=${!!fileId}`);
         
         const roleConfigForEnable2 = await getUserLimits(userId);
         if (roleConfigForEnable2 && roleConfigForEnable2.enabled === false) {
@@ -764,12 +795,59 @@ exports.main = async (event, context) => {
           };
         }
 
-        const buffer = Buffer.from(String(fileContentBase64), 'base64');
-        const zip = new AdmZip(buffer);
-        const zipEntries = zip.getEntries();
-        console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
+        await updateProgress('unzipping');
 
-        const existingPath = await resolveExistingPath(userId, websiteId);
+        let zip;
+        let tempFilePath = null;
+
+        try {
+            if (fileContentBase64) {
+                const buffer = Buffer.from(String(fileContentBase64), 'base64');
+                zip = new AdmZip(buffer);
+            } else if (fileId) {
+                console.log(`通过 fileId 部署: ${fileId}`);
+                // 1. 获取下载链接
+                const fileRes = await app.getTempFileURL({ fileList: [fileId] });
+                if (!fileRes.fileList || fileRes.fileList.length === 0 || !fileRes.fileList[0].tempFileURL) {
+                    throw new Error('无法获取文件下载链接');
+                }
+                const downloadUrl = fileRes.fileList[0].tempFileURL;
+                
+                // 2. 下载到临时文件
+                tempFilePath = path.join(os.tmpdir(), `deploy_${Date.now()}.zip`);
+                await new Promise((resolve, reject) => {
+                    const file = fs.createWriteStream(tempFilePath);
+                    https.get(downloadUrl, (res) => {
+                        if (res.statusCode !== 200) {
+                            reject(new Error(`下载失败: status ${res.statusCode}`));
+                            return;
+                        }
+                        res.pipe(file);
+                        file.on('finish', () => {
+                            file.close(resolve);
+                        });
+                    }).on('error', (err) => {
+                        fs.unlink(tempFilePath, () => {});
+                        reject(err);
+                    });
+                });
+                
+                console.log(`文件已下载到: ${tempFilePath}`);
+                // AdmZip 支持直接读取文件路径
+                zip = new AdmZip(tempFilePath);
+            } else {
+                throw new Error('未提供文件内容或 fileId');
+            }
+
+            const zipEntries = zip.getEntries();
+            console.log(`解压完成，包含 ${zipEntries.length} 个文件`);
+
+            // Calculate valid files count for progress
+            const validEntriesCount = zipEntries.filter(e => !e.isDirectory && !e.entryName.includes('..') && !e.entryName.includes('__MACOSX') && !e.entryName.includes('.DS_Store')).length;
+            await updateProgress('uploading', { total: validEntriesCount, current: 0 });
+
+            const existingPath = await resolveExistingPath(userId, websiteId);
+
         let targetPrefix, urlPrefix, effectiveFileNameNoExt, wId;
         if (existingPath) {
           const parts = existingPath.split('/');
@@ -818,7 +896,17 @@ exports.main = async (event, context) => {
           }
         }
 
-        await deployZipToTarget(zipEntries, targetPrefix);
+        let lastUpdateTime = 0;
+        const throttledUpdate = async (count) => {
+          const now = Date.now();
+          // Update at most once per 500ms, or when finished
+          if (now - lastUpdateTime > 500 || count === validEntriesCount) {
+            lastUpdateTime = now;
+            await updateProgress('uploading', { total: validEntriesCount, current: count });
+          }
+        };
+
+        await deployZipToTarget(zipEntries, targetPrefix, throttledUpdate);
 
         // 4. 获取访问 URL
         const defaultDomain = process.env.DEFAULT_DOMAIN;
@@ -856,6 +944,24 @@ exports.main = async (event, context) => {
             message: existingPath ? '重新部署成功' : '上传并部署成功',
             websitePath: urlPrefix
         };
+    } finally {
+        // 清理临时文件 (local fs)
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+            try { fs.unlinkSync(tempFilePath); } catch(e) {}
+        }
+        
+        // 清理云端临时文件
+        if (fileId) {
+            try {
+                await app.deleteFile({
+                    fileList: [fileId]
+                });
+                console.log(`Deleted temp cloud file: ${fileId}`);
+            } catch (e) {
+                console.warn(`Failed to delete temp cloud file: ${fileId}`, e);
+            }
+        }
+    }
     }
 
     throw new Error(`Unknown action: ${action}`);

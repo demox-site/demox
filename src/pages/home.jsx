@@ -250,6 +250,10 @@ export default function Home(props) {
   const [websites, setWebsites] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatusText, setUploadStatusText] = useState("");
+  const [uploadStage, setUploadStage] = useState(0); // 1: Uploading to Cloud, 2: Unzipping, 3: Uploading to COS
+  const [funnyMessage, setFunnyMessage] = useState("");
+  const [uploadFileSize, setUploadFileSize] = useState(0);
   const [deploying, setDeploying] = useState({});
   const [roleLimits, setRoleLimits] = useState(null);
   const fileInputRef = React.useRef(null);
@@ -270,6 +274,36 @@ export default function Home(props) {
       loadWebsites();
     }
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    let interval;
+    if (uploading && uploadFileSize > 0) {
+      const sizeMB = uploadFileSize / 1024 / 1024;
+      let msgs = [];
+      if (sizeMB <= 50) {
+        msgs = ["稍等片刻，马上就好~", "快马加鞭~", "就快了！！就快了！！"];
+      } else {
+        msgs = [
+          "谁教你整这么大的部署包的？累死我算辣！！！",
+          "太大啦！太大啦！快不中啦！！",
+          "谢谢您这么看得起我~给我整这么一大坨~~"
+        ];
+      }
+
+      let index = 0;
+      setFunnyMessage(msgs[0]);
+
+      interval = setInterval(() => {
+        index = (index + 1) % msgs.length;
+        setFunnyMessage(msgs[index]);
+      }, 3000);
+    } else {
+      setFunnyMessage("");
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [uploading, uploadFileSize]);
 
   /**
    * checkAuthStatus
@@ -586,6 +620,10 @@ export default function Home(props) {
 
     setUploading(true);
     setUploadProgress(0);
+    setUploadStatusText("");
+    setUploadStage(1);
+    setUploadFileSize(file.size);
+
     let websiteId = null;
 
     try {
@@ -601,8 +639,7 @@ export default function Home(props) {
       }
 
       const safeFileName = sanitizeFileName(file.name);
-      const cloudPath = `websites/${user.userId}/${Date.now()}_${safeFileName}`;
-
+      
       // 生成 websiteId，并先更新本地状态，创建时间记录到秒
       websiteId = generateWebsiteId();
       const now = Date.now();
@@ -622,30 +659,63 @@ export default function Home(props) {
       });
       setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
-      const toBase64 = (f) =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const res = String(reader.result || "");
-            const base64 = res.includes(",") ? res.split(",")[1] : res;
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(f);
-        });
-      const fileContentBase64 = await toBase64(file);
+      // Phase 1: Upload to Cloud Storage
+      const totalSizeMB = (file.size / 1024 / 1024).toFixed(2);
+      setUploadStatusText(`正在上传 (0MB / ${totalSizeMB}MB)`);
+      
+      const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const cloudPath = `tmp_uploads/${user.userId}/${taskId}.zip`;
+
+      const uploadResult = await app.uploadFile({
+        cloudPath,
+        filePath: file,
+        onUploadProgress: (progressEvent) => {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            const loadedMB = (progressEvent.loaded / 1024 / 1024).toFixed(2);
+            const totalMB = (progressEvent.total / 1024 / 1024).toFixed(2);
+            setUploadProgress(percentCompleted);
+            setUploadStatusText(`正在上传 (${loadedMB}MB / ${totalMB}MB)`);
+        }
+      });
+
+      const fileId = uploadResult.fileID;
+
+      // Phase 2: Watch progress
+      const watcher = db.collection('ai_builder_task_progress').doc(taskId).watch({
+        onChange: (snapshot) => {
+            if (snapshot.docs && snapshot.docs.length > 0) {
+                const data = snapshot.docs[0];
+                if (data.status === 'unzipping') {
+                     setUploadStage(2);
+                     setUploadStatusText("正在解压");
+                     setUploadProgress(100); 
+                } else if (data.status === 'uploading') {
+                     setUploadStage(3);
+                     if (data.total > 0) {
+                        const percent = Math.floor((data.current / data.total) * 100);
+                        setUploadStatusText(`正在部署 (${data.current}/${data.total})`);
+                        setUploadProgress(percent);
+                     }
+                }
+            }
+        },
+        onError: (err) => console.error('Watch error', err)
+      });
 
       const deployResult = await app.callFunction({
         name: "deploy-website",
         data: {
           action: "upload_and_deploy",
-          cloudPath,
-          fileContentBase64,
+          fileId,
+          taskId,
           userId: user.userId,
           websiteId: websiteId,
           fileName: safeFileName
         }
       });
+
+      watcher.close();
+
       setDeploying((prev) => ({
         ...prev,
         [websiteId]: false
@@ -680,6 +750,7 @@ export default function Home(props) {
     } finally {
       setUploading(false);
       setUploadProgress(0);
+      setUploadStatusText("");
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -1079,13 +1150,21 @@ export default function Home(props) {
               {uploading && (
                 <div className="mt-8 max-w-xl mx-auto">
                   <div className="flex justify-between text-xs font-mono text-zinc-400 mb-2">
-                    <span>{t.uploadProgressLabel}</span>
-                    <span>{uploadProgress}%</span>
+                    <span>{uploadStatusText || t.uploadProgressLabel}</span>
+                    <span>{uploadProgress}% ({uploadStage}/3) </span>
                   </div>
                   <Progress
                     value={uploadProgress}
                     className="bg-zinc-900 h-2"
+                    indicatorClassName={
+                        uploadStage === 1 ? "bg-blue-400" :
+                        uploadStage === 2 ? "bg-amber-400" :
+                        uploadStage === 3 ? "bg-lime-400" : "bg-primary"
+                    }
                   />
+                  <div className="text-center mt-2 text-xs text-zinc-500 animate-pulse">
+                      {funnyMessage}
+                  </div>
                 </div>
               )}
             </CardContent>

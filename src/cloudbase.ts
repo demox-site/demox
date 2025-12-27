@@ -3,7 +3,8 @@ import env from "./configs/env";
 
 const app = cloudbase.init({
   env: env.env,
-  region: "ap-shanghai"
+  region: "ap-shanghai",
+  timeout: 900000
 });
 
 const auth = app.auth();
