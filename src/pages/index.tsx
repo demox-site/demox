@@ -9,11 +9,9 @@ import {
 } from "../components/ui/tooltip";
 import {
   Terminal,
-  Zap,
-  Globe,
-  Lock,
-  Cpu,
-  Command,
+  Package,
+  UploadCloud,
+  Rocket,
   CheckCircle2
 } from "lucide-react";
 
@@ -50,35 +48,24 @@ const translations = {
       success: "成功！已部署至：",
       url: "https://project-gamma.demox.app"
     },
-    features: [
-      {
-        title: "极速体验",
-        desc: "全球边缘网络确保您的网站在毫秒级加载，无论用户身在何处。"
-      },
-      {
-        title: "自定义域名",
-        desc: "秒级绑定您的域名，自动配置和更新 SSL 证书。"
-      },
-      {
-        title: "企业级安全",
-        desc: "开箱即用的 DDoS 防护、托管 WAF 和 SOC2 合规性。"
-      }
-    ],
-    how_it_works: {
-      title: "从本地到全球",
-      subtitle: "简单三步，部署您的应用。",
+    workflow: {
+      title: "从代码到全球",
+      subtitle: "极简的发布流程，集成了企业级的基础设施能力。",
       steps: [
         {
-          title: "连接",
-          desc: "关联您的 GitHub 仓库或使用我们的 CLI 进行初始化。"
+          title: "本地构建",
+          desc: "使用您熟悉的工具构建项目，生成静态文件。",
+          tags: ["任意框架", "零配置"]
         },
         {
-          title: "构建",
-          desc: "我们自动检测您的框架并构建您的网站。"
+          title: "上传部署",
+          desc: "将构建产物打包为 zip，直接拖拽上传。",
+          tags: ["秒级处理", "安全扫描"]
         },
         {
-          title: "部署",
-          desc: "即时不可变部署，生成唯一访问 URL。"
+          title: "全球分发",
+          desc: "自动分发至全球边缘节点，即刻访问。",
+          tags: ["全球 CDN", "DDoS 防护", "自动 HTTPS", "独立域名"]
         }
       ]
     },
@@ -124,35 +111,25 @@ const translations = {
       success: "Success! Deployed to:",
       url: "https://project-gamma.demox.app"
     },
-    features: [
-      {
-        title: "Lightning Fast",
-        desc: "Global edge network ensures your site loads in milliseconds, no matter where your users are."
-      },
-      {
-        title: "Custom Domains",
-        desc: "Map your own domain in seconds with automatic SSL provisioning and renewal."
-      },
-      {
-        title: "Enterprise Security",
-        desc: "DDoS protection, managed WAF, and SOC2 compliance out of the box."
-      }
-    ],
-    how_it_works: {
-      title: "From Local to Global",
-      subtitle: "Three simple steps to deploy your application.",
+    workflow: {
+      title: "From Code to Global",
+      subtitle:
+        "Streamlined deployment workflow with enterprise-grade infrastructure built-in.",
       steps: [
         {
-          title: "Connect",
-          desc: "Link your GitHub repository or use our CLI to initialize."
+          title: "Build Locally",
+          desc: "Build your project with familiar tools to generate static files.",
+          tags: ["Any Framework", "No Config"]
         },
         {
-          title: "Build",
-          desc: "We automatically detect your framework and build your site."
+          title: "Upload & Deploy",
+          desc: "Zip your artifacts and drag-and-drop to upload directly.",
+          tags: ["Instant Processing", "Security Scan"]
         },
         {
-          title: "Deploy",
-          desc: "Instant immutable deployments with a unique URL."
+          title: "Global Distribution",
+          desc: "Automatically distributed to global edge nodes for instant access.",
+          tags: ["Global CDN", "DDoS Protection", "Auto HTTPS", "Custom Domain"]
         }
       ]
     },
@@ -300,91 +277,70 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <section className="py-24 px-4 border-t border-zinc-900 bg-zinc-950/30">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid md:grid-cols-3 gap-6">
+      <section className="py-24 px-4 bg-black relative overflow-hidden">
+        {/* Neon accent lines background */}
+        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/50 to-transparent -translate-y-1/2 hidden md:block" />
+        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-purple-500/50 to-transparent translate-y-[2px] blur-[2px] hidden md:block" />
+
+        <div className="max-w-6xl mx-auto relative z-10">
+          <div className="text-center mb-20">
+            <h2 className="text-3xl md:text-5xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-zinc-500">
+              {t.workflow.title}
+            </h2>
+            <p className="text-zinc-400 text-lg max-w-2xl mx-auto">
+              {t.workflow.subtitle}
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-12 relative">
             {[
               {
-                icon: <Zap className="text-zinc-100" size={24} />,
-                title: t.features[0].title,
-                desc: t.features[0].desc
+                icon: <Package className="text-blue-400" size={32} />,
+                ...t.workflow.steps[0]
               },
               {
-                icon: <Globe className="text-zinc-100" size={24} />,
-                title: t.features[1].title,
-                desc: t.features[1].desc
+                icon: <UploadCloud className="text-purple-400" size={32} />,
+                ...t.workflow.steps[1]
               },
               {
-                icon: <Lock className="text-zinc-100" size={24} />,
-                title: t.features[2].title,
-                desc: t.features[2].desc
+                icon: <Rocket className="text-pink-400" size={32} />,
+                ...t.workflow.steps[2]
               }
-            ].map((feature, i) => (
+            ].map((step, i) => (
               <div
                 key={i}
-                className="p-6 rounded-lg border border-zinc-900 bg-zinc-950/50 hover:border-zinc-700 transition-colors group"
+                className="flex flex-col items-center text-center group"
               >
-                <div className="w-12 h-12 rounded-lg bg-zinc-900 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                  {feature.icon}
+                {/* Glassmorphism Icon Circle */}
+                <div className="w-24 h-24 rounded-full bg-white/5 backdrop-blur-md border border-white/10 flex items-center justify-center mb-8 relative z-10 transition-transform duration-500 group-hover:scale-110 group-hover:border-white/20 shadow-[0_0_30px_-10px_rgba(255,255,255,0.1)]">
+                  <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                  {step.icon}
+                  {/* Step Number Badge */}
+                  <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-400 flex items-center justify-center font-mono text-sm font-bold">
+                    {i + 1}
+                  </div>
                 </div>
-                <h3 className="text-xl font-semibold mb-2 text-zinc-100">
-                  {feature.title}
+
+                <h3 className="text-xl font-bold mb-3 text-white">
+                  {step.title}
                 </h3>
-                <p className="text-zinc-400 leading-relaxed">{feature.desc}</p>
+                <p className="text-zinc-400 leading-relaxed mb-6 h-12">
+                  {step.desc}
+                </p>
+
+                {/* Tech Badges */}
+                <div className="flex flex-wrap justify-center gap-2">
+                  {step.tags.map((tag, tagIndex) => (
+                    <span
+                      key={tagIndex}
+                      className="px-3 py-1 rounded-full text-xs font-medium bg-zinc-900/50 border border-zinc-800 text-zinc-400 group-hover:border-zinc-600 transition-colors"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
               </div>
             ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="py-24 px-4 bg-black relative">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              {t.how_it_works.title}
-            </h2>
-            <p className="text-zinc-400">{t.how_it_works.subtitle}</p>
-          </div>
-
-          <div className="relative">
-            <div className="hidden md:block absolute top-12 left-0 w-full h-[2px] bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 z-0"></div>
-
-            <div className="grid md:grid-cols-3 gap-12 relative z-10">
-              {[
-                {
-                  step: "01",
-                  title: t.how_it_works.steps[0].title,
-                  icon: <Command size={32} />,
-                  desc: t.how_it_works.steps[0].desc
-                },
-                {
-                  step: "02",
-                  title: t.how_it_works.steps[1].title,
-                  icon: <Cpu size={32} />,
-                  desc: t.how_it_works.steps[1].desc
-                },
-                {
-                  step: "03",
-                  title: t.how_it_works.steps[2].title,
-                  icon: <Globe size={32} />,
-                  desc: t.how_it_works.steps[2].desc
-                }
-              ].map((item, i) => (
-                <div key={i} className="flex flex-col items-center text-center">
-                  <div className="w-24 h-24 rounded-full bg-black border border-zinc-800 flex items-center justify-center mb-6 relative group">
-                    <div className="absolute inset-0 rounded-full bg-zinc-900/50 blur-xl opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <div className="relative text-zinc-100">{item.icon}</div>
-                    <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-zinc-100 text-black flex items-center justify-center font-bold text-sm">
-                      {item.step}
-                    </div>
-                  </div>
-                  <h3 className="text-xl font-bold mb-2">{item.title}</h3>
-                  <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
-                    {item.desc}
-                  </p>
-                </div>
-              ))}
-            </div>
           </div>
         </div>
       </section>
