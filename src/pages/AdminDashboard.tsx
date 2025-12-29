@@ -6,6 +6,7 @@ import { useToast } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { MainLayout } from "@/layouts/MainLayout";
 
 interface BucketStats {
   success: boolean;
@@ -538,24 +539,28 @@ const AdminDashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black text-zinc-100 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
-      </div>
+      <MainLayout>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
+        </div>
+      </MainLayout>
     );
   }
 
   if (!isAdmin) {
     return (
-      <div className="min-h-screen bg-black text-zinc-100 flex items-center justify-center">
-        <Card className="bg-zinc-900 border-zinc-800 w-[520px]">
-          <CardHeader>
-            <CardTitle className="text-zinc-100">无权限</CardTitle>
-          </CardHeader>
-          <CardContent className="text-zinc-400">
-            该页面仅管理员可见，请联系管理员开通权限
-          </CardContent>
-        </Card>
-      </div>
+      <MainLayout>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Card className="bg-zinc-900 border-zinc-800 w-[520px]">
+            <CardHeader>
+              <CardTitle className="text-zinc-100">无权限</CardTitle>
+            </CardHeader>
+            <CardContent className="text-zinc-400">
+              该页面仅管理员可见，请联系管理员开通权限
+            </CardContent>
+          </Card>
+        </div>
+      </MainLayout>
     );
   }
 
@@ -639,7 +644,7 @@ const AdminDashboard: React.FC = () => {
 
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100">
+    <MainLayout>
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-2">
@@ -1167,7 +1172,7 @@ const AdminDashboard: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </MainLayout>
   );
 };
 
