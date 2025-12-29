@@ -578,6 +578,42 @@ exports.main = async (event, context) => {
         };
     }
 
+    // --- 功能 4: 更新站点标签 ---
+    if (action === 'update_tags') {
+        const { docId, tags } = event || {};
+        if (!docId || !userId || !Array.isArray(tags)) {
+            throw new Error('Missing required parameter: docId/userId/tags');
+        }
+        
+        // 验证 tags 内容
+        const cleanTags = tags
+            .map(t => String(t || '').trim())
+            .filter(t => t.length > 0 && t.length <= 32); // 限制标签长度
+
+        // 限制标签数量
+        if (cleanTags.length > 20) {
+            throw new Error('标签数量不能超过20个');
+        }
+
+        const docRes = await db.collection('resource-game').doc(docId).get();
+        const doc = docRes.data && docRes.data[0];
+        if (!doc) {
+            throw new Error('记录不存在');
+        }
+        if (String(doc.userId) !== String(userId)) {
+            throw new Error('无权限更新该记录');
+        }
+        await db.collection('resource-game').doc(docId).update({
+            tags: cleanTags,
+            updatedAt: db.serverDate()
+        });
+        return {
+            success: true,
+            message: '标签已更新',
+            tags: cleanTags
+        };
+    }
+
     // --- 功能 2: 删除文件 ---
     if (action === 'delete') {
         // 支持直接传 key，或者通过 userId + websiteId + fileNameNoExt 拼接；若传入的是文档 _id，则尝试回查数据库
@@ -776,6 +812,51 @@ exports.main = async (event, context) => {
         };
     }
 
+    // --- 新增功能: 更新资源记录的标签 (action === 'update_tags') ---
+    /**
+     * update_tags
+     * 根据文档 ID 更新 resource-game 记录的 tags 字段（数组），仅允许记录所有者更新
+     */
+    if (action === 'update_tags') {
+        const { docId, userId, tags } = event || {};
+        if (!docId || !userId || !Array.isArray(tags)) {
+            throw new Error('缺少必要参数: docId/userId/tags(Array)');
+        }
+        // 规范化标签：去空白、去空字符串、去重、限制数量与长度
+        const normalized = Array.from(
+            new Set(
+                tags
+                    .map((t) => String(t || '').trim())
+                    .filter((t) => t.length > 0)
+            )
+        );
+        if (normalized.length > 20) {
+            throw new Error('标签数量不能超过20个');
+        }
+        const tooLong = normalized.find((t) => t.length > 30);
+        if (tooLong) {
+            throw new Error('单个标签长度不能超过30字符');
+        }
+        // 验证记录归属
+        const docRes = await db.collection('resource-game').doc(docId).get();
+        if (!docRes.data || docRes.data.length === 0) {
+            throw new Error('记录不存在');
+        }
+        const record = docRes.data[0];
+        if (record.userId !== userId) {
+            throw new Error('无权限更新该记录');
+        }
+        // 执行更新
+        await db.collection('resource-game').doc(docId).update({
+            tags: normalized,
+            updatedAt: db.serverDate()
+        });
+        return {
+            success: true,
+            tags: normalized
+        };
+    }
+
     // 原 deploy 动作已移除
 
     // --- 新增功能 5: 前端直接上传内容并部署 (action === 'upload_and_deploy') ---
@@ -930,6 +1011,7 @@ exports.main = async (event, context) => {
                     fileName,
                     path: targetPrefix,
                     url: finalUrl,
+                    tags: [],
                     createdAt: db.serverDate(),
                     updatedAt: db.serverDate()
                 });

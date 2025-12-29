@@ -31,7 +31,8 @@ import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
-  TooltipTrigger
+  TooltipTrigger,
+  Input
 } from "@/components/ui";
 // @ts-ignore;
 import {
@@ -48,7 +49,10 @@ import {
   XCircle,
   AlertCircle,
   RefreshCw,
-  Pencil
+  Pencil,
+  Tag,
+  Check,
+  X
 } from "lucide-react";
 import { app, auth, db } from "../cloudbase";
 import { useNavigate, Navigate } from "react-router-dom";
@@ -344,6 +348,10 @@ export default function Home(props) {
   const [isRedeployDragActive, setIsRedeployDragActive] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState("");
+  const [allTags, setAllTags] = useState([]);
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [editingTagsId, setEditingTagsId] = useState(null);
+  const [editingTagsValue, setEditingTagsValue] = useState("");
   const t = translations[lang];
   useEffect(() => {
     checkAuthStatus();
@@ -567,6 +575,15 @@ export default function Home(props) {
           (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
         );
         setWebsites(sorted);
+        
+        // 提取所有标签并去重
+        const tagsSet = new Set();
+        sorted.forEach(w => {
+          if (Array.isArray(w.tags)) {
+            w.tags.forEach(tag => tagsSet.add(tag));
+          }
+        });
+        setAllTags(Array.from(tagsSet).sort());
       } else {
         throw new Error(result.result?.message || t.loadListFailed);
       }
@@ -644,6 +661,127 @@ export default function Home(props) {
       });
     }
   };
+
+  /**
+   * parseTags
+   * 解析逗号分隔的标签字符串为去重后的标签数组
+   */
+  const parseTags = (str) => {
+    if (!str) return [];
+    const arr = String(str)
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return Array.from(new Set(arr));
+  };
+
+  /**
+   * joinTags
+   * 将标签数组拼接为逗号分隔的字符串
+   */
+  const joinTags = (tags) => {
+    return (Array.isArray(tags) ? tags : []).join(", ");
+  };
+
+  /**
+   * startEditTags
+   * 开始编辑站点标签
+   */
+  const startEditTags = (website) => {
+    setEditingTagsId(website._id);
+    setEditingTagsValue(Array.isArray(website.tags) ? website.tags.join(", ") : "");
+  };
+
+  /**
+   * cancelEditTags
+   * 取消编辑站点标签
+   */
+  const cancelEditTags = () => {
+    setEditingTagsId(null);
+    setEditingTagsValue("");
+  };
+
+  /**
+   * saveEditTags
+   * 保存站点标签
+   */
+  const saveEditTags = async (website) => {
+    const tags = parseTags(editingTagsValue);
+    
+    // 简单验证
+    if (tags.length > 20) {
+      toast({
+        title: "标签过多",
+        description: "标签数量不能超过20个",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      const res = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "update_tags",
+          docId: website._id,
+          userId: user.userId,
+          tags
+        }
+      });
+
+      if (res.result && res.result.success) {
+        setWebsites((prev) => {
+          const newWebsites = prev.map((w) =>
+            w._id === website._id ? { ...w, tags, updatedAt: Date.now() } : w
+          );
+          
+          // 更新全局 tags 列表
+          const tagsSet = new Set();
+          newWebsites.forEach(w => {
+            if (Array.isArray(w.tags)) {
+              w.tags.forEach(tag => tagsSet.add(tag));
+            }
+          });
+          setAllTags(Array.from(tagsSet).sort());
+          
+          return newWebsites;
+        });
+        
+        cancelEditTags();
+        toast({
+          title: t.savedTitle,
+          description: "标签已更新"
+        });
+      } else {
+        throw new Error(res.result?.message || t.saveFailedTitle);
+      }
+    } catch (error) {
+      toast({
+        title: t.saveFailedTitle,
+        description: error.message || t.saveFailedDesc,
+        variant: "destructive"
+      });
+    }
+  };
+
+  /**
+   * toggleFilterTag
+   * 顶部筛选区：切换选择/取消选择某个标签
+   */
+  const toggleFilterTag = (tag) => {
+    setSelectedTags((prev) => {
+      if (prev.includes(tag)) {
+        return prev.filter((t) => t !== tag);
+      }
+      return [...prev, tag];
+    });
+  };
+
+  /**
+   * clearFilterTags
+   * 清空已选的筛选标签
+   */
+  const clearFilterTags = () => setSelectedTags([]);
 
   /**
    * uploadZipFile
@@ -1297,21 +1435,77 @@ export default function Home(props) {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              {websites.length === 0 ? (
-                <div className="text-center py-16">
-                  <div className="w-16 h-16 rounded-full bg-zinc-900/50 flex items-center justify-center mx-auto mb-4 border border-zinc-800">
-                    <Globe className="w-8 h-8 text-zinc-600" />
-                  </div>
-                  <p className="text-zinc-400 font-medium">{t.emptyTitle}</p>
-                  <p className="text-zinc-600 text-sm mt-2">{t.emptyDesc}</p>
-                </div>
-              ) : (
-                <div className="divide-y divide-zinc-900">
-                  {websites.map((website) => (
-                    <div
-                      key={website._id}
-                      className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
+              {allTags.length > 0 && (
+                <div className="p-4 border-b border-zinc-900 flex flex-wrap gap-2 items-center bg-zinc-900/10">
+                  <span className="text-xs text-zinc-500 mr-2 flex items-center gap-1">
+                    <Tag className="w-3 h-3" />
+                    筛选:
+                  </span>
+                  <Badge
+                    variant={selectedTags.length === 0 ? "default" : "outline"}
+                    className={`cursor-pointer transition-all ${
+                      selectedTags.length === 0
+                        ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                        : "text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                    }`}
+                    onClick={clearFilterTags}
+                  >
+                    全部
+                  </Badge>
+                  {allTags.map((tag) => {
+                    const active = selectedTags.includes(tag);
+                    return (
+                      <Badge
+                        key={tag}
+                        variant={active ? "default" : "outline"}
+                        className={`cursor-pointer transition-all ${
+                          active
+                            ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
+                            : "text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                        }`}
+                        onClick={() => toggleFilterTag(tag)}
+                      >
+                        {tag}
+                      </Badge>
+                    );
+                  })}
+                  {selectedTags.length > 0 && (
+                    <Badge
+                      variant="outline"
+                      className="ml-2 cursor-pointer text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                      onClick={clearFilterTags}
                     >
+                      清空
+                    </Badge>
+                  )}
+                </div>
+              )}
+              {websites.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="w-16 h-16 rounded-full bg-zinc-900/50 flex items-center justify-center mx-auto mb-4 border border-zinc-800">
+                  <Globe className="w-8 h-8 text-zinc-600" />
+                </div>
+                <p className="text-zinc-400 font-medium">{t.emptyTitle}</p>
+                <p className="text-zinc-600 text-sm mt-2">{t.emptyDesc}</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-900">
+                {websites
+                  .filter(w => selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t))))
+                  .length === 0 && (
+                    <div className="text-center py-12">
+                      <p className="text-zinc-500 text-sm">
+                        未找到包含标签 [{selectedTags.join(", ")}] 的项目
+                      </p>
+                    </div>
+                  )}
+                {websites
+                  .filter(w => selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t))))
+                  .map((website) => (
+                  <div
+                    key={website._id}
+                    className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 group"
+                  >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-2">
                           <div className="flex items-center gap-2 group">
@@ -1361,6 +1555,97 @@ export default function Home(props) {
                               <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
                               {t.processingBadge}
                             </Badge>
+                          )}
+                        </div>
+
+                        {/* Tags Section */}
+                        <div className="flex items-center flex-wrap gap-2 mt-2">
+                          {editingTagsId === website._id ? (
+                            <div className="flex items-center gap-2 w-full max-w-md my-1">
+                              <Input
+                                value={editingTagsValue}
+                                onChange={(e) => setEditingTagsValue(e.target.value)}
+                                placeholder="输入标签，用逗号分隔"
+                                className="h-7 text-xs bg-zinc-900/50 border-zinc-800 focus:border-zinc-600 text-zinc-100 placeholder:text-zinc-500"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') saveEditTags(website);
+                                  if (e.key === 'Escape') cancelEditTags();
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <div className="flex items-center gap-1 flex-wrap">
+                                {parseTags(editingTagsValue).map((tag, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 transition-colors"
+                                  >
+                                    {tag}
+                                    <button
+                                      className="ml-1 text-zinc-400 hover:text-zinc-200"
+                                      title="删除该标签"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const next = parseTags(editingTagsValue).filter((t) => t !== tag);
+                                        setEditingTagsValue(joinTags(next));
+                                      }}
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0 text-green-500 hover:text-green-400 hover:bg-green-500/10"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  saveEditTags(website);
+                                }}
+                              >
+                                <Check className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-800"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelEditTags();
+                                }}
+                              >
+                                <X className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 my-1">
+                              {Array.isArray(website.tags) && website.tags.length > 0 && (
+                                <div className="flex gap-1 flex-wrap">
+                                  {website.tags.map((tag, idx) => (
+                                    <span key={idx} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-700 transition-colors cursor-default">
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className={`h-5 w-5 p-0 hover:bg-zinc-800 ${
+                                  Array.isArray(website.tags) && website.tags.length > 0 
+                                    ? "text-zinc-600 hover:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity" 
+                                    : "text-zinc-600 hover:text-zinc-400"
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startEditTags(website);
+                                }}
+                                title="编辑标签"
+                              >
+                                <Tag className="w-3 h-3" />
+                              </Button>
+                            </div>
                           )}
                         </div>
 
