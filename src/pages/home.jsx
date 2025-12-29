@@ -554,6 +554,48 @@ export default function Home(props) {
       });
     }
   };
+
+  /**
+   * isTokenExpiredError
+   * 判断错误是否为凭证过期相关（ACCESS_TOKEN_EXPIRED / invalid_grant 4026）
+   */
+  const isTokenExpiredError = (error) => {
+    const code = error?.code || error?.error_code;
+    const msg =
+      error?.message || error?.msg || error?.error_description || "";
+    return (
+      code === "ACCESS_TOKEN_EXPIRED" ||
+      code === 4026 ||
+      String(msg).includes("ACCESS_TOKEN_EXPIRED") ||
+      String(msg).includes("invalid_grant") ||
+      String(msg).includes("invalid refresh token")
+    );
+  };
+
+  /**
+   * handleAuthError
+   * 统一处理鉴权相关错误；凭证过期时弹框确认刷新页面
+   */
+  const handleAuthError = (error, fallbackToast = true) => {
+    if (isTokenExpiredError(error)) {
+      try {
+        if (typeof window !== "undefined" && window.showTokenExpiredModal) {
+          window.showTokenExpiredModal();
+          return;
+        }
+      } catch {}
+    }
+    if (fallbackToast) {
+      toast({
+        title: t.loadFailedTitle,
+        description:
+          (error && (error.message || error.msg || error.error_description)) ||
+          t.loadFailedDesc,
+        variant: "destructive"
+      });
+    }
+  };
+
   /**
    * 加载当前用户的站点列表（从 resource-game 集合）
    */
@@ -589,11 +631,7 @@ export default function Home(props) {
       }
     } catch (error) {
       console.error("Failed to load website list:", error);
-      toast({
-        title: t.loadFailedTitle,
-        description: error.message || t.loadFailedDesc,
-        variant: "destructive"
-      });
+      handleAuthError(error);
     }
   };
 
@@ -756,11 +794,15 @@ export default function Home(props) {
         throw new Error(res.result?.message || t.saveFailedTitle);
       }
     } catch (error) {
-      toast({
-        title: t.saveFailedTitle,
-        description: error.message || t.saveFailedDesc,
-        variant: "destructive"
-      });
+      if (isTokenExpiredError(error)) {
+        handleAuthError(error, false);
+      } else {
+        toast({
+          title: t.saveFailedTitle,
+          description: error.message || t.saveFailedDesc,
+          variant: "destructive"
+        });
+      }
     }
   };
 
