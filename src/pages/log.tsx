@@ -10,6 +10,7 @@ import {
   Ghost
 } from "lucide-react";
 import { MainLayout } from "@/layouts/MainLayout";
+import { siteConfig } from "@/configs/env";
 
 const LogPage: React.FC = () => {
   const [typedText, setTypedText] = useState("");
@@ -51,6 +52,20 @@ const LogPage: React.FC = () => {
               lineColor="border-green-500"
               glow="shadow-[0_0_20px_rgba(34,197,94,0.3)]"
             >
+              <TimelineItem
+                version={`v${siteConfig.version}`}
+                name="井井有条 (Orderliness)"
+                date="2025-12-29"
+                dateNote="(强迫症狂喜)"
+              >
+                <Feature
+                  tag="Feature"
+                  title="资源标签管理"
+                  desc="增加了资源标签管理。终于不用在一堆乱七八糟的资源里大海捞针了，现在你可以优雅地给它们打上标签。"
+                  note="整理使人快乐，虽然通常只能维持一天。"
+                />
+              </TimelineItem>
+
               <TimelineItem
                 version="v0.7.0"
                 name="名正言顺 (The Identity)"
@@ -160,70 +175,6 @@ const LogPage: React.FC = () => {
                   tag="Style"
                   title="暗黑模式"
                   desc="默认全黑。为了保护你的视网膜，也为了省点电费。"
-                />
-              </TimelineItem>
-            </Section>
-
-            <Section
-              title="Roadmap to Glory"
-              subtitle="画的大饼"
-              icon={<Sparkles className="text-black" size={20} />}
-              color="bg-zinc-100"
-              lineColor="border-dashed border-zinc-700"
-              ghost
-            >
-              <TimelineItem
-                version="Soon™"
-                name="下周一定 (Next Week for Sure)"
-                date="Coming..."
-              >
-                <Feature
-                  tag="Refactor"
-                  title="控制台整容手术"
-                  desc="目前的控制台丑得像是我用脚写的 CSS。我们将进行一次彻底的整容，争取让它看起来不像是一个后端工程师的业余作品。"
-                  note="设计师已经提刀在路上了。"
-                />
-                <Feature
-                  tag="Copywriting"
-                  title="尝试说人话"
-                  desc="首页现在的文案充满了‘赋能’、‘抓手’这种黑话。我们要把它改成人类能看懂的语言，停止假装我们在改变世界。"
-                />
-                <Feature
-                  tag="Open Source"
-                  title="代码开源 (公开处刑)"
-                  desc="我们要把这一坨代码传到 GitHub 上了。链接即将更新，届时欢迎大家来 Review (Roast) 我的代码。"
-                  note="请轻喷，我也知道写得很烂。"
-                />
-              </TimelineItem>
-
-              <TimelineItem version="v1.0" name="项目的诞生 (Projectization)">
-                <Feature
-                  tag="New"
-                  title="项目归档"
-                  desc="终于不再全是 deployment_final_v2_really_final.zip 了。我们要引入“项目”概念，让你乱糟糟的代码有个家。"
-                />
-                <Feature
-                  tag="New"
-                  title="单文件极简主义"
-                  desc="支持直接上传单 html 页面。有时候你只是想写个 Hello World，不需要把它打包成一个 2KB 的 zip 还要假装它是个工程。"
-                />
-                <Feature
-                  tag="New"
-                  title="版本回退 (后悔药)"
-                  desc="当你周五下午 5 点发布的更新把生产环境搞挂时，点这个按钮可以保住你的饭碗。"
-                />
-              </TimelineItem>
-
-              <TimelineItem version="v3.0" name="氪金时代 (Premium Era)">
-                <Feature
-                  tag="New"
-                  title="自定义域名"
-                  desc="告别 project-gamma.demox.app 这种看起来像诈骗网站的域名。换上你自己的 .com，假装自己是大厂。"
-                />
-                <Feature
-                  tag="New"
-                  title="构建日志"
-                  desc="如果部署失败了，我们会告诉你死在哪一行，而不是只回你一个高冷的 Error。"
                 />
               </TimelineItem>
             </Section>
