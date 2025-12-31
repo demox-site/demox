@@ -26,6 +26,7 @@ exports.main = async (event, context) => {
 
   const app = tcb.init();
   const db = app.database();
+  const auth = app.auth();
 
   /**
    * updateProgress
@@ -511,6 +512,80 @@ exports.main = async (event, context) => {
             files: result.data,
             count: result.data.length
         };
+    }
+
+    /**
+     * list_all
+     * 管理员查询所有用户的项目列表（基于 ai_builder_user_roles 校验）
+     */
+    if (action === 'list_all') {
+        if (!userId) {
+            throw new Error('Missing required parameter: userId');
+        }
+        try {
+            const roleDoc = await db.collection('ai_builder_user_roles').doc(userId).get();
+            const roles = roleDoc?.data?.[0]?.role || [];
+            const isAdmin = Array.isArray(roles) && roles.includes('admin');
+            if (!isAdmin) {
+                return { success: false, message: '仅管理员可访问全部项目' };
+            }
+            const all = await db.collection('resource-game').get();
+            return {
+                success: true,
+                files: all.data || [],
+                count: (all.data || []).length
+            };
+        } catch (e) {
+            return { success: false, message: e.message || String(e) };
+        }
+    }
+
+  /**
+   * resolve_user_emails
+   * 批量解析用户邮箱，输入 userIds 数组，返回 { userId, email } 列表
+   */
+  if (action === 'resolve_user_emails') {
+        /**
+         * extractEmailFromUserInfo
+         * 从 CloudBase EndUserInfo 中尽可能提取邮箱：优先 email 字段，其次 username（若为邮箱格式）
+         */
+        const extractEmailFromUserInfo = (userInfo) => {
+            const direct = String(userInfo?.email || userInfo?.Email || '').trim();
+            if (direct) return direct;
+
+            const username = String(userInfo?.username || userInfo?.userName || userInfo?.UserName || userInfo?.user_name || '').trim();
+            if (username && username.includes('@')) return username;
+
+            return '';
+        };
+
+        const { userIds = [] } = event || {};
+        if (!Array.isArray(userIds) || userIds.length === 0) {
+            return { success: true, users: [] };
+        }
+        try {
+            const tasks = userIds.map(async (uid) => {
+                try {
+                    const { userInfo } = await auth.getEndUserInfo(uid);
+                    let email = extractEmailFromUserInfo(userInfo);
+                    if (!email) {
+                        try {
+                            const res = await auth.queryUserInfo({ uid });
+                            email = extractEmailFromUserInfo(res?.userInfo);
+                        } catch (e) {
+                            email = '';
+                        }
+                    }
+                    return { userId: uid, email: email || '' };
+                } catch (err) {
+                    return { userId: uid, email: '' };
+                }
+            });
+            const users = await Promise.all(tasks);
+            return { success: true, users };
+        } catch (e) {
+            return { success: false, message: e.message || String(e) };
+        }
     }
 
     // --- 新增功能: COS 统计（sites 目录体积、对象数量、桶流量时间序列） ---

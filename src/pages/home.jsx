@@ -6,6 +6,12 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
+  Command,
+  CommandInput,
+  CommandList,
+  CommandItem,
+  CommandGroup,
+  CommandEmpty,
   Alert,
   AlertDescription,
   AlertTitle,
@@ -20,6 +26,9 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -352,6 +361,8 @@ export default function Home(props) {
   const [selectedTags, setSelectedTags] = useState([]);
   const [editingTagsId, setEditingTagsId] = useState(null);
   const [editingTagsValue, setEditingTagsValue] = useState("");
+  const [allUsers, setAllUsers] = useState([]);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
   const t = translations[lang];
   useEffect(() => {
     checkAuthStatus();
@@ -597,16 +608,16 @@ export default function Home(props) {
   };
 
   /**
-   * 加载当前用户的站点列表（从 resource-game 集合）
+   * 加载站点列表：普通用户仅加载自己的，管理员加载所有人的
    */
   const loadWebsites = async () => {
     try {
+      const isAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
       const result = await app.callFunction({
         name: "deploy-website",
-        data: {
-          action: "list",
-          userId: user?.userId || ""
-        }
+        data: isAdmin
+          ? { action: "list_all", userId: user?.userId || "" }
+          : { action: "list", userId: user?.userId || "" }
       });
       if (result.result && result.result.success) {
         const mapped = (result.result.files || []).map((item) => ({
@@ -626,6 +637,31 @@ export default function Home(props) {
           }
         });
         setAllTags(Array.from(tagsSet).sort());
+
+        // 管理员解析用户邮箱用于筛选
+        if (isAdmin) {
+          const uidSet = new Set(sorted.map(w => w.userId).filter(Boolean));
+          const uniqueUids = Array.from(uidSet);
+          if (uniqueUids.length > 0) {
+            try {
+              const emailRes = await app.callFunction({
+                name: "deploy-website",
+                data: { action: "resolve_user_emails", userIds: uniqueUids }
+              });
+              if (emailRes.result && emailRes.result.success) {
+                setAllUsers(emailRes.result.users || []);
+              } else {
+                setAllUsers(uniqueUids.map(uid => ({ userId: uid, email: "" })));
+              }
+            } catch {
+              setAllUsers(uniqueUids.map(uid => ({ userId: uid, email: "" })));
+            }
+          } else {
+            setAllUsers([]);
+          }
+        } else {
+          setAllUsers([]);
+        }
       } else {
         throw new Error(result.result?.message || t.loadListFailed);
       }
@@ -824,6 +860,44 @@ export default function Home(props) {
    * 清空已选的筛选标签
    */
   const clearFilterTags = () => setSelectedTags([]);
+
+  /**
+   * getEmailByUserId
+   * 根据 userId 获取邮箱（不存在则返回空字符串）
+   */
+  const getEmailByUserId = (uid) => {
+    const u = allUsers.find((x) => x.userId === uid);
+    return (u && u.email) || "";
+  };
+
+  /**
+   * getUsersWithEmail
+   * 仅保留有邮箱的用户列表（用于筛选下拉框展示）
+   */
+  const getUsersWithEmail = () => {
+    return (allUsers || []).filter((u) => String(u?.email || "").trim());
+  };
+
+  /**
+   * toggleSelectUserId
+   * 切换选择/取消选择某个用户（值为 userId）
+   */
+  const toggleSelectUserId = (uid) => {
+    uid = String(uid || "").trim();
+    if (!uid) return;
+    setSelectedUserIds((prev) => {
+      if (prev.includes(uid)) {
+        return prev.filter((e) => e !== uid);
+      }
+      return [...prev, uid];
+    });
+  };
+
+  /**
+   * clearSelectedUserIds
+   * 清空已选用户
+   */
+  const clearSelectedUserIds = () => setSelectedUserIds([]);
 
   /**
    * uploadZipFile
@@ -1477,6 +1551,57 @@ export default function Home(props) {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
+              {(Array.isArray(user?.roles) && user.roles.includes("admin")) && allUsers.length > 0 && (
+                <div className="p-4 border-b border-zinc-900 flex flex-wrap gap-2 items-center bg-zinc-900/10">
+                  <span className="text-xs text-zinc-500 mr-2 flex items-center gap-1">
+                    <User className="w-3 h-3" />
+                    用户:
+                  </span>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
+                      >
+                        {selectedUserIds.length === 0 ? "全部用户" : `已选 ${selectedUserIds.length} 人`}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0 w-80" align="start">
+                      <Command>
+                        <CommandInput placeholder="搜索用户邮箱..." />
+                        <CommandList>
+                          <CommandEmpty>无匹配用户</CommandEmpty>
+                          <CommandGroup heading="用户列表">
+                            {getUsersWithEmail().map((u) => {
+                              const label = String(u.email || "").trim();
+                              const checked = selectedUserIds.includes(u.userId);
+                              return (
+                                <CommandItem
+                                  key={u.userId}
+                                  onSelect={() => toggleSelectUserId(u.userId)}
+                                >
+                                  <span className="truncate">{label}</span>
+                                  {checked ? <Check className="ml-auto h-4 w-4 opacity-70" /> : null}
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                  {selectedUserIds.length > 0 && (
+                    <Badge
+                      variant="outline"
+                      className="ml-2 cursor-pointer text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                      onClick={clearSelectedUserIds}
+                    >
+                      清空
+                    </Badge>
+                  )}
+                </div>
+              )}
               {allTags.length > 0 && (
                 <div className="p-4 border-b border-zinc-900 flex flex-wrap gap-2 items-center bg-zinc-900/10">
                   <span className="text-xs text-zinc-500 mr-2 flex items-center gap-1">
@@ -1533,7 +1658,11 @@ export default function Home(props) {
             ) : (
               <div className="divide-y divide-zinc-900">
                 {websites
-                  .filter(w => selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t))))
+                  .filter(w => {
+                    const tagOk = selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t)));
+                    const userOk = selectedUserIds.length === 0 || (w.userId && selectedUserIds.includes(w.userId));
+                    return tagOk && userOk;
+                  })
                   .length === 0 && (
                     <div className="text-center py-12">
                       <p className="text-zinc-500 text-sm">
@@ -1542,7 +1671,11 @@ export default function Home(props) {
                     </div>
                   )}
                 {websites
-                  .filter(w => selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t))))
+                  .filter(w => {
+                    const tagOk = selectedTags.length === 0 || (Array.isArray(w.tags) && w.tags.some((t) => selectedTags.includes(t)));
+                    const userOk = selectedUserIds.length === 0 || (w.userId && selectedUserIds.includes(w.userId));
+                    return tagOk && userOk;
+                  })
                   .map((website) => (
                   <div
                     key={website._id}

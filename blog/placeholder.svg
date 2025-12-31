@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480">
+  <rect x="0" y="0" width="800" height="480" fill="#111827"/>
+  <rect x="40" y="40" width="720" height="400" rx="16" fill="#1f2937" stroke="#374151" stroke-width="2"/>
+  <g fill="#374151">
+    <circle cx="140" cy="140" r="60"/>
+    <rect x="240" y="100" width="400" height="24" rx="6"/>
+    <rect x="240" y="140" width="340" height="16" rx="6"/>
+    <rect x="240" y="170" width="360" height="16" rx="6"/>
+    <rect x="240" y="220" width="440" height="12" rx="6"/>
+    <rect x="240" y="240" width="420" height="12" rx="6"/>
+    <rect x="240" y="260" width="380" height="12" rx="6"/>
+  </g>
+  <text x="400" y="360" font-size="14" font-family="Segoe UI, system-ui, -apple-system, sans-serif" text-anchor="middle" fill="#9ca3af">
+    占位图 Placeholder
+  </text>
+</svg>
