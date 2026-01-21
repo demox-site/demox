@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP API</title>
+</head>
+<body>
+<script src="https://cdn.cloudbase.net/cloudbase.full.js"></script>
+<script>
+// 初始化 CloudBase
+const app = cloudbase.init({
+  env: 'moyu-3g5pbxld00f4aead'
+});
+
+// 从 URL 查询参数获取请求数据
+const urlParams = new URLSearchParams(window.location.search);
+const action = urlParams.get('action') || 'exchange_token';
+const code = urlParams.get('code');
+const clientId = urlParams.get('client_id');
+const redirectUri = urlParams.get('redirect_uri');
+
+// 调用云函数
+app.callFunction({
+  name: 'oauth-token-manager',
+  data: {
+    action,
+    code,
+    clientId,
+    redirectUri,
+  },
+}).then(res => {
+  const result = res.result;
+  // 返回 JSON 响应
+  document.body.innerHTML = '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+}).catch(err => {
+  // 返回错误
+  document.body.innerHTML = '<pre>' + JSON.stringify({
+    error: {
+      code: 'FUNCTION_CALL_FAILED',
+      message: err.message || '云函数调用失败'
+    }
+  }, null, 2) + '</pre>';
+});
+</script>
+</body>
+</html>

@@ -9,8 +9,16 @@ const fs = require('fs');
 const os = require('os');
 
 exports.main = async (event, context) => {
-  const { action = 'bucket_stats', fileId, userId, websiteId, fileName, taskId } = event || {};
-  
+  const {
+    action = 'bucket_stats',
+    fileId,
+    userId: providedUserId,
+    websiteId,
+    fileName,
+    taskId,
+    accessToken  // 新增：OAuth Access Token
+  } = event || {};
+
   // 静态网站托管 Bucket 名称及区域
   const hostingBucket = 'resource-game-1307257815';
   const region = 'ap-chengdu';
@@ -27,6 +35,74 @@ exports.main = async (event, context) => {
   const app = tcb.init();
   const db = app.database();
   const auth = app.auth();
+
+  // ==========================================
+  // 用户身份认证（支持多种方式）
+  // ==========================================
+  let userId = null;
+
+  try {
+    // 优先级 1: 从 context.userInfo 获取（Web 端调用）
+    if (context.userInfo && context.userInfo.uid) {
+      userId = context.userInfo.uid;
+      console.log('[Auth] 来自 Web 端调用，用户 ID:', userId);
+    }
+    // 优先级 2: 从 accessToken 获取（MCP 调用）
+    else if (accessToken) {
+      // 验证 CloudBase Access Token
+      try {
+        // 解析 JWT token 获取 userId (不验证签名，仅用于提取信息)
+        const tokenParts = accessToken.split('.');
+        if (tokenParts.length !== 3) {
+          throw new Error('Invalid token format');
+        }
+
+        const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+        userId = payload.sub || payload.user_id;
+
+        if (!userId) {
+          throw new Error('Cannot extract userId from token');
+        }
+
+        console.log('[Auth] 来自 MCP 调用，用户 ID:', userId);
+      } catch (error) {
+        console.error('[Auth] Token 验证失败:', error);
+        return {
+          error: {
+            code: 'TOKEN_INVALID',
+            message: '访问令牌无效或已过期',
+            suggestion: '请在 MCP 客户端重新登录，Token 会自动刷新',
+            timestamp: new Date().toISOString()
+          }
+        };
+      }
+    }
+    // 优先级 3: 直接传入的 userId（兼容旧版本）
+    else if (providedUserId) {
+      userId = providedUserId;
+      console.log('[Auth] 兼容模式，用户 ID:', userId);
+    }
+    else {
+      return {
+        error: {
+          code: 'AUTH_REQUIRED',
+          message: '无法获取用户身份',
+          suggestion: '请提供 accessToken 或确保从已登录的客户端调用',
+          timestamp: new Date().toISOString()
+        }
+      };
+    }
+  } catch (error) {
+    console.error('[Auth] 认证过程出错:', error);
+    return {
+      error: {
+        code: 'AUTH_ERROR',
+        message: '认证失败',
+        suggestion: error.message,
+        timestamp: new Date().toISOString()
+      }
+    };
+  }
 
   /**
    * updateProgress
