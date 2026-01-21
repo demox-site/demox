@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MCP API Proxy</title>
+</head>
+<body>
+<script type="module">
+  import cloudbase from 'https://cdn.cloudbase.net/cloudbase.full.js';
+
+  const app = cloudbase.init({
+    env: 'moyu-3g5pbxld00f4aead'
+  });
+
+  // 从 URL 参数获取数据
+  const urlParams = new URLSearchParams(window.location.search);
+  const action = urlParams.get('action') || 'exchange_token';
+  const code = urlParams.get('code');
+  const clientId = urlParams.get('client_id');
+  const redirectUri = urlParams.get('redirect_uri');
+
+  // 调用云函数
+  app.callFunction({
+    name: 'oauth-token-manager',
+    data: {
+      action,
+      code,
+      clientId,
+      redirectUri,
+    },
+  }).then(res => {
+    const result = res.result;
+    document.body.innerHTML = JSON.stringify(result);
+  }).catch(err => {
+    document.body.innerHTML = JSON.stringify({
+      error: {
+        code: 'FUNCTION_CALL_FAILED',
+        message: err.message
+      }
+    });
+  });
+</script>
+</body>
+</html>

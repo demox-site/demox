@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "demox": {
+      "command": "node",
+      "args": ["/Users/phosa/data/project/moyu/ai-builder/mcp-server/dist/index.js"]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "envId": "moyu-3g5pbxld00f4aead",
+  "region": "ap-chengdu",
+  "$schema": "https://framework-1258016615.tcloudbaseapp.com/schema/latest.json",
+  "version": "2.0",
+  "framework": {
+    "name": "demox-mcp",
+    "plugins": {
+      "client": {
+        "use": "@cloudbase/framework-plugin-website",
+        "inputs": {
+          "buildCommand": "npm run build",
+          "outputPath": "dist"
+        }
+      },
+      "server": {
+        "use": "@cloudbase/framework-plugin-function",
+        "inputs": {
+          "functionRoot": "./cloudfunctions",
+          "functions": [
+            {
+              "name": "mcp-api",
+              "timeout": 60,
+              "envVariables": {},
+              "handler": "index.main"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

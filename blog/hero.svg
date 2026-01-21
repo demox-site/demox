@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.8)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1200" height="360" fill="#0b0f19"/>
+  <g opacity="0.2" stroke="#1f2937">
+    <path d="M0 60 H1200"/>
+    <path d="M0 120 H1200"/>
+    <path d="M0 180 H1200"/>
+    <path d="M0 240 H1200"/>
+    <path d="M0 300 H1200"/>
+  </g>
+  <circle cx="600" cy="180" r="200" fill="url(#glow)" opacity="0.2"/>
+  <rect x="60" y="60" width="1080" height="240" rx="24" fill="url(#g)"/>
+  <rect x="60" y="60" width="1080" height="240" rx="24" fill="#000" opacity="0.15"/>
+  <text x="600" y="160" font-size="44" font-family="Segoe UI, system-ui, -apple-system, sans-serif" text-anchor="middle" fill="#ffffff" font-weight="700">
+    DemoX
+  </text>
+  <text x="600" y="210" font-size="22" font-family="Segoe UI, system-ui, -apple-system, sans-serif" text-anchor="middle" fill="#d1d5db">
+    极简静态网站托管与部署平台
+  </text>
+  <text x="600" y="250" font-size="16" font-family="Segoe UI, system-ui, -apple-system, sans-serif" text-anchor="middle" fill="#9ca3af">
+    Vite • React • Tailwind • Radix UI • Cloud Functions
+  </text>
+</svg>

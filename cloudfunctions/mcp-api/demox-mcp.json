@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "demox": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@demox/mcp-server"
+      ]
+    }
+  }
+}
