@@ -10,6 +10,7 @@ import LayoutDemo from "../pages/LayoutDemo";
 import { MCPSetup } from "../pages/MCPSetup";
 import { MCPLogin } from "../pages/MCPLogin";
 import { MCPAuthorize } from "../pages/MCPAuthorize";
+import { MCPPage } from "../pages/MCPPage";
 
 export const routers = [
   {
@@ -24,6 +25,10 @@ export const routers = [
   {
     id: "pricing",
     component: MemberPrice
+  },
+  {
+    id: "mcp",
+    component: MCPPage
   },
   {
     id: "layout-demo",

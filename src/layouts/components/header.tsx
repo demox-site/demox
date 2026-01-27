@@ -22,13 +22,15 @@ import {
   X,
   Settings,
   CreditCard,
-  FileText
+  FileText,
+  Terminal
 } from "lucide-react";
 
 const navbarTexts = {
   zh: {
     pricing: "价格",
     log: "日志",
+    mcp: "MCP",
     login: "登录",
     console: "控制台",
     logout: "退出登录",
@@ -37,6 +39,7 @@ const navbarTexts = {
   en: {
     pricing: "Pricing",
     log: "Log",
+    mcp: "MCP",
     login: "Login",
     console: "Console",
     logout: "Log out",
@@ -115,7 +118,7 @@ export const MainHeader: React.FC = () => {
                 <span className="text-xs font-mono uppercase">{lang}</span>
               </button>
 
-              {/* Global navigation: Pricing & Log */}
+              {/* Global navigation: Pricing & Log & MCP */}
               <button
                 type="button"
                 onClick={() => navigate("/pricing")}
@@ -129,6 +132,13 @@ export const MainHeader: React.FC = () => {
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
               >
                 {t.log}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/mcp")}
+                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
+              >
+                {t.mcp}
               </button>
 
               {user ? (
@@ -260,6 +270,13 @@ export const MainHeader: React.FC = () => {
               >
                 <FileText size={16} />
                 {t.log}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/mcp")}
+                className="flex items-center gap-3 text-sm text-zinc-400 hover:text-zinc-100 w-full text-left p-2 rounded-md hover:bg-zinc-900"
+              >
+                {t.mcp}
               </button>
 
               {user ? (
