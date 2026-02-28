@@ -496,7 +496,7 @@ async function handleUploadAndDeploy(event) {
     const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : generateWebsiteId();
     const fileNameNoExt = normalizeFileNameNoExt(fileName);
     const targetPrefix = `sites/${userId}/${websiteId}/${fileNameNoExt}`;
-    const urlPrefix = `sites-${userId.replace(/_/g, '-')}-${websiteId}-${fileNameNoExt}`;
+    const urlPrefix = `sites-${userId}-${websiteId}-${fileNameNoExt}`;
 
     // 部署到 COS
     const uploadedCount = await deployZipToCos(zipEntries, targetPrefix);
