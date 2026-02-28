@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth } from "../cloudbase";
+import { userManager } from "../api";
 import { AuthDialog } from "../components/AuthDialog";
 import {
   Tooltip,
@@ -158,19 +158,19 @@ const CloudHostLanding: React.FC = () => {
   const t = translations[lang];
 
   useEffect(() => {
-    const checkLoginState = async () => {
-      const loginState = await auth.getLoginState();
-      if (loginState) {
-        setUser(loginState.user);
+    const checkLoginState = () => {
+      const currentUser = userManager.get();
+      if (currentUser) {
+        setUser(currentUser);
       }
     };
     checkLoginState();
   }, []);
 
-  const handleLoginSuccess = async () => {
-    const loginState = await auth.getLoginState();
-    if (loginState) {
-      setUser(loginState.user);
+  const handleLoginSuccess = () => {
+    const currentUser = userManager.get();
+    if (currentUser) {
+      setUser(currentUser);
     }
     navigate("/home");
   };

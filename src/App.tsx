@@ -24,26 +24,19 @@ import { HelmetProvider } from "react-helmet-async";
 import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
 import { createHashHistory } from "history";
-import { auth } from "./cloudbase";
+import { authApi, tokenManager } from "./api";
 
 const history = createHashHistory();
 window._WEAPPS_HISTORY = history;
 // Create a client
 const queryClient = new QueryClient();
 
- const App: React.FC = () => {
-  /**
-   * handleTokenRefreshFailure
-   * 处理凭证刷新失败的全局事件，并展示确认刷新页面的弹框
-   */
+const App: React.FC = () => {
   const [tokenExpiredOpen, setTokenExpiredOpen] = React.useState(false);
-  /**
-   * handleConfirmRefresh
-   * 确认刷新页面前，主动清理当前登录凭证（access/refresh token）
-   */
+
   const handleConfirmRefresh = async () => {
     try {
-      await auth.signOut();
+      authApi.logout();
     } catch {}
     try {
       window.location.reload();
@@ -51,22 +44,22 @@ const queryClient = new QueryClient();
       setTokenExpiredOpen(false);
     }
   };
+
   React.useEffect(() => {
-    const unsubscribe = auth.onLoginStateChanged((params) => {
-      try {
-        const eventType = params?.data?.eventType;
-        if (eventType === "refresh_token_failed") {
+    // 检查token是否有效
+    const checkAuth = async () => {
+      const token = tokenManager.get();
+      if (token) {
+        try {
+          await authApi.verifyToken();
+        } catch {
           setTokenExpiredOpen(true);
         }
-      } catch {}
-    });
-    // 提供全局方法供业务代码在捕获 4026 等错误时调用
-    (window as any).showTokenExpiredModal = () => setTokenExpiredOpen(true);
-    return () => {
-      try {
-        typeof unsubscribe === "function" && unsubscribe();
-      } catch {}
+      }
     };
+    checkAuth();
+
+    (window as any).showTokenExpiredModal = () => setTokenExpiredOpen(true);
   }, []);
 
   return (

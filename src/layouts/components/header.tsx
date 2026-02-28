@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth } from "@/cloudbase";
+import { authApi, userManager, isLoggedIn } from "@/api";
 import { AuthDialog } from "@/components/AuthDialog";
 import { useLanguage } from "@/hooks/use-language";
 import logo from "@/assets/logo.png";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
@@ -20,7 +19,6 @@ import {
   LayoutDashboard,
   Menu,
   X,
-  Settings,
   CreditCard,
   FileText,
   Terminal
@@ -65,25 +63,25 @@ export const MainHeader: React.FC = () => {
   const t = navbarTexts[lang];
 
   useEffect(() => {
-    const checkLoginState = async () => {
-      const loginState = await auth.getLoginState();
-      if (loginState) {
-        setUser(loginState.user);
+    const checkLoginState = () => {
+      const currentUser = userManager.get();
+      if (currentUser) {
+        setUser(currentUser);
       }
     };
     checkLoginState();
   }, []);
 
-  const handleLoginSuccess = async () => {
-    const loginState = await auth.getLoginState();
-    if (loginState) {
-      setUser(loginState.user);
+  const handleLoginSuccess = () => {
+    const currentUser = userManager.get();
+    if (currentUser) {
+      setUser(currentUser);
     }
     navigate("/home");
   };
 
-  const handleLogout = async () => {
-    await auth.signOut();
+  const handleLogout = () => {
+    authApi.logout();
     setUser(null);
     navigate("/index");
   };
@@ -160,14 +158,8 @@ export const MainHeader: React.FC = () => {
                     <DropdownMenuTrigger asChild>
                       <button className="ml-2 outline-none rounded-full ring-offset-2 ring-offset-black focus:ring-2 focus:ring-zinc-700 transition-all">
                         <Avatar className="h-9 w-9 border border-zinc-800 hover:border-zinc-600 transition-colors">
-                          <AvatarImage
-                            src={user.avatarUrl}
-                            alt={user.nickName}
-                          />
                           <AvatarFallback className="bg-zinc-900 text-zinc-400 text-xs font-mono">
-                            {user.nickName?.[0]?.toUpperCase() || (
-                              <User size={16} />
-                            )}
+                            {user.email?.[0]?.toUpperCase() || <User size={16} />}
                           </AvatarFallback>
                         </Avatar>
                       </button>
@@ -180,14 +172,13 @@ export const MainHeader: React.FC = () => {
                       {/* User Info Header */}
                       <div className="flex items-center gap-3 p-2 mb-1 border-b border-zinc-900 pb-3">
                         <Avatar className="h-8 w-8 border border-zinc-800">
-                          <AvatarImage src={user.avatarUrl} />
                           <AvatarFallback className="bg-zinc-900 text-zinc-500 text-xs">
                             <User size={14} />
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex flex-col overflow-hidden">
                           <span className="text-sm font-medium text-zinc-100 truncate">
-                            {user.nickName || "User"}
+                            User
                           </span>
                           <span className="text-xs text-zinc-500 truncate font-mono">
                             {maskEmail(user.email)}
@@ -284,15 +275,12 @@ export const MainHeader: React.FC = () => {
                   <div className="h-px bg-zinc-900 w-full my-2" />
                   <div className="flex items-center gap-3 p-2">
                     <Avatar className="h-8 w-8">
-                      <AvatarImage src={user.avatarUrl} />
                       <AvatarFallback className="bg-zinc-800 text-zinc-400">
-                        {user.nickName?.[0] || <User size={14} />}
+                        {user.email?.[0] || <User size={14} />}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex flex-col">
-                      <span className="text-sm text-zinc-200">
-                        {user.nickName || "User"}
-                      </span>
+                      <span className="text-sm text-zinc-200">User</span>
                       <span className="text-xs text-zinc-500 font-mono">
                         {maskEmail(user.email)}
                       </span>
