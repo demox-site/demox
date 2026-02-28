@@ -69,7 +69,7 @@ export const authApi = {
     return data;
   },
 
-  // 登录
+  // 密码登录
   login: async (email: string, password: string) => {
     const data = await request<{ success: boolean; token: string; userId: string; email: string }>(
       AUTH_API_URL,
@@ -80,6 +80,33 @@ export const authApi = {
     if (data.success && data.token) {
       tokenManager.set(data.token);
       // 管理员邮箱列表 - 与数据库中的 user_roles 表保持同步
+      const adminEmails = ["phosa@qq.com"];
+      const roles = adminEmails.includes(email) ? ["admin", "user"] : ["user"];
+      userManager.set({ userId: data.userId, email: data.email, roles });
+    }
+
+    return data;
+  },
+
+  // 发送验证码
+  sendCode: async (email: string, type: 'login' | 'register' | 'reset' = 'login') => {
+    return request<{ success: boolean; message: string }>(
+      AUTH_API_URL,
+      "/auth/send-code",
+      { method: "POST", body: { email, type } }
+    );
+  },
+
+  // 验证码登录
+  loginWithCode: async (email: string, code: string) => {
+    const data = await request<{ success: boolean; token: string; userId: string; email: string; isNewUser?: boolean }>(
+      AUTH_API_URL,
+      "/auth/login-code",
+      { method: "POST", body: { email, code } }
+    );
+
+    if (data.success && data.token) {
+      tokenManager.set(data.token);
       const adminEmails = ["phosa@qq.com"];
       const roles = adminEmails.includes(email) ? ["admin", "user"] : ["user"];
       userManager.set({ userId: data.userId, email: data.email, roles });

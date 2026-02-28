@@ -19,6 +19,8 @@ interface AuthDialogProps {
   onLoginSuccess: () => void;
 }
 
+type LoginMode = 'password' | 'code';
+
 export function AuthDialog({
   isOpen,
   onOpenChange,
@@ -27,23 +29,62 @@ export function AuthDialog({
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [loginMode, setLoginMode] = useState<LoginMode>("code");
   const [isRegister, setIsRegister] = useState(false);
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
+  const [countdown, setCountdown] = useState(0);
 
   useEffect(() => {
     if (!isOpen) {
       setAgreed(false);
       setEmail("");
       setPassword("");
+      setCode("");
+      setCodeSent(false);
+      setCountdown(0);
     }
   }, [isOpen]);
+
+  // 倒计时
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdown]);
+
+  // 发送验证码
+  const handleSendCode = async () => {
+    if (!email) {
+      toast({ title: "请输入邮箱", variant: "destructive" });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await authApi.sendCode(email, isRegister ? 'register' : 'login');
+      setCodeSent(true);
+      setCountdown(60);
+      toast({ title: "验证码已发送", description: "请查收邮件" });
+    } catch (error: any) {
+      toast({
+        title: "发送失败",
+        description: error.message,
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!email || !password) {
-      toast({ title: "请输入邮箱和密码", variant: "destructive" });
+    if (!email) {
+      toast({ title: "请输入邮箱", variant: "destructive" });
       return;
     }
 
@@ -52,13 +93,31 @@ export function AuthDialog({
       return;
     }
 
+    if (loginMode === 'code' && !code) {
+      toast({ title: "请输入验证码", variant: "destructive" });
+      return;
+    }
+
+    if (loginMode === 'password' && !password) {
+      toast({ title: "请输入密码", variant: "destructive" });
+      return;
+    }
+
     setLoading(true);
     try {
       if (isRegister) {
-        await authApi.register(email, password);
+        if (loginMode === 'code') {
+          await authApi.loginWithCode(email, code);
+        } else {
+          await authApi.register(email, password);
+        }
         toast({ title: "注册成功", description: "欢迎使用 Demox" });
       } else {
-        await authApi.login(email, password);
+        if (loginMode === 'code') {
+          await authApi.loginWithCode(email, code);
+        } else {
+          await authApi.login(email, password);
+        }
         toast({ title: "登录成功", description: "欢迎回来" });
       }
       onLoginSuccess();
@@ -91,21 +150,77 @@ export function AuthDialog({
               type="email"
               placeholder="请输入邮箱"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setCodeSent(false);
+              }}
               className="border-zinc-700 bg-zinc-800"
             />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="password">密码</Label>
-            <Input
-              id="password"
-              type="password"
-              placeholder="请输入密码"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="border-zinc-700 bg-zinc-800"
-            />
+
+          {/* 登录方式切换 */}
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant={loginMode === 'code' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setLoginMode('code')}
+              className={`flex-1 ${loginMode === 'code' ? 'bg-zinc-100 text-zinc-900' : 'border-zinc-700 text-zinc-400'}`}
+            >
+              验证码登录
+            </Button>
+            <Button
+              type="button"
+              variant={loginMode === 'password' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setLoginMode('password')}
+              className={`flex-1 ${loginMode === 'password' ? 'bg-zinc-100 text-zinc-900' : 'border-zinc-700 text-zinc-400'}`}
+            >
+              密码登录
+            </Button>
           </div>
+
+          {loginMode === 'code' ? (
+            <div className="space-y-2">
+              <Label htmlFor="code">验证码</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="code"
+                  type="text"
+                  placeholder="请输入6位验证码"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="flex-1 border-zinc-700 bg-zinc-800"
+                  maxLength={6}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleSendCode}
+                  disabled={countdown > 0 || loading}
+                  className="shrink-0 border-zinc-700 text-zinc-300"
+                >
+                  {countdown > 0 ? `${countdown}s` : (codeSent ? '重新发送' : '发送验证码')}
+                </Button>
+              </div>
+              {codeSent && (
+                <p className="text-xs text-zinc-500">验证码已发送到您的邮箱，10分钟内有效</p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor="password">密码</Label>
+              <Input
+                id="password"
+                type="password"
+                placeholder="请输入密码"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="border-zinc-700 bg-zinc-800"
+              />
+            </div>
+          )}
+
           <div className="flex items-center space-x-2">
             <Checkbox
               id="agree"
@@ -130,14 +245,13 @@ export function AuthDialog({
           >
             {loading ? "处理中..." : (isRegister ? "注册" : "登录")}
           </Button>
-          <div className="text-center text-sm text-zinc-400">
-            {isRegister ? "已有账号？" : "没有账号？"}{" "}
+          <div className="flex justify-between text-sm text-zinc-400">
             <button
               type="button"
               onClick={() => setIsRegister(!isRegister)}
               className="text-blue-400 hover:underline"
             >
-              {isRegister ? "立即登录" : "立即注册"}
+              {isRegister ? "已有账号？立即登录" : "没有账号？立即注册"}
             </button>
           </div>
         </form>
