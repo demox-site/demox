@@ -1,0 +1,12 @@
+{
+  "name": "demox-website-api",
+  "version": "1.0.1",
+  "description": "Demox Website API - SCF Function",
+  "main": "index.js",
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "cos-nodejs-sdk-v5": "^2.12.5",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.6.5"
+  }
+}
