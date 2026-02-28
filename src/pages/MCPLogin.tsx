@@ -1,115 +1,91 @@
-import React, { useEffect, useState } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
-import { auth, app } from "../cloudbase";
+import React, { useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { tokenManager, userManager } from "../api";
 import { Button } from "@/components/ui";
 import { CheckCircle, Loader2 } from "lucide-react";
 import { EmailLoginForm } from "@/components/EmailLoginForm";
 
 export function MCPLogin() {
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
 
   const [status, setStatus] = useState<"pending" | "logging" | "success" | "error">(
     "pending"
   );
   const [errorMessage, setErrorMessage] = useState("");
-  const [authCode, setAuthCode] = useState("");
 
   const clientId = searchParams.get("client_id");
   const redirectUri = searchParams.get("redirect_uri");
   const state = searchParams.get("state");
   const scope = searchParams.get("scope");
 
-  useEffect(() => {
-    // 验证必需参数
-    if (!clientId || !redirectUri || !state) {
-      setStatus("error");
-      setErrorMessage("缺少必需的 OAuth 参数");
-      return;
+  // 验证客户端
+  const validateClient = () => {
+    if (!clientId) {
+      return "缺少客户端 ID";
     }
 
-    // 验证客户端 ID
-    validateClient();
-  }, []);
-
-  const validateClient = async () => {
-    try {
-      console.log("[MCPLogin] 开始验证客户端", { clientId, redirectUri, state });
-
-      // 官方客户端配置（硬编码，避免数据库权限问题）
-      const officialClients = {
-        "demox-mcp-client": {
-          isActive: true,
-          redirectUris: [
-            "http://localhost:39897/callback",
-            "http://localhost:*/callback"
-          ]
-        }
-      };
-
-      const clientConfig = officialClients[clientId as keyof typeof officialClients];
-
-      if (!clientConfig) {
-        console.error("[MCPLogin] 客户端不存在");
-        setStatus("error");
-        setErrorMessage("无效的客户端 ID");
-        return;
+    // 官方客户端配置（硬编码，避免数据库权限问题）
+    const officialClients: Record<string, { isActive: boolean; redirectUris: string[] }> = {
+      "demox-mcp-client": {
+        isActive: true,
+        redirectUris: [
+          "http://localhost:39897/callback",
+          "http://localhost:*/callback"
+        ]
       }
+    };
 
-      if (!clientConfig.isActive) {
-        console.error("[MCPLogin] 客户端未激活");
-        setStatus("error");
-        setErrorMessage("客户端未激活");
-        return;
-      }
-
-      if (!clientConfig.redirectUris.includes(redirectUri)) {
-        console.error("[MCPLogin] 回调地址不匹配", {
-          expected: clientConfig.redirectUris,
-          received: redirectUri
-        });
-        setStatus("error");
-        setErrorMessage("无效的回调地址");
-        return;
-      }
-
-      console.log("[MCPLogin] 客户端验证成功");
-      setStatus("pending");
-    } catch (error) {
-      console.error("[MCPLogin] 验证客户端异常:", error);
-      setStatus("error");
-      setErrorMessage(`验证客户端失败: ${error}`);
+    const clientConfig = officialClients[clientId];
+    if (!clientConfig) {
+      return "无效的客户端 ID";
     }
+
+    if (!clientConfig.isActive) {
+      return "客户端未激活";
+    }
+
+    // 支持通配符匹配
+    const isValidRedirect = clientConfig.redirectUris.some(pattern => {
+      if (pattern.includes('*')) {
+        const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+        return regex.test(redirectUri || '');
+      }
+      return pattern === redirectUri;
+    });
+
+    if (!isValidRedirect) {
+      return "无效的回调地址";
+    }
+
+    return null;
   };
 
   const handleLoginSuccess = async () => {
     try {
       setStatus("logging");
 
-      // 1. 获取 CloudBase Access Token 和用户信息
-      const accessTokenResult = await auth.getAccessToken();
-      const userInfo = await auth.getUserInfo();
-      const userId = userInfo?.uid || "";
+      // 获取 Token 和用户信息
+      const accessToken = tokenManager.get();
+      const user = userManager.get();
 
-      // 提取实际的 access token 字符串
-      const accessToken = typeof accessTokenResult === 'object'
-        ? (accessTokenResult as any).accessToken || JSON.stringify(accessTokenResult)
-        : accessTokenResult;
+      if (!accessToken || !user) {
+        throw new Error("登录状态异常");
+      }
 
-      console.log("[MCPLogin] 获取到 Token 和用户信息", { userId, hasToken: !!accessToken });
+      console.log("[MCPLogin] 获取到 Token 和用户信息", { userId: user.userId, hasToken: !!accessToken });
 
-      // 2. 构建回调 URL，直接返回 Token（不再通过云函数交换）
-      const callbackUrl = new URL(redirectUri);
+      // 构建回调 URL
+      const callbackUrl = new URL(redirectUri || "");
       callbackUrl.searchParams.set("access_token", accessToken);
-      callbackUrl.searchParams.set("refresh_token", accessToken); // CloudBase 自动处理刷新
-      callbackUrl.searchParams.set("user_id", userId);
-      callbackUrl.searchParams.set("state", state);
+      callbackUrl.searchParams.set("refresh_token", accessToken);
+      callbackUrl.searchParams.set("user_id", user.userId);
+      callbackUrl.searchParams.set("state", state || "");
 
       console.log("[MCPLogin] 准备跳转到回调地址");
 
       setStatus("success");
 
-      // 3. 延迟跳转（让用户看到成功页面）
+      // 延迟跳转（让用户看到成功页面）
       setTimeout(() => {
         window.location.href = callbackUrl.toString();
       }, 1500);
@@ -119,6 +95,19 @@ export function MCPLogin() {
       setErrorMessage(error.message || "登录失败，请重试");
     }
   };
+
+  // 验证参数
+  const validationError = validateClient();
+  if (validationError && status === "pending") {
+    // 首次加载时验证
+    if (!clientId || !redirectUri || !state) {
+      setStatus("error");
+      setErrorMessage("缺少必需的 OAuth 参数");
+    } else if (validationError) {
+      setStatus("error");
+      setErrorMessage(validationError);
+    }
+  }
 
   // 成功页面
   if (status === "success") {
@@ -242,7 +231,7 @@ export function MCPLogin() {
               隐私政策
             </a>
           </p>
-          <p>© 2025 Demox. Powered by CloudBase.</p>
+          <p>© 2025 Demox. Powered by Tencent Cloud.</p>
         </div>
       </div>
     </div>

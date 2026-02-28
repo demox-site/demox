@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { auth } from "../cloudbase";
+import { authApi } from "../api";
 import {
   Button,
   Input,
@@ -15,36 +15,13 @@ interface EmailLoginFormProps {
 export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
   const { toast } = useToast();
 
-  interface VerificationInfo {
-    verification_id: string;
-    expires_in?: number;
-    is_user?: boolean;
-  }
-
-  function getErrorMessage(e: unknown): string {
-    if (e instanceof Error) return e.message;
-    if (typeof e === "object" && e !== null) {
-      const err = e as any;
-      if (err.message) return err.message;
-      if (err.msg) return err.msg;
-      if (err.error_description) return err.error_description;
-    }
-    try {
-      return JSON.stringify(e);
-    } catch {
-      return String(e);
-    }
-  }
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginWithCode, setLoginWithCode] = useState(true);
   const [verificationCode, setVerificationCode] = useState("");
-  const [verificationId, setVerificationId] = useState("");
-  const [verificationInfo, setVerificationInfo] =
-    useState<VerificationInfo | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [agreed, setAgreed] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -58,41 +35,26 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
     };
   }, [countdown]);
 
-  useEffect(() => {
-    setAgreed(false);
-  }, [loginWithCode]);
-
   const handleSendCode = async () => {
     if (!email) {
       toast({ title: "请输入邮箱", variant: "destructive" });
       return;
     }
     try {
-      const result = await auth.getVerification({
-        email
-      });
-
-      if (result && result.verification_id) {
-        setVerificationId(result.verification_id);
-        setVerificationInfo(result);
-        toast({ title: "验证码已发送", description: "请前往邮箱查收" });
-        setCountdown(60);
-      } else {
-        setVerificationInfo(result);
-        toast({ title: "请求已发送", description: "请前往邮箱查收" });
-        setCountdown(60);
-      }
+      setLoading(true);
+      await authApi.sendCode(email, 'login');
+      toast({ title: "验证码已发送", description: "请前往邮箱查收" });
+      setCountdown(60);
     } catch (error: unknown) {
       console.error(error);
+      const message = error instanceof Error ? error.message : "发送失败";
       toast({
         title: "发送失败",
-        description: (
-          <div className="break-all whitespace-pre-wrap">
-            {getErrorMessage(error) || "请稍后重试"}
-          </div>
-        ),
+        description: message,
         variant: "destructive"
       });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -109,76 +71,43 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
       });
       return;
     }
-    if (!loginWithCode && !password) {
-      toast({ title: "请输入密码", variant: "destructive" });
-      return;
-    }
+
+    setLoading(true);
     try {
       if (loginWithCode) {
         if (!verificationCode) {
           toast({ title: "请输入验证码", variant: "destructive" });
-          return;
-        }
-        if (!verificationInfo || !verificationId) {
-          toast({ title: "请先发送验证码", variant: "destructive" });
+          setLoading(false);
           return;
         }
 
-        const verifyResult = await auth.verify({
-          verification_id: verificationId,
-          verification_code: verificationCode
-        });
-
-        if (!verifyResult || !verifyResult.verification_token) {
-          throw new Error("验证码校验失败");
-        }
-
-        if (verificationInfo.is_user) {
-            await auth.signIn({
-                username: email,
-                verification_token: verifyResult.verification_token
-            });
-            toast({ title: "登录成功" });
+        const result = await authApi.loginWithCode(email, verificationCode);
+        if (result.isNewUser) {
+          toast({ title: "注册成功", description: "已自动登录" });
         } else {
-            await auth.signUp({
-                email,
-                verification_token: verifyResult.verification_token
-            });
-            toast({
-                title: "注册成功",
-                description: "已自动登录"
-            });
+          toast({ title: "登录成功" });
         }
       } else {
-        await auth.signIn({
-          username: email,
-          password
-        });
+        if (!password) {
+          toast({ title: "请输入密码", variant: "destructive" });
+          setLoading(false);
+          return;
+        }
+        await authApi.login(email, password);
         toast({ title: "登录成功" });
       }
 
       onLoginSuccess();
-
     } catch (error: unknown) {
       console.error(error);
-      let errorMsg = getErrorMessage(error);
-      const errCode = (error as unknown as Record<string, unknown>)["code"];
-      if (
-        errCode === "CHECK_LOGIN_FAILED" ||
-        errCode === "INVALID_USERNAME_OR_PASSWORD"
-      ) {
-        errorMsg = "邮箱或密码错误";
-      }
-
+      const message = error instanceof Error ? error.message : "登录失败";
       toast({
-        title: "登录/注册失败",
-        description: (
-          <div className="break-all whitespace-pre-wrap">
-            {errorMsg || "请检查输入信息"}
-          </div>
-        ),
+        title: "登录失败",
+        description: message,
         variant: "destructive"
       });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -190,6 +119,7 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
         </Label>
         <Input
           id="email"
+          type="email"
           placeholder="name@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -220,15 +150,16 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
               id="code"
               placeholder="6位验证码"
               value={verificationCode}
-              onChange={(e) => setVerificationCode(e.target.value)}
+              onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              maxLength={6}
               className="bg-zinc-900 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
             />
             <Button
               variant="outline"
               onClick={handleSendCode}
-              disabled={countdown > 0}
+              disabled={countdown > 0 || loading}
               type="button"
-              className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 shrink-0"
             >
               {countdown > 0 ? `${countdown}s` : "发送验证码"}
             </Button>
@@ -266,9 +197,10 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
         </div>
         <Button
           onClick={handleEmailAuth}
+          disabled={loading}
           className="w-full bg-zinc-100 text-black hover:bg-zinc-200"
         >
-          {loginWithCode ? "登录 / 注册" : "登录"}
+          {loading ? "处理中..." : (loginWithCode ? "登录 / 注册" : "登录")}
         </Button>
         <div className="text-center text-sm">
           <Button
