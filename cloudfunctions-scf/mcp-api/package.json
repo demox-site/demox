@@ -1,9 +1,0 @@
-{
-  "name": "mcp-api",
-  "version": "1.0.0",
-  "description": "Demox MCP API - SCF HTTP Function",
-  "main": "index.js",
-  "dependencies": {
-    "jsonwebtoken": "^9.0.2"
-  }
-}
