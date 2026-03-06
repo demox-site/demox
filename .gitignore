@@ -28,4 +28,4 @@ webpack.config.js
 project.zip
 
 .trae
-.datasources
+.datasourcesscripts/scf-deploy*.cjs
