@@ -1,22 +1,30 @@
 import React, { useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { tokenManager, userManager } from "../api";
 import { Button } from "@/components/ui";
 import { CheckCircle, Loader2 } from "lucide-react";
 import { EmailLoginForm } from "@/components/EmailLoginForm";
 
-export function MCPLogin() {
-  const [searchParams] = useSearchParams();
+// 从 hash 路由中解析查询参数
+function getHashParams() {
+  const hash = window.location.hash; // #/mcp-login?client_id=xxx&...
+  const queryIndex = hash.indexOf('?');
+  if (queryIndex === -1) return new URLSearchParams();
 
+  const queryString = hash.substring(queryIndex + 1);
+  return new URLSearchParams(queryString);
+}
+
+export function MCPLogin() {
   const [status, setStatus] = useState<"pending" | "logging" | "success" | "error">(
     "pending"
   );
   const [errorMessage, setErrorMessage] = useState("");
 
-  const clientId = searchParams.get("client_id");
-  const redirectUri = searchParams.get("redirect_uri");
-  const state = searchParams.get("state");
-  const scope = searchParams.get("scope");
+  const params = getHashParams();
+  const clientId = params.get("client_id");
+  const redirectUri = params.get("redirect_uri");
+  const state = params.get("state");
+  const scope = params.get("scope");
 
   // 验证客户端
   const validateClient = () => {

@@ -1,17 +1,26 @@
 import React, { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { auth, app } from "../cloudbase";
 import { Loader2 } from "lucide-react";
 
+// 从 hash 路由中解析查询参数
+function getHashParams() {
+  const hash = window.location.hash; // #/mcp-authorize?client_id=xxx&...
+  const queryIndex = hash.indexOf('?');
+  if (queryIndex === -1) return new URLSearchParams();
+
+  const queryString = hash.substring(queryIndex + 1);
+  return new URLSearchParams(queryString);
+}
+
 export function MCPAuthorize() {
-  const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<"checking" | "redirecting">("checking");
 
-  const clientId = searchParams.get("client_id");
-  const redirectUri = searchParams.get("redirect_uri");
-  const state = searchParams.get("state");
-  const scope = searchParams.get("scope");
-  const responseType = searchParams.get("response_type");
+  const params = getHashParams();
+  const clientId = params.get("client_id");
+  const redirectUri = params.get("redirect_uri");
+  const state = params.get("state");
+  const scope = params.get("scope");
+  const responseType = params.get("response_type");
 
   useEffect(() => {
     handleAuthorize();

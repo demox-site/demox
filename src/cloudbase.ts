@@ -318,6 +318,24 @@ const auth = {
     return null;
   },
 
+  getAccessToken: async () => {
+    const token = tokenManager.get();
+    return token || null;
+  },
+
+  getUserInfo: async () => {
+    const user = userManager.get();
+    if (user) {
+      return {
+        uid: user.userId,
+        nickName: user.email?.split("@")[0] || "User",
+        email: user.email,
+        roles: (user as any).roles || ["user"]
+      };
+    }
+    return null;
+  },
+
   signInWithEmailAndPassword: async (email: string, password: string) => {
     return await authApi.login(email, password);
   },
