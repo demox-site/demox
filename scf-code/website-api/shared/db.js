@@ -5,11 +5,11 @@ let pool = null;
 function getPool() {
   if (!pool) {
     pool = mysql.createPool({
-      host: process.env.MYSQL_HOST || 'DATABASE_HOST',
+      host: process.env.MYSQL_HOST,
       port: parseInt(process.env.MYSQL_PORT || '3306'),
-      user: process.env.MYSQL_USER || 'DATABASE_USER',
-      password: process.env.MYSQL_PASSWORD || 'DATABASE_PASSWORD',
-      database: process.env.MYSQL_DATABASE || 'DATABASE_NAME',
+      user: process.env.MYSQL_USER,
+      password: process.env.MYSQL_PASSWORD,
+      database: process.env.MYSQL_DATABASE,
       waitForConnections: true,
       connectionLimit: 5,
       queueLimit: 0
