@@ -273,7 +273,13 @@ const generateWebsiteId = () => {
  */
 const getWebsiteDisplayName = (w) => {
   if (!w) return "";
-  return w.websiteId || w._id || w.fileName || "";
+  const wid = w.websiteId || "";
+  if (wid && wid !== "undefined") return wid;
+  const id = w._id || "";
+  if (id && id !== "undefined") return id;
+  const fn = w.fileName || "";
+  if (fn && fn !== "undefined") return fn;
+  return "未命名";
 };
 
 /**
@@ -321,8 +327,14 @@ const getComparableTimestamp = (w) => {
 const getDisplayName = (w) => {
   if (!w) return "";
   const n = (w.name || "").trim();
-  if (n) return n;
-  return w.websiteId || w._id || w.fileName || "";
+  if (n && n !== "undefined") return n;
+  const wid = w.websiteId || "";
+  if (wid && wid !== "undefined") return wid;
+  const id = w._id || "";
+  if (id && id !== "undefined") return id;
+  const fn = w.fileName || "";
+  if (fn && fn !== "undefined") return fn;
+  return "未命名网站";
 };
 
 /**
