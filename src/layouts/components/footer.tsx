@@ -27,7 +27,7 @@ export const MainFooter: React.FC = () => {
               rel="noreferrer"
               className="hover:text-zinc-300 transition-colors flex items-center gap-2"
             >
-              <span>陕ICP备2024025600号-1</span>
+              <span>陕ICP备2024025600号-2</span>
             </a>
           </div>
         </div>
