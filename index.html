@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Demox</title>
+    <script>
+      // Apply the persisted/system theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem("app_theme");
+          var theme = saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+          var dark =
+            theme === "dark" ||
+            (theme === "system" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var root = document.documentElement;
+          root.classList.toggle("dark", dark);
+          root.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
 
   <body>

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authApi, userManager, isLoggedIn } from "@/api";
 import { AuthDialog } from "@/components/AuthDialog";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLanguage } from "@/hooks/use-language";
 import logo from "@/assets/logo.png";
 import {
@@ -115,6 +116,9 @@ export const MainHeader: React.FC = () => {
                 <Languages size={16} />
                 <span className="text-xs font-mono uppercase">{lang}</span>
               </button>
+
+              {/* Theme Switcher - system / light / dark */}
+              <ThemeToggle />
 
               {/* Global navigation: Pricing & Log & MCP */}
               <button
@@ -231,6 +235,7 @@ export const MainHeader: React.FC = () => {
                 <Languages size={20} />
                 <span className="text-xs font-mono uppercase">{lang}</span>
               </button>
+              <ThemeToggle size={20} />
               <button
                 type="button"
                 onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}

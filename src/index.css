@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    /* shadcn semantic tokens — light */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 
@@ -33,9 +34,33 @@
     --ring: 222.2 84% 4.9%;
 
     --radius: 0.5rem;
+
+    /*
+     * Neutral scale (zinc / black / white).
+     * The product was designed dark-first with hardcoded zinc/black/white
+     * utilities. These utilities are mapped (in tailwind.config) to the
+     * variables below. In light mode the zinc scale is mirror-inverted around
+     * 500 (50<->950, 100<->900, ...) and black/white are swapped, so every
+     * light-on-dark pairing flips to a correct dark-on-light pairing without
+     * editing any component.
+     */
+    --black: 255 255 255;
+    --white: 24 24 27;
+    --zinc-50: 9 9 11;
+    --zinc-100: 24 24 27;
+    --zinc-200: 39 39 42;
+    --zinc-300: 63 63 70;
+    --zinc-400: 82 82 91;
+    --zinc-500: 113 113 122;
+    --zinc-600: 161 161 170;
+    --zinc-700: 212 212 216;
+    --zinc-800: 228 228 231;
+    --zinc-900: 244 244 245;
+    --zinc-950: 250 250 250;
   }
 
   .dark {
+    /* shadcn semantic tokens — dark */
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
 
@@ -63,6 +88,21 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
+
+    /* Neutral scale — identity (true Tailwind zinc values, original look). */
+    --black: 0 0 0;
+    --white: 255 255 255;
+    --zinc-50: 250 250 250;
+    --zinc-100: 244 244 245;
+    --zinc-200: 228 228 231;
+    --zinc-300: 212 212 216;
+    --zinc-400: 161 161 170;
+    --zinc-500: 113 113 122;
+    --zinc-600: 82 82 91;
+    --zinc-700: 63 63 70;
+    --zinc-800: 39 39 42;
+    --zinc-900: 24 24 27;
+    --zinc-950: 9 9 11;
   }
 }
 

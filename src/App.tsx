@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LanguageProvider } from "@/hooks/use-language";
+import { ThemeProvider } from "@/hooks/use-theme";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -67,7 +68,8 @@ const App: React.FC = () => {
       <HelmetProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <LanguageProvider>
+            <ThemeProvider>
+              <LanguageProvider>
               <Toaster />
               <Sonner position="top-center" />
               <AlertDialog open={tokenExpiredOpen} onOpenChange={setTokenExpiredOpen}>
@@ -125,6 +127,7 @@ const App: React.FC = () => {
                 </Routes>
               </BrowserRouter>
             </LanguageProvider>
+            </ThemeProvider>
           </TooltipProvider>
         </QueryClientProvider>
       </HelmetProvider>
