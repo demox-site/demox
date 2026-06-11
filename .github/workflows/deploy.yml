@@ -1,0 +1,48 @@
+name: Deploy to Tencent COS
+
+# 等价于原 .cnb.yml：push 到 master 时构建并上传 dist/ 到腾讯云 COS
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  COS_BUCKET: resource-game-1307257815
+  COS_REGION: ap-chengdu
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install & build
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+
+      - name: Install coscli
+        run: |
+          # 取最新 release 的 linux-amd64 资产（资产名形如 coscli-vX.Y.Z-linux-amd64）
+          url=$(curl -fsSL https://api.github.com/repos/tencentyun/coscli/releases/latest \
+            | grep -o 'https://[^"]*linux-amd64' | head -1)
+          echo "Downloading $url"
+          curl -fsSL -o coscli "$url"
+          chmod +x coscli
+          sudo mv coscli /usr/local/bin/coscli
+          coscli --version || true
+
+      - name: Upload dist/ to COS
+        env:
+          TC_SECRET_ID: ${{ secrets.TC_SECRET_ID }}
+          TC_SECRET_KEY: ${{ secrets.TC_SECRET_KEY }}
+        run: |
+          coscli config set --secret_id "$TC_SECRET_ID" --secret_key "$TC_SECRET_KEY"
+          coscli config add --init-skip=true -b "$COS_BUCKET" -r "$COS_REGION"
+          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r
