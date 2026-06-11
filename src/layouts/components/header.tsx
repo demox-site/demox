@@ -101,7 +101,7 @@ export const MainHeader: React.FC = () => {
               <img
                 src={logo}
                 alt="Demox"
-                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300"
+                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300 invert dark:invert-0"
               />
             </button>
 
