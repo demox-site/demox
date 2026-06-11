@@ -21,10 +21,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
       - name: Install & build
         run: |
-          npm install --legacy-peer-deps
+          # npm 网络偶发 ECONNRESET，加重试与超时
+          npm config set fetch-retries 5
+          npm config set fetch-retry-factor 2
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
       - name: Install coscli
