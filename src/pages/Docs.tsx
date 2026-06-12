@@ -115,6 +115,33 @@ const CodeBlock: React.FC<{ code: string; lang?: string; copyLabel: string; copi
   );
 };
 
+/** 内联 URL 行：等宽显示 + 右侧行内复制按钮，比 CodeBlock 更紧凑。 */
+const InlineCopy: React.FC<{ value: string; copyLabel: string; copiedLabel: string }> = ({
+  value,
+  copyLabel,
+  copiedLabel,
+}) => {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 pl-4 pr-2 py-2">
+      <code className="flex-1 min-w-0 truncate text-sm font-mono text-zinc-200">{value}</code>
+      <button
+        type="button"
+        onClick={copy}
+        className="flex items-center gap-1 shrink-0 px-2.5 py-1.5 rounded-md text-xs bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition-colors"
+      >
+        {copied ? <CheckCircle size={13} /> : <Copy size={13} />}
+        {copied ? copiedLabel : copyLabel}
+      </button>
+    </div>
+  );
+};
+
 /** 章节容器：统一标题样式 + 滚动锚点。 */
 const Section: React.FC<{
   id: SectionId;
@@ -180,24 +207,24 @@ export const Docs: React.FC = () => {
         </div>
 
         {/* Agent Skill 高亮块 */}
-        <div className="mb-10 rounded-xl border border-zinc-700 bg-gradient-to-br from-zinc-900 to-zinc-900/40 p-6">
-          <div className="flex items-start gap-3 mb-4">
-            <Sparkles className="text-zinc-200 shrink-0 mt-0.5" size={22} />
-            <div>
-              <h2 className="text-lg font-bold text-zinc-100">{tr.skill.title}</h2>
-              <p className="text-sm text-zinc-400 mt-1 leading-relaxed">{tr.skill.desc}</p>
-            </div>
+        <div className="mb-12 rounded-xl border border-zinc-700/80 bg-gradient-to-br from-zinc-900 to-zinc-900/30 p-6 sm:p-7">
+          <div className="flex items-center gap-2.5 mb-2">
+            <Sparkles className="text-zinc-200 shrink-0" size={20} />
+            <h2 className="text-lg font-bold text-zinc-100">{tr.skill.title}</h2>
           </div>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-            <CodeBlock
-              code="https://github.com/demox-site/skill"
-              {...copyProps}
-            />
+          <p className="text-sm text-zinc-400 leading-relaxed mb-5 max-w-2xl">{tr.skill.desc}</p>
+          <div className="flex flex-col sm:flex-row sm:items-stretch gap-3">
+            <div className="flex-1 min-w-0">
+              <InlineCopy
+                value="https://github.com/demox-site/skill"
+                {...copyProps}
+              />
+            </div>
             <a
               href="https://github.com/demox-site/skill"
               target="_blank"
               rel="noreferrer"
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-medium bg-zinc-100 text-zinc-900 hover:bg-white transition-colors whitespace-nowrap shrink-0"
+              className="flex items-center justify-center gap-1.5 px-5 rounded-lg text-sm font-medium bg-zinc-100 text-zinc-900 hover:bg-white transition-colors whitespace-nowrap shrink-0 py-2.5 sm:py-0"
             >
               {tr.skill.open}
               <ChevronRight size={15} />
