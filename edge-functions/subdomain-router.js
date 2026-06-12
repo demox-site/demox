@@ -21,9 +21,11 @@ var RESOLVE_CACHE_TTL = 60; // 秒
 
 // 自托管 demox 主站（作为被 demox 托管的站点 EPX2UU43，发布走 demox cli，不再走 GitHub Actions→COS 根）：
 //   - apex demox.site：301 跳转到 www.demox.site（保留 path+query，OAuth code 不丢）。
-//   - www.demox.site：不写死，走下方通用路由表逻辑（DB websites.subdomain='www' → path）。
+//   - www.demox.site：优先走路由表（DB websites.subdomain='www' → path）；
+//     resolve 失败时用 WWW_FALLBACK_PATH 兜底，绝不放行回源已清空的桶根。
 var APEX_HOST = 'demox.site';        // 跳转源
 var WWW_HOST = 'www.demox.site';     // 主站承载域名
+var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底 path（改绑主站时同步改 DB 与此）
 
 addEventListener('fetch', (event) => {
   // 异常时回源，避免整站 500
@@ -114,7 +116,15 @@ async function handle(req) {
 
   // 查路由表：label 可能是站点默认域名(websiteId 小写)或自定义前缀。
   // 经 website-api resolve + 边缘 Cache。
-  const path = await resolvePath(label);
+  let path = await resolvePath(label);
+
+  // www 是主站基础设施(自托管 demox 本身)，path 固定。
+  // resolvePath 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
+  // 用硬编码兜底。改绑主站时同时改 DB 与此常量。
+  if (!path && label === 'www') {
+    path = WWW_FALLBACK_PATH;
+  }
+
   if (path) {
     return rewriteOrigin(req, u, `/${path}/${rest}`);
   }

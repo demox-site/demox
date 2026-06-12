@@ -1,8 +1,8 @@
 export const siteConfig = {
   name: "Demox",
   version: "0.7.7",
-  domain: "demox.site",
-  url: "https://demox.site/"
+  domain: "www.demox.site",
+  url: "https://www.demox.site/"
 };
 
 // API配置 - SCF HTTP触发器URL
