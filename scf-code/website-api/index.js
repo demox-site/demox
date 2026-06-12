@@ -519,17 +519,23 @@ async function handleCheckSubdomain(event) {
     }
   } catch (e) {}
 
+  // 占用判断:① 被别的站点用作自定义前缀 ② 撞到任意站点的 websiteId(已是默认域名,保留)
   const occupied = await query('SELECT id FROM websites WHERE subdomain = ? LIMIT 1', [label]);
   const takenByOther = occupied.length > 0 && String(occupied[0].id) !== selfId;
 
+  // 自己站点的 websiteId(小写)允许作为前缀(等于默认域名,无意义但不算冲突);别人的 websiteId 则冲突
+  const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
+  const widConflict = widHit.length > 0 && String(widHit[0].id) !== selfId;
+
+  const blocked = takenByOther || widConflict;
   return {
     statusCode: 200,
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      available: !takenByOther,
-      reason: takenByOther ? 'taken' : 'ok',
-      message: takenByOther ? '该前缀已被占用' : '可用'
+      available: !blocked,
+      reason: blocked ? 'taken' : 'ok',
+      message: blocked ? '该前缀已被占用' : '可用'
     })
   };
 }
@@ -586,6 +592,16 @@ async function handleSetSubdomain(event) {
   // 并发安全：不做"先查后写"（有 TOCTOU 竞争），直接靠 subdomain 列的唯一索引兜底。
   // 用条件 UPDATE：仅当目标前缀未被别人占用(不存在 / 或就是本站点)时才写入。
   try {
+    // 前缀不能撞别的站点的 websiteId(那是它的默认域名,保留)
+    const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
+    if (widHit.length > 0 && String(widHit[0].id) !== String(site.id)) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, code: 'DUPLICATE', message: '该前缀已被占用，请换一个' })
+      };
+    }
+
     // 先确认该前缀当前是否已属于本站点（幂等：重复设置同一个前缀直接成功）
     if (site.subdomain === label) {
       return {
@@ -960,10 +976,18 @@ async function handleResolveSubdomain(event) {
   }
 
   try {
-    const rows = await query(
+    // label 可能是自定义前缀(websites.subdomain)或默认域名(websites.website_id 小写)。
+    // 自定义前缀优先;都查不到返回 not found。
+    let rows = await query(
       'SELECT path FROM websites WHERE subdomain = ? LIMIT 1',
       [label]
     );
+    if (rows.length === 0) {
+      rows = await query(
+        'SELECT path FROM websites WHERE LOWER(website_id) = ? LIMIT 1',
+        [label]
+      );
+    }
     if (rows.length === 0 || !rows[0].path) {
       return {
         statusCode: 200,
@@ -1144,14 +1168,13 @@ async function handleUploadAndDeploy(event) {
     const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : generateWebsiteId();
     const fileNameNoExt = normalizeFileNameNoExt(fileName);
     const targetPrefix = `sites/${userId}/${websiteId}/${fileNameNoExt}`;
-    const urlPrefix = `sites-${userId}-${websiteId}-${fileNameNoExt}`;
 
     // 部署到 COS
     const uploadedCount = await deployZipToCos(zipEntries, targetPrefix);
     console.log(`部署完成，上传了 ${uploadedCount} 个文件`);
 
-    // 生成访问 URL
-    const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
+    // 默认访问域名 = <websiteId 小写>.demox.site(由边缘函数 resolve 路由到 COS path)
+    const finalUrl = `https://${websiteId.toLowerCase()}.${defaultDomain}/index.html?v=${Date.now()}`;
 
     // 默认名称:优先用 index.html 的 <title>,其次文件名
     const extractedTitle = extractTitleFromZip(zipEntries);

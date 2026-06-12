@@ -96,6 +96,8 @@ const translations = {
     createdAt: "创建时间：",
     deployedAt: "修改时间：",
     creator: "创建人：",
+    domainDefaultTag: "默认",
+    domainCustomTag: "自定义",
     processingBadge: "处理中",
     redeployButton: "重新部署",
     toastInvalidFileTitle: "文件格式错误",
@@ -205,6 +207,8 @@ const translations = {
     createdAt: "Created: ",
     deployedAt: "Updated: ",
     creator: "Creator: ",
+    domainDefaultTag: "Default",
+    domainCustomTag: "Custom",
     processingBadge: "Processing",
     redeployButton: "Redeploy",
     toastInvalidFileTitle: "Invalid file format",
@@ -386,6 +390,29 @@ const getDisplayName = (w) => {
   const fn = (w.fileName || "").trim();
   if (fn && fn !== "undefined") return fn;
   return "未命名网站";
+};
+
+/**
+ * getSiteDomains
+ * 返回站点的域名列表(最多 2 个):
+ *   - 默认域名 <websiteId 小写>.demox.site(始终存在)
+ *   - 自定义前缀 <subdomain>.demox.site(可选)
+ * 每项 { host, url, isDefault }。
+ */
+const getSiteDomains = (w) => {
+  if (!w) return [];
+  const list = [];
+  const wid = (w.websiteId || "").trim();
+  if (wid && wid !== "undefined") {
+    const host = `${wid.toLowerCase()}.demox.site`;
+    list.push({ host, url: `https://${host}/`, isDefault: true });
+  }
+  const sub = (w.subdomain || "").trim();
+  if (sub && sub !== "undefined") {
+    const host = `${sub}.demox.site`;
+    list.push({ host, url: `https://${host}/`, isDefault: false });
+  }
+  return list;
 };
 
 /**
@@ -1941,27 +1968,38 @@ export default function Home(props) {
                           )}
                         </div>
 
-                        {website.url && (
-                          <div className="flex items-center gap-2 mt-3">
-                            <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 max-w-full">
-                              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                              <a
-                                href={website.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-zinc-300 hover:text-white text-sm font-mono truncate hover:underline underline-offset-4 decoration-zinc-600"
-                              >
-                                {website.url}
-                              </a>
-                            </div>
-                            <a
-                              href={website.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors"
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
+                        {getSiteDomains(website).length > 0 && (
+                          <div className="flex flex-col gap-2 mt-3">
+                            {getSiteDomains(website).map((d) => (
+                              <div key={d.host} className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 max-w-full">
+                                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                                  <a
+                                    href={d.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-zinc-300 hover:text-white text-sm font-mono truncate hover:underline underline-offset-4 decoration-zinc-600"
+                                  >
+                                    {d.host}
+                                  </a>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                                    d.isDefault
+                                      ? "bg-zinc-800 text-zinc-400 border border-zinc-700/50"
+                                      : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                  }`}>
+                                    {d.isDefault ? t.domainDefaultTag : t.domainCustomTag}
+                                  </span>
+                                </div>
+                                <a
+                                  href={d.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                </a>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
