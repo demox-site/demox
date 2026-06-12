@@ -1,0 +1,103 @@
+import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { authApi } from "../api";
+import { CheckCircle, Loader2, XCircle } from "lucide-react";
+import { Button } from "@/components/ui";
+
+// 从 hash 路由中解析查询参数 (#/github-callback?code=xxx&state=yyy)
+function getHashParams() {
+  const hash = window.location.hash;
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex === -1) return new URLSearchParams();
+  return new URLSearchParams(hash.substring(queryIndex + 1));
+}
+
+export function GithubCallback() {
+  const navigate = useNavigate();
+  const [status, setStatus] = useState<"logging" | "success" | "error">(
+    "logging"
+  );
+  const [message, setMessage] = useState("正在使用 GitHub 登录...");
+  // StrictMode 下 effect 会跑两次，code 只能用一次，用 ref 守卫
+  const handled = useRef(false);
+
+  useEffect(() => {
+    if (handled.current) return;
+    handled.current = true;
+
+    const params = getHashParams();
+    const code = params.get("code");
+    const returnedState = params.get("state");
+    const oauthError = params.get("error");
+    const savedState = sessionStorage.getItem("github_oauth_state");
+    sessionStorage.removeItem("github_oauth_state");
+
+    const fail = (msg: string) => {
+      setStatus("error");
+      setMessage(msg);
+    };
+
+    if (oauthError) {
+      fail(`GitHub 授权被拒绝: ${oauthError}`);
+      return;
+    }
+    if (!code) {
+      fail("缺少授权码 code");
+      return;
+    }
+    // 校验 state，防 CSRF
+    if (!returnedState || returnedState !== savedState) {
+      fail("授权状态校验失败，请重试");
+      return;
+    }
+
+    const isBind = returnedState.startsWith("bind.");
+
+    authApi
+      .githubLogin(code)
+      .then((res) => {
+        if (!res.success) throw new Error("登录失败");
+        setStatus("success");
+        setMessage(
+          res.bound
+            ? "GitHub 账号绑定成功"
+            : res.isNewUser
+            ? "注册成功，正在进入控制台..."
+            : "登录成功，正在进入控制台..."
+        );
+        setTimeout(() => {
+          navigate(isBind ? "/console/settings" : "/console/sites", {
+            replace: true
+          });
+        }, 1200);
+      })
+      .catch((e) => fail(e.message || "GitHub 登录失败"));
+  }, [navigate]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-black text-zinc-100 px-4">
+      <div className="flex flex-col items-center gap-5 max-w-sm text-center">
+        {status === "logging" && (
+          <Loader2 className="w-10 h-10 text-zinc-400 animate-spin" />
+        )}
+        {status === "success" && (
+          <CheckCircle className="w-10 h-10 text-emerald-400" />
+        )}
+        {status === "error" && <XCircle className="w-10 h-10 text-red-400" />}
+
+        <p className="text-sm text-zinc-400">{message}</p>
+
+        {status === "error" && (
+          <Button
+            onClick={() => navigate("/index", { replace: true })}
+            className="bg-zinc-100 text-black hover:bg-white"
+          >
+            返回首页
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default GithubCallback;

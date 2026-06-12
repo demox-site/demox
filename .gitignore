@@ -28,4 +28,10 @@ webpack.config.js
 project.zip
 
 .trae
-.datasourcesscripts/scf-deploy*.cjs
+.datasources
+scripts/scf-deploy*.cjs
+
+# Local env / secrets — never commit
+.env
+.env.*
+!.env.example

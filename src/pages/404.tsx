@@ -140,7 +140,7 @@ const NotFoundPage: React.FC = () => {
             </button>
 
             <button
-              onClick={() => navigate("/home")}
+              onClick={() => navigate("/console/sites")}
               className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-300 rounded-md hover:border-zinc-600 hover:text-zinc-100 transition-colors flex items-center justify-center gap-2 group"
             >
               <Activity size={18} />

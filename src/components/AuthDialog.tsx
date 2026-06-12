@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { authApi } from "../api";
+import { Github } from "lucide-react";
 import {
   Button,
   Dialog,
@@ -211,6 +212,29 @@ export function AuthDialog({
             disabled={loading}
           >
             {loading ? "处理中..." : (loginMode === 'code' ? "登录 / 注册" : "登录")}
+          </Button>
+
+          <div className="flex items-center gap-3 py-1">
+            <div className="h-px flex-1 bg-zinc-800" />
+            <span className="text-xs text-zinc-600">或</span>
+            <div className="h-px flex-1 bg-zinc-800" />
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            disabled={loading}
+            onClick={() => {
+              if (!agreed) {
+                toast({ title: "请先同意用户协议和隐私政策", variant: "destructive" });
+                return;
+              }
+              authApi.startGithubLogin("login");
+            }}
+            className="w-full bg-zinc-800 border-zinc-700 text-zinc-100 hover:bg-zinc-700"
+          >
+            <Github className="w-4 h-4 mr-2" />
+            使用 GitHub 登录
           </Button>
 
           <div className="text-center text-sm">

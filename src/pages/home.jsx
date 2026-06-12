@@ -65,7 +65,6 @@ import {
 } from "lucide-react";
 import { app, auth, db } from "../cloudbase";
 import { useNavigate, Navigate } from "react-router-dom";
-import { MainLayout } from "@/layouts/MainLayout";
 import { useLanguage } from "@/hooks/use-language";
 
 const translations = {
@@ -1285,7 +1284,7 @@ export default function Home(props) {
           .sort((a, b) => getComparableTimestamp(b) - getComparableTimestamp(a))
       );
       setDeploying((prev) => ({ ...prev, [website._id]: true }));
-      navigate("/home");
+      navigate("/console/sites");
 
       const state = await auth.getLoginState();
       if (!state || !state.user) {
@@ -1392,25 +1391,23 @@ export default function Home(props) {
 
   if (isLoading) {
     return (
-      <MainLayout>
-        <div style={style} className="flex items-center justify-center py-24">
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
-            <span className="text-zinc-500 font-mono text-sm animate-pulse">
-              {t.loading}
-            </span>
-          </div>
+      <div style={style} className="flex items-center justify-center py-24">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
+          <span className="text-zinc-500 font-mono text-sm animate-pulse">
+            {t.loading}
+          </span>
         </div>
-      </MainLayout>
+      </div>
     );
   }
 
   if (!isLoggedIn) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/index" replace />;
   }
 
   return (
-    <MainLayout>
+    <>
       <div style={style} className="relative z-10">
         <div className="container mx-auto px-4 py-8">
           <div className="mb-10">
@@ -2025,6 +2022,6 @@ export default function Home(props) {
         {/* Background Grid Effect */}
         <div className="fixed inset-0 bg-[linear-gradient(to_right,var(--grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-line)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10 pointer-events-none" />
       </div>
-    </MainLayout>
+    </>
   );
 }

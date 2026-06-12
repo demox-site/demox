@@ -115,6 +115,45 @@ export const authApi = {
     return data;
   },
 
+  // 发起 GitHub 授权：跳转到 GitHub 授权页
+  // mode='bind' 时用于已登录用户绑定（回调页据此决定后续跳转）
+  startGithubLogin: (mode: "login" | "bind" = "login") => {
+    const { clientId, redirectUri, scope } = config.github;
+    // 随机 state 防 CSRF，存 sessionStorage 供回调校验
+    const state = `${mode}.${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    sessionStorage.setItem("github_oauth_state", state);
+    const url =
+      "https://github.com/login/oauth/authorize" +
+      `?client_id=${encodeURIComponent(clientId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scope)}` +
+      `&state=${encodeURIComponent(state)}`;
+    window.location.href = url;
+  },
+
+  // GitHub 回调：用 code 换取登录态。绑定模式下后端据 Authorization 头自动绑定
+  githubLogin: async (code: string) => {
+    const data = await request<{
+      success: boolean;
+      token: string;
+      userId: string;
+      email: string;
+      isNewUser?: boolean;
+      bound?: boolean;
+    }>(AUTH_API_URL, "/auth/github", { method: "POST", body: { code } });
+
+    if (data.success && data.token) {
+      tokenManager.set(data.token);
+      const adminEmails = ["phosa@qq.com"];
+      const roles = adminEmails.includes(data.email)
+        ? ["admin", "user"]
+        : ["user"];
+      userManager.set({ userId: data.userId, email: data.email, roles });
+    }
+
+    return data;
+  },
+
   // 登出
   logout: () => {
     tokenManager.remove();

@@ -26,6 +26,12 @@ import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
 import { createHashHistory } from "history";
 import { authApi, tokenManager } from "./api";
+import { ConsoleLayout } from "./layouts/ConsoleLayout";
+import Home from "./pages/home.jsx";
+import AdminDashboard from "./pages/AdminDashboard";
+import SettingsPage from "./pages/console/SettingsPage";
+import TokensPage from "./pages/console/TokensPage";
+import UsagePage from "./pages/console/UsagePage";
 
 const history = createHashHistory();
 window._WEAPPS_HISTORY = history;
@@ -113,17 +119,42 @@ const App: React.FC = () => {
                       />
                     }
                   />
-                  {routers.map((item) => {
-                    return (
-                      <Route
-                        key={item.id}
-                        path={`/${item.id}`}
-                        element={
-                          <PageWrapper id={item.id} Page={item.component} />
-                        }
-                      />
-                    );
-                  })}
+
+                  {/* 控制台：共享侧栏布局的嵌套路由 */}
+                  <Route path="/console" element={<ConsoleLayout />}>
+                    <Route index element={<Navigate to="sites" replace />} />
+                    <Route path="sites" element={<Home />} />
+                    <Route path="usage" element={<UsagePage />} />
+                    <Route path="tokens" element={<TokensPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="admin" element={<AdminDashboard />} />
+                  </Route>
+
+                  {/* 旧地址兼容重定向 */}
+                  <Route
+                    path="/home"
+                    element={<Navigate to="/console/sites" replace />}
+                  />
+                  <Route
+                    path="/admin"
+                    element={<Navigate to="/console/admin" replace />}
+                  />
+
+                  {routers
+                    .filter(
+                      (item) => item.id !== "home" && item.id !== "admin"
+                    )
+                    .map((item) => {
+                      return (
+                        <Route
+                          key={item.id}
+                          path={`/${item.id}`}
+                          element={
+                            <PageWrapper id={item.id} Page={item.component} />
+                          }
+                        />
+                      );
+                    })}
                 </Routes>
               </BrowserRouter>
             </LanguageProvider>

@@ -172,7 +172,7 @@ const CloudHostLanding: React.FC = () => {
     if (currentUser) {
       setUser(currentUser);
     }
-    navigate("/home");
+    navigate("/console/sites");
   };
 
   return (
@@ -212,7 +212,7 @@ const CloudHostLanding: React.FC = () => {
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
             <button
-              onClick={() => (user ? navigate("/home") : setIsLoginOpen(true))}
+              onClick={() => (user ? navigate("/console/sites") : setIsLoginOpen(true))}
               className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
             >
               {t.hero.start_btn}
@@ -351,7 +351,7 @@ const CloudHostLanding: React.FC = () => {
           <p className="text-zinc-400 mb-8">{t.cta.subtitle}</p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
-              onClick={() => (user ? navigate("/home") : setIsLoginOpen(true))}
+              onClick={() => (user ? navigate("/console/sites") : setIsLoginOpen(true))}
               className="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold rounded-md hover:bg-zinc-200 transition-colors"
             >
               {t.cta.start_btn}

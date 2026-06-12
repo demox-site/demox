@@ -29,7 +29,7 @@ const navbarTexts = {
   zh: {
     pricing: "价格",
     log: "日志",
-    mcp: "MCP",
+    mcp: "文档",
     login: "登录",
     console: "控制台",
     logout: "退出登录",
@@ -38,7 +38,7 @@ const navbarTexts = {
   en: {
     pricing: "Pricing",
     log: "Log",
-    mcp: "MCP",
+    mcp: "Docs",
     login: "Login",
     console: "Console",
     logout: "Log out",
@@ -78,7 +78,7 @@ export const MainHeader: React.FC = () => {
     if (currentUser) {
       setUser(currentUser);
     }
-    navigate("/home");
+    navigate("/console/sites");
   };
 
   const handleLogout = () => {
@@ -150,7 +150,7 @@ export const MainHeader: React.FC = () => {
                   {/* Console CTA - Primary Action */}
                   <button
                     type="button"
-                    onClick={() => navigate("/home")}
+                    onClick={() => navigate("/console/sites")}
                     className="flex items-center gap-2 px-5 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:-translate-y-0.5 hover:shadow-[0_0_15px_rgba(255,255,255,0.15)] transition-all duration-300"
                   >
                     <LayoutDashboard size={16} />
@@ -221,7 +221,7 @@ export const MainHeader: React.FC = () => {
               {user && (
                 <button
                   type="button"
-                  onClick={() => navigate("/home")}
+                  onClick={() => navigate("/console/sites")}
                   className="p-2 text-zinc-400 hover:text-zinc-100"
                 >
                   <LayoutDashboard size={20} />
