@@ -95,6 +95,7 @@ const translations = {
     emptyDesc: "上传你的第一个项目以开始使用。",
     createdAt: "创建时间：",
     deployedAt: "修改时间：",
+    creator: "创建人：",
     processingBadge: "处理中",
     redeployButton: "重新部署",
     toastInvalidFileTitle: "文件格式错误",
@@ -203,6 +204,7 @@ const translations = {
     emptyDesc: "Upload your first project to get started.",
     createdAt: "Created: ",
     deployedAt: "Updated: ",
+    creator: "Creator: ",
     processingBadge: "Processing",
     redeployButton: "Redeploy",
     toastInvalidFileTitle: "Invalid file format",
@@ -1915,6 +1917,12 @@ export default function Home(props) {
                         </div>
 
                         <div className="flex flex-col sm:flex-row gap-4 text-sm text-zinc-500 font-mono mt-3">
+                          {(Array.isArray(user?.roles) && user.roles.includes("admin")) && website.userId && (
+                            <span>
+                              {t.creator}
+                              {getEmailByUserId(website.userId) || website.userId}
+                            </span>
+                          )}
                           <span>
                             {t.createdAt}
                             {formatTimestamp(website.createdAt)}
