@@ -332,6 +332,10 @@ const getWebsiteDisplayName = (w) => {
  */
 const formatTimestamp = (ts) => {
   if (!ts) return "";
+  // 兼容映射层的 { $date: number } 形态
+  if (ts && typeof ts === "object" && "$date" in ts) {
+    ts = ts.$date;
+  }
   const d =
     ts instanceof Date
       ? ts
@@ -354,7 +358,11 @@ const formatTimestamp = (ts) => {
  * 提取用于排序的时间戳（优先使用 updatedAt，其次 createdAt）
  */
 const getComparableTimestamp = (w) => {
-  const v = w?.updatedAt || w?.createdAt || 0;
+  let v = w?.updatedAt || w?.createdAt || 0;
+  // 兼容映射层的 { $date: number } 形态
+  if (v && typeof v === "object" && "$date" in v) {
+    v = v.$date;
+  }
   const d =
     v instanceof Date
       ? v
