@@ -1,14 +1,18 @@
-name: Deploy to Tencent COS
+name: Deploy to Demox (self-hosted)
 
-# 等价于原 .cnb.yml：push 到 master 时构建并上传 dist/ 到腾讯云 COS
+# 自托管部署：构建 dist/ 后，用 Demox 自己的 /deploy 接口原地更新站点 EPX2UU43。
+# 取代原 coscli→COS 流程。鉴权用长期 CI token(DEMOX_TOKEN)，详见仓库 Secrets。
 on:
   push:
     branches: [master]
   workflow_dispatch:
 
 env:
-  COS_BUCKET: resource-game-1307257815
-  COS_REGION: ap-chengdu
+  # 被 demox 平台托管的「demox 主站」自身的站点 ID（固定，原地更新）
+  WEBSITE_ID: EPX2UU43
+  WEBSITE_NAME: demox-site
+  # website-api 的 /deploy 端点（与 cli 默认 cloudFunctionUrl 一致）
+  DEPLOY_URL: https://1307257815-ju8ahprgj9.ap-guangzhou.tencentscf.com/deploy
 
 jobs:
   deploy:
@@ -33,39 +37,44 @@ jobs:
           npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
-      - name: Install coscli
-        run: |
-          # 取最新 release 的 linux-amd64 资产（资产名形如 coscli-vX.Y.Z-linux-amd64）
-          url=$(curl -fsSL https://api.github.com/repos/tencentyun/coscli/releases/latest \
-            | grep -o 'https://[^"]*linux-amd64' | head -1)
-          echo "Downloading $url"
-          curl -fsSL -o coscli "$url"
-          chmod +x coscli
-          sudo mv coscli /usr/local/bin/coscli
-          coscli --version || true
-
-      - name: Upload dist/ to COS
+      - name: Deploy dist/ via Demox API
         env:
-          TC_SECRET_ID: ${{ secrets.TC_SECRET_ID }}
-          TC_SECRET_KEY: ${{ secrets.TC_SECRET_KEY }}
+          DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
         run: |
-          coscli config set --secret_id "$TC_SECRET_ID" --secret_key "$TC_SECRET_KEY"
-          coscli config add --init-skip=true -b "$COS_BUCKET" -r "$COS_REGION"
+          set -euo pipefail
+          if [ -z "${DEMOX_TOKEN:-}" ]; then
+            echo "::error::缺少 DEMOX_TOKEN secret"; exit 1
+          fi
 
-          # 部署顺序很重要，避免部署期白屏：
-          # 1) 先传 assets 等带哈希的静态资源（长缓存）。此时旧 index.html 仍指向旧资源，
-          #    旧资源还在 COS（cp 不删旧文件），用户访问不受影响。
-          # 2) 最后传 index.html / 404.html，并设 no-cache，让边缘和浏览器每次校验，
-          #    部署完成后用户立刻拿到指向新资源的新 index.html。
-          # 这样 index.html 引用的新资源必定已存在，且入口 HTML 不被 30 天长缓存。
+          # 1) 打包 dist/（zip 根 = dist 内容，与 cli deploy 一致）
+          ( cd dist && zip -qr /tmp/deploy.zip . )
+          echo "zip size: $(du -h /tmp/deploy.zip | cut -f1)"
 
-          # 先传除 html 外的所有内容（assets、图片等），长缓存
-          # 注意：coscli 的 --include/--exclude 用正则(非 glob)，--meta 多个头用 # 分隔
-          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r \
-            --exclude ".*\.html$" \
-            --meta="Cache-Control:public,max-age=31536000,immutable"
+          # 2) 组装 JSON：fileContentBase64 + fileName + websiteId（原地更新）
+          #    用 node 生成，避免 base64 换行与 shell 转义问题
+          node -e '
+            const fs = require("fs");
+            const b = fs.readFileSync("/tmp/deploy.zip").toString("base64");
+            const payload = {
+              fileContentBase64: b,
+              fileName: process.env.WEBSITE_NAME,
+              websiteId: process.env.WEBSITE_ID,
+            };
+            fs.writeFileSync("/tmp/deploy.json", JSON.stringify(payload));
+          '
 
-          # 再单独传 html 入口文件，禁缓存
-          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r \
-            --include ".*\.html$" \
-            --meta="Cache-Control:no-cache,no-store,must-revalidate"
+          # 3) 调 /deploy。-f 让 HTTP 错误码非零退出；响应里再校验 success
+          resp=$(curl -fsS -m 120 -X POST "$DEPLOY_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $DEMOX_TOKEN" \
+            --data-binary @/tmp/deploy.json)
+          echo "API 响应: $resp"
+
+          echo "$resp" | node -e '
+            let s = ""; process.stdin.on("data", d => s += d);
+            process.stdin.on("end", () => {
+              let j; try { j = JSON.parse(s); } catch (e) { console.error("响应非 JSON"); process.exit(1); }
+              if (!j.success) { console.error("部署失败:", j.message || j.error || s); process.exit(1); }
+              console.log("✅ 部署成功:", j.url);
+            });
+          '
