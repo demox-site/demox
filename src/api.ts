@@ -295,6 +295,24 @@ export const websiteApi = {
       "/website/deploy",
       { method: "POST", body: { action: "deploy", websiteId, zipFile } }
     );
+  },
+
+  // 设置自定义子域名前缀
+  setSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string }) => {
+    return request<{ success: boolean; subdomain?: string; url?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/set-subdomain",
+      { method: "POST", body: { action: "set_subdomain", ...data } }
+    );
+  },
+
+  // 清除自定义子域名前缀
+  clearSubdomain: async (data: { docId?: string; websiteId?: string }) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/clear-subdomain",
+      { method: "POST", body: { action: "clear_subdomain", ...data } }
+    );
   }
 };
 

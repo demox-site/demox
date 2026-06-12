@@ -8,6 +8,7 @@ const COS = require('cos-nodejs-sdk-v5');
 const path = require('path');
 const { query } = require('./shared/db.js');
 const { getUserId, authenticate } = require('./shared/jwt.js');
+const { kvPut, kvDelete } = require('./shared/edgeone.js');
 
 // COS 配置
 const hostingBucket = 'resource-game-1307257815';
@@ -59,6 +60,12 @@ exports.main = async (event, context) => {
       return await handleUpdateWebsiteName(event);
     } else if (pathUrl.includes('/update-tags') || body?.action === 'update_tags') {
       return await handleUpdateWebsiteTags(event);
+    } else if (pathUrl.includes('/set-subdomain') || body?.action === 'set_subdomain') {
+      return await handleSetSubdomain(event);
+    } else if (pathUrl.includes('/clear-subdomain') || body?.action === 'clear_subdomain') {
+      return await handleClearSubdomain(event);
+    } else if (pathUrl.includes('/migrate-subdomain') || body?.action === 'migrate_subdomain') {
+      return await handleMigrateSubdomain(event);
     } else {
       return {
         statusCode: 404,
@@ -260,6 +267,21 @@ async function handleDeleteWebsite(event) {
     params.push(key);
   }
 
+  // 删除前清理自定义子域名前缀的 KV 记录，失败不阻断删除
+  try {
+    const toDelete = await query(
+      `SELECT subdomain FROM websites WHERE ${whereClause}`,
+      params
+    );
+    for (const row of toDelete) {
+      const label = row.subdomain;
+      if (!label) continue;
+      try { await kvDelete(label); } catch (e) { console.error('KV delete 失败:', e.message); }
+    }
+  } catch (e) {
+    console.error('清理自定义前缀失败:', e.message);
+  }
+
   const result = await query(`DELETE FROM websites WHERE ${whereClause}`, params);
 
   return {
@@ -397,6 +419,257 @@ async function handleUpdateWebsiteTags(event) {
   };
 }
 
+
+/**
+ * 校验自定义子域名前缀(label)：只允许小写字母、数字、连字符，
+ * 不以连字符开头/结尾，长度 1-63；并排除会与旧格式/平台冲突的前缀。
+ */
+const RESERVED_LABELS = new Set([
+  'www', 'sites', 'kv-admin', 'api', 'app', 'admin', 'mail', 'ftp',
+  'cdn', 'static', 'assets', 'blog', 'demox'
+]);
+
+function normalizeLabel(input) {
+  return String(input || '').trim().toLowerCase();
+}
+
+function isValidLabel(label) {
+  if (typeof label !== 'string') return false;
+  if (label.length < 1 || label.length > 63) return false;
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) return false;
+  // 旧格式以 sites- 开头，避免与向后兼容正则冲突
+  if (label.startsWith('sites-')) return false;
+  if (RESERVED_LABELS.has(label)) return false;
+  return true;
+}
+
+/**
+ * 设置/修改站点的自定义子域名前缀。
+ * 流程：校验归属 + 前缀合法/未占用 → 写 KV(label->{path}) → 删旧 label 的 KV → 落库。
+ * 访问地址：https://{label}.demox.site
+ */
+async function handleSetSubdomain(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const { docId, websiteId, subdomain } = event.body || event;
+  const label = normalizeLabel(subdomain);
+
+  if (!isValidLabel(label)) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: false,
+        message: '前缀不合法：仅限小写字母、数字、连字符，1-63 位，且不能用保留词'
+      })
+    };
+  }
+
+  // 定位站点并校验归属
+  let site;
+  if (docId) {
+    const rows = await query('SELECT * FROM websites WHERE id = ?', [docId]);
+    site = rows[0];
+  } else if (websiteId) {
+    const rows = await query('SELECT * FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    site = rows[0];
+  }
+
+  if (!site) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: '站点不存在' })
+    };
+  }
+  if (site.user_id !== userId) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: '无权操作该站点' })
+    };
+  }
+
+  // 前缀是否被其它站点占用
+  const occupied = await query('SELECT id FROM websites WHERE subdomain = ?', [label]);
+  if (occupied.length > 0 && String(occupied[0].id) !== String(site.id)) {
+    return {
+      statusCode: 409,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: '该前缀已被占用，请换一个' })
+    };
+  }
+
+  try {
+    // 写 KV：label -> { userId, websiteId, path }
+    await kvPut(label, {
+      userId: site.user_id,
+      websiteId: site.website_id,
+      path: site.path
+    });
+
+    // 若改了前缀，删除旧 label 的 KV（失败不阻断）
+    if (site.subdomain && site.subdomain !== label) {
+      try { await kvDelete(site.subdomain); } catch (e) { console.error('删除旧前缀 KV 失败:', e.message); }
+    }
+
+    // 落库
+    await query(
+      'UPDATE websites SET subdomain = ?, updated_at = NOW() WHERE id = ?',
+      [label, site.id]
+    );
+
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        subdomain: label,
+        url: `https://${label}.demox.site`,
+        message: '设置成功，访问可能有最长 60 秒的边缘缓存同步延迟'
+      })
+    };
+  } catch (error) {
+    console.error('设置子域名失败:', error);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: error.message || '设置失败' })
+    };
+  }
+}
+
+/**
+ * 清除站点的自定义子域名前缀（删 KV + 清库），站点仍可用原始长地址访问。
+ */
+async function handleClearSubdomain(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const { docId, websiteId } = event.body || event;
+
+  let site;
+  if (docId) {
+    const rows = await query('SELECT * FROM websites WHERE id = ?', [docId]);
+    site = rows[0];
+  } else if (websiteId) {
+    const rows = await query('SELECT * FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    site = rows[0];
+  }
+
+  if (!site) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: '站点不存在' })
+    };
+  }
+  if (site.user_id !== userId) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: '无权操作该站点' })
+    };
+  }
+
+  if (!site.subdomain) {
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: true, message: '该站点未设置自定义前缀' })
+    };
+  }
+
+  try {
+    try { await kvDelete(site.subdomain); } catch (e) { console.error('删除前缀 KV 失败:', e.message); }
+    await query('UPDATE websites SET subdomain = NULL, updated_at = NOW() WHERE id = ?', [site.id]);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: true, message: '已清除自定义前缀' })
+    };
+  } catch (error) {
+    console.error('清除子域名失败:', error);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: error.message || '清除失败' })
+    };
+  }
+}
+
+/**
+ * 临时迁移：给 websites 表加 subdomain 列 + 唯一索引（幂等）。
+ * 用一次性密钥授权（body.migrationKey === env.MIGRATION_KEY），不依赖 DB 角色，
+ * 避免“查 admin 需先连库”的鸡生蛋问题。迁移完成后可删除本 handler、路由和环境变量。
+ */
+async function handleMigrateSubdomain(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '迁移密钥无效' })
+    };
+  }
+
+  const steps = [];
+  try {
+    // 列是否已存在
+    const col = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'subdomain'`
+    );
+    if (col[0].c === 0) {
+      await query(
+        `ALTER TABLE websites ADD COLUMN subdomain VARCHAR(63) DEFAULT NULL COMMENT '自定义子域名前缀(label)'`
+      );
+      steps.push('added column subdomain');
+    } else {
+      steps.push('column subdomain already exists');
+    }
+
+    // 唯一索引是否已存在
+    const idx = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'uniq_subdomain'`
+    );
+    if (idx[0].c === 0) {
+      await query(`ALTER TABLE websites ADD UNIQUE KEY uniq_subdomain (subdomain)`);
+      steps.push('added unique index uniq_subdomain');
+    } else {
+      steps.push('index uniq_subdomain already exists');
+    }
+
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: true, steps })
+    };
+  } catch (error) {
+    console.error('迁移失败:', error);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, steps, message: error.message })
+    };
+  }
+}
+
 /**
  * 处理上传并部署
  */
@@ -506,12 +779,21 @@ async function handleUploadAndDeploy(event) {
     const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
 
     // 保存到数据库
-    const existing = await query('SELECT id FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    const existing = await query('SELECT id, subdomain FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
     if (existing.length > 0) {
       await query(
-        `UPDATE websites SET file_name = ?, name = ?, url = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
-        [fileName, fileName, finalUrl, userId, websiteId]
+        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
+        [fileName, fileName, targetPrefix, finalUrl, userId, websiteId]
       );
+      // 若已设置自定义前缀，重部署后 path 可能变化，刷新 KV 路由表
+      const label = existing[0].subdomain;
+      if (label) {
+        try {
+          await kvPut(label, { userId, websiteId, path: targetPrefix });
+        } catch (e) {
+          console.error('重部署刷新 KV 失败:', e.message);
+        }
+      }
     } else {
       await query(
         `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags) VALUES (?, ?, ?, ?, ?, ?, ?)`,

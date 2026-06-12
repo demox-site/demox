@@ -61,7 +61,10 @@ import {
   Pencil,
   Tag,
   Check,
-  X
+  X,
+  Link2,
+  Copy,
+  Loader2
 } from "lucide-react";
 import { app, auth, db } from "../cloudbase";
 import { useNavigate, Navigate } from "react-router-dom";
@@ -153,6 +156,24 @@ const translations = {
     redeployFailedDesc: "重新部署过程中出现错误",
     save: "保存",
     editName: "编辑名称",
+    customDomain: "自定义网址",
+    domainDialogTitle: "自定义网址",
+    domainDialogDesc: "给站点设置一个好记的前缀，用 前缀.demox.site 访问。",
+    domainInputLabel: "子域名前缀",
+    domainInputPlaceholder: "例如 myblog",
+    domainBindButton: "保存",
+    domainUnbindButton: "清除",
+    domainBound: "已设置",
+    domainCnameTip: "保存后访问地址：",
+    domainCopy: "复制",
+    domainCopied: "已复制",
+    domainHint: "仅限小写字母、数字、连字符，1-63 位",
+    domainBindSuccess: "设置成功",
+    domainBindSuccessDesc: "最长 60 秒边缘缓存同步后即可访问",
+    domainUnbindSuccess: "已清除",
+    domainOpenBtn: "访问",
+    domainInvalid: "前缀不合法",
+    domainFailTitle: "操作失败",
   },
   en: {
     pageTitle: "Deploy Console",
@@ -242,7 +263,25 @@ const translations = {
     redeployFailedTitle: "Redeployment failed",
     redeployFailedDesc: "Error occurred during redeployment",
     save: "Save",
-    editName: "Edit Name"
+    editName: "Edit Name",
+    customDomain: "Custom URL",
+    domainDialogTitle: "Custom URL",
+    domainDialogDesc: "Set a memorable prefix, accessible at prefix.demox.site.",
+    domainInputLabel: "Subdomain prefix",
+    domainInputPlaceholder: "e.g. myblog",
+    domainBindButton: "Save",
+    domainUnbindButton: "Clear",
+    domainBound: "Set",
+    domainCnameTip: "URL after saving:",
+    domainCopy: "Copy",
+    domainCopied: "Copied",
+    domainHint: "Lowercase letters, digits, hyphens; 1-63 chars",
+    domainBindSuccess: "Saved",
+    domainBindSuccessDesc: "Live after up to 60s of edge cache sync",
+    domainUnbindSuccess: "Cleared",
+    domainOpenBtn: "Open",
+    domainInvalid: "Invalid prefix",
+    domainFailTitle: "Operation failed"
   }
 };
 
@@ -374,6 +413,12 @@ export default function Home(props) {
   const [editingTagsValue, setEditingTagsValue] = useState("");
   const [allUsers, setAllUsers] = useState([]);
   const [selectedUserIds, setSelectedUserIds] = useState([]);
+  // 自定义子域名前缀
+  const [domainOpen, setDomainOpen] = useState(false);
+  const [domainWebsite, setDomainWebsite] = useState(null);
+  const [domainInput, setDomainInput] = useState("");
+  const [domainInfo, setDomainInfo] = useState(null); // { subdomain }
+  const [domainBusy, setDomainBusy] = useState(false);
   const t = translations[lang];
   useEffect(() => {
     checkAuthStatus();
@@ -1121,6 +1166,88 @@ export default function Home(props) {
       setWebsiteToDelete(website);
       setDeleteConfirmOpen(true);
     }
+  };
+
+  /**
+   * 打开自定义子域名弹窗
+   */
+  const openDomainDialog = (website) => {
+    setDomainWebsite(website);
+    setDomainInput(website.subdomain || "");
+    setDomainInfo(website.subdomain ? { subdomain: website.subdomain } : null);
+    setDomainOpen(true);
+  };
+
+  /**
+   * 保存自定义子域名前缀
+   */
+  const bindDomain = async () => {
+    if (!domainWebsite) return;
+    const subdomain = String(domainInput || "").trim().toLowerCase();
+    if (!subdomain) return;
+    setDomainBusy(true);
+    try {
+      const res = await app.callFunction({
+        name: "deploy-website",
+        data: {
+          action: "set_subdomain",
+          docId: domainWebsite._id,
+          websiteId: domainWebsite.websiteId,
+          subdomain
+        }
+      });
+      const r = res.result || {};
+      if (r.success) {
+        const label = r.subdomain || subdomain;
+        setDomainInfo({ subdomain: label });
+        setWebsites((prev) =>
+          prev.map((w) => (w._id === domainWebsite._id ? { ...w, subdomain: label } : w))
+        );
+        toast({ title: t.domainBindSuccess, description: t.domainBindSuccessDesc });
+      } else {
+        throw new Error(r.message || t.domainFailTitle);
+      }
+    } catch (error) {
+      toast({ title: t.domainFailTitle, description: error.message, variant: "destructive" });
+    } finally {
+      setDomainBusy(false);
+    }
+  };
+
+  /**
+   * 清除自定义子域名前缀
+   */
+  const unbindDomain = async () => {
+    if (!domainWebsite) return;
+    setDomainBusy(true);
+    try {
+      const res = await app.callFunction({
+        name: "deploy-website",
+        data: { action: "clear_subdomain", docId: domainWebsite._id, websiteId: domainWebsite.websiteId }
+      });
+      const r = res.result || {};
+      if (r.success) {
+        setDomainInfo(null);
+        setDomainInput("");
+        setWebsites((prev) =>
+          prev.map((w) => (w._id === domainWebsite._id ? { ...w, subdomain: null } : w))
+        );
+        toast({ title: t.domainUnbindSuccess });
+      } else {
+        throw new Error(r.message || t.domainFailTitle);
+      }
+    } catch (error) {
+      toast({ title: t.domainFailTitle, description: error.message, variant: "destructive" });
+    } finally {
+      setDomainBusy(false);
+    }
+  };
+
+  const copyCname = (text) => {
+    try {
+      navigator.clipboard.writeText(text);
+      toast({ title: t.domainCopied });
+    } catch (e) {}
   };
 
   const executeDeleteWebsite = async () => {
@@ -1904,6 +2031,21 @@ export default function Home(props) {
                         </TooltipProvider>
 
                         <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openDomainDialog(website)}
+                          className={`border-zinc-800 bg-zinc-900 ${
+                            website.subdomain
+                              ? "text-green-400 hover:text-green-300 hover:bg-zinc-100 hover:!text-zinc-900"
+                              : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
+                          }`}
+                          title={t.customDomain}
+                        >
+                          <Link2 className="w-4 h-4 mr-2" />
+                          {website.subdomain ? t.domainBound : t.customDomain}
+                        </Button>
+
+                        <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => confirmDeleteWebsite(website._id)}
@@ -1918,6 +2060,111 @@ export default function Home(props) {
               )}
             </CardContent>
           </Card>
+
+          <Dialog open={domainOpen} onOpenChange={setDomainOpen}>
+            <DialogContent className="bg-zinc-900 border-zinc-800">
+              <DialogHeader>
+                <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                  <Link2 className="w-5 h-5 text-zinc-400" />
+                  {t.domainDialogTitle}
+                </DialogTitle>
+                <DialogDescription className="text-zinc-400">
+                  {t.domainDialogDesc}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                {domainInfo && domainInfo.subdomain ? (
+                  <div className="space-y-4">
+                    <p className="text-xs text-zinc-500">{t.domainCnameTip}</p>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded bg-zinc-950 border border-zinc-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                      <a
+                        href={`https://${domainInfo.subdomain}.demox.site`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-zinc-200 text-sm font-mono truncate hover:underline flex-1"
+                      >
+                        {domainInfo.subdomain}.demox.site
+                      </a>
+                      <button
+                        onClick={() => copyCname(`https://${domainInfo.subdomain}.demox.site`)}
+                        className="text-zinc-500 hover:text-zinc-200"
+                        title={t.domainCopy}
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setDomainInfo(null);
+                          setDomainInput(domainInfo.subdomain);
+                        }}
+                        className="border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-100 hover:text-zinc-900"
+                      >
+                        <Pencil className="w-4 h-4 mr-2" />
+                        {t.editName}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={unbindDomain}
+                        disabled={domainBusy}
+                        className="border-zinc-800 bg-zinc-900 text-red-400 hover:bg-red-950/40 hover:text-red-300 hover:border-red-900"
+                      >
+                        {domainBusy ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <X className="w-4 h-4 mr-2" />
+                        )}
+                        {t.domainUnbindButton}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <label className="text-sm text-zinc-400">{t.domainInputLabel}</label>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center flex-1 rounded bg-zinc-950 border border-zinc-800 overflow-hidden focus-within:border-zinc-600">
+                        <Input
+                          value={domainInput}
+                          onChange={(e) =>
+                            setDomainInput(
+                              e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")
+                            )
+                          }
+                          placeholder={t.domainInputPlaceholder}
+                          className="border-0 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0 focus-visible:ring-offset-0"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") bindDomain();
+                          }}
+                        />
+                        <span className="px-3 text-sm text-zinc-500 font-mono whitespace-nowrap select-none">
+                          .demox.site
+                        </span>
+                      </div>
+                      <Button
+                        onClick={bindDomain}
+                        disabled={domainBusy || !domainInput.trim()}
+                        className="bg-zinc-100 text-black hover:bg-zinc-300 shrink-0"
+                      >
+                        {domainBusy ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          t.domainBindButton
+                        )}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-zinc-600">{t.domainHint}</p>
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
 
           <Dialog open={redeployOpen} onOpenChange={setRedeployOpen}>
             <DialogContent className="bg-zinc-900 border-zinc-800">

@@ -23,6 +23,7 @@ function mapMySQLToNoSQL(row: any): any {
     url: row.url,
     tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : (row.tags || []),
     userId: row.user_id,
+    subdomain: row.subdomain || null,
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
   };
@@ -150,6 +151,21 @@ const app = {
         case "delete":
           return {
             result: await websiteApi.delete(data.id || data.websiteId)
+          };
+        case "set_subdomain":
+          return {
+            result: await websiteApi.setSubdomain({
+              docId: data.docId,
+              websiteId: data.websiteId,
+              subdomain: data.subdomain
+            })
+          };
+        case "clear_subdomain":
+          return {
+            result: await websiteApi.clearSubdomain({
+              docId: data.docId,
+              websiteId: data.websiteId
+            })
           };
         default:
           return {
