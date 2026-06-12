@@ -57,6 +57,21 @@ export function GithubCallback() {
       .githubLogin(code)
       .then((res) => {
         if (!res.success) throw new Error("登录失败");
+
+        // github_id 无主：需要用户选择「创建新账号 / 关联已有账号」
+        if (res.needsChoice && res.githubTicket) {
+          sessionStorage.setItem(
+            "github_link_ctx",
+            JSON.stringify({
+              ticket: res.githubTicket,
+              githubEmail: res.githubEmail || null,
+              matchedAccount: res.matchedAccount || { exists: false, emailMasked: null }
+            })
+          );
+          navigate("/github-link", { replace: true });
+          return;
+        }
+
         setStatus("success");
         setMessage(
           res.bound

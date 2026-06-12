@@ -131,8 +131,39 @@ export const authApi = {
     window.location.href = url;
   },
 
-  // GitHub 回调：用 code 换取登录态。绑定模式下后端据 Authorization 头自动绑定
+  // GitHub 回调：用 code 换取结果。
+  // 三种返回：①回头客/绑定 → 带 token，存登录态；②needsChoice → 不存 token，
+  // 透传 ticket/matchedAccount 给前端引导用户选择。
   githubLogin: async (code: string) => {
+    const data = await request<{
+      success: boolean;
+      token?: string;
+      userId?: string;
+      email?: string;
+      isNewUser?: boolean;
+      bound?: boolean;
+      needsChoice?: boolean;
+      githubTicket?: string;
+      githubEmail?: string | null;
+      matchedAccount?: { exists: boolean; emailMasked: string | null };
+    }>(AUTH_API_URL, "/auth/github", { method: "POST", body: { code } });
+
+    // 需要用户选择时不写登录态，原样透传
+    if (data.success && data.token && !data.needsChoice) {
+      tokenManager.set(data.token);
+      const adminEmails = ["phosa@qq.com"];
+      const roles = adminEmails.includes(data.email || "")
+        ? ["admin", "user"]
+        : ["user"];
+      userManager.set({ userId: data.userId, email: data.email, roles });
+    }
+
+    return data;
+  },
+
+  // 完成 GitHub 关联选择：create=建新号 / link=绑到当前已登录账号
+  // link 模式下 request 会自动带上 Authorization(原账号 token)
+  githubFinalize: async (ticket: string, choice: "create" | "link") => {
     const data = await request<{
       success: boolean;
       token: string;
@@ -140,7 +171,10 @@ export const authApi = {
       email: string;
       isNewUser?: boolean;
       bound?: boolean;
-    }>(AUTH_API_URL, "/auth/github", { method: "POST", body: { code } });
+    }>(AUTH_API_URL, "/auth/github/finalize", {
+      method: "POST",
+      body: { ticket, choice }
+    });
 
     if (data.success && data.token) {
       tokenManager.set(data.token);

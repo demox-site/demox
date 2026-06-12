@@ -42,6 +42,8 @@ exports.main = async (event, context) => {
       return await handleLoginWithCode(event);
     } else if (path === '/auth/github' || event.body?.action === 'github') {
       return await handleGithubLogin(event);
+    } else if (path === '/auth/github/finalize' || event.body?.action === 'github_finalize') {
+      return await handleGithubFinalize(event);
     } else if (path === '/auth/me' || event.body?.action === 'me') {
       return await handleGetCurrentUser(event);
     } else if (path === '/auth/verify' || event.body?.action === 'verify') {
@@ -435,6 +437,123 @@ async function handleGithubLogin(event) {
 }
 
 /**
+ * 完成 GitHub 关联选择：用前一步签发的 github_ticket 完成
+ * 「创建新账号」或「关联到已有账号」。
+ * - choice='create'：用票据里的 GitHub 资料新建账号并登录
+ * - choice='link'：要求 Authorization(原账号 token)，把票据里的 github_id 绑到当前账号
+ */
+async function handleGithubFinalize(event) {
+  const { ticket, choice } = event.body || event;
+
+  if (!ticket || !choice) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '缺少必要参数: ticket 和 choice' })
+    };
+  }
+
+  // 校验票据
+  let payload;
+  try {
+    payload = verify(ticket);
+  } catch (e) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '关联票据无效或已过期，请重新发起 GitHub 授权' })
+    };
+  }
+
+  if (payload.kind !== 'github_link' || !payload.githubId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '关联票据格式错误' })
+    };
+  }
+
+  const { githubId, githubLogin, avatarUrl, nickname, ghEmail } = payload;
+
+  // 该 github_id 在选择期间可能已被占用，统一先查一次
+  const owned = await query('SELECT id FROM users WHERE github_id = ?', [githubId]);
+
+  if (choice === 'create') {
+    if (owned.length > 0) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '该 GitHub 账号已被使用，请改为登录' })
+      };
+    }
+    const userId = generateUserId();
+    const email = ghEmail || `gh_${githubId}@users.noreply.github.com`;
+    await query(
+      'INSERT INTO users (id, email, password_hash, email_verified, github_id, github_login, avatar_url, nickname) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [userId, email, '', ghEmail ? true : false, githubId, githubLogin, avatarUrl, nickname]
+    );
+    await query('INSERT INTO user_roles (user_id, roles) VALUES (?, ?)', [userId, JSON.stringify(['user'])]);
+    const token = sign({ userId, email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        token,
+        userId,
+        email,
+        isNewUser: true,
+        message: '注册成功'
+      })
+    };
+  }
+
+  if (choice === 'link') {
+    // 必须证明原账号所有权：带原账号 token
+    const current = authenticate(event);
+    if (!current) {
+      return {
+        statusCode: 401,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '请先登录要关联的账号' })
+      };
+    }
+    // github_id 是否已被别的账号占用
+    if (owned.length > 0 && owned[0].id !== current.userId) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '该 GitHub 账号已绑定到其他用户' })
+      };
+    }
+    await query(
+      'UPDATE users SET github_id = ?, github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?) WHERE id = ?',
+      [githubId, githubLogin, avatarUrl, nickname, current.userId]
+    );
+    const users = await query('SELECT id, email FROM users WHERE id = ?', [current.userId]);
+    const token = sign({ userId: current.userId, email: users[0]?.email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        bound: true,
+        token,
+        userId: current.userId,
+        email: users[0]?.email,
+        message: 'GitHub 账号关联成功'
+      })
+    };
+  }
+
+  return {
+    statusCode: 400,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ error: '无效的 choice，应为 create 或 link' })
+  };
+}
+
+/**
  * 根据 GitHub 资料定位/创建用户并签发 JWT。
  * 匹配优先级：github_id > 邮箱。
  * 若请求带有效 Authorization，则进入「绑定」模式，把 GitHub 账号挂到当前用户。
@@ -474,58 +593,67 @@ async function resolveGithubUser(event, profile) {
     };
   }
 
-  // 登录模式 1：按 github_id 匹配已有用户
+  // 登录模式 1：github_id 已绑定某账号 → 回头客，直接登录
   let users = await query('SELECT id, email FROM users WHERE github_id = ?', [githubId]);
-  let user;
-  let isNewUser = false;
-
   if (users.length > 0) {
-    user = users[0];
+    const user = users[0];
     // 资料回填（头像/昵称可能更新）
     await query(
       'UPDATE users SET github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?) WHERE id = ?',
       [githubLogin, avatarUrl, nickname, user.id]
     );
-  } else if (ghEmail) {
-    // 登录模式 2：按邮箱匹配已有账号并补绑 GitHub
-    const byEmail = await query('SELECT id, email FROM users WHERE email = ?', [ghEmail]);
+    const token = sign({ userId: user.id, email: user.email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        token,
+        userId: user.id,
+        email: user.email,
+        isNewUser: false,
+        message: '登录成功'
+      })
+    };
+  }
+
+  // github_id 无主：不自动建号，签发短期票据让前端引导用户选择
+  // （创建新账号 / 关联到已有账号）。统一处理，无论邮箱是否匹配。
+  const ticket = sign(
+    { kind: 'github_link', githubId, githubLogin, avatarUrl, nickname, ghEmail: ghEmail || null },
+    '5m'
+  );
+
+  // 按 GitHub 邮箱探测是否已有账号，仅用于前端提示（回脱敏邮箱）
+  let matchedAccount = { exists: false, emailMasked: null };
+  if (ghEmail) {
+    const byEmail = await query('SELECT email FROM users WHERE email = ?', [ghEmail]);
     if (byEmail.length > 0) {
-      user = byEmail[0];
-      await query(
-        'UPDATE users SET github_id = ?, github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?), email_verified = TRUE WHERE id = ?',
-        [githubId, githubLogin, avatarUrl, nickname, user.id]
-      );
+      matchedAccount = { exists: true, emailMasked: maskEmail(byEmail[0].email) };
     }
   }
 
-  // 登录模式 3：全新用户，自动注册
-  if (!user) {
-    isNewUser = true;
-    const userId = generateUserId();
-    // GitHub 未公开邮箱时用占位邮箱，保证 email 非空约束
-    const email = ghEmail || `gh_${githubId}@users.noreply.github.com`;
-
-    await query(
-      'INSERT INTO users (id, email, password_hash, email_verified, github_id, github_login, avatar_url, nickname) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [userId, email, '', ghEmail ? true : false, githubId, githubLogin, avatarUrl, nickname]
-    );
-    await query('INSERT INTO user_roles (user_id, roles) VALUES (?, ?)', [userId, JSON.stringify(['user'])]);
-    user = { id: userId, email };
-  }
-
-  const token = sign({ userId: user.id, email: user.email });
   return {
     statusCode: 200,
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      token,
-      userId: user.id,
-      email: user.email,
-      isNewUser,
-      message: isNewUser ? '注册成功' : '登录成功'
+      needsChoice: true,
+      githubTicket: ticket,
+      githubEmail: ghEmail || null,
+      matchedAccount
     })
   };
+}
+
+/**
+ * 邮箱脱敏：前两位 + ... + 最后一位 @ 域名
+ */
+function maskEmail(email) {
+  if (!email || email.indexOf('@') === -1) return null;
+  const [name, domain] = email.split('@');
+  const masked = name.length > 2 ? `${name.slice(0, 2)}...${name.slice(-1)}` : name;
+  return `${masked}@${domain}`;
 }
 
 /**

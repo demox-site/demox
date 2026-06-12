@@ -9,6 +9,7 @@ import { MCPLogin } from "../pages/MCPLogin";
 import { MCPAuthorize } from "../pages/MCPAuthorize";
 import { Docs } from "../pages/Docs";
 import { GithubCallback } from "../pages/GithubCallback";
+import { GithubLink } from "../pages/GithubLink";
 
 export const routers = [
   {
@@ -55,6 +56,10 @@ export const routers = [
   {
     id: "github-callback",
     component: GithubCallback
+  },
+  {
+    id: "github-link",
+    component: GithubLink
   },
   {
     id: "*",
