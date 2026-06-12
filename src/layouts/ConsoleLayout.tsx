@@ -23,7 +23,10 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarSeparator,
-  SidebarTrigger
+  SidebarTrigger,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem
 } from "@/components/ui/sidebar";
 import {
   DropdownMenu,
@@ -54,6 +57,9 @@ const navTexts = {
     tokens: "访问令牌",
     settings: "账号设置",
     admin: "管理后台",
+    adminDashboard: "数据概览",
+    adminRoles: "用户角色配置",
+    adminRoleLimits: "角色列表",
     logout: "退出登录",
     backHome: "返回首页"
   },
@@ -65,6 +71,9 @@ const navTexts = {
     tokens: "Access Tokens",
     settings: "Settings",
     admin: "Admin",
+    adminDashboard: "Dashboard",
+    adminRoles: "User Roles",
+    adminRoleLimits: "Roles",
     logout: "Log out",
     backHome: "Home"
   }
@@ -128,18 +137,23 @@ export const ConsoleLayout: React.FC = () => {
       path: "/console/settings",
       label: t.settings,
       icon: Settings
-    },
-    {
-      key: "admin",
-      path: "/console/admin",
-      label: t.admin,
-      icon: ShieldCheck,
-      adminOnly: true
     }
+  ];
+
+  // 管理后台二级菜单(URL ?tab= 驱动 AdminDashboard)
+  const adminSubNav = [
+    { key: "dashboard", tab: "dashboard", label: t.adminDashboard },
+    { key: "roles", tab: "roles", label: t.adminRoles },
+    { key: "roleLimits", tab: "roleLimits", label: t.adminRoleLimits }
   ];
 
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(path + "/");
+
+  // 当前管理后台激活的 tab(默认 dashboard)
+  const currentAdminTab =
+    new URLSearchParams(location.search).get("tab") || "dashboard";
+  const onAdminPage = location.pathname.startsWith("/console/admin");
 
   const renderItem = (item: NavItem) => {
     if (item.adminOnly && !isAdmin) return null;
@@ -154,6 +168,36 @@ export const ConsoleLayout: React.FC = () => {
           <Icon size={16} />
           <span>{item.label}</span>
         </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  };
+
+  const renderAdminNav = () => {
+    if (!isAdmin) return null;
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          isActive={onAdminPage}
+          onClick={() => navigate("/console/admin?tab=dashboard")}
+          tooltip={t.admin}
+        >
+          <ShieldCheck size={16} />
+          <span>{t.admin}</span>
+        </SidebarMenuButton>
+        {onAdminPage && (
+          <SidebarMenuSub>
+            {adminSubNav.map((s) => (
+              <SidebarMenuSubItem key={s.key}>
+                <SidebarMenuSubButton
+                  isActive={currentAdminTab === s.tab}
+                  onClick={() => navigate(`/console/admin?tab=${s.tab}`)}
+                >
+                  <span>{s.label}</span>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+            ))}
+          </SidebarMenuSub>
+        )}
       </SidebarMenuItem>
     );
   };
@@ -188,7 +232,10 @@ export const ConsoleLayout: React.FC = () => {
           <SidebarGroup>
             <SidebarGroupLabel>{t.groupAccount}</SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu>{accountNav.map(renderItem)}</SidebarMenu>
+              <SidebarMenu>
+                {accountNav.map(renderItem)}
+                {renderAdminNav()}
+              </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>

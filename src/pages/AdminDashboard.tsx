@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { userManager, websiteApi, adminApi } from "@/api";
 import { Card, CardHeader, CardTitle, CardContent, Button, Input, Label, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
@@ -27,9 +28,12 @@ interface BucketStats {
  */
 const AdminDashboard: React.FC = () => {
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab: "dashboard" | "roles" | "roleLimits" =
+    tabParam === "roles" ? "roles" : tabParam === "roleLimits" ? "roleLimits" : "dashboard";
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "roles">("dashboard");
   const [statsDay, setStatsDay] = useState<BucketStats | null>(null);
   const [statsHour, setStatsHour] = useState<BucketStats | null>(null);
   const [userName, setUserName] = useState<string>("");
@@ -127,11 +131,13 @@ const AdminDashboard: React.FC = () => {
   // ===== 角色配置状态与方法 =====
   interface UserRoleDoc {
     _id: string;
+    email?: string;
     role?: string[];
     updatedAt?: number;
   }
   type RawRoleDoc = {
     _id: string;
+    email?: string;
     role?: string[];
     updatedAt?: number;
     updateTime?: number;
@@ -162,6 +168,7 @@ const AdminDashboard: React.FC = () => {
       const raw: RawRoleDoc[] = (res.data || []) as RawRoleDoc[];
       const list: UserRoleDoc[] = raw.map((d) => ({
         _id: d._id || "",
+        email: d.email || "",
         role: Array.isArray(d.role) ? d.role : [],
         updatedAt: d.updatedAt || d.updateTime
       }));
@@ -519,6 +526,13 @@ const AdminDashboard: React.FC = () => {
     setIsRoleLimitEditOpen(false);
   };
 
+  // 根据 URL ?tab= 切换时加载对应数据(侧边栏二级菜单驱动)
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab === "roles") fetchRoles();
+    else if (activeTab === "roleLimits") fetchRoleLimits();
+  }, [isAdmin, activeTab, fetchRoles, fetchRoleLimits]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -633,59 +647,9 @@ const AdminDashboard: React.FC = () => {
           <div className="text-sm text-zinc-400">欢迎，{userName}</div>
         </div>
 
-        <div className="flex gap-6">
-          {/* Sidebar */}
-          <div className="w-56 shrink-0">
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader>
-                <CardTitle className="text-zinc-100">导航</CardTitle>
-              </CardHeader>
-              <CardContent className="text-zinc-300 space-y-2">
-                <Button
-                  variant="outline"
-                  className={`w-full border-zinc-700 ${
-                    activeTab === "dashboard"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                  }`}
-                  onClick={() => setActiveTab("dashboard")}
-                >
-                  Dashboard
-                </Button>
-                <Button
-                  variant="outline"
-                  className={`w-full border-zinc-700 ${
-                    activeTab === "roles"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                  }`}
-                  onClick={async () => {
-                    setActiveTab("roles");
-                    await fetchRoles();
-                  }}
-                >
-                  用户角色配置
-                </Button>
-                <Button
-                  variant="outline"
-                  className={`w-full border-zinc-700 ${
-                    activeTab === "roleLimits"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                  }`}
-                  onClick={async () => {
-                    setActiveTab("roleLimits");
-                    await fetchRoleLimits();
-                  }}
-                >
-                  角色列表
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1">
+        <div>
+          {/* Content（导航已上移到控制台侧边栏二级菜单，由 URL ?tab= 驱动） */}
+          <div>
             {activeTab === "dashboard" ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -884,6 +848,7 @@ const AdminDashboard: React.FC = () => {
                       <table className="min-w-full text-sm">
                         <thead>
                           <tr className="text-left text-zinc-400">
+                            <th className="py-2 pr-4">邮箱</th>
                             <th className="py-2 pr-4">UID</th>
                             <th className="py-2 pr-4">角色</th>
                             <th className="py-2 pr-4">操作</th>
@@ -892,7 +857,7 @@ const AdminDashboard: React.FC = () => {
                         <tbody>
                           {rolesList.length === 0 ? (
                             <tr>
-                              <td className="py-3 pr-4 text-zinc-400" colSpan={3}>
+                              <td className="py-3 pr-4 text-zinc-400" colSpan={4}>
                                 {rolesLoading ? "加载中..." : "暂无数据"}
                               </td>
                             </tr>
@@ -901,7 +866,8 @@ const AdminDashboard: React.FC = () => {
                               const currentText = editMap[item._id] ?? (item.role || []).join(",");
                               return (
                                 <tr key={item._id} className="border-t border-zinc-800">
-                                  <td className="py-2 pr-4 text-zinc-200">{item._id}</td>
+                                  <td className="py-2 pr-4 text-zinc-200">{item.email || <span className="text-zinc-600">—</span>}</td>
+                                  <td className="py-2 pr-4 text-zinc-500 font-mono text-xs">{item._id}</td>
                                   <td className="py-2 pr-4">
                                     <Input
                                       value={currentText}
