@@ -139,6 +139,14 @@ const App: React.FC = () => {
                     path="/admin"
                     element={<Navigate to="/console/admin" replace />}
                   />
+                  <Route
+                    path="/mcp"
+                    element={<Navigate to="/doc" replace />}
+                  />
+                  <Route
+                    path="/docs"
+                    element={<Navigate to="/doc" replace />}
+                  />
 
                   {routers
                     .filter(

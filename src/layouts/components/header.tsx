@@ -137,7 +137,7 @@ export const MainHeader: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => navigate("/mcp")}
+                onClick={() => navigate("/doc")}
                 className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
               >
                 {t.mcp}
@@ -269,7 +269,7 @@ export const MainHeader: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => navigate("/mcp")}
+                onClick={() => navigate("/doc")}
                 className="flex items-center gap-3 text-sm text-zinc-400 hover:text-zinc-100 w-full text-left p-2 rounded-md hover:bg-zinc-900"
               >
                 {t.mcp}

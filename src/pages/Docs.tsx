@@ -13,6 +13,7 @@ import {
   HelpCircle,
   Rocket,
   ChevronRight,
+  Sparkles,
 } from "lucide-react";
 
 /** 文档章节 id（用于侧边栏锚点与滚动高亮）。 */
@@ -32,6 +33,11 @@ const t = {
     onThisPage: "本页目录",
     copy: "复制",
     copied: "已复制",
+    skill: {
+      title: "用 Agent Skill 一键接入",
+      desc: "把下面的仓库地址甩给你的 AI（Claude Code、Cursor 等），它就学会用 demox CLI 帮你部署网站了。",
+      open: "查看仓库",
+    },
     nav: {
       start: "快速开始",
       mcp: "通过 MCP 接入",
@@ -49,6 +55,11 @@ const t = {
     onThisPage: "On this page",
     copy: "Copy",
     copied: "Copied",
+    skill: {
+      title: "Connect with an Agent Skill",
+      desc: "Hand the repo URL below to your AI (Claude Code, Cursor, etc.) and it learns to deploy your sites with the demox CLI.",
+      open: "View repo",
+    },
     nav: {
       start: "Quick Start",
       mcp: "Via MCP",
@@ -166,6 +177,32 @@ export const Docs: React.FC = () => {
             {tr.pageTitle}
           </h1>
           <p className="text-zinc-400 max-w-2xl leading-relaxed">{tr.pageSubtitle}</p>
+        </div>
+
+        {/* Agent Skill 高亮块 */}
+        <div className="mb-10 rounded-xl border border-zinc-700 bg-gradient-to-br from-zinc-900 to-zinc-900/40 p-6">
+          <div className="flex items-start gap-3 mb-4">
+            <Sparkles className="text-zinc-200 shrink-0 mt-0.5" size={22} />
+            <div>
+              <h2 className="text-lg font-bold text-zinc-100">{tr.skill.title}</h2>
+              <p className="text-sm text-zinc-400 mt-1 leading-relaxed">{tr.skill.desc}</p>
+            </div>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <CodeBlock
+              code="https://github.com/demox-site/skill"
+              {...copyProps}
+            />
+            <a
+              href="https://github.com/demox-site/skill"
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-medium bg-zinc-100 text-zinc-900 hover:bg-white transition-colors whitespace-nowrap shrink-0"
+            >
+              {tr.skill.open}
+              <ChevronRight size={15} />
+            </a>
+          </div>
         </div>
 
         <div className="flex gap-10">

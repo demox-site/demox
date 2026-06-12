@@ -22,11 +22,7 @@ export const routers = [
     component: MemberPrice
   },
   {
-    id: "mcp",
-    component: Docs
-  },
-  {
-    id: "docs",
+    id: "doc",
     component: Docs
   },
   {
