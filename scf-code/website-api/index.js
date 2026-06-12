@@ -47,46 +47,63 @@ exports.main = async (event, context) => {
     }
 
     // 路由分发
-    if (pathUrl.includes('/upload') || body?.action === 'upload_and_deploy') {
+    // 优先按 body.action 精确分发(前端总是带 action);
+    // path 含义模糊(如 /list 会匹配 /list-user-roles),仅作无 action 时的回退。
+    const action = body?.action;
+    const actionMap = {
+      upload_and_deploy: handleUploadAndDeploy,
+      list: handleListWebsites,
+      delete: handleDeleteWebsite,
+      list_all: handleListAllWebsites,
+      update_name: handleUpdateWebsiteName,
+      update_tags: handleUpdateWebsiteTags,
+      set_subdomain: handleSetSubdomain,
+      check_subdomain: handleCheckSubdomain,
+      clear_subdomain: handleClearSubdomain,
+      resolve_subdomain: handleResolveSubdomain,
+      migrate_subdomain: handleMigrateSubdomain,
+      bucket_stats: handleBucketStats,
+      list_user_roles: handleListUserRoles,
+      set_user_role: handleSetUserRole,
+      delete_user_role: handleDeleteUserRole,
+      list_role_limits: handleListRoleLimits,
+      set_role_limit: handleSetRoleLimit,
+      delete_role_limit: handleDeleteRoleLimit,
+      resolve_user_emails: handleResolveUserEmails,
+      get_role_limits: handleGetRoleLimits
+    };
+
+    if (action && actionMap[action]) {
+      return await actionMap[action](event);
+    }
+
+    // 无 action 时按 path 回退(兼容旧调用)。注意顺序:更长/更具体的放前面。
+    if (pathUrl.includes('/upload')) {
       return await handleUploadAndDeploy(event);
-    } else if (pathUrl.includes('/list') || body?.action === 'list') {
-      return await handleListWebsites(event);
-    } else if (pathUrl.includes('/delete') || body?.action === 'delete') {
-      return await handleDeleteWebsite(event);
-    } else if (pathUrl.includes('/list-all') || body?.action === 'list_all') {
-      return await handleListAllWebsites(event);
-    } else if (pathUrl.includes('/update-name') || body?.action === 'update_name') {
-      return await handleUpdateWebsiteName(event);
-    } else if (pathUrl.includes('/update-tags') || body?.action === 'update_tags') {
-      return await handleUpdateWebsiteTags(event);
-    } else if (pathUrl.includes('/set-subdomain') || body?.action === 'set_subdomain') {
-      return await handleSetSubdomain(event);
-    } else if (pathUrl.includes('/check-subdomain') || body?.action === 'check_subdomain') {
-      return await handleCheckSubdomain(event);
-    } else if (pathUrl.includes('/clear-subdomain') || body?.action === 'clear_subdomain') {
-      return await handleClearSubdomain(event);
-    } else if (pathUrl.includes('/resolve-subdomain') || body?.action === 'resolve_subdomain') {
-      return await handleResolveSubdomain(event);
-    } else if (pathUrl.includes('/migrate-subdomain') || body?.action === 'migrate_subdomain') {
-      return await handleMigrateSubdomain(event);
-    } else if (body?.action === 'bucket_stats') {
-      return await handleBucketStats(event);
-    } else if (body?.action === 'list_user_roles') {
+    } else if (pathUrl.includes('/list-user-roles')) {
       return await handleListUserRoles(event);
-    } else if (body?.action === 'set_user_role') {
-      return await handleSetUserRole(event);
-    } else if (body?.action === 'delete_user_role') {
-      return await handleDeleteUserRole(event);
-    } else if (body?.action === 'list_role_limits') {
+    } else if (pathUrl.includes('/list-role-limits')) {
       return await handleListRoleLimits(event);
-    } else if (body?.action === 'set_role_limit') {
-      return await handleSetRoleLimit(event);
-    } else if (body?.action === 'delete_role_limit') {
-      return await handleDeleteRoleLimit(event);
-    } else if (body?.action === 'resolve_user_emails') {
-      return await handleResolveUserEmails(event);
-    } else if (body?.action === 'get_role_limits') {
-      return await handleGetRoleLimits(event);
+    } else if (pathUrl.includes('/list-all')) {
+      return await handleListAllWebsites(event);
+    } else if (pathUrl.includes('/list')) {
+      return await handleListWebsites(event);
+    } else if (pathUrl.includes('/delete')) {
+      return await handleDeleteWebsite(event);
+    } else if (pathUrl.includes('/update-name')) {
+      return await handleUpdateWebsiteName(event);
+    } else if (pathUrl.includes('/update-tags')) {
+      return await handleUpdateWebsiteTags(event);
+    } else if (pathUrl.includes('/set-subdomain')) {
+      return await handleSetSubdomain(event);
+    } else if (pathUrl.includes('/check-subdomain')) {
+      return await handleCheckSubdomain(event);
+    } else if (pathUrl.includes('/clear-subdomain')) {
+      return await handleClearSubdomain(event);
+    } else if (pathUrl.includes('/resolve-subdomain')) {
+      return await handleResolveSubdomain(event);
+    } else if (pathUrl.includes('/migrate-subdomain')) {
+      return await handleMigrateSubdomain(event);
     } else {
       return {
         statusCode: 404,
