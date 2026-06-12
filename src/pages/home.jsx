@@ -376,17 +376,14 @@ const getComparableTimestamp = (w) => {
 
 /**
  * getDisplayName
- * 站点显示名称优先使用数据库中 name；其次使用 websiteId（wid），再其次 _id 或文件名
+ * 站点显示名称：优先 name（部署时已写入 <title> 或文件名）；
+ * 其次文件名；都没有则“未命名网站”。websiteId 不再作为名称回退——它单独以小字显示。
  */
 const getDisplayName = (w) => {
   if (!w) return "";
   const n = (w.name || "").trim();
   if (n && n !== "undefined") return n;
-  const wid = w.websiteId || "";
-  if (wid && wid !== "undefined") return wid;
-  const id = w._id || "";
-  if (id && id !== "undefined") return id;
-  const fn = w.fileName || "";
+  const fn = (w.fileName || "").trim();
   if (fn && fn !== "undefined") return fn;
   return "未命名网站";
 };
@@ -1775,7 +1772,7 @@ export default function Home(props) {
                   >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-2">
-                          <div className="flex items-center gap-2 group">
+                          <div className="flex flex-col items-start gap-0.5 group">
                             {editingId === website._id ? (
                               <div className="flex items-center gap-2">
                                 <input
@@ -1803,16 +1800,23 @@ export default function Home(props) {
                               </div>
                             ) : (
                               <>
-                                <h3 className="text-zinc-100 font-bold truncate">
-                                  {getDisplayName(website)}
-                                </h3>
-                                <button
-                                  onClick={() => startEditName(website)}
-                                  className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
-                                  title={t.editName}
-                                >
-                                  <Pencil className="w-4 h-4" />
-                                </button>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="text-zinc-100 font-bold truncate">
+                                    {getDisplayName(website)}
+                                  </h3>
+                                  <button
+                                    onClick={() => startEditName(website)}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
+                                    title={t.editName}
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </button>
+                                </div>
+                                {(website.websiteId || website._id) && (
+                                  <span className="text-[11px] text-zinc-600 font-mono leading-none">
+                                    ID: {website.websiteId || website._id}
+                                  </span>
+                                )}
                               </>
                             )}
                           </div>

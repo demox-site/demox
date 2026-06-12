@@ -1153,19 +1153,28 @@ async function handleUploadAndDeploy(event) {
     // 生成访问 URL
     const finalUrl = `https://${urlPrefix}.${defaultDomain}/index.html?v=${Date.now()}`;
 
+    // 默认名称:优先用 index.html 的 <title>,其次文件名
+    const extractedTitle = extractTitleFromZip(zipEntries);
+    const defaultName = extractedTitle || fileName;
+
     // 保存到数据库
-    const existing = await query('SELECT id, subdomain FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    const existing = await query('SELECT id, subdomain, name, file_name FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
     if (existing.length > 0) {
+      // 重部署:仅当用户从未自定义过名称(name 为空或等于旧 file_name)时,才用新默认名覆盖
+      const prev = existing[0];
+      const prevName = (prev.name || '').trim();
+      const userCustomized = prevName && prevName !== (prev.file_name || '').trim();
+      const nextName = userCustomized ? prevName : defaultName;
       await query(
         `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
-        [fileName, fileName, targetPrefix, finalUrl, userId, websiteId]
+        [fileName, nextName, targetPrefix, finalUrl, userId, websiteId]
       );
       // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
       // （边缘缓存最长 60s 后自然刷新）
     } else {
       await query(
         `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [userId, websiteId, fileName, fileName, targetPrefix, finalUrl, JSON.stringify([])]
+        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([])]
       );
     }
 
@@ -1265,6 +1274,40 @@ function generateWebsiteId() {
     out += chars[Math.floor(Math.random() * chars.length)];
   }
   return out;
+}
+
+/**
+ * 从 zip 里提取入口 index.html 的 <title> 作为默认站点名称。
+ * 优先取根目录 index.html，其次任意层级最浅的 index.html。提取不到返回 ''。
+ */
+function extractTitleFromZip(zipEntries) {
+  try {
+    const indexEntries = zipEntries.filter((e) => {
+      if (e.isDirectory) return false;
+      const name = e.entryName;
+      if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
+      return /(^|\/)index\.html$/i.test(name);
+    });
+    if (indexEntries.length === 0) return '';
+    // 路径层级最浅的优先(最接近根)
+    indexEntries.sort(
+      (a, b) => a.entryName.split('/').length - b.entryName.split('/').length
+    );
+    const html = indexEntries[0].getData().toString('utf8');
+    const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (!m) return '';
+    // 去标签、压空白、解最常见的 HTML 实体
+    let title = m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    title = title
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+    return title.slice(0, 255);
+  } catch (e) {
+    return '';
+  }
 }
 
 /**
