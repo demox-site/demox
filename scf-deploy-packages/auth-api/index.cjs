@@ -764,9 +764,13 @@ async function handleGetCurrentUser(event) {
 
   const userData = users[0];
 
-  // 获取用户角色
+  // 获取用户角色（MySQL JSON 列可能已被驱动解析为数组，也可能是字符串）
   const roles = await query('SELECT roles FROM user_roles WHERE user_id = ?', [user.userId]);
-  const userRoles = roles.length > 0 ? JSON.parse(roles[0].roles) : ['user'];
+  let userRoles = ['user'];
+  if (roles.length > 0 && roles[0].roles != null) {
+    const r = roles[0].roles;
+    userRoles = Array.isArray(r) ? r : (typeof r === 'string' ? JSON.parse(r) : r);
+  }
 
   return {
     statusCode: 200,
