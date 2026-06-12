@@ -161,6 +161,9 @@ const translations = {
     domainDialogDesc: "给站点设置一个好记的前缀，用 前缀.demox.site 访问。",
     domainInputLabel: "子域名前缀",
     domainInputPlaceholder: "例如 myblog",
+    domainChecking: "检测中…",
+    domainAvailable: "可用",
+    domainTaken: "该前缀已被占用",
     domainBindButton: "保存",
     domainUnbindButton: "清除",
     domainBound: "已设置",
@@ -269,6 +272,9 @@ const translations = {
     domainDialogDesc: "Set a memorable prefix, accessible at prefix.demox.site.",
     domainInputLabel: "Subdomain prefix",
     domainInputPlaceholder: "e.g. myblog",
+    domainChecking: "Checking…",
+    domainAvailable: "Available",
+    domainTaken: "This prefix is already taken",
     domainBindButton: "Save",
     domainUnbindButton: "Clear",
     domainBound: "Set",
@@ -419,6 +425,8 @@ export default function Home(props) {
   const [domainInput, setDomainInput] = useState("");
   const [domainInfo, setDomainInfo] = useState(null); // { subdomain }
   const [domainBusy, setDomainBusy] = useState(false);
+  // 实时检测：status = idle | checking | ok | taken | invalid
+  const [domainCheck, setDomainCheck] = useState({ status: "idle", message: "" });
   const t = translations[lang];
   useEffect(() => {
     checkAuthStatus();
@@ -1175,8 +1183,59 @@ export default function Home(props) {
     setDomainWebsite(website);
     setDomainInput(website.subdomain || "");
     setDomainInfo(website.subdomain ? { subdomain: website.subdomain } : null);
+    setDomainCheck({ status: "idle", message: "" });
     setDomainOpen(true);
   };
+
+  /**
+   * 实时检测前缀是否可用(防抖 500ms)。
+   * 仅在"未设置/正在编辑"状态下生效;输入与当前已设置前缀相同则视为可用。
+   */
+  useEffect(() => {
+    if (!domainOpen || !domainWebsite) return;
+    if (domainInfo && domainInfo.subdomain) return; // 已设置态不检测
+    const label = String(domainInput || "").trim().toLowerCase();
+    if (!label) {
+      setDomainCheck({ status: "idle", message: "" });
+      return;
+    }
+    // 与当前站点已有前缀相同 → 直接可用
+    if (domainWebsite.subdomain && label === domainWebsite.subdomain) {
+      setDomainCheck({ status: "ok", message: "" });
+      return;
+    }
+    let cancelled = false;
+    setDomainCheck({ status: "checking", message: "" });
+    const timer = setTimeout(async () => {
+      try {
+        const res = await app.callFunction({
+          name: "deploy-website",
+          data: {
+            action: "check_subdomain",
+            docId: domainWebsite._id,
+            websiteId: domainWebsite.websiteId,
+            subdomain: label
+          }
+        });
+        if (cancelled) return;
+        const r = res.result || {};
+        if (r.success && r.available) {
+          setDomainCheck({ status: "ok", message: "" });
+        } else {
+          setDomainCheck({
+            status: r.reason === "invalid" ? "invalid" : "taken",
+            message: r.message || ""
+          });
+        }
+      } catch (e) {
+        if (!cancelled) setDomainCheck({ status: "idle", message: "" });
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [domainInput, domainOpen, domainWebsite, domainInfo]);
 
   /**
    * 保存自定义子域名前缀
@@ -1205,6 +1264,10 @@ export default function Home(props) {
         );
         toast({ title: t.domainBindSuccess, description: t.domainBindSuccessDesc });
       } else {
+        // 并发冲突:后端唯一索引兜底返回 DUPLICATE → 标红并提示
+        if (r.code === "DUPLICATE") {
+          setDomainCheck({ status: "taken", message: r.message || t.domainTaken });
+        }
         throw new Error(r.message || t.domainFailTitle);
       }
     } catch (error) {
@@ -2129,7 +2192,13 @@ export default function Home(props) {
                   <div className="space-y-3">
                     <label className="text-sm text-zinc-400">{t.domainInputLabel}</label>
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center flex-1 rounded bg-zinc-950 border border-zinc-800 overflow-hidden focus-within:border-zinc-600">
+                      <div className={`flex items-center flex-1 rounded bg-zinc-950 border overflow-hidden focus-within:border-zinc-600 ${
+                        domainCheck.status === "taken" || domainCheck.status === "invalid"
+                          ? "border-red-500/70"
+                          : domainCheck.status === "ok"
+                          ? "border-green-500/60"
+                          : "border-zinc-800"
+                      }`}>
                         <Input
                           value={domainInput}
                           onChange={(e) =>
@@ -2140,7 +2209,7 @@ export default function Home(props) {
                           placeholder={t.domainInputPlaceholder}
                           className="border-0 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0 focus-visible:ring-offset-0"
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") bindDomain();
+                            if (e.key === "Enter" && domainCheck.status === "ok" && !domainBusy) bindDomain();
                           }}
                         />
                         <span className="px-3 text-sm text-zinc-500 font-mono whitespace-nowrap select-none">
@@ -2149,8 +2218,8 @@ export default function Home(props) {
                       </div>
                       <Button
                         onClick={bindDomain}
-                        disabled={domainBusy || !domainInput.trim()}
-                        className="bg-zinc-100 text-black hover:bg-zinc-300 shrink-0"
+                        disabled={domainBusy || !domainInput.trim() || domainCheck.status !== "ok"}
+                        className="bg-zinc-100 text-black hover:bg-zinc-300 shrink-0 disabled:opacity-40"
                       >
                         {domainBusy ? (
                           <Loader2 className="w-4 h-4 animate-spin" />
@@ -2159,7 +2228,28 @@ export default function Home(props) {
                         )}
                       </Button>
                     </div>
-                    <p className="text-xs text-zinc-600">{t.domainHint}</p>
+                    {/* 检测状态行 */}
+                    {domainCheck.status === "checking" && (
+                      <p className="text-xs text-zinc-500 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {t.domainChecking}
+                      </p>
+                    )}
+                    {domainCheck.status === "ok" && domainInput.trim() && (
+                      <p className="text-xs text-green-500 flex items-center gap-1">
+                        <Check className="w-3 h-3" />
+                        {t.domainAvailable}
+                      </p>
+                    )}
+                    {(domainCheck.status === "taken" || domainCheck.status === "invalid") && (
+                      <p className="text-xs text-red-400 flex items-center gap-1">
+                        <XCircle className="w-3 h-3" />
+                        {domainCheck.message || (domainCheck.status === "taken" ? t.domainTaken : t.domainHint)}
+                      </p>
+                    )}
+                    {domainCheck.status === "idle" && (
+                      <p className="text-xs text-zinc-600">{t.domainHint}</p>
+                    )}
                   </div>
                 )}
               </div>

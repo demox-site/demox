@@ -160,6 +160,14 @@ const app = {
               subdomain: data.subdomain
             })
           };
+        case "check_subdomain":
+          return {
+            result: await websiteApi.checkSubdomain({
+              docId: data.docId,
+              websiteId: data.websiteId,
+              subdomain: data.subdomain
+            })
+          };
         case "clear_subdomain":
           return {
             result: await websiteApi.clearSubdomain({

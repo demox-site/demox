@@ -299,10 +299,19 @@ export const websiteApi = {
 
   // 设置自定义子域名前缀
   setSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string }) => {
-    return request<{ success: boolean; subdomain?: string; url?: string; message?: string }>(
+    return request<{ success: boolean; subdomain?: string; url?: string; code?: string; message?: string }>(
       WEBSITE_API_URL,
       "/website/set-subdomain",
       { method: "POST", body: { action: "set_subdomain", ...data } }
+    );
+  },
+
+  // 实时检测前缀是否可用
+  checkSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string }) => {
+    return request<{ success: boolean; available: boolean; reason?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/check-subdomain",
+      { method: "POST", body: { action: "check_subdomain", ...data } }
     );
   },
 

@@ -61,6 +61,8 @@ exports.main = async (event, context) => {
       return await handleUpdateWebsiteTags(event);
     } else if (pathUrl.includes('/set-subdomain') || body?.action === 'set_subdomain') {
       return await handleSetSubdomain(event);
+    } else if (pathUrl.includes('/check-subdomain') || body?.action === 'check_subdomain') {
+      return await handleCheckSubdomain(event);
     } else if (pathUrl.includes('/clear-subdomain') || body?.action === 'clear_subdomain') {
       return await handleClearSubdomain(event);
     } else if (pathUrl.includes('/resolve-subdomain') || body?.action === 'resolve_subdomain') {
@@ -435,6 +437,63 @@ function isValidLabel(label) {
  * 流程：校验归属 + 前缀合法/未占用 → 写 KV(label->{path}) → 删旧 label 的 KV → 落库。
  * 访问地址：https://{label}.demox.site
  */
+/**
+ * 实时检测前缀是否可用(供前端输入时防抖调用)。
+ * 返回 { success, available, reason }。无需写库,只读。
+ */
+async function handleCheckSubdomain(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const { docId, websiteId, subdomain } = event.body || event;
+  const label = normalizeLabel(subdomain);
+
+  if (!isValidLabel(label)) {
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        available: false,
+        reason: 'invalid',
+        message: '仅限小写字母、数字、连字符，1-63 位，且不能用保留词'
+      })
+    };
+  }
+
+  // 找出当前站点(用于判断"前缀已属于自己"算可用)
+  let selfId = null;
+  try {
+    if (docId) {
+      const rows = await query('SELECT id, user_id FROM websites WHERE id = ?', [docId]);
+      if (rows[0] && rows[0].user_id === userId) selfId = String(rows[0].id);
+    } else if (websiteId) {
+      const rows = await query('SELECT id FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+      if (rows[0]) selfId = String(rows[0].id);
+    }
+  } catch (e) {}
+
+  const occupied = await query('SELECT id FROM websites WHERE subdomain = ? LIMIT 1', [label]);
+  const takenByOther = occupied.length > 0 && String(occupied[0].id) !== selfId;
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      available: !takenByOther,
+      reason: takenByOther ? 'taken' : 'ok',
+      message: takenByOther ? '该前缀已被占用' : '可用'
+    })
+  };
+}
+
 async function handleSetSubdomain(event) {
   const userId = getUserId(event);
   if (!userId) {
@@ -484,18 +543,24 @@ async function handleSetSubdomain(event) {
     };
   }
 
-  // 前缀是否被其它站点占用
-  const occupied = await query('SELECT id FROM websites WHERE subdomain = ?', [label]);
-  if (occupied.length > 0 && String(occupied[0].id) !== String(site.id)) {
-    return {
-      statusCode: 409,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ success: false, message: '该前缀已被占用，请换一个' })
-    };
-  }
-
+  // 并发安全：不做"先查后写"（有 TOCTOU 竞争），直接靠 subdomain 列的唯一索引兜底。
+  // 用条件 UPDATE：仅当目标前缀未被别人占用(不存在 / 或就是本站点)时才写入。
   try {
-    // 路由表只写数据库 websites.subdomain 列；边缘函数通过 resolve_subdomain 查表。
+    // 先确认该前缀当前是否已属于本站点（幂等：重复设置同一个前缀直接成功）
+    if (site.subdomain === label) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({
+          success: true,
+          subdomain: label,
+          url: `https://${label}.demox.site`,
+          message: '该前缀已是当前站点'
+        })
+      };
+    }
+
+    // 条件写入：唯一索引保证并发下只有一个请求能成功；重复会抛 ER_DUP_ENTRY
     await query(
       'UPDATE websites SET subdomain = ?, updated_at = NOW() WHERE id = ?',
       [label, site.id]
@@ -512,6 +577,14 @@ async function handleSetSubdomain(event) {
       })
     };
   } catch (error) {
+    // 唯一索引冲突 = 并发下被别的站点抢先占用
+    if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, code: 'DUPLICATE', message: '该前缀已被占用，请换一个' })
+      };
+    }
     console.error('设置子域名失败:', error);
     return {
       statusCode: 200,
