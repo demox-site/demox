@@ -33,12 +33,44 @@ addEventListener('fetch', (event) => {
   event.respondWith(handle(event.request));
 });
 
-function rewriteOrigin(req, u, originPath) {
+function buildOriginUrl(req, originPath, search) {
   const origin = new URL(req.url);
   origin.hostname = 'sites.demox.site';
   origin.pathname = originPath.replace(/\/+/g, '/');
-  origin.search = u.search;
-  return fetch(origin.toString(), req);
+  origin.search = search;
+  return origin.toString();
+}
+
+// 判断 404 是否应回退到 SPA 的 index.html。
+// 目标：让每个站点的体验等同于「独占一个桶根的 SPA 静态托管」(Netlify/Vercel 风格)。
+//   - 页面导航请求(浏览器地址栏/刷新，Accept 优先 text/html) → 回退，前端路由接管。
+//   - 静态资源请求(.js/.css/.png/.json…，或 fetch/XHR 的 */*) → 保持 404，
+//     绝不把缺失的资源伪装成 HTML(否则缺失的 chunk.js 返回 HTML，浏览器静默解析失败，极难排查)。
+function shouldFallbackToIndex(req, originPath) {
+  const last = (originPath.split('?')[0].split('/').pop() || '').toLowerCase();
+  if (last.includes('.')) {
+    // 带扩展名：只有 .html/.htm 当作页面，其余一律按静态资源处理(404 保持 404)
+    return /\.html?$/.test(last);
+  }
+  // 无扩展名：看是不是浏览器导航请求(Accept 含 text/html)。
+  // 资源/接口请求(Accept: */*、image/*、application/json 等)不回退。
+  const accept = (req.headers.get('accept') || '').toLowerCase();
+  return accept.includes('text/html');
+}
+
+async function rewriteOrigin(req, u, originPath, sitePath) {
+  const resp = await fetch(buildOriginUrl(req, originPath, u.search), req);
+  if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
+    const idxResp = await fetch(buildOriginUrl(req, `/${sitePath}/index.html`, ''), { method: 'GET' });
+    if (idxResp.ok) {
+      // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
+      return new Response(idxResp.body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
+      });
+    }
+  }
+  return resp;
 }
 
 /**
@@ -126,7 +158,7 @@ async function handle(req) {
   }
 
   if (path) {
-    return rewriteOrigin(req, u, `/${path}/${rest}`);
+    return rewriteOrigin(req, u, `/${path}/${rest}`, path);
   }
 
   // 未知子域名：放行回源（由 COS 返回 404）
