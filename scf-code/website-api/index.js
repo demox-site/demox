@@ -8,7 +8,6 @@ const COS = require('cos-nodejs-sdk-v5');
 const path = require('path');
 const { query } = require('./shared/db.js');
 const { getUserId, authenticate } = require('./shared/jwt.js');
-const { kvPut, kvDelete } = require('./shared/edgeone.js');
 
 // COS 配置
 const hostingBucket = 'resource-game-1307257815';
@@ -64,6 +63,8 @@ exports.main = async (event, context) => {
       return await handleSetSubdomain(event);
     } else if (pathUrl.includes('/clear-subdomain') || body?.action === 'clear_subdomain') {
       return await handleClearSubdomain(event);
+    } else if (pathUrl.includes('/resolve-subdomain') || body?.action === 'resolve_subdomain') {
+      return await handleResolveSubdomain(event);
     } else if (pathUrl.includes('/migrate-subdomain') || body?.action === 'migrate_subdomain') {
       return await handleMigrateSubdomain(event);
     } else {
@@ -267,21 +268,7 @@ async function handleDeleteWebsite(event) {
     params.push(key);
   }
 
-  // 删除前清理自定义子域名前缀的 KV 记录，失败不阻断删除
-  try {
-    const toDelete = await query(
-      `SELECT subdomain FROM websites WHERE ${whereClause}`,
-      params
-    );
-    for (const row of toDelete) {
-      const label = row.subdomain;
-      if (!label) continue;
-      try { await kvDelete(label); } catch (e) { console.error('KV delete 失败:', e.message); }
-    }
-  } catch (e) {
-    console.error('清理自定义前缀失败:', e.message);
-  }
-
+  // 路由表在 websites.subdomain 列里，删除行即清理；边缘缓存 60s 内自然失效。
   const result = await query(`DELETE FROM websites WHERE ${whereClause}`, params);
 
   return {
@@ -508,19 +495,7 @@ async function handleSetSubdomain(event) {
   }
 
   try {
-    // 写 KV：label -> { userId, websiteId, path }
-    await kvPut(label, {
-      userId: site.user_id,
-      websiteId: site.website_id,
-      path: site.path
-    });
-
-    // 若改了前缀，删除旧 label 的 KV（失败不阻断）
-    if (site.subdomain && site.subdomain !== label) {
-      try { await kvDelete(site.subdomain); } catch (e) { console.error('删除旧前缀 KV 失败:', e.message); }
-    }
-
-    // 落库
+    // 路由表只写数据库 websites.subdomain 列；边缘函数通过 resolve_subdomain 查表。
     await query(
       'UPDATE websites SET subdomain = ?, updated_at = NOW() WHERE id = ?',
       [label, site.id]
@@ -594,7 +569,6 @@ async function handleClearSubdomain(event) {
   }
 
   try {
-    try { await kvDelete(site.subdomain); } catch (e) { console.error('删除前缀 KV 失败:', e.message); }
     await query('UPDATE websites SET subdomain = NULL, updated_at = NOW() WHERE id = ?', [site.id]);
     return {
       statusCode: 200,
@@ -607,6 +581,49 @@ async function handleClearSubdomain(event) {
       statusCode: 200,
       headers: getCORSHeaders(),
       body: JSON.stringify({ success: false, message: error.message || '清除失败' })
+    };
+  }
+}
+
+/**
+ * 公开解析接口：label -> COS path。供 subdomain-router 边缘函数查表。
+ * 无需鉴权：只返回站点的 COS 路径前缀，该信息本就通过公开 URL 暴露。
+ */
+async function handleResolveSubdomain(event) {
+  const { subdomain } = event.body || event;
+  const label = String(subdomain || '').trim().toLowerCase();
+
+  if (!label) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: 'Missing subdomain' })
+    };
+  }
+
+  try {
+    const rows = await query(
+      'SELECT path FROM websites WHERE subdomain = ? LIMIT 1',
+      [label]
+    );
+    if (rows.length === 0 || !rows[0].path) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, message: 'not found' })
+      };
+    }
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: true, path: rows[0].path })
+    };
+  } catch (error) {
+    console.error('解析子域名失败:', error);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: error.message })
     };
   }
 }
@@ -785,15 +802,8 @@ async function handleUploadAndDeploy(event) {
         `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
         [fileName, fileName, targetPrefix, finalUrl, userId, websiteId]
       );
-      // 若已设置自定义前缀，重部署后 path 可能变化，刷新 KV 路由表
-      const label = existing[0].subdomain;
-      if (label) {
-        try {
-          await kvPut(label, { userId, websiteId, path: targetPrefix });
-        } catch (e) {
-          console.error('重部署刷新 KV 失败:', e.message);
-        }
-      }
+      // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
+      // （边缘缓存最长 60s 后自然刷新）
     } else {
       await query(
         `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags) VALUES (?, ?, ?, ?, ?, ?, ?)`,

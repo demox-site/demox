@@ -5,22 +5,21 @@
  *   1. 旧格式（向后兼容，零改动）：sites-{userId}-{fileId}-{dir}.demox.site
  *      → 回源 /sites/{userId}/{FILEID}/{dir}/{rest}
  *   2. 自定义前缀（新增）：{label}.demox.site
- *      → 查 KV(ROUTES) 取 { path }，回源 /{path}/{rest}
+ *      → 调 website-api 解析接口查 label -> path（边缘 Cache 缓存），回源 /{path}/{rest}
  *
- * 部署/共存策略（重要）：
- *   - 本函数与旧函数 ef-7ej45f3q 都匹配 host=*.demox.site。
- *   - 给本函数的触发规则设更高优先级（Priority 数值更小/置顶），
- *     让它接管 *.demox.site；旧函数保持不动，作为即时回滚：
- *     只要把本函数的触发规则停用/删除，流量立刻回到旧函数。
- *   - 本函数已内置旧正则逻辑，所以接管后旧站点照常工作。
+ * 路由表用现有 MySQL（websites.subdomain 列），不用 KV：
+ *   标准版 EdgeOne 边缘函数无法绑定 Pages KV，但支持 fetch 子请求，
+ *   所以查表走 website-api 的 /resolve-subdomain 接口 + 边缘 Cache（默认 60s）。
  *
- * 部署要点（控制台）：
- *   1. 新建边缘函数，名称 subdomain-router，粘贴本文件内容。
- *   2. 拓展服务 → 新增服务绑定 → KV 命名空间 ns-rHwjjy513D6S，变量名填 ROUTES。
- *   3. 触发规则：host equal *.demox.site，优先级高于 ef-7ej45f3q。
+ * 部署/共存策略：
+ *   - 与旧函数 ef-7ej45f3q 都匹配 host=*.demox.site；本函数接管该规则。
+ *   - 本函数内置旧正则逻辑，旧站点照常工作。
+ *   - 回滚：把触发规则的 FunctionId 改回 ef-7ej45f3q。
  */
 
-/* global ROUTES */
+// website-api 解析接口（SCF HTTP 触发器）
+var RESOLVE_API = 'https://1307257815-3empxtnzn9.ap-guangzhou.tencentscf.com/resolve-subdomain';
+var RESOLVE_CACHE_TTL = 60; // 秒
 
 addEventListener('fetch', (event) => {
   // 异常时回源，避免整站 500
@@ -34,6 +33,58 @@ function rewriteOrigin(req, u, originPath) {
   origin.pathname = originPath.replace(/\/+/g, '/');
   origin.search = u.search;
   return fetch(origin.toString(), req);
+}
+
+/**
+ * 查 label -> path，带边缘缓存。
+ * 用 caches.default 把解析结果缓存 RESOLVE_CACHE_TTL 秒，避免每请求打 SCF。
+ */
+async function resolvePath(label) {
+  const cacheKey = new Request('https://resolve.demox.site/label/' + encodeURIComponent(label));
+  let cache = null;
+  try { cache = caches.default; } catch (e) { cache = null; }
+
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) {
+        const j = await hit.json();
+        return j && j.path ? j.path : null;
+      }
+    } catch (e) {}
+  }
+
+  // 未命中：调 website-api 解析
+  let path = null;
+  try {
+    const resp = await fetch(RESOLVE_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'resolve_subdomain', subdomain: label })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.success && data.path) path = data.path;
+    }
+  } catch (e) {
+    path = null;
+  }
+
+  // 写缓存（命中和未命中都缓存，未命中缓存空对象以挡住穿透）
+  if (cache) {
+    try {
+      const body = JSON.stringify({ path: path });
+      const cacheResp = new Response(body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=' + RESOLVE_CACHE_TTL
+        }
+      });
+      await cache.put(cacheKey, cacheResp);
+    } catch (e) {}
+  }
+
+  return path;
 }
 
 async function handle(req) {
@@ -56,15 +107,10 @@ async function handle(req) {
     return rewriteOrigin(req, u, `/sites/${userId}/${fileId}/${dir}/${rest}`);
   }
 
-  // 2) 自定义前缀：查 KV 路由表 label -> { userId, websiteId, path }
-  let mapping = null;
-  try {
-    mapping = await ROUTES.get(label, 'json');
-  } catch (e) {
-    mapping = null;
-  }
-  if (mapping && mapping.path) {
-    return rewriteOrigin(req, u, `/${mapping.path}/${rest}`);
+  // 2) 自定义前缀：查 MySQL 路由表（经 website-api + 边缘缓存）
+  const path = await resolvePath(label);
+  if (path) {
+    return rewriteOrigin(req, u, `/${path}/${rest}`);
   }
 
   // 未知子域名：放行回源（由 COS 返回 404）
