@@ -207,6 +207,18 @@ export const authApi = {
 
 // 网站API
 export const websiteApi = {
+  uploadAndDeploy: async (params: {
+    fileContentBase64: string;
+    fileName: string;
+    websiteId?: string;
+  }) => {
+    return request<{ success: boolean; url?: string; websiteId?: string; path?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/upload",
+      { method: "POST", body: { action: "upload_and_deploy", ...params } }
+    );
+  },
+
   // 获取网站列表
   list: async () => {
     return request<{ success: boolean; websites: any[]; count: number }>(
@@ -322,12 +334,104 @@ export const websiteApi = {
       "/website/clear-subdomain",
       { method: "POST", body: { action: "clear_subdomain", ...data } }
     );
+  },
+
+  // 按角色 id/name 列表获取限额(home.jsx 计算有效限额用)
+  getRoleLimits: async (roles: string[]) => {
+    return request<{ code: number; data: any[]; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/get-role-limits",
+      { method: "POST", body: { action: "get_role_limits", roles } }
+    );
+  },
+
+  // 解析 userId -> email(管理员站点列表用)
+  resolveUserEmails: async (userIds: string[]) => {
+    return request<{ success: boolean; users: { userId: string; email: string }[] }>(
+      WEBSITE_API_URL,
+      "/website/resolve-user-emails",
+      { method: "POST", body: { action: "resolve_user_emails", userIds } }
+    );
+  },
+
+  // 大盘统计
+  bucketStats: async (data: { granularity?: string; startTime?: string; endTime?: string }) => {
+    return request<any>(
+      WEBSITE_API_URL,
+      "/website/bucket-stats",
+      { method: "POST", body: { action: "bucket_stats", ...data } }
+    );
+  }
+};
+
+// 管理员 API（角色与限额配置）
+export const adminApi = {
+  listUserRoles: async () => {
+    return request<{ success: boolean; data: any[] }>(
+      WEBSITE_API_URL,
+      "/website/list-user-roles",
+      { method: "POST", body: { action: "list_user_roles" } }
+    );
+  },
+  setUserRole: async (uid: string, role: string[]) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/set-user-role",
+      { method: "POST", body: { action: "set_user_role", uid, role } }
+    );
+  },
+  deleteUserRole: async (uid: string) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-user-role",
+      { method: "POST", body: { action: "delete_user_role", uid } }
+    );
+  },
+  listRoleLimits: async () => {
+    return request<{ success: boolean; data: any[] }>(
+      WEBSITE_API_URL,
+      "/website/list-role-limits",
+      { method: "POST", body: { action: "list_role_limits" } }
+    );
+  },
+  setRoleLimit: async (doc: any) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/set-role-limit",
+      { method: "POST", body: { action: "set_role_limit", ...doc } }
+    );
+  },
+  deleteRoleLimit: async (idOrName: string) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-role-limit",
+      { method: "POST", body: { action: "delete_role_limit", id: idOrName, name: idOrName } }
+    );
   }
 };
 
 // 检查登录状态
 export function isLoggedIn(): boolean {
   return !!tokenManager.get();
+}
+
+/**
+ * 将 MySQL 行映射为 home.jsx 期望的字段名(_id, websiteId, fileName, ... 时间为 {$date})
+ */
+export function mapWebsiteRow(row: any): any {
+  return {
+    _id: String(row.id),
+    websiteId: row.website_id,
+    fileName: row.file_name,
+    name: row.name || row.file_name,
+    path: row.path,
+    url: row.url,
+    tags: typeof row.tags === "string" ? JSON.parse(row.tags) : (row.tags || []),
+    userId: row.user_id,
+    subdomain: row.subdomain || null,
+    createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
+    updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
+  };
 }
 
 // 获取当前用户

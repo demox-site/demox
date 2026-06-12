@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { app } from "@/cloudbase";
-import { userManager } from "@/api";
+import { userManager, websiteApi } from "@/api";
 import {
   Card,
   CardHeader,
@@ -66,12 +65,9 @@ const UsagePage: React.FC = () => {
       try {
         const user = userManager.get();
         const roles = (user?.roles as string[]) || ["user"];
-        const res = await app.callFunction({
-          name: "getRoleLimits",
-          data: { roles }
-        });
-        if (res.result?.code === 0 && res.result.data?.length > 0) {
-          const sorted = (res.result.data as (RoleLimits & {
+        const res = await websiteApi.getRoleLimits(roles);
+        if (res?.code === 0 && res.data?.length > 0) {
+          const sorted = (res.data as (RoleLimits & {
             priority?: number;
           })[]).sort((a, b) => (b.priority || 0) - (a.priority || 0));
           setLimits(sorted[0]);

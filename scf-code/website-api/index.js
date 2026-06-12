@@ -69,6 +69,24 @@ exports.main = async (event, context) => {
       return await handleResolveSubdomain(event);
     } else if (pathUrl.includes('/migrate-subdomain') || body?.action === 'migrate_subdomain') {
       return await handleMigrateSubdomain(event);
+    } else if (body?.action === 'bucket_stats') {
+      return await handleBucketStats(event);
+    } else if (body?.action === 'list_user_roles') {
+      return await handleListUserRoles(event);
+    } else if (body?.action === 'set_user_role') {
+      return await handleSetUserRole(event);
+    } else if (body?.action === 'delete_user_role') {
+      return await handleDeleteUserRole(event);
+    } else if (body?.action === 'list_role_limits') {
+      return await handleListRoleLimits(event);
+    } else if (body?.action === 'set_role_limit') {
+      return await handleSetRoleLimit(event);
+    } else if (body?.action === 'delete_role_limit') {
+      return await handleDeleteRoleLimit(event);
+    } else if (body?.action === 'resolve_user_emails') {
+      return await handleResolveUserEmails(event);
+    } else if (body?.action === 'get_role_limits') {
+      return await handleGetRoleLimits(event);
     } else {
       return {
         statusCode: 404,
@@ -165,7 +183,12 @@ async function checkAdmin(userId) {
   if (roles.length === 0) {
     return false;
   }
-  const userRoles = JSON.parse(roles[0].roles || '[]');
+  // mysql2 对 JSON 列会自动解析为数组;字符串时才需 JSON.parse
+  let userRoles = roles[0].roles;
+  if (typeof userRoles === 'string') {
+    try { userRoles = JSON.parse(userRoles || '[]'); } catch (e) { userRoles = []; }
+  }
+  if (!Array.isArray(userRoles)) userRoles = [];
   return userRoles.includes('admin');
 }
 
@@ -655,6 +678,244 @@ async function handleClearSubdomain(event) {
       headers: getCORSHeaders(),
       body: JSON.stringify({ success: false, message: error.message || '清除失败' })
     };
+  }
+}
+
+/**
+ * 管理员鉴权辅助：返回 { userId } 或 错误响应对象。
+ */
+async function requireAdmin(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return { err: { statusCode: 401, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '未登录或token已过期' }) } };
+  }
+  const ok = await checkAdmin(userId);
+  if (!ok) {
+    return { err: { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '仅管理员可访问' }) } };
+  }
+  return { userId };
+}
+
+function ok(obj) {
+  return { statusCode: 200, headers: getCORSHeaders(), body: JSON.stringify(obj) };
+}
+
+/** 列出所有用户角色(user_roles 表) */
+async function handleListUserRoles(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const rows = await query('SELECT user_id, roles, updated_at FROM user_roles ORDER BY updated_at DESC');
+  const list = rows.map((r) => ({
+    _id: r.user_id,
+    role: typeof r.roles === 'string' ? JSON.parse(r.roles || '[]') : (r.roles || []),
+    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined
+  }));
+  return ok({ success: true, data: list });
+}
+
+/** 设置/新增某用户的角色 */
+async function handleSetUserRole(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const { uid, role } = event.body || event;
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) return ok({ success: false, message: '缺少用户 UID' });
+  const rolesArr = Array.isArray(role) ? role.map((x) => String(x).trim()).filter(Boolean) : [];
+  await query(
+    `INSERT INTO user_roles (user_id, roles, updated_at) VALUES (?, ?, NOW())
+     ON DUPLICATE KEY UPDATE roles = VALUES(roles), updated_at = NOW()`,
+    [targetUid, JSON.stringify(rolesArr)]
+  );
+  return ok({ success: true });
+}
+
+/** 删除某用户的角色文档 */
+async function handleDeleteUserRole(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const { uid } = event.body || event;
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) return ok({ success: false, message: '缺少用户 UID' });
+  await query('DELETE FROM user_roles WHERE user_id = ?', [targetUid]);
+  return ok({ success: true });
+}
+
+/** 列出角色限额定义(roles 表) */
+async function handleListRoleLimits(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const rows = await query('SELECT * FROM roles ORDER BY priority DESC');
+  const list = rows.map((r) => ({
+    _id: r.id || r.name,
+    name: r.name,
+    priority: r.priority,
+    max_file_size: r.max_file_size,
+    deployment_limit: r.deployment_limit,
+    max_file_count: r.max_file_count,
+    allowed_extensions: typeof r.allowed_extensions === 'string'
+      ? JSON.parse(r.allowed_extensions || 'null')
+      : (r.allowed_extensions || null),
+    enabled: r.enabled === null || r.enabled === undefined ? null : !!r.enabled,
+    description: r.description || null
+  }));
+  return ok({ success: true, data: list });
+}
+
+/** 设置/新增角色限额(docId/id 用角色名或现有 id) */
+async function handleSetRoleLimit(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const d = event.body || event;
+  const id = String(d.id || d.name || '').trim();
+  const name = String(d.name || d.id || '').trim();
+  if (!name) return ok({ success: false, message: '缺少角色名' });
+
+  const allowedExt = Array.isArray(d.allowed_extensions)
+    ? JSON.stringify(d.allowed_extensions)
+    : (d.allowed_extensions == null ? null : JSON.stringify(d.allowed_extensions));
+
+  await query(
+    `INSERT INTO roles (id, name, priority, enabled, max_file_count, allowed_extensions, deployment_limit, max_file_size)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       name = VALUES(name), priority = VALUES(priority), enabled = VALUES(enabled),
+       max_file_count = VALUES(max_file_count), allowed_extensions = VALUES(allowed_extensions),
+       deployment_limit = VALUES(deployment_limit), max_file_size = VALUES(max_file_size)`,
+    [
+      id || name,
+      name,
+      d.priority == null ? null : Number(d.priority),
+      d.enabled == null ? 1 : (d.enabled ? 1 : 0),
+      d.max_file_count == null ? null : Number(d.max_file_count),
+      allowedExt,
+      d.deployment_limit == null ? null : Number(d.deployment_limit),
+      d.max_file_size == null ? null : Number(d.max_file_size)
+    ]
+  );
+  return ok({ success: true });
+}
+
+/**
+ * 大盘统计：COS 存储用量/对象数 + 用户数/项目数(来自 DB)。
+ * 流量时序需云监控,SCF 默认无权限,做 best-effort:拿不到返回 null,前端显示"暂无数据"。
+ */
+async function handleBucketStats(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+
+  // 1) COS: 统计 sites/ 前缀下的对象数与总字节
+  let sitesBytes = 0;
+  let sitesCount = 0;
+  try {
+    let marker = '';
+    let truncated = true;
+    while (truncated) {
+      const page = await new Promise((resolve, reject) => {
+        cos.getBucket(
+          { Bucket: hostingBucket, Region: hostingRegion, Prefix: 'sites/', Marker: marker, MaxKeys: 1000 },
+          (err, data) => (err ? reject(err) : resolve(data))
+        );
+      });
+      const contents = page.Contents || [];
+      for (const o of contents) {
+        sitesBytes += Number(o.Size || 0);
+        sitesCount += 1;
+      }
+      truncated = page.IsTruncated === 'true' || page.IsTruncated === true;
+      marker = page.NextMarker || (contents.length ? contents[contents.length - 1].Key : '');
+      if (!marker) break;
+    }
+  } catch (e) {
+    console.error('COS 统计失败:', e.message);
+  }
+
+  // 2) DB: 在用用户数(有站点的不同 user)、项目数(站点总数)
+  let usersCount = 0;
+  let projectsCount = 0;
+  try {
+    const u = await query('SELECT COUNT(DISTINCT user_id) AS c FROM websites');
+    usersCount = u[0]?.c || 0;
+    const p = await query('SELECT COUNT(*) AS c FROM websites');
+    projectsCount = p[0]?.c || 0;
+  } catch (e) {
+    console.error('DB 统计失败:', e.message);
+  }
+
+  return ok({
+    success: true,
+    sitesBytes,
+    sitesCount,
+    usersCount,
+    projectsCount,
+    traffic: { timestamps: [], inbound: null, outbound: null }
+  });
+}
+
+/** 删除角色限额 */
+async function handleDeleteRoleLimit(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const { id, name } = event.body || event;
+  const key = String(id || name || '').trim();
+  if (!key) return ok({ success: false, message: '缺少角色标识' });
+  await query('DELETE FROM roles WHERE id = ? OR name = ?', [key, key]);
+  return ok({ success: true });
+}
+
+/**
+ * 按角色名列表返回限额(供 home.jsx 计算用户有效限额)。需登录,不需管理员。
+ * 返回 { code: 0, data: [...] }(沿用旧 getRoleLimits 形态)。
+ */
+async function handleGetRoleLimits(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: [], message: '未登录' });
+  const roles = Array.isArray(event.body?.roles) ? event.body.roles : (event.roles || []);
+  const names = roles.map((r) => String(r).trim()).filter(Boolean);
+  if (names.length === 0) return ok({ code: 0, data: [] });
+  const placeholders = names.map(() => '?').join(',');
+  // home.jsx 传的是角色 id(如 user/pro/admin);表里 name 是中文展示名,故按 id 或 name 都匹配
+  const rows = await query(
+    `SELECT * FROM roles WHERE enabled = 1 AND (id IN (${placeholders}) OR name IN (${placeholders})) ORDER BY priority DESC`,
+    [...names, ...names]
+  );
+  const data = rows.map((r) => ({
+    name: r.name,
+    priority: r.priority,
+    max_file_size: r.max_file_size,
+    deployment_limit: r.deployment_limit,
+    max_file_count: r.max_file_count,
+    allowed_extensions: typeof r.allowed_extensions === 'string'
+      ? JSON.parse(r.allowed_extensions || 'null')
+      : (r.allowed_extensions || null),
+    enabled: r.enabled === null ? null : !!r.enabled
+  }));
+  return ok({ code: 0, data });
+}
+
+/**
+ * 解析用户 ID -> 邮箱(管理员站点列表用)。
+ * 用户表未知时优雅降级:返回 userId 占位,不报错。
+ */
+async function handleResolveUserEmails(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const ids = Array.isArray(event.body?.userIds) ? event.body.userIds : [];
+  const clean = ids.map((x) => String(x).trim()).filter(Boolean);
+  if (clean.length === 0) return ok({ success: true, users: [] });
+
+  // users 表主键是 id(形如 user_xxx);老站点的 user_id 是纯数字、不在 users 表中,查不到则空邮箱
+  const placeholders = clean.map(() => '?').join(',');
+  try {
+    const rows = await query(
+      `SELECT id, email FROM users WHERE id IN (${placeholders})`,
+      clean
+    );
+    const map = {};
+    for (const r of rows) map[r.id] = r.email;
+    return ok({ success: true, users: clean.map((id) => ({ userId: id, email: map[id] || '' })) });
+  } catch (e) {
+    console.error('解析用户邮箱失败:', e.message);
+    return ok({ success: true, users: clean.map((id) => ({ userId: id, email: '' })) });
   }
 }
 

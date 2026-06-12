@@ -12,7 +12,6 @@
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\""
   },
   "dependencies": {
-    "@cloudbase/js-sdk": "^2.15.1",
     "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-accordion": "^1.2.0",
     "@radix-ui/react-alert-dialog": "^1.1.1",

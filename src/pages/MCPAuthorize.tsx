@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { auth, app } from "../cloudbase";
+import { tokenManager, userManager } from "../api";
 import { Loader2 } from "lucide-react";
 
 // 从 hash 路由中解析查询参数
@@ -33,8 +33,9 @@ export function MCPAuthorize() {
       // 1. 检查用户是否已登录
       let isLoggedIn = false;
       try {
-        const loginState = await auth.getLoginState();
-        isLoggedIn = !!loginState;
+        const token = tokenManager.get();
+        const user = userManager.get();
+        isLoggedIn = !!(token && user);
         console.log("[MCPAuthorize] 登录状态:", isLoggedIn);
       } catch (error) {
         console.error("[MCPAuthorize] 检查登录状态失败:", error);
@@ -51,23 +52,18 @@ export function MCPAuthorize() {
 
       // 3. 已登录，直接获取 Token 并返回
       setStatus("redirecting");
-      console.log("[MCPAuthorize] 已登录，获取 CloudBase Token...");
+      console.log("[MCPAuthorize] 已登录，获取 Token...");
 
-      const accessTokenResult = await auth.getAccessToken();
-      const userInfo = await auth.getUserInfo();
-      const userId = userInfo?.uid || "";
-
-      // 提取实际的 access token 字符串
-      const accessToken = typeof accessTokenResult === 'object'
-        ? (accessTokenResult as any).accessToken || JSON.stringify(accessTokenResult)
-        : accessTokenResult;
+      const accessToken = tokenManager.get() || "";
+      const user = userManager.get();
+      const userId = user?.userId || "";
 
       console.log("[MCPAuthorize] 获取到 Token:", { userId, hasToken: !!accessToken });
 
       // 4. 直接返回 Token（无需授权码交换）
       const callbackUrl = new URL(redirectUri || "");
       callbackUrl.searchParams.set("access_token", accessToken);
-      callbackUrl.searchParams.set("refresh_token", accessToken); // CloudBase 自动处理刷新
+      callbackUrl.searchParams.set("refresh_token", accessToken);
       callbackUrl.searchParams.set("user_id", userId);
       callbackUrl.searchParams.set("state", state || "");
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { app, auth, db } from "@/cloudbase";
+import { userManager, websiteApi, adminApi } from "@/api";
 import { Card, CardHeader, CardTitle, CardContent, Button, Input, Label, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useToast } from "@/components/ui";
@@ -54,22 +54,15 @@ const AdminDashboard: React.FC = () => {
    * 检查当前用户是否为管理员
    */
   const checkAdmin = async () => {
-    const loginState = await auth.getLoginState();
-    if (!loginState || !loginState.user) {
+    const user = userManager.get();
+    if (!user || !user.userId) {
       setIsAdmin(false);
       setLoading(false);
       return;
     }
-    const uid = loginState.user.uid;
-    setUserName(loginState.user.nickName || loginState.user.email || uid);
-    try {
-      const res = await db.collection("ai_builder_user_roles").doc(uid).get();
-      const roles = res.data && res.data[0]?.role ? res.data[0].role : ["user"];
-      const isAdminRole = Array.isArray(roles) && roles.includes("admin");
-      setIsAdmin(isAdminRole);
-    } catch {
-      setIsAdmin(false);
-    }
+    setUserName(user.email || user.userId);
+    const roles = Array.isArray(user.roles) ? user.roles : [];
+    setIsAdmin(roles.includes("admin"));
   };
 
   /**
@@ -77,16 +70,11 @@ const AdminDashboard: React.FC = () => {
    */
   const fetchStatsDay = useCallback(async () => {
     try {
-      const fnRes = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "bucket_stats",
-          granularity: "day",
-          startTime: rangeDay.start,
-          endTime: rangeDay.end
-        }
+      const result: BucketStats = await websiteApi.bucketStats({
+        granularity: "day",
+        startTime: rangeDay.start,
+        endTime: rangeDay.end
       });
-      const result: BucketStats = fnRes.result || {};
       if (!result.success) {
         throw new Error(result.message || "获取统计失败");
       }
@@ -105,16 +93,11 @@ const AdminDashboard: React.FC = () => {
    */
   const fetchStatsHour = useCallback(async () => {
     try {
-      const fnRes = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "bucket_stats",
-          granularity: "hour",
-          startTime: rangeHour.start,
-          endTime: rangeHour.end
-        }
+      const result: BucketStats = await websiteApi.bucketStats({
+        granularity: "hour",
+        startTime: rangeHour.start,
+        endTime: rangeHour.end
       });
-      const result: BucketStats = fnRes.result || {};
       if (!result.success) {
         throw new Error(result.message || "获取统计失败");
       }
@@ -175,7 +158,7 @@ const AdminDashboard: React.FC = () => {
   const fetchRoles = useCallback(async () => {
     setRolesLoading(true);
     try {
-      const res = await db.collection("ai_builder_user_roles").get();
+      const res = await adminApi.listUserRoles();
       const raw: RawRoleDoc[] = (res.data || []) as RawRoleDoc[];
       const list: UserRoleDoc[] = raw.map((d) => ({
         _id: d._id || "",
@@ -204,7 +187,7 @@ const AdminDashboard: React.FC = () => {
       return;
     }
     try {
-      await db.collection("ai_builder_user_roles").doc(uid).set({ role: roles });
+      await adminApi.setUserRole(uid, roles);
       toast({ title: "保存成功", description: `用户 ${uid} 角色已更新` });
       setEditMap((m) => {
         const cp = { ...m };
@@ -227,7 +210,7 @@ const AdminDashboard: React.FC = () => {
   const deleteRoleDoc = async (uid: string) => {
     if (!uid) return;
     try {
-      await db.collection("ai_builder_user_roles").doc(uid).remove();
+      await adminApi.deleteUserRole(uid);
       toast({ title: "删除成功", description: `用户 ${uid} 角色已删除` });
       await fetchRoles();
     } catch (e: unknown) {
@@ -307,7 +290,7 @@ const AdminDashboard: React.FC = () => {
   const fetchRoleLimits = useCallback(async () => {
     setRoleLimitsLoading(true);
     try {
-      const res = await db.collection("ai_builder_roles").get();
+      const res = await adminApi.listRoleLimits();
       const raw: RawRoleLimitDoc[] = (res.data || []) as RawRoleLimitDoc[];
       const list: RoleLimitDoc[] = raw
         .map((d) => ({
@@ -357,7 +340,7 @@ const AdminDashboard: React.FC = () => {
       }
     });
     try {
-      await db.collection("ai_builder_roles").doc((doc._id || doc.name) as string).set(payload);
+      await adminApi.setRoleLimit({ id: (doc._id || doc.name), ...payload });
       toast({ title: "保存成功", description: `角色 ${doc.name} 限额已更新` });
       setEditRoleLimitMap((m) => {
         const cp = { ...m };
@@ -379,7 +362,7 @@ const AdminDashboard: React.FC = () => {
    */
   const deleteRoleLimitDoc = async (name: string) => {
     try {
-      await db.collection("ai_builder_roles").doc(name).remove();
+      await adminApi.deleteRoleLimit(name);
       toast({ title: "删除成功", description: `角色 ${name} 限额已删除` });
       await fetchRoleLimits();
     } catch (e: unknown) {

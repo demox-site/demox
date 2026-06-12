@@ -66,7 +66,7 @@ import {
   Copy,
   Loader2
 } from "lucide-react";
-import { app, auth, db } from "../cloudbase";
+import { authApi, websiteApi, tokenManager, userManager, mapWebsiteRow } from "../api";
 import { useNavigate, Navigate } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 
@@ -94,7 +94,7 @@ const translations = {
     emptyTitle: "暂无部署记录",
     emptyDesc: "上传你的第一个项目以开始使用。",
     createdAt: "创建时间：",
-    deployedAt: "部署时间：",
+    deployedAt: "修改时间：",
     processingBadge: "处理中",
     redeployButton: "重新部署",
     toastInvalidFileTitle: "文件格式错误",
@@ -202,7 +202,7 @@ const translations = {
     emptyTitle: "No deployments yet",
     emptyDesc: "Upload your first project to get started.",
     createdAt: "Created: ",
-    deployedAt: "Deployed: ",
+    deployedAt: "Updated: ",
     processingBadge: "Processing",
     redeployButton: "Redeploy",
     toastInvalidFileTitle: "Invalid file format",
@@ -483,100 +483,59 @@ export default function Home(props) {
   const checkAuthStatus = async (retry = true) => {
     console.log("Checking auth status...");
     try {
-      const loginState = await auth.getLoginState();
-      console.log("Login state:", loginState);
+      const token = tokenManager.get();
+      const storedUser = userManager.get();
 
-      // 允许匿名登录，统一将登录态视为有效
-      if (loginState && loginState.user) {
-        console.log("User logged in:", loginState.user);
-        // 使用 CloudBase SDK 的用户对象，适配 Weda 字段
+      if (token && storedUser && storedUser.userId) {
         const user = {
-          ...loginState.user,
-          userId: loginState.user.uid,
-          openId: loginState.user.uid, // 适配 openId
-          nickName: loginState.user.nickName,
-          email: loginState.user.email
+          ...storedUser,
+          userId: storedUser.userId,
+          openId: storedUser.userId,
+          nickName: storedUser.nickName || storedUser.email?.split("@")[0],
+          email: storedUser.email
         };
 
-        // 查询用户身份 (user_roles)
         try {
-          const roleRes = await db
-            .collection("ai_builder_user_roles")
-            .doc(loginState.user.uid)
-            .get();
-
-          if (roleRes.data && roleRes.data.length > 0) {
-            // 数据库中保存的是 role: ['admin', 'vip']
-            user.roles = roleRes.data[0].role;
-          } else {
-            user.roles = ["user"]; // 未查到则赋予普通用户角色
+          // 角色已存于登录态;无则默认普通用户
+          if (!Array.isArray(user.roles) || user.roles.length === 0) {
+            user.roles = ["user"];
           }
 
-          // Fetch role limits
-          // Default to 'user' role
-          let candidateRoles = ["user"];
-          if (user.roles && user.roles.length > 0) {
-            candidateRoles = [...candidateRoles, ...user.roles];
-          }
-          // Remove duplicates
+          let candidateRoles = ["user", ...user.roles];
           candidateRoles = [...new Set(candidateRoles)];
-          // Use Cloud Function to fetch role limits to avoid ACL issues
-          const limitFnRes = await app.callFunction({
-            name: "getRoleLimits",
-            data: {
-              roles: candidateRoles
-            }
-          });
+          const limitRes = await websiteApi.getRoleLimits(candidateRoles);
 
-          let limitRes = { data: [] };
-          if (limitFnRes.result && limitFnRes.result.code === 0) {
-            limitRes.data = limitFnRes.result.data;
+          let data = [];
+          if (limitRes && limitRes.code === 0) {
+            data = limitRes.data || [];
           } else {
-            console.warn(
-              "Cloud function getRoleLimits failed:",
-              limitFnRes.result
-            );
+            console.warn("getRoleLimits failed:", limitRes);
           }
 
-          if (limitRes.data && limitRes.data.length > 0) {
-            // Sort by priority descending
-            const sortedRoles = limitRes.data.sort(
+          if (data && data.length > 0) {
+            const sortedRoles = data.sort(
               (a, b) => (b.priority || 0) - (a.priority || 0)
             );
-            // Use the highest priority role
             const effectiveRole = sortedRoles[0];
             setRoleLimits(effectiveRole);
             user.role_name = effectiveRole.name || t.roleStandard;
           } else {
             console.warn("No role limits found in database");
-            // 禁止默认设置，仅设置角色名称
             user.role_name = t.roleStandard;
           }
         } catch (roleError) {
           console.warn("Fetch user roles failed:", roleError);
-          // 忽略错误，降级为普通用户，并尝试获取普通用户限额
           user.roles = ["user"];
           user.role_name = t.roleStandard;
 
           try {
-            const userLimitFnRes = await app.callFunction({
-              name: "getRoleLimits",
-              data: { roles: ["user"] }
-            });
-
-            if (
-              userLimitFnRes.result &&
-              userLimitFnRes.result.code === 0 &&
-              userLimitFnRes.result.data.length > 0
-            ) {
-              setRoleLimits(userLimitFnRes.result.data[0]);
-              user.role_name = userLimitFnRes.result.data[0].name || t.roleStandard;
+            const userLimitRes = await websiteApi.getRoleLimits(["user"]);
+            if (userLimitRes && userLimitRes.code === 0 && userLimitRes.data.length > 0) {
+              setRoleLimits(userLimitRes.data[0]);
+              user.role_name = userLimitRes.data[0].name || t.roleStandard;
             }
           } catch (limitError) {
-            console.warn(
-              "Fallback fetch 'user' role limit failed:",
-              limitError
-            );
+            console.warn("Fallback fetch 'user' role limit failed:", limitError);
           }
         }
 
@@ -610,15 +569,9 @@ export default function Home(props) {
   const handleLogout = async () => {
     try {
       try {
-        await auth.signOut();
+        authApi.logout();
       } catch (err) {
-        // 忽略匿名登录被禁用的错误
-        if (
-          err?.code !== "login_type_disabled" &&
-          err?.error !== "login_type_disabled"
-        ) {
-          console.warn("SignOut error:", err);
-        }
+        console.warn("SignOut error:", err);
       }
 
       setIsLoggedIn(false);
@@ -685,22 +638,17 @@ export default function Home(props) {
   const loadWebsites = async () => {
     try {
       const isAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
-      const result = await app.callFunction({
-        name: "deploy-website",
-        data: isAdmin
-          ? { action: "list_all", userId: user?.userId || "" }
-          : { action: "list", userId: user?.userId || "" }
-      });
-      if (result.result && result.result.success) {
-        const mapped = (result.result.files || []).map((item) => ({
-          ...item,
+      const result = isAdmin ? await websiteApi.listAll() : await websiteApi.list();
+      if (result && result.success) {
+        const mapped = (result.websites || []).map((row) => ({
+          ...mapWebsiteRow(row),
           status: "deployed"
         }));
         const sorted = mapped.sort(
           (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
         );
         setWebsites(sorted);
-        
+
         // 提取所有标签并去重
         const tagsSet = new Set();
         sorted.forEach(w => {
@@ -716,12 +664,9 @@ export default function Home(props) {
           const uniqueUids = Array.from(uidSet);
           if (uniqueUids.length > 0) {
             try {
-              const emailRes = await app.callFunction({
-                name: "deploy-website",
-                data: { action: "resolve_user_emails", userIds: uniqueUids }
-              });
-              if (emailRes.result && emailRes.result.success) {
-                setAllUsers(emailRes.result.users || []);
+              const emailRes = await websiteApi.resolveUserEmails(uniqueUids);
+              if (emailRes && emailRes.success) {
+                setAllUsers(emailRes.users || []);
               } else {
                 setAllUsers(uniqueUids.map(uid => ({ userId: uid, email: "" })));
               }
@@ -735,7 +680,7 @@ export default function Home(props) {
           setAllUsers([]);
         }
       } else {
-        throw new Error(result.result?.message || t.loadListFailed);
+        throw new Error(result?.message || t.loadListFailed);
       }
     } catch (error) {
       console.error("Failed to load website list:", error);
@@ -776,16 +721,8 @@ export default function Home(props) {
       return;
     }
     try {
-      const res = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "update_name",
-          docId: website._id,
-          userId: user.userId,
-          name
-        }
-      });
-      if (res.result && res.result.success) {
+      const res = await websiteApi.updateName(website._id, name);
+      if (res && res.success) {
         setWebsites((prev) =>
           prev.map((w) =>
             w._id === website._id ? { ...w, name, updatedAt: Date.now() } : w
@@ -797,7 +734,7 @@ export default function Home(props) {
           description: t.savedDesc
         });
       } else {
-        throw new Error(res.result?.message || t.saveFailedTitle);
+        throw new Error(res?.message || t.saveFailedTitle);
       }
     } catch (error) {
       toast({
@@ -865,17 +802,9 @@ export default function Home(props) {
     }
 
     try {
-      const res = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "update_tags",
-          docId: website._id,
-          userId: user.userId,
-          tags
-        }
-      });
+      const res = await websiteApi.updateTags(website._id, tags);
 
-      if (res.result && res.result.success) {
+      if (res && res.success) {
         setWebsites((prev) => {
           const newWebsites = prev.map((w) =>
             w._id === website._id ? { ...w, tags, updatedAt: Date.now() } : w
@@ -899,7 +828,7 @@ export default function Home(props) {
           description: "标签已更新"
         });
       } else {
-        throw new Error(res.result?.message || t.saveFailedTitle);
+        throw new Error(res?.message || t.saveFailedTitle);
       }
     } catch (error) {
       if (isTokenExpiredError(error)) {
@@ -1033,8 +962,9 @@ export default function Home(props) {
     let websiteId = null;
 
     try {
-      const state = await auth.getLoginState();
-      if (!state || !state.user) {
+      const token = tokenManager.get();
+      const storedUser = userManager.get();
+      if (!token || !storedUser || !storedUser.userId) {
         toast({
           title: t.toastExpiredTitle,
           description: t.toastExpiredDesc,
@@ -1045,7 +975,7 @@ export default function Home(props) {
       }
 
       const safeFileName = sanitizeFileName(file.name);
-      
+
       // 生成 websiteId，并先更新本地状态，创建时间记录到秒
       websiteId = generateWebsiteId();
       const now = Date.now();
@@ -1065,75 +995,54 @@ export default function Home(props) {
       });
       setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
-      // Phase 1: Upload to Cloud Storage
+      // Phase 1: 读文件为 base64
       const totalSizeMB = (file.size / 1024 / 1024).toFixed(2);
       setUploadStatusText(`${t.statusUploading} (0MB / ${totalSizeMB}MB)`);
-      
-      const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const cloudPath = `tmp_uploads/${user.userId}/${taskId}.zip`;
+      setUploadStage(2);
 
-      const uploadResult = await app.uploadFile({
-        cloudPath,
-        filePath: file,
-        onUploadProgress: (progressEvent) => {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            const loadedMB = (progressEvent.loaded / 1024 / 1024).toFixed(2);
-            const totalMB = (progressEvent.total / 1024 / 1024).toFixed(2);
-            setUploadProgress(percentCompleted);
-            setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalMB}MB)`);
-        }
-      });
-
-      const fileId = uploadResult.fileID;
-
-      // Phase 2: Watch progress
-      const watcher = db.collection('ai_builder_task_progress').doc(taskId).watch({
-        onChange: (snapshot) => {
-            if (snapshot.docs && snapshot.docs.length > 0) {
-                const data = snapshot.docs[0];
-                if (data.status === 'unzipping') {
-                     setUploadStage(2);
-                     setUploadStatusText(t.statusUnzipping);
-                     setUploadProgress(100); 
-                } else if (data.status === 'uploading') {
-                     setUploadStage(3);
-                     if (data.total > 0) {
-                        const percent = Math.floor((data.current / data.total) * 100);
-                        setUploadStatusText(`${t.statusDeploying} (${data.current}/${data.total})`);
-                        setUploadProgress(percent);
-                     }
-                }
+      const toBase64 = (f) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round((e.loaded * 100) / e.total);
+              const loadedMB = (e.loaded / 1024 / 1024).toFixed(2);
+              setUploadProgress(percent);
+              setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalSizeMB}MB)`);
             }
-        },
-        onError: (err) => console.error('Watch error', err)
-      });
+          };
+          reader.onload = () => {
+            const res = String(reader.result || "");
+            resolve(res.includes(",") ? res.split(",")[1] : res);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+      const fileContentBase64 = await toBase64(file);
 
-      const deployResult = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "upload_and_deploy",
-          fileId,
-          taskId,
-          userId: user.userId,
-          websiteId: websiteId,
-          fileName: safeFileName
-        }
-      });
+      // Phase 2: 上传并部署(SCF)
+      setUploadStage(3);
+      setUploadProgress(100);
+      setUploadStatusText(t.statusDeploying);
 
-      watcher.close();
+      const deployResult = await websiteApi.uploadAndDeploy({
+        fileContentBase64,
+        fileName: safeFileName,
+        websiteId
+      });
 
       setDeploying((prev) => ({
         ...prev,
         [websiteId]: false
       }));
-      if (deployResult.result && deployResult.result.success) {
+      if (deployResult && deployResult.success) {
         toast({
           title: t.toastDeploySuccessTitle,
           description: t.toastDeploySuccessDesc
         });
         loadWebsites();
       } else {
-        throw new Error(deployResult.result?.message || t.deployFailed);
+        throw new Error(deployResult?.message || t.deployFailed);
       }
     } catch (error) {
       console.error("Deployment failed:", error);
@@ -1216,23 +1125,18 @@ export default function Home(props) {
     setDomainCheck({ status: "checking", message: "" });
     const timer = setTimeout(async () => {
       try {
-        const res = await app.callFunction({
-          name: "deploy-website",
-          data: {
-            action: "check_subdomain",
-            docId: domainWebsite._id,
-            websiteId: domainWebsite.websiteId,
-            subdomain: label
-          }
+        const r = await websiteApi.checkSubdomain({
+          docId: domainWebsite._id,
+          websiteId: domainWebsite.websiteId,
+          subdomain: label
         });
         if (cancelled) return;
-        const r = res.result || {};
-        if (r.success && r.available) {
+        if (r && r.success && r.available) {
           setDomainCheck({ status: "ok", message: "" });
         } else {
           setDomainCheck({
-            status: r.reason === "invalid" ? "invalid" : "taken",
-            message: r.message || ""
+            status: r && r.reason === "invalid" ? "invalid" : "taken",
+            message: (r && r.message) || ""
           });
         }
       } catch (e) {
@@ -1254,31 +1158,26 @@ export default function Home(props) {
     if (!subdomain) return;
     setDomainBusy(true);
     try {
-      const res = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "set_subdomain",
-          docId: domainWebsite._id,
-          websiteId: domainWebsite.websiteId,
-          subdomain
-        }
+      const r = await websiteApi.setSubdomain({
+        docId: domainWebsite._id,
+        websiteId: domainWebsite.websiteId,
+        subdomain
       });
-      const r = res.result || {};
-      if (r.success) {
+      if (r && r.success) {
         const label = r.subdomain || subdomain;
         setDomainInfo({ subdomain: label });
         setWebsites((prev) =>
           prev.map((w) => (w._id === domainWebsite._id ? { ...w, subdomain: label } : w))
         );
         toast({ title: t.domainBindSuccess, description: t.domainBindSuccessDesc });
-      } else if (r.code === "DUPLICATE" || r.reason === "taken") {
+      } else if (r && (r.code === "DUPLICATE" || r.reason === "taken")) {
         // 并发冲突/已被占用:只让输入框变红,不弹 toast
         setDomainCheck({ status: "taken", message: r.message || t.domainTaken });
-      } else if (r.reason === "invalid") {
+      } else if (r && r.reason === "invalid") {
         setDomainCheck({ status: "invalid", message: r.message || "" });
       } else {
         // 其它真实错误(网络/服务端异常)才提示
-        throw new Error(r.message || t.domainFailTitle);
+        throw new Error((r && r.message) || t.domainFailTitle);
       }
     } catch (error) {
       toast({ title: t.domainFailTitle, description: error.message, variant: "destructive" });
@@ -1294,12 +1193,11 @@ export default function Home(props) {
     if (!domainWebsite) return;
     setDomainBusy(true);
     try {
-      const res = await app.callFunction({
-        name: "deploy-website",
-        data: { action: "clear_subdomain", docId: domainWebsite._id, websiteId: domainWebsite.websiteId }
+      const r = await websiteApi.clearSubdomain({
+        docId: domainWebsite._id,
+        websiteId: domainWebsite.websiteId
       });
-      const r = res.result || {};
-      if (r.success) {
+      if (r && r.success) {
         setDomainInfo(null);
         setDomainInput("");
         setWebsites((prev) =>
@@ -1307,7 +1205,7 @@ export default function Home(props) {
         );
         toast({ title: t.domainUnbindSuccess });
       } else {
-        throw new Error(r.message || t.domainFailTitle);
+        throw new Error((r && r.message) || t.domainFailTitle);
       }
     } catch (error) {
       toast({ title: t.domainFailTitle, description: error.message, variant: "destructive" });
@@ -1328,19 +1226,10 @@ export default function Home(props) {
     const websiteId = websiteToDelete._id;
 
     try {
-      // 使用云函数删除整站资源（COS + 数据库）
-      const result = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "delete",
-          userId: websiteToDelete.userId,
-          websiteId: websiteToDelete.websiteId || websiteToDelete._id,
-          fileName: websiteToDelete.fileName,
-          key: websiteToDelete.path // 直接传递数据库中的 path，提高删除准确性
-        }
-      });
+      // 使用 SCF 删除整站资源（COS + 数据库）
+      const result = await websiteApi.delete(websiteToDelete.websiteId || websiteToDelete._id);
 
-      if (result.result && result.result.success) {
+      if (result && result.success) {
         toast({
           title: t.toastDeleteSuccessTitle,
           description: t.toastDeleteSuccessDesc
@@ -1348,7 +1237,7 @@ export default function Home(props) {
         // 从本地状态中移除
         setWebsites((prev) => prev.filter((w) => w._id !== websiteId));
       } else {
-        throw new Error(result.result?.message || t.toastDeleteFailedTitle);
+        throw new Error(result?.message || t.toastDeleteFailedTitle);
       }
     } catch (error) {
       toast({
@@ -1486,8 +1375,9 @@ export default function Home(props) {
       setDeploying((prev) => ({ ...prev, [website._id]: true }));
       navigate("/console/sites");
 
-      const state = await auth.getLoginState();
-      if (!state || !state.user) {
+      const token = tokenManager.get();
+      const storedUser = userManager.get();
+      if (!token || !storedUser || !storedUser.userId) {
         toast({
           title: t.toastExpiredTitle,
           description: t.toastExpiredDesc,
@@ -1498,9 +1388,6 @@ export default function Home(props) {
       }
 
       const safeFileName = sanitizeFileName(file.name);
-      const cloudPath = `websites/${
-        user.userId
-      }/redeploy_${Date.now()}_${safeFileName}`;
 
       const toBase64 = (f) =>
         new Promise((resolve, reject) => {
@@ -1515,28 +1402,22 @@ export default function Home(props) {
         });
       const fileContentBase64 = await toBase64(file);
 
-      const deployResult = await app.callFunction({
-        name: "deploy-website",
-        data: {
-          action: "upload_and_deploy",
-          cloudPath,
-          fileContentBase64,
-          userId: user.userId,
-          websiteId: website.websiteId || website._id,
-          fileName: safeFileName
-        }
+      const deployResult = await websiteApi.uploadAndDeploy({
+        fileContentBase64,
+        fileName: safeFileName,
+        websiteId: website.websiteId || website._id
       });
 
       setDeploying((prev) => ({ ...prev, [website._id]: false }));
 
-      if (deployResult.result && deployResult.result.success) {
+      if (deployResult && deployResult.success) {
         toast({
           title: t.redeploySuccessTitle,
           description: t.redeploySuccessDesc
         });
         loadWebsites();
       } else {
-        throw new Error(deployResult.result?.message || t.redeployFailedTitle);
+        throw new Error(deployResult?.message || t.redeployFailedTitle);
       }
     } catch (error) {
       setDeploying((prev) => ({ ...prev, [website._id]: false }));
