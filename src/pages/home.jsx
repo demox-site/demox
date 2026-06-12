@@ -1263,11 +1263,13 @@ export default function Home(props) {
           prev.map((w) => (w._id === domainWebsite._id ? { ...w, subdomain: label } : w))
         );
         toast({ title: t.domainBindSuccess, description: t.domainBindSuccessDesc });
+      } else if (r.code === "DUPLICATE" || r.reason === "taken") {
+        // 并发冲突/已被占用:只让输入框变红,不弹 toast
+        setDomainCheck({ status: "taken", message: r.message || t.domainTaken });
+      } else if (r.reason === "invalid") {
+        setDomainCheck({ status: "invalid", message: r.message || "" });
       } else {
-        // 并发冲突:后端唯一索引兜底返回 DUPLICATE → 标红并提示
-        if (r.code === "DUPLICATE") {
-          setDomainCheck({ status: "taken", message: r.message || t.domainTaken });
-        }
+        // 其它真实错误(网络/服务端异常)才提示
         throw new Error(r.message || t.domainFailTitle);
       }
     } catch (error) {
