@@ -51,4 +51,21 @@ jobs:
         run: |
           coscli config set --secret_id "$TC_SECRET_ID" --secret_key "$TC_SECRET_KEY"
           coscli config add --init-skip=true -b "$COS_BUCKET" -r "$COS_REGION"
-          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r
+
+          # 部署顺序很重要，避免部署期白屏：
+          # 1) 先传 assets 等带哈希的静态资源（长缓存）。此时旧 index.html 仍指向旧资源，
+          #    旧资源还在 COS（cp 不删旧文件），用户访问不受影响。
+          # 2) 最后传 index.html / 404.html，并设 no-cache，让边缘和浏览器每次校验，
+          #    部署完成后用户立刻拿到指向新资源的新 index.html。
+          # 这样 index.html 引用的新资源必定已存在，且入口 HTML 不被 30 天长缓存。
+
+          # 先传除 html 外的所有内容（assets、图片等），长缓存
+          # 注意：coscli 的 --include/--exclude 用正则(非 glob)，--meta 多个头用 # 分隔
+          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r \
+            --exclude ".*\.html$" \
+            --meta="Cache-Control:public,max-age=31536000,immutable"
+
+          # 再单独传 html 入口文件，禁缓存
+          coscli cp ./dist/ "cos://${COS_BUCKET}/" -r \
+            --include ".*\.html$" \
+            --meta="Cache-Control:no-cache,no-store,must-revalidate"
