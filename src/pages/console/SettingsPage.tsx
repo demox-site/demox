@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { userManager, authApi } from "@/api";
 import {
   Card,
@@ -82,7 +82,43 @@ const SettingsPage: React.FC = () => {
   const [nickname, setNickname] = useState(
     user?.nickname || user?.email?.split("@")[0] || ""
   );
-  const githubBound = !!user?.githubId;
+  // 绑定状态以后端 /auth/me 为准；localStorage 的 user 不一定含 githubId
+  const [githubBound, setGithubBound] = useState<boolean>(!!user?.githubId);
+  const [githubLogin, setGithubLogin] = useState<string | null>(
+    user?.githubLogin || null
+  );
+
+  // 进入页面时拉取真实账号信息，刷新绑定状态并回写本地
+  useEffect(() => {
+    let alive = true;
+    authApi
+      .getCurrentUser()
+      .then((res) => {
+        if (!alive || !res?.success || !res.user) return;
+        const u = res.user;
+        setGithubBound(!!u.githubId);
+        setGithubLogin(u.githubLogin || null);
+        if (u.nickname) setNickname((prev) => prev || u.nickname);
+        // 回写本地，保持其它页面一致
+        const local = userManager.get() || {};
+        userManager.set({
+          ...local,
+          userId: u.id || local.userId,
+          email: u.email || local.email,
+          githubId: u.githubId || null,
+          githubLogin: u.githubLogin || null,
+          avatarUrl: u.avatarUrl || null,
+          nickname: u.nickname || local.nickname,
+          roles: u.roles || local.roles
+        });
+      })
+      .catch(() => {
+        /* 拉取失败则维持本地状态 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const notImplemented = () =>
     toast({ title: t.todo, variant: "destructive" });
@@ -197,7 +233,11 @@ const SettingsPage: React.FC = () => {
                   <div className="flex flex-col">
                     <span className="text-sm text-zinc-100">{t.github}</span>
                     <span className="text-xs text-zinc-500">
-                      {githubBound ? t.bound : t.notBound}
+                      {githubBound
+                        ? githubLogin
+                          ? `${t.bound} · @${githubLogin}`
+                          : t.bound
+                        : t.notBound}
                     </span>
                   </div>
                 </div>
