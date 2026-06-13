@@ -191,6 +191,7 @@ export const ConsoleLayout: React.FC = () => {
                 <SidebarMenuSubButton
                   isActive={isActive(s.path)}
                   onClick={() => navigate(s.path)}
+                  className="cursor-pointer"
                 >
                   <span>{s.label}</span>
                 </SidebarMenuSubButton>
