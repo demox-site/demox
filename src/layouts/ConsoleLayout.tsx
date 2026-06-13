@@ -174,10 +174,13 @@ export const ConsoleLayout: React.FC = () => {
 
   const renderAdminNav = () => {
     if (!isAdmin) return null;
+    // 在管理后台页时总有一个二级项被选中，故一级仅作分组标题、不再抢高亮，
+    // 避免一级与当前二级项同时高亮造成“选中停在一级”的错觉。
+    const anySubActive = adminSubNav.some((s) => isActive(s.path));
     return (
       <SidebarMenuItem>
         <SidebarMenuButton
-          isActive={onAdminPage}
+          isActive={onAdminPage && !anySubActive}
           onClick={() => navigate("/console/admin/dashboard")}
           tooltip={t.admin}
         >

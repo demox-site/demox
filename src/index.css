@@ -60,6 +60,16 @@
 
     /* 背景网格线颜色（主题感知，低透明度更通透）。亮色：淡灰线。 */
     --grid-line: rgba(0, 0, 0, 0.04);
+
+    /* 侧边栏 tokens（light）——复用语义色，active/hover 用 accent。 */
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 222.2 84% 4.9%;
+    --sidebar-primary: 222.2 47.4% 11.2%;
+    --sidebar-primary-foreground: 210 40% 98%;
+    --sidebar-accent: 210 40% 96.1%;
+    --sidebar-accent-foreground: 222.2 47.4% 11.2%;
+    --sidebar-border: 214.3 31.8% 91.4%;
+    --sidebar-ring: 222.2 84% 4.9%;
   }
 
   .dark {
@@ -109,6 +119,16 @@
 
     /* 暗色：原来是实色 #18181b，太重；改用低透明度白线，更通透。 */
     --grid-line: rgba(255, 255, 255, 0.05);
+
+    /* 侧边栏 tokens（dark）——active/hover 用比侧栏底色亮一档的 zinc，确保可见。 */
+    --sidebar-background: 240 10% 3.9%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 0 0% 98%;
+    --sidebar-primary-foreground: 240 5.9% 10%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
   }
 }
 
