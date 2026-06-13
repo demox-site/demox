@@ -2,20 +2,21 @@ import React, { useEffect, useState } from "react";
 import { tokenManager, userManager } from "../api";
 import { Loader2 } from "lucide-react";
 
-// 从 hash 路由中解析查询参数
-function getHashParams() {
-  const hash = window.location.hash; // #/mcp-authorize?client_id=xxx&...
-  const queryIndex = hash.indexOf('?');
+// 解析 OAuth 参数。browser history 下走 ?client_id=...；
+// 兼容旧的 hash 形式(#/mcp-authorize?...)，避免历史链接失效。
+function getOAuthParams() {
+  const search = window.location.search;
+  if (search && search.length > 1) return new URLSearchParams(search);
+  const hash = window.location.hash;
+  const queryIndex = hash.indexOf("?");
   if (queryIndex === -1) return new URLSearchParams();
-
-  const queryString = hash.substring(queryIndex + 1);
-  return new URLSearchParams(queryString);
+  return new URLSearchParams(hash.substring(queryIndex + 1));
 }
 
 export function MCPAuthorize() {
   const [status, setStatus] = useState<"checking" | "redirecting">("checking");
 
-  const params = getHashParams();
+  const params = getOAuthParams();
   const clientId = params.get("client_id");
   const redirectUri = params.get("redirect_uri");
   const state = params.get("state");
@@ -44,7 +45,7 @@ export function MCPAuthorize() {
 
       // 2. 如果未登录，跳转到登录页面
       if (!isLoggedIn) {
-        const loginUrl = `${window.location.origin}/#/mcp-login?client_id=${clientId || ""}&redirect_uri=${encodeURIComponent(redirectUri || "")}&state=${state || ""}&scope=${scope || ""}&response_type=${responseType || ""}`;
+        const loginUrl = `${window.location.origin}/mcp-login?client_id=${clientId || ""}&redirect_uri=${encodeURIComponent(redirectUri || "")}&state=${state || ""}&scope=${scope || ""}&response_type=${responseType || ""}`;
         console.log("[MCPAuthorize] 未登录，跳转到:", loginUrl);
         window.location.href = loginUrl;
         return;
@@ -73,7 +74,7 @@ export function MCPAuthorize() {
       console.error("[MCPAuthorize] 授权失败:", error);
       console.error("[MCPAuthorize] 错误堆栈:", error.stack);
       // 跳转到错误页面
-      const errorUrl = `${window.location.origin}/#/mcp-login?error=${encodeURIComponent(error.message || "network request error")}`;
+      const errorUrl = `${window.location.origin}/mcp-login?error=${encodeURIComponent(error.message || "network request error")}`;
       window.location.href = errorUrl;
     }
   };

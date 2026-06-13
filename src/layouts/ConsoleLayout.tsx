@@ -60,6 +60,7 @@ const navTexts = {
     adminDashboard: "数据概览",
     adminRoles: "用户角色配置",
     adminRoleLimits: "角色列表",
+    adminBuckets: "存储桶",
     logout: "退出登录",
     backHome: "返回首页"
   },
@@ -74,6 +75,7 @@ const navTexts = {
     adminDashboard: "Dashboard",
     adminRoles: "User Roles",
     adminRoleLimits: "Roles",
+    adminBuckets: "Storage Buckets",
     logout: "Log out",
     backHome: "Home"
   }
@@ -140,19 +142,17 @@ export const ConsoleLayout: React.FC = () => {
     }
   ];
 
-  // 管理后台二级菜单(URL ?tab= 驱动 AdminDashboard)
+  // 管理后台二级菜单(真实二级路由 /console/admin/:section)
   const adminSubNav = [
-    { key: "dashboard", tab: "dashboard", label: t.adminDashboard },
-    { key: "roles", tab: "roles", label: t.adminRoles },
-    { key: "roleLimits", tab: "roleLimits", label: t.adminRoleLimits }
+    { key: "dashboard", path: "/console/admin/dashboard", label: t.adminDashboard },
+    { key: "roles", path: "/console/admin/roles", label: t.adminRoles },
+    { key: "roleLimits", path: "/console/admin/roleLimits", label: t.adminRoleLimits },
+    { key: "buckets", path: "/console/admin/buckets", label: t.adminBuckets }
   ];
 
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(path + "/");
 
-  // 当前管理后台激活的 tab(默认 dashboard)
-  const currentAdminTab =
-    new URLSearchParams(location.search).get("tab") || "dashboard";
   const onAdminPage = location.pathname.startsWith("/console/admin");
 
   const renderItem = (item: NavItem) => {
@@ -178,7 +178,7 @@ export const ConsoleLayout: React.FC = () => {
       <SidebarMenuItem>
         <SidebarMenuButton
           isActive={onAdminPage}
-          onClick={() => navigate("/console/admin?tab=dashboard")}
+          onClick={() => navigate("/console/admin/dashboard")}
           tooltip={t.admin}
         >
           <ShieldCheck size={16} />
@@ -189,8 +189,8 @@ export const ConsoleLayout: React.FC = () => {
             {adminSubNav.map((s) => (
               <SidebarMenuSubItem key={s.key}>
                 <SidebarMenuSubButton
-                  isActive={currentAdminTab === s.tab}
-                  onClick={() => navigate(`/console/admin?tab=${s.tab}`)}
+                  isActive={isActive(s.path)}
+                  onClick={() => navigate(s.path)}
                 >
                   <span>{s.label}</span>
                 </SidebarMenuSubButton>

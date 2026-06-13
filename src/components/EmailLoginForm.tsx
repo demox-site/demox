@@ -180,7 +180,7 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
               <button
                 type="button"
                 className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200"
-                onClick={() => window.open("#/terms", "_blank")}
+                onClick={() => window.open("/terms", "_blank")}
               >
                 《服务条款》
               </button>{" "}
@@ -188,7 +188,7 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
               <button
                 type="button"
                 className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200"
-                onClick={() => window.open("#/privacy", "_blank")}
+                onClick={() => window.open("/privacy", "_blank")}
               >
                 《隐私政策》
               </button>

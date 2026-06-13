@@ -5,21 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Demox</title>
     <script>
-      // Rewrite the real-path GitHub OAuth callback into the app's hash route,
-      // before React boots. GitHub can't redirect to a URL fragment, so it lands
-      // on /github-callback?code=...; convert it to /#/github-callback?...
-      (function () {
-        try {
-          if (window.location.pathname.indexOf("/github-callback") !== -1) {
-            var search = window.location.search || "";
-            window.location.replace(
-              window.location.origin + "/#/github-callback" + search
-            );
-          }
-        } catch (e) {}
-      })();
-    </script>
-    <script>
       // Apply the persisted/system theme before first paint to avoid a flash.
       (function () {
         try {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { userManager, websiteApi, adminApi } from "@/api";
 import { Card, CardHeader, CardTitle, CardContent, Button, Input, Label, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
@@ -28,10 +28,12 @@ interface BucketStats {
  */
 const AdminDashboard: React.FC = () => {
   const { toast } = useToast();
-  const [searchParams] = useSearchParams();
-  const tabParam = searchParams.get("tab");
-  const activeTab: "dashboard" | "roles" | "roleLimits" =
-    tabParam === "roles" ? "roles" : tabParam === "roleLimits" ? "roleLimits" : "dashboard";
+  const { section } = useParams<{ section?: string }>();
+  const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" =
+    section === "roles" ? "roles"
+      : section === "roleLimits" ? "roleLimits"
+        : section === "buckets" ? "buckets"
+          : "dashboard";
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [statsDay, setStatsDay] = useState<BucketStats | null>(null);
@@ -526,12 +528,211 @@ const AdminDashboard: React.FC = () => {
     setIsRoleLimitEditOpen(false);
   };
 
-  // 根据 URL ?tab= 切换时加载对应数据(侧边栏二级菜单驱动)
+  // ====== 存储桶注册制 ======
+  interface BucketRow {
+    id: number;
+    name: string;
+    provider: string;
+    bucket: string;
+    region?: string | null;
+    endpoint?: string | null;
+    originHost?: string | null;
+    forcePathStyle?: boolean;
+    hasOwnCreds: boolean;
+    isDefault: boolean;
+    enabled: boolean;
+  }
+  const [bucketsLoading, setBucketsLoading] = useState(false);
+  const [bucketsList, setBucketsList] = useState<BucketRow[]>([]);
+  const [bucketsErr, setBucketsErr] = useState<string>("");
+  const [isAddBucketOpen, setIsAddBucketOpen] = useState(false);
+  // 新增存储桶表单
+  const [bkName, setBkName] = useState("");
+  const [bkProvider, setBkProvider] = useState<"cos" | "s3">("cos");
+  const [bkBucket, setBkBucket] = useState("");
+  const [bkRegion, setBkRegion] = useState("");
+  const [bkEndpoint, setBkEndpoint] = useState("");
+  const [bkOriginHost, setBkOriginHost] = useState("");
+  const [bkSecretId, setBkSecretId] = useState("");
+  const [bkSecretKey, setBkSecretKey] = useState("");
+  const [bkIsDefault, setBkIsDefault] = useState(false);
+  const [bkSaving, setBkSaving] = useState(false);
+
+  const fetchBuckets = useCallback(async () => {
+    setBucketsLoading(true);
+    setBucketsErr("");
+    try {
+      const res = await adminApi.listBuckets();
+      if (!res.success) {
+        setBucketsErr(res.message || "加载失败");
+        setBucketsList([]);
+      } else {
+        setBucketsList(Array.isArray(res.data) ? res.data : []);
+      }
+    } catch (e: unknown) {
+      setBucketsErr(e instanceof Error ? e.message : "加载失败");
+    } finally {
+      setBucketsLoading(false);
+    }
+  }, []);
+
+  const resetBucketForm = () => {
+    setBkName(""); setBkProvider("cos"); setBkBucket(""); setBkRegion("");
+    setBkEndpoint(""); setBkOriginHost(""); setBkSecretId(""); setBkSecretKey("");
+    setBkIsDefault(false);
+  };
+
+  const submitBucket = async () => {
+    if (!bkName.trim() || !bkBucket.trim()) {
+      toast({ title: "请填写桶名称与 bucket", variant: "destructive" });
+      return;
+    }
+    if ((bkSecretId && !bkSecretKey) || (!bkSecretId && bkSecretKey)) {
+      toast({ title: "SecretId 与 SecretKey 需同时填写", variant: "destructive" });
+      return;
+    }
+    setBkSaving(true);
+    try {
+      const res = await adminApi.registerBucket({
+        name: bkName.trim(),
+        provider: bkProvider,
+        bucket: bkBucket.trim(),
+        region: bkRegion.trim() || undefined,
+        endpoint: bkEndpoint.trim() || undefined,
+        originHost: bkOriginHost.trim() || undefined,
+        secretId: bkSecretId || undefined,
+        secretKey: bkSecretKey || undefined,
+        isDefault: bkIsDefault
+      });
+      if (!res.success) throw new Error(res.message || "注册失败");
+      toast({ title: "存储桶已注册" });
+      setIsAddBucketOpen(false);
+      resetBucketForm();
+      fetchBuckets();
+    } catch (e: unknown) {
+      toast({ title: "注册失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    } finally {
+      setBkSaving(false);
+    }
+  };
+
+  const setDefaultBucket = async (id: number) => {
+    try {
+      const res = await adminApi.setDefaultBucket(id);
+      if (!res.success) throw new Error(res.message || "操作失败");
+      toast({ title: "已设为默认桶" });
+      fetchBuckets();
+    } catch (e: unknown) {
+      toast({ title: "操作失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    }
+  };
+
+  const toggleBucketEnabled = async (b: BucketRow) => {
+    try {
+      const res = await adminApi.updateBucket({ id: b.id, enabled: !b.enabled });
+      if (!res.success) throw new Error(res.message || "操作失败");
+      fetchBuckets();
+    } catch (e: unknown) {
+      toast({ title: "操作失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    }
+  };
+
+  const removeBucket = async (b: BucketRow) => {
+    if (!window.confirm(`确定删除存储桶「${b.name}」？仅删除注册记录，不影响桶内文件。`)) return;
+    try {
+      const res = await adminApi.deleteBucket(b.id);
+      if (!res.success) throw new Error(res.message || "删除失败");
+      toast({ title: "已删除" });
+      fetchBuckets();
+    } catch (e: unknown) {
+      toast({ title: "删除失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    }
+  };
+
+  // 注册存储桶弹窗。S3 兼容(R2/OSS/B2/MinIO)需填 endpoint；COS 用 region。
+  const BUCKET_DIALOG = (
+    <Dialog open={isAddBucketOpen} onOpenChange={setIsAddBucketOpen}>
+      <DialogContent className="bg-zinc-900 border-zinc-800 max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-zinc-100">注册存储桶</DialogTitle>
+          <DialogDescription className="text-zinc-500">
+            密钥将加密后存入数据库；留空则该桶使用服务端环境变量凭证（仅适合默认桶）。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-zinc-300">名称</Label>
+              <Input value={bkName} onChange={(e) => setBkName(e.target.value)} placeholder="如：Cloudflare R2（备用）"
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+            <div>
+              <Label className="text-zinc-300">类型</Label>
+              <select value={bkProvider} onChange={(e) => setBkProvider(e.target.value as "cos" | "s3")}
+                className="w-full h-10 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-100 px-3">
+                <option value="cos">腾讯云 COS</option>
+                <option value="s3">S3 兼容（R2/OSS/B2/MinIO）</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-zinc-300">Bucket 名</Label>
+              <Input value={bkBucket} onChange={(e) => setBkBucket(e.target.value)} placeholder="bucket 名称"
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+            <div>
+              <Label className="text-zinc-300">{bkProvider === "cos" ? "区域 Region" : "区域（可填 auto）"}</Label>
+              <Input value={bkRegion} onChange={(e) => setBkRegion(e.target.value)} placeholder={bkProvider === "cos" ? "如：ap-chengdu" : "auto"}
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+          </div>
+          {bkProvider === "s3" ? (
+            <div>
+              <Label className="text-zinc-300">Endpoint</Label>
+              <Input value={bkEndpoint} onChange={(e) => setBkEndpoint(e.target.value)} placeholder="如：https://<acct>.r2.cloudflarestorage.com"
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+          ) : null}
+          <div>
+            <Label className="text-zinc-300">回源域 origin_host</Label>
+            <Input value={bkOriginHost} onChange={(e) => setBkOriginHost(e.target.value)} placeholder="边缘函数回源域，如 sites.demox.site"
+              className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-zinc-300">SecretId / AccessKeyId</Label>
+              <Input value={bkSecretId} onChange={(e) => setBkSecretId(e.target.value)} placeholder="留空=用环境变量"
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+            <div>
+              <Label className="text-zinc-300">SecretKey / SecretAccessKey</Label>
+              <Input type="password" value={bkSecretKey} onChange={(e) => setBkSecretKey(e.target.value)} placeholder="留空=用环境变量"
+                className="bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500" />
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <Label className="text-zinc-300">设为默认桶</Label>
+            <Switch checked={bkIsDefault} onCheckedChange={setBkIsDefault} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+              onClick={() => setIsAddBucketOpen(false)} disabled={bkSaving}>取消</Button>
+            <Button variant="outline" className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+              onClick={submitBucket} disabled={bkSaving}>{bkSaving ? "注册中..." : "注册"}</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
+  // 根据二级路由 section 切换时加载对应数据(侧边栏二级菜单驱动)
   useEffect(() => {
     if (!isAdmin) return;
     if (activeTab === "roles") fetchRoles();
     else if (activeTab === "roleLimits") fetchRoleLimits();
-  }, [isAdmin, activeTab, fetchRoles, fetchRoleLimits]);
+    else if (activeTab === "buckets") fetchBuckets();
+  }, [isAdmin, activeTab, fetchRoles, fetchRoleLimits, fetchBuckets]);
 
   if (loading) {
     return (
@@ -648,7 +849,7 @@ const AdminDashboard: React.FC = () => {
         </div>
 
         <div>
-          {/* Content（导航已上移到控制台侧边栏二级菜单，由 URL ?tab= 驱动） */}
+          {/* Content（导航已上移到控制台侧边栏二级菜单，由二级路由 section 驱动） */}
           <div>
             {activeTab === "dashboard" ? (
               <>
@@ -917,7 +1118,7 @@ const AdminDashboard: React.FC = () => {
                   </CardContent>
                 </Card>
               </div>
-            ) : (
+            ) : activeTab === "roleLimits" ? (
               <div className="space-y-6">
                 <Card className="bg-zinc-900 border-zinc-800">
                   <CardHeader className="flex flex-row items-center justify-between">
@@ -1110,6 +1311,86 @@ const AdminDashboard: React.FC = () => {
                   </div>
                 </DialogContent>
               </Dialog>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <Card className="bg-zinc-900 border-zinc-800">
+                  <CardHeader className="flex flex-row items-center justify-between">
+                    <div>
+                      <CardTitle className="text-zinc-100">存储桶</CardTitle>
+                      <p className="text-zinc-500 text-sm mt-1">
+                        注册多个存储桶（腾讯云 COS / S3 兼容）。新部署落「默认桶」，已有站点保持各自所属桶不变。
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+                      onClick={() => { resetBucketForm(); setIsAddBucketOpen(true); }}
+                    >
+                      注册存储桶
+                    </Button>
+                  </CardHeader>
+                  <CardContent>
+                    {bucketsErr ? (
+                      <div className="text-amber-400 text-sm mb-3">{bucketsErr}</div>
+                    ) : null}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-zinc-300">
+                        <thead className="text-zinc-500 border-b border-zinc-800">
+                          <tr>
+                            <th className="text-left py-2 pr-4">名称</th>
+                            <th className="text-left py-2 pr-4">类型</th>
+                            <th className="text-left py-2 pr-4">Bucket / 区域</th>
+                            <th className="text-left py-2 pr-4">回源域</th>
+                            <th className="text-left py-2 pr-4">凭证</th>
+                            <th className="text-left py-2 pr-4">状态</th>
+                            <th className="text-right py-2">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bucketsList.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="py-6 text-center text-zinc-500">
+                                {bucketsLoading ? "加载中..." : "暂无存储桶，点击右上角注册"}
+                              </td>
+                            </tr>
+                          ) : (
+                            bucketsList.map((b) => (
+                              <tr key={b.id} className="border-b border-zinc-800/60">
+                                <td className="py-2 pr-4">
+                                  {b.name}
+                                  {b.isDefault ? (
+                                    <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">默认</span>
+                                  ) : null}
+                                </td>
+                                <td className="py-2 pr-4 uppercase text-zinc-400">{b.provider}</td>
+                                <td className="py-2 pr-4">
+                                  <div>{b.bucket}</div>
+                                  <div className="text-zinc-500 text-xs">{b.region || (b.endpoint || "—")}</div>
+                                </td>
+                                <td className="py-2 pr-4 text-zinc-400">{b.originHost || "—"}</td>
+                                <td className="py-2 pr-4 text-zinc-400">{b.hasOwnCreds ? "独立密钥" : "环境变量"}</td>
+                                <td className="py-2 pr-4">{b.enabled ? "启用" : "停用"}</td>
+                                <td className="py-2 text-right whitespace-nowrap">
+                                  {!b.isDefault && b.enabled ? (
+                                    <button className="text-emerald-400 hover:underline mr-3" onClick={() => setDefaultBucket(b.id)}>设为默认</button>
+                                  ) : null}
+                                  <button className="text-zinc-400 hover:underline mr-3" onClick={() => toggleBucketEnabled(b)}>
+                                    {b.enabled ? "停用" : "启用"}
+                                  </button>
+                                  {!b.isDefault ? (
+                                    <button className="text-red-400 hover:underline" onClick={() => removeBucket(b)}>删除</button>
+                                  ) : null}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+                {BUCKET_DIALOG}
               </div>
             )}
           </div>

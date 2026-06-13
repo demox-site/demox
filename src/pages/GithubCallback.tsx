@@ -4,8 +4,11 @@ import { authApi } from "../api";
 import { CheckCircle, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui";
 
-// 从 hash 路由中解析查询参数 (#/github-callback?code=xxx&state=yyy)
-function getHashParams() {
+// 解析 OAuth 回调参数。browser history 下走 ?code=...&state=...；
+// 兼容旧的 hash 形式(#/github-callback?code=...)，避免历史链接失效。
+function getCallbackParams() {
+  const search = window.location.search;
+  if (search && search.length > 1) return new URLSearchParams(search);
   const hash = window.location.hash;
   const queryIndex = hash.indexOf("?");
   if (queryIndex === -1) return new URLSearchParams();
@@ -25,7 +28,7 @@ export function GithubCallback() {
     if (handled.current) return;
     handled.current = true;
 
-    const params = getHashParams();
+    const params = getCallbackParams();
     const code = params.get("code");
     const returnedState = params.get("state");
     const oauthError = params.get("error");

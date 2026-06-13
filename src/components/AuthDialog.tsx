@@ -196,11 +196,11 @@ export function AuthDialog({
             />
             <label htmlFor="agree" className="leading-relaxed">
               我已阅读并同意{" "}
-              <a href="#/terms" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
+              <a href="/terms" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
                 《服务条款》
               </a>{" "}
               和{" "}
-              <a href="#/privacy" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
+              <a href="/privacy" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
                 《隐私政策》
               </a>
             </label>

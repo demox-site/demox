@@ -4,14 +4,15 @@ import { Button } from "@/components/ui";
 import { CheckCircle, Loader2 } from "lucide-react";
 import { EmailLoginForm } from "@/components/EmailLoginForm";
 
-// 从 hash 路由中解析查询参数
-function getHashParams() {
-  const hash = window.location.hash; // #/mcp-login?client_id=xxx&...
-  const queryIndex = hash.indexOf('?');
+// 解析 OAuth 参数。browser history 下走 ?client_id=...；
+// 兼容旧的 hash 形式(#/mcp-login?...)，避免历史链接失效。
+function getOAuthParams() {
+  const search = window.location.search;
+  if (search && search.length > 1) return new URLSearchParams(search);
+  const hash = window.location.hash;
+  const queryIndex = hash.indexOf("?");
   if (queryIndex === -1) return new URLSearchParams();
-
-  const queryString = hash.substring(queryIndex + 1);
-  return new URLSearchParams(queryString);
+  return new URLSearchParams(hash.substring(queryIndex + 1));
 }
 
 export function MCPLogin() {
@@ -20,7 +21,7 @@ export function MCPLogin() {
   );
   const [errorMessage, setErrorMessage] = useState("");
 
-  const params = getHashParams();
+  const params = getOAuthParams();
   const clientId = params.get("client_id");
   const redirectUri = params.get("redirect_uri");
   const state = params.get("state");
@@ -224,7 +225,7 @@ export function MCPLogin() {
           <p className="mb-2">
             登录即表示您同意我们的{" "}
             <a
-              href="#/terms"
+              href="/terms"
               target="_blank"
               className="text-blue-400 hover:underline"
             >
@@ -232,7 +233,7 @@ export function MCPLogin() {
             </a>{" "}
             和{" "}
             <a
-              href="#/privacy"
+              href="/privacy"
               target="_blank"
               className="text-blue-400 hover:underline"
             >

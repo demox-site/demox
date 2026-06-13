@@ -24,7 +24,7 @@ import {
 import { HelmetProvider } from "react-helmet-async";
 import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
-import { createHashHistory } from "history";
+import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
@@ -33,7 +33,7 @@ import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import UsagePage from "./pages/console/UsagePage";
 
-const history = createHashHistory();
+const history = createBrowserHistory();
 window._WEAPPS_HISTORY = history;
 // Create a client
 const queryClient = new QueryClient();
@@ -127,7 +127,12 @@ const App: React.FC = () => {
                     <Route path="usage" element={<UsagePage />} />
                     <Route path="tokens" element={<TokensPage />} />
                     <Route path="settings" element={<SettingsPage />} />
-                    <Route path="admin" element={<AdminDashboard />} />
+                    {/* 管理后台：真正的二级路由，section 决定展示哪个面板 */}
+                    <Route
+                      path="admin"
+                      element={<Navigate to="dashboard" replace />}
+                    />
+                    <Route path="admin/:section" element={<AdminDashboard />} />
                   </Route>
 
                   {/* 旧地址兼容重定向 */}
@@ -137,7 +142,7 @@ const App: React.FC = () => {
                   />
                   <Route
                     path="/admin"
-                    element={<Navigate to="/console/admin" replace />}
+                    element={<Navigate to="/console/admin/dashboard" replace />}
                   />
                   <Route
                     path="/mcp"
