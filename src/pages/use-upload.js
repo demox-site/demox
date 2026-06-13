@@ -1,0 +1,251 @@
+import { useState, useRef, useEffect } from "react";
+import { websiteApi, tokenManager, userManager } from "../api";
+import { useToast } from "@/components/ui";
+import {
+  sanitizeFileName,
+  generateWebsiteId,
+  getComparableTimestamp
+} from "@/lib/website-utils";
+
+/**
+ * fileToBase64
+ * 将文件读为 base64（去掉 dataURL 前缀），可选地上报读取进度
+ */
+const fileToBase64 = (file, onProgress) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    if (onProgress) {
+      reader.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded * 100) / e.total), e.loaded);
+        }
+      };
+    }
+    reader.onload = () => {
+      const res = String(reader.result || "");
+      resolve(res.includes(",") ? res.split(",")[1] : res);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+/**
+ * useUpload
+ * 首页上传区的状态机：校验、读文件、调用部署、进度与趣味文案。
+ * @param {{
+ *   user:any, roleLimits:any, websites:any[], t:Record<string,any>,
+ *   navigate:Function, loadWebsites:Function,
+ *   setWebsites:Function, setDeploying:Function
+ * }} deps
+ */
+export function useUpload({
+  user,
+  roleLimits,
+  websites,
+  t,
+  navigate,
+  loadWebsites,
+  setWebsites,
+  setDeploying
+}) {
+  const { toast } = useToast();
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatusText, setUploadStatusText] = useState("");
+  const [uploadStage, setUploadStage] = useState(0); // 1: Cloud, 2: Unzip, 3: COS
+  const [funnyMessage, setFunnyMessage] = useState("");
+  const [uploadFileSize, setUploadFileSize] = useState(0);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // 上传中轮播趣味文案
+  useEffect(() => {
+    let interval;
+    if (uploading && uploadFileSize > 0) {
+      const sizeMB = uploadFileSize / 1024 / 1024;
+      const msgs =
+        sizeMB <= 50
+          ? [t.funnyMsgSmall1, t.funnyMsgSmall2, t.funnyMsgSmall3]
+          : [t.funnyMsgLarge1, t.funnyMsgLarge2, t.funnyMsgLarge3];
+      let index = 0;
+      setFunnyMessage(msgs[0]);
+      interval = setInterval(() => {
+        index = (index + 1) % msgs.length;
+        setFunnyMessage(msgs[index]);
+      }, 3000);
+    } else {
+      setFunnyMessage("");
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [uploading, uploadFileSize, t]);
+
+  /**
+   * uploadZipFile
+   * 通用上传入口：支持按钮选择与拖拽区域的 .zip 文件上传
+   */
+  const uploadZipFile = async (file) => {
+    if (!file) return;
+    if (!file.name.endsWith(".zip")) {
+      toast({
+        title: t.toastInvalidFileTitle,
+        description: t.toastInvalidFileDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (roleLimits && roleLimits.enabled === false) {
+      toast({
+        title: t.toastServiceDisabledTitle,
+        description: t.toastServiceDisabledDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (roleLimits) {
+      if (
+        roleLimits.deployment_limit !== null &&
+        websites.length >= roleLimits.deployment_limit
+      ) {
+        toast({
+          title: t.toastLimitReachedTitle,
+          description: t.toastLimitReachedDesc(roleLimits.deployment_limit),
+          variant: "destructive"
+        });
+        return;
+      }
+      if (
+        roleLimits.max_file_size !== null &&
+        file.size > roleLimits.max_file_size
+      ) {
+        toast({
+          title: t.toastFileTooLargeTitle,
+          description: t.toastFileTooLargeDesc(
+            Math.round(roleLimits.max_file_size / 1024 / 1024)
+          ),
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+
+    setUploading(true);
+    setUploadProgress(0);
+    setUploadStatusText("");
+    setUploadStage(1);
+    setUploadFileSize(file.size);
+
+    let websiteId = null;
+
+    try {
+      const token = tokenManager.get();
+      const storedUser = userManager.get();
+      if (!token || !storedUser || !storedUser.userId) {
+        toast({
+          title: t.toastExpiredTitle,
+          description: t.toastExpiredDesc,
+          variant: "destructive"
+        });
+        navigate("/");
+        return;
+      }
+
+      const safeFileName = sanitizeFileName(file.name);
+
+      // 生成 websiteId，并先更新本地状态
+      websiteId = generateWebsiteId();
+      const now = Date.now();
+      const websiteData = {
+        userId: user.userId,
+        userName: user.nickName || user.name,
+        fileName: safeFileName,
+        status: "processing",
+        createdAt: now,
+        updatedAt: now
+      };
+      setWebsites((prev) => {
+        const next = [{ _id: websiteId, ...websiteData }, ...prev];
+        return next.sort(
+          (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
+        );
+      });
+      setDeploying((prev) => ({ ...prev, [websiteId]: true }));
+
+      // Phase 1: 读文件为 base64
+      const totalSizeMB = (file.size / 1024 / 1024).toFixed(2);
+      setUploadStatusText(`${t.statusUploading} (0MB / ${totalSizeMB}MB)`);
+      setUploadStage(2);
+
+      const fileContentBase64 = await fileToBase64(file, (percent, loaded) => {
+        const loadedMB = (loaded / 1024 / 1024).toFixed(2);
+        setUploadProgress(percent);
+        setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalSizeMB}MB)`);
+      });
+
+      // Phase 2: 上传并部署(SCF)
+      setUploadStage(3);
+      setUploadProgress(100);
+      setUploadStatusText(t.statusDeploying);
+
+      const deployResult = await websiteApi.uploadAndDeploy({
+        fileContentBase64,
+        fileName: safeFileName,
+        websiteId
+      });
+
+      setDeploying((prev) => ({ ...prev, [websiteId]: false }));
+      if (deployResult && deployResult.success) {
+        toast({
+          title: t.toastDeploySuccessTitle,
+          description: t.toastDeploySuccessDesc
+        });
+        loadWebsites();
+      } else {
+        throw new Error(deployResult?.message || t.deployFailed);
+      }
+    } catch (error) {
+      console.error("Deployment failed:", error);
+      if (websiteId) {
+        setWebsites((prev) =>
+          prev.map((w) => (w._id === websiteId ? { ...w, status: "failed" } : w))
+        );
+        setDeploying((prev) => ({ ...prev, [websiteId]: false }));
+      }
+      toast({
+        title: t.toastDeployFailedTitle,
+        description: error.message || t.toastDeployFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+      setUploadStatusText("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  /**
+   * handleFileUpload
+   * 选择文件上传事件处理：委托给 uploadZipFile
+   */
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    await uploadZipFile(file);
+  };
+
+  return {
+    uploading,
+    uploadProgress,
+    uploadStatusText,
+    uploadStage,
+    funnyMessage,
+    isDragActive,
+    setIsDragActive,
+    fileInputRef,
+    uploadZipFile,
+    handleFileUpload
+  };
+}
