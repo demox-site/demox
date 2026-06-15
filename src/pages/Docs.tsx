@@ -343,7 +343,7 @@ export const Docs: React.FC = () => {
   "mcpServers": {
     "demox": {
       "command": "npx",
-      "args": ["-y", "@demox-site/mcp-server@latest"]
+      "args": ["-y", "github:demox-site/mcp-server#main"]
     }
   }
 }`}
@@ -392,7 +392,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 全局安装\nnpm install -g @demox-site/cli@latest\n\n# 或免安装直接用\nnpx @demox-site/cli@latest --help`}
+                      code={`# 全局安装\nnpm install -g github:demox-site/cli#main\n\n# 或免安装直接用\nnpx github:demox-site/cli#main --help`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
