@@ -129,9 +129,10 @@ This is a service designed for long-term use.
 
 Demox is built on Tencent Cloud infrastructure:
 
-- **CloudBase** for authentication, cloud functions, and database
+- **SCF (Cloud Functions)** for authentication, the user system, and all core business logic
+- **MySQL (TencentDB)** for user, site, and permission data
 - **COS** for static asset storage
-- **EdgeOne** for CDN, HTTPS, and wildcard domains
+- **EdgeOne** for CDN, HTTPS, wildcard domains, and edge routing
 
 Cloud functions handle:
 
@@ -154,7 +155,7 @@ However:
 > **This repository is not a plug-and-play template.**
 
 It deeply depends on Tencent Cloud services
-(CloudBase, COS, EdgeOne, IAM configuration).
+(SCF, MySQL, COS, EdgeOne, IAM configuration).
 
 If you simply want to use Demox,
 **the hosted platform is the recommended way.**
