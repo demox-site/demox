@@ -5,13 +5,14 @@
 ## 发布方式
 
 - 本项目不走 Cycor，也不需要手动执行云端发布命令。
-- 正式发布方式是：将代码直接推送到 GitHub 仓库的 `master` 分支。
+- 正式发布方式是：本地提交后推送到 GitHub 仓库的 `master` 分支。
+- 只要代码进入 `master`，就会自动部署主站；不要手动打包 `dist/`、不要手动调用 `/deploy` 接口。
 - 推送到 `master` 后会自动触发 GitHub Actions：`.github/workflows/deploy.yml`。
 - 该 Action 会安装依赖、执行 `npm run build`，把 `dist/` 打包成 zip，然后调用 Demox 自己的 `/deploy` 接口发布。
 - Action 中固定发布到 Demox 平台托管的专属站点/项目：
   - `WEBSITE_ID=EPX2UU43`
   - `WEBSITE_NAME=demox-site`
-  - `DEPLOY_URL=https://1307257815-ju8ahprgj9.ap-guangzhou.tencentscf.com/deploy`
+  - `DEPLOY_URL` 来自 GitHub Actions Variable `DEMOX_DEPLOY_URL`
 - GitHub Actions 通过仓库 Secret `DEMOX_TOKEN` 鉴权；不要把 token 写入代码、文档或命令行参数。
 
 ## 后端说明
@@ -23,6 +24,8 @@
 ## 给 Agent 的发布提醒
 
 - 用户说“发布吧”“上线吧”时，应理解为：检查本地改动是否已提交并推送到 `master`，由 GitHub Action 自动发布。
+- 如果本地有需要发布的改动，流程是 `git add` -> `git commit` -> `git push github master`，然后等待 Action 完成；不需要再做任何手动部署。
 - 不要尝试用 Cycor 发布本项目。
+- 不要通过本地脚本、CLI、curl 或控制台手动部署主站，除非用户明确要求绕过 CI 做应急处理。
 - 不要临时改 `.github/workflows/deploy.yml` 中的目标站点，除非用户明确要求。
 - 发布前建议至少执行 `npm run build`，确认前端构建通过。

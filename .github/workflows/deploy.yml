@@ -12,7 +12,9 @@ env:
   WEBSITE_ID: EPX2UU43
   WEBSITE_NAME: demox-site
   # website-api 的 /deploy 端点（与 cli 默认 cloudFunctionUrl 一致）
-  DEPLOY_URL: https://1307257815-ju8ahprgj9.ap-guangzhou.tencentscf.com/deploy
+  DEPLOY_URL: ${{ vars.DEMOX_DEPLOY_URL }}
+  VITE_DEMOX_API_URL: ${{ vars.VITE_DEMOX_API_URL }}
+  VITE_DEMOX_SITE_URL: ${{ vars.VITE_DEMOX_SITE_URL }}
 
 jobs:
   deploy:
@@ -29,6 +31,8 @@ jobs:
 
       - name: Install & build
         run: |
+          : "${VITE_DEMOX_API_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_API_URL}"
+          : "${VITE_DEMOX_SITE_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_SITE_URL}"
           # npm 网络偶发 ECONNRESET，加重试与超时
           npm config set fetch-retries 5
           npm config set fetch-retry-factor 2
@@ -64,6 +68,7 @@ jobs:
           '
 
           # 3) 调 /deploy。-f 让 HTTP 错误码非零退出；响应里再校验 success
+          : "${DEPLOY_URL:?请在 GitHub Actions Variables 中配置 DEMOX_DEPLOY_URL}"
           resp=$(curl -fsS -m 120 -X POST "$DEPLOY_URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $DEMOX_TOKEN" \

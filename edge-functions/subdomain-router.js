@@ -15,9 +15,27 @@
  *   - 回滚：把触发规则的 FunctionId 改回 ef-7ej45f3q。
  */
 
-// website-api 解析接口（SCF HTTP 触发器）
-var RESOLVE_API = 'https://1307257815-3empxtnzn9.ap-guangzhou.tencentscf.com/resolve-subdomain';
+// Backend URLs are read from EdgeOne environment variables for quick rollback.
 var RESOLVE_CACHE_TTL = 60; // 秒
+
+function runtimeEnv(name) {
+  try {
+    if (typeof env !== 'undefined' && env && env[name]) {
+      return String(env[name]).replace(/\/+$/, '');
+    }
+  } catch (e) {}
+  return '';
+}
+
+function requiredRuntimeEnv(name) {
+  const value = runtimeEnv(name);
+  if (!value) throw new Error('Missing EdgeOne environment variable: ' + name);
+  return value;
+}
+
+function backendUrl(path) {
+  return requiredRuntimeEnv('DEMOX_API_URL') + path;
+}
 
 // 自托管 demox 主站（作为被 demox 托管的站点 EPX2UU43，发布走 demox cli，不再走 GitHub Actions→COS 根）：
 //   - apex demox.site：301 跳转到 www.demox.site（保留 path+query，OAuth code 不丢）。
@@ -95,7 +113,7 @@ async function resolvePath(label) {
   // 未命中：调 website-api 解析
   let path = null;
   try {
-    const resp = await fetch(RESOLVE_API, {
+    const resp = await fetch(backendUrl('/resolve-subdomain'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'resolve_subdomain', subdomain: label })

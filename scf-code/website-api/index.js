@@ -451,8 +451,11 @@ async function handleUpdateWebsiteTags(event) {
 
 /**
  * 校验自定义子域名前缀(label)：只允许小写字母、数字、连字符，
- * 不以连字符开头/结尾，长度 1-63；并排除会与旧格式/平台冲突的前缀。
+ * 不以连字符开头/结尾，长度 5-63；并排除会与旧格式/平台冲突的前缀。
  */
+const SUBDOMAIN_MIN_LENGTH = 5;
+const SUBDOMAIN_MAX_LENGTH = 63;
+const SUBDOMAIN_RULE_MESSAGE = `仅限小写字母、数字、连字符，${SUBDOMAIN_MIN_LENGTH}-${SUBDOMAIN_MAX_LENGTH} 位，且不能用保留词`;
 const RESERVED_LABELS = new Set([
   'www', 'sites', 'kv-admin', 'api', 'app', 'admin', 'mail', 'ftp',
   'cdn', 'static', 'assets', 'blog', 'demox'
@@ -464,7 +467,7 @@ function normalizeLabel(input) {
 
 function isValidLabel(label) {
   if (typeof label !== 'string') return false;
-  if (label.length < 1 || label.length > 63) return false;
+  if (label.length < SUBDOMAIN_MIN_LENGTH || label.length > SUBDOMAIN_MAX_LENGTH) return false;
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) return false;
   // 旧格式以 sites- 开头，避免与向后兼容正则冲突
   if (label.startsWith('sites-')) return false;
@@ -502,7 +505,7 @@ async function handleCheckSubdomain(event) {
         success: true,
         available: false,
         reason: 'invalid',
-        message: '仅限小写字母、数字、连字符，1-63 位，且不能用保留词'
+        message: SUBDOMAIN_RULE_MESSAGE
       })
     };
   }
@@ -559,7 +562,7 @@ async function handleSetSubdomain(event) {
       headers: getCORSHeaders(),
       body: JSON.stringify({
         success: false,
-        message: '前缀不合法：仅限小写字母、数字、连字符，1-63 位，且不能用保留词'
+        message: `前缀不合法：${SUBDOMAIN_RULE_MESSAGE}`
       })
     };
   }
