@@ -46,7 +46,7 @@ const translations = {
       uploading: "上传至边缘网络...",
       uploading_done: "完成 (1.2s)",
       success: "成功！已部署至：",
-      url: "https://project-gamma.demox.app"
+      url: "https://project-gamma.demox.site"
     },
     workflow: {
       title: "从代码到全球",
@@ -109,7 +109,7 @@ const translations = {
       uploading: "Uploading to Edge Network...",
       uploading_done: "Done (1.2s)",
       success: "Success! Deployed to:",
-      url: "https://project-gamma.demox.app"
+      url: "https://project-gamma.demox.site"
     },
     workflow: {
       title: "From Code to Global",

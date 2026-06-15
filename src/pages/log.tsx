@@ -54,6 +54,76 @@ const LogPage: React.FC = () => {
             >
               <TimelineItem
                 version={`v${siteConfig.version}`}
+                name="海纳百川 (The Great Migration)"
+                date="2026-06-13"
+                dateNote="(吃自己的狗粮，真香)"
+              >
+                <Feature
+                  tag="Feature"
+                  title="多云存储桶注册制"
+                  desc="存储桶改为注册制，抽象出统一的存储层，密钥加密入库。多云时代的第一块砖，先把地基打牢。"
+                  note="目前还是单云，但架子已经搭好，吹牛不犯法。"
+                />
+                <Feature
+                  tag="Infra"
+                  title="主站自托管"
+                  desc="本站不再走 GitHub Actions 传 COS，而是把自己当成一个普通用户站点，用 demox 部署 demox。"
+                  note="套娃部署成功，删桶根那次白屏的眼泪我们自己擦干了。"
+                />
+                <Feature
+                  tag="CI"
+                  title="一键自动发布"
+                  desc="push 到 master 自动构建打包并发布到边缘网络，纯 curl 最小依赖。顺手把路由从 # 哈希切到了真·浏览器路由。"
+                  note="地址栏里那个碍眼的 # 终于没了。"
+                />
+                <Feature
+                  tag="Fix"
+                  title="DNS 与证书急救"
+                  desc="修复了首页打开慢十秒和 HTTPS 证书过期的连环坑，根因是 DNS 绕路。已把解析迁回，证书重新签发。"
+                  note="证书续期失败这种事，总在你睡着时发生。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version="v0.8.0"
+                name="认证觉醒 (The Awakening)"
+                date="2026-06-12"
+                dateNote="(终于有人管门了)"
+              >
+                <Feature
+                  tag="Feature"
+                  title="GitHub 一键登录"
+                  desc="接入 GitHub OAuth，点一下就能登录或绑定账号。无主账号还能选择新建还是关联已有，不再偷偷帮你合并。"
+                  note="毕竟你的 star 数就是你的尊严。"
+                />
+                <Feature
+                  tag="Refactor"
+                  title="控制台大改造"
+                  desc="登录后的控制台从顶栏导航重构为独立的侧边栏 + 嵌套路由，营销页和控制台彻底分家。"
+                  note="终于不再像两个妈生的了。"
+                />
+                <Feature
+                  tag="Feature"
+                  title="自定义子域名"
+                  desc="每个站点除了默认域名，还能挑一个好记的前缀 {label}.demox.site。泛域名 + 证书已就位，无需备案和 CNAME。"
+                  note="抢一个好听的名字，手慢无。"
+                />
+                <Feature
+                  tag="Feature"
+                  title="MCP 部署"
+                  desc="提供 MCP server，让 AI 助手直接帮你部署站点。你动嘴，它动手。"
+                  note="未来你可能连拖拽都懒得拖了。"
+                />
+                <Feature
+                  tag="Style"
+                  title="主题三态切换"
+                  desc="新增 跟随系统 / 浅色 / 深色 三态主题，浅色模式由深色镜像反转而来，颜色体系全部走 CSS 变量。"
+                  note="白天党终于不用被亮瞎了。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version="v0.7.7"
                 name="井井有条 (Orderliness)"
                 date="2025-12-29"
                 dateNote="(强迫症狂喜)"

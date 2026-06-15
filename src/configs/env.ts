@@ -1,6 +1,6 @@
 export const siteConfig = {
   name: "Demox",
-  version: "0.7.7",
+  version: "0.9.0",
   domain: "www.demox.site",
   url: "https://www.demox.site/"
 };
