@@ -343,7 +343,7 @@ export const Docs: React.FC = () => {
   "mcpServers": {
     "demox": {
       "command": "npx",
-      "args": ["-y", "@demox-site/mcp-server"]
+      "args": ["-y", "@demox-site/mcp-server@latest"]
     }
   }
 }`}
@@ -392,7 +392,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 全局安装\nnpm install -g @demox-site/cli\n\n# 或免安装直接用\nnpx @demox-site/cli --help`}
+                      code={`# 全局安装\nnpm install -g @demox-site/cli@latest\n\n# 或免安装直接用\nnpx @demox-site/cli@latest --help`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
@@ -407,7 +407,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 部署目录或 ZIP\ndemox deploy ./dist\ndemox deploy ./website.zip\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID`}
+                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
@@ -418,7 +418,9 @@ export const Docs: React.FC = () => {
                         ["demox login", isZh ? "登录到 Demox" : "Log in to Demox"],
                         ["demox logout", isZh ? "登出并删除本地 Token" : "Log out and remove local token"],
                         ["demox status", isZh ? "查看登录状态" : "Show login status"],
-                        ["demox deploy <path>", isZh ? "部署网站或目录" : "Deploy a site or folder"],
+                        ["demox deploy <path>", isZh ? "部署目录、ZIP、PDF 或文档" : "Deploy folder, ZIP, PDF, or docs"],
+                        ["demox domain set <id> <subdomain>", isZh ? "设置自定义子域名" : "Set custom subdomain"],
+                        ["demox domain clear <id>", isZh ? "清除自定义子域名" : "Clear custom subdomain"],
                         ["demox list / ls", isZh ? "列出所有网站" : "List all sites"],
                         ["demox info <id>", isZh ? "查看网站详情" : "Show site details"],
                         ["demox delete <id> / rm", isZh ? "删除网站" : "Delete a site"],
@@ -486,6 +488,8 @@ export const Docs: React.FC = () => {
                       {[
                         isZh ? "本地目录（自动打包为 ZIP）" : "Local folder (auto-zipped)",
                         isZh ? "本地 ZIP 文件" : "Local ZIP file",
+                        isZh ? "PDF（自动生成预览页）" : "PDF (viewer page generated)",
+                        isZh ? "Markdown / TXT / DOCX 文档（自动套模板）" : "Markdown / TXT / DOCX docs (templated)",
                         isZh ? "HTTPS URL（指向 .zip）" : "HTTPS URL (to a .zip)",
                       ].map((item) => (
                         <li key={item} className="flex items-center gap-2.5 text-sm text-zinc-400">
@@ -496,7 +500,7 @@ export const Docs: React.FC = () => {
                     </ul>
                     <div className="flex flex-wrap gap-3">
                       <Badge variant="outline" className="border-zinc-700 text-zinc-300">
-                        MCP {isZh ? "上限" : "max"}: 500MB
+                        MCP {isZh ? "上限" : "max"}: 8MB
                       </Badge>
                       <Badge variant="outline" className="border-zinc-700 text-zinc-300">
                         CLI {isZh ? "上限" : "max"}: 8MB
@@ -504,8 +508,8 @@ export const Docs: React.FC = () => {
                     </div>
                     <p className="text-xs text-zinc-500 mt-3">
                       {isZh
-                        ? "MCP 大文件会被流式传输，不占用大量内存。"
-                        : "MCP streams large files without high memory usage."}
+                        ? "当前 CLI 与 MCP 通过 SCF 请求体上传，超过 8MB 请先压缩或拆分。"
+                        : "CLI and MCP currently upload through SCF request bodies; compress or split files over 8MB."}
                     </p>
                   </Section>
 

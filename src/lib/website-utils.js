@@ -122,22 +122,22 @@ export const getDisplayName = (w) => {
 /**
  * getSiteDomains
  * 返回站点的域名列表(最多 2 个):
+ *   - 自定义前缀 <subdomain>.demox.site(可选，优先展示)
  *   - 默认域名 <websiteId 小写>.demox.site(始终存在)
- *   - 自定义前缀 <subdomain>.demox.site(可选)
  * 每项 { host, url, isDefault }。
  */
 export const getSiteDomains = (w) => {
   if (!w) return [];
   const list = [];
-  const wid = (w.websiteId || "").trim();
-  if (wid && wid !== "undefined") {
-    const host = `${wid.toLowerCase()}.demox.site`;
-    list.push({ host, url: `https://${host}/`, isDefault: true });
-  }
   const sub = (w.subdomain || "").trim();
   if (sub && sub !== "undefined") {
     const host = `${sub}.demox.site`;
     list.push({ host, url: `https://${host}/`, isDefault: false });
+  }
+  const wid = (w.websiteId || "").trim();
+  if (wid && wid !== "undefined") {
+    const host = `${wid.toLowerCase()}.demox.site`;
+    list.push({ host, url: `https://${host}/`, isDefault: true });
   }
   return list;
 };
