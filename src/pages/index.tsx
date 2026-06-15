@@ -21,13 +21,6 @@ import { MainLayout } from "@/layouts/MainLayout";
 
 const translations = {
   zh: {
-    navbar: {
-      pricing: "价格",
-      log: "日志",
-      login: "登录",
-      console: "控制台",
-      logout: "退出"
-    },
     hero: {
       version: `v${siteConfig.version} 现已发布`,
       title_start: "部署，从未如此简单",
@@ -84,13 +77,6 @@ const translations = {
     }
   },
   en: {
-    navbar: {
-      pricing: "Pricing",
-      log: "Log",
-      login: "Login",
-      console: "Console",
-      logout: "Logout"
-    },
     hero: {
       version: `v${siteConfig.version} is now live`,
       title_start: "Deploy Static Sites.",
