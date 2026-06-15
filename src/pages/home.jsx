@@ -125,12 +125,14 @@ export default function Home(props) {
 
           <UploadSection
             t={t}
+            lang={lang}
             roleLimits={roleLimits}
             isDragActive={upload.isDragActive}
             setIsDragActive={upload.setIsDragActive}
             uploadZipFile={upload.uploadZipFile}
+            uploadDocFile={upload.uploadDocFile}
+            uploadPdfFile={upload.uploadPdfFile}
             fileInputRef={upload.fileInputRef}
-            onFileChange={upload.handleFileUpload}
             uploading={upload.uploading}
             uploadStatusText={upload.uploadStatusText}
             uploadProgress={upload.uploadProgress}

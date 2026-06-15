@@ -6,6 +6,8 @@ import {
   generateWebsiteId,
   getComparableTimestamp
 } from "@/lib/website-utils";
+import { buildSiteZipFile, isSupportedDoc } from "@/lib/doc-to-site";
+import { buildPdfSiteZipFile, isSupportedPdf } from "@/lib/pdf-to-site";
 
 /**
  * fileToBase64
@@ -87,7 +89,7 @@ export function useUpload({
    */
   const uploadZipFile = async (file) => {
     if (!file) return;
-    if (!file.name.endsWith(".zip")) {
+    if (!String(file.name || "").toLowerCase().endsWith(".zip")) {
       toast({
         title: t.toastInvalidFileTitle,
         description: t.toastInvalidFileDesc,
@@ -228,12 +230,73 @@ export function useUpload({
   };
 
   /**
-   * handleFileUpload
-   * 选择文件上传事件处理：委托给 uploadZipFile
+   * uploadDocFile
+   * 文档模式入口：把 .md/.txt/.docx 等文字文档用所选模板渲染成站点，
+   * 在浏览器端打包为 .zip 后复用 uploadZipFile 走既有部署流程。
+   * @param {File|null} file 文字文档
+   * @param {string} templateId 模板 id（insight / warm / dark）
    */
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
-    await uploadZipFile(file);
+  const uploadDocFile = async (file, templateId) => {
+    if (!file) return;
+    if (!isSupportedDoc(file)) {
+      toast({
+        title: t.toastInvalidDocTitle,
+        description: t.toastInvalidDocDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    let zipFile;
+    try {
+      const built = await buildSiteZipFile({ file, templateId });
+      zipFile = built.zipFile;
+    } catch (error) {
+      console.error("Document parse failed:", error);
+      const isLegacyDoc = error && error.message === "UNSUPPORTED_DOC";
+      toast({
+        title: t.toastDocParseFailedTitle,
+        description: isLegacyDoc ? t.toastLegacyDocDesc : t.toastDocParseFailedDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    await uploadZipFile(zipFile);
+  };
+
+  /**
+   * uploadPdfFile
+   * PDF 模式入口：保留原始 PDF，生成内联预览的 index.html，
+   * 在浏览器端打包为 .zip 后复用 uploadZipFile 走既有部署流程。
+   * @param {File|null} file PDF 文件
+   */
+  const uploadPdfFile = async (file) => {
+    if (!file) return;
+    if (!isSupportedPdf(file)) {
+      toast({
+        title: t.toastInvalidPdfTitle,
+        description: t.toastInvalidPdfDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    let zipFile;
+    try {
+      const built = await buildPdfSiteZipFile({ file });
+      zipFile = built.zipFile;
+    } catch (error) {
+      console.error("PDF pack failed:", error);
+      toast({
+        title: t.toastPdfPackFailedTitle,
+        description: t.toastPdfPackFailedDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    await uploadZipFile(zipFile);
   };
 
   return {
@@ -246,6 +309,7 @@ export function useUpload({
     setIsDragActive,
     fileInputRef,
     uploadZipFile,
-    handleFileUpload
+    uploadDocFile,
+    uploadPdfFile
   };
 }
