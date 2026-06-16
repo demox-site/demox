@@ -1,9 +1,9 @@
 import React from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 // @ts-ignore
-import { Button, Card, CardContent } from "@/components/ui";
+import { Card, CardContent } from "@/components/ui";
 // @ts-ignore
-import { ArrowLeft, ShieldCheck, UsersRound } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { userManager } from "@/api";
 import { translations } from "../home-translations";
@@ -44,30 +44,6 @@ export default function ProjectMembersPage() {
 
   return (
     <div className="stitch-page">
-      <div className="stitch-page-hero mb-8">
-        <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <div className="stitch-eyebrow">
-              <UsersRound className="h-3.5 w-3.5" />
-              {projectForPanel.name}
-            </div>
-            <h1 className="stitch-title">{t.projectMembersTitle}</h1>
-            <p className="stitch-subtitle">
-              {projectId ? `${t.projectMembersDesc} · ID: ${projectId}` : t.projectMembersDesc}
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => navigate(`/console/projects/${projectId}/sites`)}
-            className="stitch-action rounded-full px-4"
-          >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            {t.sitesPageTitle}
-          </Button>
-        </div>
-      </div>
-
       <Card className="stitch-panel overflow-hidden">
         <CardContent className="p-4 sm:p-6">
           <div className="mb-5 flex items-center gap-2 text-sm text-[var(--stitch-muted)]">

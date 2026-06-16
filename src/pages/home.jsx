@@ -9,7 +9,7 @@ import {
   Badge
 } from "@/components/ui";
 // @ts-ignore;
-import { Globe, RefreshCw, Tag, UploadCloud, Rocket, FolderKanban } from "lucide-react";
+import { Globe, RefreshCw, Tag, UploadCloud } from "lucide-react";
 import { Navigate, useParams } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "./home-translations";
@@ -65,7 +65,6 @@ export default function Home(props) {
   const uploadProject =
     projects.getProjectById(currentProjectId) ||
     projects.getUploadProject(filters.selectedProjectId);
-  const projectName = uploadProject?.name || t.defaultProjectName || "Project";
 
   const upload = useUpload({
     user,
@@ -136,44 +135,9 @@ export default function Home(props) {
     return <Navigate to="/console/projects" replace />;
   }
 
-  const pageTitle = isDeployMode ? t.deployPageTitle : t.sitesPageTitle;
-  const pageSubtitle = currentProjectId
-    ? `${projectName} · ID: ${currentProjectId}`
-    : projectName;
-
   return (
     <>
       <div style={style} className="stitch-page">
-          <div className="stitch-page-hero mb-8">
-            <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <div className="stitch-eyebrow">
-                  {isDeployMode ? (
-                    <Rocket className="h-3.5 w-3.5" />
-                  ) : (
-                    <FolderKanban className="h-3.5 w-3.5" />
-                  )}
-                  {projectName}
-                </div>
-                <h1 className="stitch-title">{pageTitle}</h1>
-                <p className="stitch-subtitle">{pageSubtitle}</p>
-              </div>
-              {!isDeployMode && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={loadWebsites}
-                    variant="outline"
-                    className="stitch-action rounded-full px-4"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    {t.refresh}
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-
           {isDeployMode ? (
             <UploadSection
               t={t}
@@ -194,8 +158,8 @@ export default function Home(props) {
           ) : (
             <Card className="stitch-panel overflow-hidden">
               <CardHeader className="border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
-                <CardTitle className="text-zinc-100 flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-2 text-[var(--stitch-ink)]">
+                <CardTitle className="flex flex-col gap-3 text-zinc-100 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-wrap items-center gap-2 text-[var(--stitch-ink)]">
                     <Globe className="w-5 h-5 text-[var(--stitch-blue)]" />
                     <span>{t.deploymentsTitle}</span>
                     {roleLimits && (
@@ -209,6 +173,15 @@ export default function Home(props) {
                       </span>
                     )}
                   </div>
+                  <Button
+                    size="sm"
+                    onClick={loadWebsites}
+                    variant="outline"
+                    className="stitch-action rounded-full px-4"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    {t.refresh}
+                  </Button>
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
