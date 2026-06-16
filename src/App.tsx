@@ -29,6 +29,7 @@ import { authApi, tokenManager } from "./api";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
 import AdminDashboard from "./pages/AdminDashboard";
+import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import UsagePage from "./pages/console/UsagePage";
@@ -122,8 +123,18 @@ const App: React.FC = () => {
 
                   {/* 控制台：共享侧栏布局的嵌套路由 */}
                   <Route path="/console" element={<ConsoleLayout />}>
-                    <Route index element={<Navigate to="sites" replace />} />
-                    <Route path="sites" element={<Home />} />
+                    <Route index element={<Navigate to="/console/projects" replace />} />
+                    <Route path="projects" element={<ProjectsPage />} />
+                    <Route
+                      path="projects/:projectId/deploy"
+                      element={<Home mode="deploy" />}
+                    />
+                    <Route
+                      path="projects/:projectId/sites"
+                      element={<Home mode="sites" />}
+                    />
+                    <Route path="deploy" element={<Navigate to="/console/projects" replace />} />
+                    <Route path="sites" element={<Navigate to="/console/projects" replace />} />
                     <Route path="usage" element={<UsagePage />} />
                     <Route path="tokens" element={<TokensPage />} />
                     <Route path="settings" element={<SettingsPage />} />
@@ -138,7 +149,7 @@ const App: React.FC = () => {
                   {/* 旧地址兼容重定向 */}
                   <Route
                     path="/home"
-                    element={<Navigate to="/console/sites" replace />}
+                    element={<Navigate to="/console/projects" replace />}
                   />
                   <Route
                     path="/admin"

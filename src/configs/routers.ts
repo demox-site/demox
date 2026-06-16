@@ -10,6 +10,7 @@ import { MCPAuthorize } from "../pages/MCPAuthorize";
 import { Docs } from "../pages/Docs";
 import { GithubCallback } from "../pages/GithubCallback";
 import { GithubLink } from "../pages/GithubLink";
+import { SiteAuth } from "../pages/SiteAuth";
 
 export const routers = [
   {
@@ -56,6 +57,10 @@ export const routers = [
   {
     id: "github-link",
     component: GithubLink
+  },
+  {
+    id: "site-auth",
+    component: SiteAuth
   },
   {
     id: "*",

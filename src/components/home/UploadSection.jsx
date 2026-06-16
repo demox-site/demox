@@ -110,13 +110,14 @@ export default function UploadSection({
   };
 
   return (
-    <Card className="border-border mb-12 overflow-hidden relative group">
-      <CardHeader className="border-b border-border bg-muted/30">
-        <CardTitle className="text-foreground flex items-center gap-2 flex-wrap">
-          <Upload className="w-5 h-5 text-muted-foreground" />
+    <Card className="stitch-panel mb-12 overflow-hidden relative group">
+      <div className="absolute inset-0 bg-gradient-to-r from-[var(--stitch-blue-soft)] to-transparent pointer-events-none" />
+      <CardHeader className="border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
+        <CardTitle className="text-[var(--stitch-ink)] flex items-center gap-2 flex-wrap">
+          <Upload className="w-5 h-5 text-[var(--stitch-blue)]" />
           {t.uploadCardTitle}
           {roleLimits && (
-            <span className="text-xs text-muted-foreground font-mono ml-2 font-normal">
+            <span className="text-xs text-[var(--stitch-muted)] font-mono ml-2 font-normal">
               ({t.uploadLimitPrefix}{" "}
               {roleLimits.max_file_size
                 ? Math.round(roleLimits.max_file_size / 1024 / 1024) + "MB"
@@ -134,11 +135,11 @@ export default function UploadSection({
         {/* 拖拽 / 选择区 */}
         <div
           data-testid="upload-dropzone"
-          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+          className={`stitch-dropzone p-12 text-center transition-colors ${
             isDragActive
-              ? "border-foreground/30 bg-muted/50"
-              : "border-border bg-muted/20"
-          } group-hover:bg-muted/30`}
+              ? "stitch-dropzone-active"
+              : ""
+          }`}
           onDragEnter={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -177,29 +178,29 @@ export default function UploadSection({
               uploading ? "opacity-50 cursor-not-allowed" : ""
             }`}
           >
-            <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-6 border border-border group-hover:scale-105 transition-transform duration-300">
-              <FolderOpen className="w-8 h-8 text-muted-foreground" />
+            <div className="stitch-icon-tile mx-auto mb-6 h-16 w-16 rounded-2xl group-hover:scale-110 transition-transform duration-300">
+              <FolderOpen className="w-8 h-8" />
             </div>
-            <h3 className="text-xl font-bold text-foreground mb-2">
+            <h3 className="text-xl font-bold text-[var(--stitch-ink)] mb-2">
               {uploading ? t.uploadTitleUploading : t.uploadTitleIdle}
             </h3>
-            <p className="text-muted-foreground mb-6 max-w-xl mx-auto">{t.uploadDesc}</p>
+            <p className="text-[var(--stitch-muted)] mb-6 max-w-xl mx-auto">{t.uploadDesc}</p>
             {!uploading && (
-              <span className="px-6 py-2 bg-primary text-primary-foreground text-sm font-bold rounded-md hover:opacity-90 transition-opacity inline-block">
+              <span className="stitch-primary inline-flex rounded-full px-6 py-2 text-sm font-bold transition-colors">
                 {t.uploadButton}
               </span>
             )}
           </label>
-          <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-3 py-1">
+          <div className="mt-6 flex flex-wrap justify-center gap-2 text-xs text-[var(--stitch-muted)]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
               <Archive className="h-3.5 w-3.5" />
               {t.uploadFormatZip}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-3 py-1">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
               <FileType className="h-3.5 w-3.5" />
               {t.uploadFormatPdf}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-3 py-1">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
               <FileText className="h-3.5 w-3.5" />
               {t.uploadFormatDoc}
             </span>
@@ -208,7 +209,7 @@ export default function UploadSection({
 
         {uploading && (
           <div className="mt-8 max-w-xl mx-auto">
-            <div className="flex justify-between text-xs font-mono text-muted-foreground mb-2">
+            <div className="flex justify-between text-xs font-mono text-[var(--stitch-muted)] mb-2">
               <span>{uploadStatusText || t.uploadProgressLabel}</span>
               <span>
                 {uploadProgress}% ({uploadStage}/3){" "}
@@ -216,10 +217,18 @@ export default function UploadSection({
             </div>
             <Progress
               value={uploadProgress}
-              className="bg-muted h-2"
-              indicatorClassName="bg-brand"
+              className="bg-[var(--stitch-line)] h-2"
+              indicatorClassName={
+                uploadStage === 1
+                  ? "bg-[var(--stitch-ink)]"
+                  : uploadStage === 2
+                  ? "bg-[var(--stitch-ink)]"
+                  : uploadStage === 3
+                  ? "bg-[var(--stitch-ink)]"
+                  : "bg-[var(--stitch-ink)]"
+              }
             />
-            <div className="text-center mt-2 text-xs text-muted-foreground animate-pulse">
+            <div className="text-center mt-2 text-xs text-[var(--stitch-muted)] animate-pulse">
               {funnyMessage}
             </div>
           </div>
@@ -232,12 +241,12 @@ export default function UploadSection({
             closeTemplateDialog();
           }
         }}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
             <DialogHeader>
-              <DialogTitle>
+              <DialogTitle className="text-[var(--stitch-ink)]">
                 {t.docTemplateDialogTitle}
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-[var(--stitch-muted)]">
                 {t.docTemplateDialogDesc}
               </DialogDescription>
             </DialogHeader>
@@ -254,12 +263,12 @@ export default function UploadSection({
                     onClick={() => setTemplateId(tpl.id)}
                     className={`relative text-left rounded-lg border p-3 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                       selected
-                        ? "border-foreground ring-1 ring-foreground"
-                        : "border-border hover:border-foreground/30"
+                        ? "border-[var(--stitch-blue)] ring-1 ring-[var(--stitch-blue)]"
+                        : "border-[var(--stitch-line)] hover:border-[var(--stitch-blue)]"
                     }`}
                   >
                     {selected && (
-                      <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center">
+                      <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-zinc-100 text-black flex items-center justify-center">
                         <Check className="w-3 h-3" />
                       </span>
                     )}
@@ -282,10 +291,10 @@ export default function UploadSection({
                         />
                       </div>
                     </div>
-                    <div className="text-sm font-bold text-foreground">
+                    <div className="text-sm font-bold text-[var(--stitch-ink)]">
                       {tpl.name[L]}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
+                    <div className="text-xs text-[var(--stitch-muted)] mt-0.5">
                       {tpl.desc[L]}
                     </div>
                   </button>
@@ -298,7 +307,7 @@ export default function UploadSection({
                 type="button"
                 disabled={uploading}
                 onClick={closeTemplateDialog}
-                className="mt-2 rounded-md border border-border bg-muted px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0"
+                className="mt-2 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-4 py-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)] disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0"
               >
                 {t.cancel}
               </button>
@@ -306,7 +315,7 @@ export default function UploadSection({
                 type="button"
                 disabled={uploading || !pendingDocFile}
                 onClick={confirmTemplateUpload}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="stitch-primary rounded-full px-4 py-2 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t.docTemplateConfirm}
               </button>

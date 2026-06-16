@@ -9,13 +9,43 @@ const WEBSITE_API_URL = config.websiteApiUrl;
 // Token管理
 const TOKEN_KEY = "demox_token";
 const USER_KEY = "demox_user";
+const AUTH_COOKIE_KEY = "demox_access";
+const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+
+function getCookieDomainAttr(): string {
+  if (typeof window === "undefined") return "";
+  const host = window.location.hostname.toLowerCase();
+  if (host === "demox.site" || host.endsWith(".demox.site")) {
+    return "Domain=.demox.site; ";
+  }
+  return "";
+}
+
+function setAuthCookie(token: string) {
+  if (typeof document === "undefined") return;
+  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "Secure; " : "";
+  document.cookie =
+    `${AUTH_COOKIE_KEY}=${encodeURIComponent(token)}; ` +
+    `Max-Age=${AUTH_COOKIE_MAX_AGE}; Path=/; ${getCookieDomainAttr()}SameSite=Lax; ${secure}`;
+}
+
+function clearAuthCookie() {
+  if (typeof document === "undefined") return;
+  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "Secure; " : "";
+  document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/; SameSite=Lax; ${secure}`;
+  document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/; ${getCookieDomainAttr()}SameSite=Lax; ${secure}`;
+}
 
 export const tokenManager = {
   get: () => localStorage.getItem(TOKEN_KEY),
-  set: (token: string) => localStorage.setItem(TOKEN_KEY, token),
+  set: (token: string) => {
+    localStorage.setItem(TOKEN_KEY, token);
+    setAuthCookie(token);
+  },
   remove: () => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    clearAuthCookie();
   }
 };
 
@@ -55,7 +85,7 @@ async function request<T>(baseUrl: string, path: string, options: RequestInit = 
 export const authApi = {
   // 注册
   register: async (email: string, password: string) => {
-    const data = await request<{ success: boolean; token: string; userId: string; email: string }>(
+    const data = await request<{ success: boolean; token: string; userId: string; email: string; nickname?: string }>(
       AUTH_API_URL,
       "/auth/register",
       { method: "POST", body: { email, password } }
@@ -63,7 +93,7 @@ export const authApi = {
 
     if (data.success && data.token) {
       tokenManager.set(data.token);
-      userManager.set({ userId: data.userId, email: data.email, roles: ["user"] });
+      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles: ["user"] });
     }
 
     return data;
@@ -71,7 +101,7 @@ export const authApi = {
 
   // 密码登录
   login: async (email: string, password: string) => {
-    const data = await request<{ success: boolean; token: string; userId: string; email: string }>(
+    const data = await request<{ success: boolean; token: string; userId: string; email: string; nickname?: string }>(
       AUTH_API_URL,
       "/auth/login",
       { method: "POST", body: { email, password } }
@@ -82,7 +112,7 @@ export const authApi = {
       // 管理员邮箱列表 - 与数据库中的 user_roles 表保持同步
       const adminEmails = ["phosa@qq.com"];
       const roles = adminEmails.includes(email) ? ["admin", "user"] : ["user"];
-      userManager.set({ userId: data.userId, email: data.email, roles });
+      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles });
     }
 
     return data;
@@ -99,7 +129,7 @@ export const authApi = {
 
   // 验证码登录
   loginWithCode: async (email: string, code: string) => {
-    const data = await request<{ success: boolean; token: string; userId: string; email: string; isNewUser?: boolean }>(
+    const data = await request<{ success: boolean; token: string; userId: string; email: string; nickname?: string; isNewUser?: boolean }>(
       AUTH_API_URL,
       "/auth/login-code",
       { method: "POST", body: { email, code } }
@@ -109,7 +139,7 @@ export const authApi = {
       tokenManager.set(data.token);
       const adminEmails = ["phosa@qq.com"];
       const roles = adminEmails.includes(email) ? ["admin", "user"] : ["user"];
-      userManager.set({ userId: data.userId, email: data.email, roles });
+      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles });
     }
 
     return data;
@@ -140,6 +170,7 @@ export const authApi = {
       token?: string;
       userId?: string;
       email?: string;
+      nickname?: string;
       isNewUser?: boolean;
       bound?: boolean;
       needsChoice?: boolean;
@@ -155,7 +186,7 @@ export const authApi = {
       const roles = adminEmails.includes(data.email || "")
         ? ["admin", "user"]
         : ["user"];
-      userManager.set({ userId: data.userId, email: data.email, roles });
+      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles });
     }
 
     return data;
@@ -169,6 +200,7 @@ export const authApi = {
       token: string;
       userId: string;
       email: string;
+      nickname?: string;
       isNewUser?: boolean;
       bound?: boolean;
     }>(AUTH_API_URL, "/auth/github/finalize", {
@@ -182,7 +214,7 @@ export const authApi = {
       const roles = adminEmails.includes(data.email)
         ? ["admin", "user"]
         : ["user"];
-      userManager.set({ userId: data.userId, email: data.email, roles });
+      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles });
     }
 
     return data;
@@ -199,6 +231,15 @@ export const authApi = {
     return request<{ success: boolean; user: any }>(AUTH_API_URL, "/auth/me");
   },
 
+  // 更新当前用户资料
+  updateProfile: async (data: { nickname: string }) => {
+    return request<{ success: boolean; user: any; nickname?: string; message?: string }>(
+      AUTH_API_URL,
+      "/auth/update-profile",
+      { method: "POST", body: data }
+    );
+  },
+
   // 验证Token
   verifyToken: async () => {
     return request<{ valid: boolean; userId: string }>(AUTH_API_URL, "/auth/verify");
@@ -211,8 +252,9 @@ export const websiteApi = {
     fileContentBase64: string;
     fileName: string;
     websiteId?: string;
+    projectId?: string | number | null;
   }) => {
-    return request<{ success: boolean; url?: string; websiteId?: string; path?: string; message?: string }>(
+    return request<{ success: boolean; url?: string; websiteId?: string; projectId?: string | number | null; path?: string; message?: string }>(
       WEBSITE_API_URL,
       "/upload",
       { method: "POST", body: { action: "upload_and_deploy", ...params } }
@@ -291,6 +333,15 @@ export const websiteApi = {
     );
   },
 
+  // 更新站点访问级别
+  updateVisibility: async (data: { docId?: string; websiteId?: string; visibility: "public" | "private" }) => {
+    return request<{ success: boolean; visibility?: "public" | "private"; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-visibility",
+      { method: "POST", body: { action: "update_visibility", ...data } }
+    );
+  },
+
   // 删除网站
   delete: async (websiteId: string) => {
     return request<{ success: boolean; message: string; deletedCount: number }>(
@@ -361,6 +412,51 @@ export const websiteApi = {
       "/website/bucket-stats",
       { method: "POST", body: { action: "bucket_stats", ...data } }
     );
+  },
+
+  // 项目列表
+  listProjects: async (data: { includeArchived?: boolean; includeAll?: boolean } = {}) => {
+    return request<{ success: boolean; projects: any[]; count: number; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/list-projects",
+      { method: "POST", body: { action: "list_projects", ...data } }
+    );
+  },
+
+  // 创建项目
+  createProject: async (data: { name: string; description?: string; color?: string; icon?: string }) => {
+    return request<{ success: boolean; project?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/create-project",
+      { method: "POST", body: { action: "create_project", ...data } }
+    );
+  },
+
+  // 更新项目
+  updateProject: async (data: { id: string | number; name?: string; description?: string; color?: string; icon?: string }) => {
+    return request<{ success: boolean; project?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-project",
+      { method: "POST", body: { action: "update_project", ...data } }
+    );
+  },
+
+  // 归档/恢复项目
+  archiveProject: async (data: { id: string | number; archived: boolean }) => {
+    return request<{ success: boolean; archived?: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/archive-project",
+      { method: "POST", body: { action: "archive_project", ...data } }
+    );
+  },
+
+  // 移动站点到项目
+  setWebsiteProject: async (data: { docId?: string | number; websiteId?: string; projectId?: string | number | null }) => {
+    return request<{ success: boolean; project?: any; websiteId?: string; docId?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/set-website-project",
+      { method: "POST", body: { action: "set_website_project", ...data } }
+    );
   }
 };
 
@@ -407,6 +503,42 @@ export const adminApi = {
       "/website/delete-role-limit",
       { method: "POST", body: { action: "delete_role_limit", id: idOrName, name: idOrName } }
     );
+  },
+  // 多云存储桶注册制
+  listBuckets: async () => {
+    return request<{ success: boolean; data: any[]; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/list-buckets",
+      { method: "POST", body: { action: "list_buckets" } }
+    );
+  },
+  registerBucket: async (doc: any) => {
+    return request<{ success: boolean; id?: number; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/register-bucket",
+      { method: "POST", body: { action: "register_bucket", ...doc } }
+    );
+  },
+  updateBucket: async (doc: any) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-bucket",
+      { method: "POST", body: { action: "update_bucket", ...doc } }
+    );
+  },
+  deleteBucket: async (id: number) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-bucket",
+      { method: "POST", body: { action: "delete_bucket", id } }
+    );
+  },
+  setDefaultBucket: async (id: number) => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/set-default-bucket",
+      { method: "POST", body: { action: "set_default_bucket", id } }
+    );
   }
 };
 
@@ -428,7 +560,12 @@ export function mapWebsiteRow(row: any): any {
     url: row.url,
     tags: typeof row.tags === "string" ? JSON.parse(row.tags) : (row.tags || []),
     userId: row.user_id,
+    userNickname: row.user_nickname || row.userNickname || "",
+    projectId: row.project_id ? String(row.project_id) : null,
+    projectName: row.project_name || row.projectName || null,
+    projectSlug: row.project_slug || row.projectSlug || null,
     subdomain: row.subdomain || null,
+    visibility: row.visibility === "private" ? "private" : "public",
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
   };

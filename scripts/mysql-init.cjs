@@ -54,6 +54,27 @@ async function initDatabase() {
     await addColumn('nickname', `nickname VARCHAR(255) COMMENT '昵称'`);
     console.log('✅ users 表迁移完成\n');
 
+    // 1c. 项目表
+    console.log('📋 创建表: projects...');
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL COMMENT '项目归属用户ID',
+        name VARCHAR(255) NOT NULL DEFAULT 'default' COMMENT '项目显示名称',
+        slug VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '用户内唯一项目标识',
+        description TEXT DEFAULT NULL,
+        color VARCHAR(32) DEFAULT NULL,
+        icon VARCHAR(64) DEFAULT NULL,
+        archived TINYINT(1) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_project_slug (user_id, slug),
+        INDEX idx_projects_user_id (user_id),
+        INDEX idx_projects_archived (archived)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户项目表'
+    `);
+    console.log('✅ projects 表创建成功\n');
+
     // 2. 网站资源表
     console.log('📋 创建表: websites...');
     await connection.execute(`
@@ -66,11 +87,16 @@ async function initDatabase() {
         path VARCHAR(500) NOT NULL COMMENT 'COS路径',
         url VARCHAR(500) COMMENT '访问URL',
         tags JSON COMMENT '标签数组',
+        project_id BIGINT DEFAULT NULL COMMENT '所属项目(projects.id)',
+        visibility VARCHAR(16) NOT NULL DEFAULT 'public' COMMENT '站点访问级别: public/private',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_user_id (user_id),
         INDEX idx_website_id (website_id),
         INDEX idx_path (path(255)),
+        INDEX idx_project_id (project_id),
+        INDEX idx_visibility (visibility),
+        INDEX idx_user_project_updated (user_id, project_id, updated_at),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);

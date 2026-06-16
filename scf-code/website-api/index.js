@@ -4,23 +4,254 @@
  */
 
 const AdmZip = require('adm-zip');
-const COS = require('cos-nodejs-sdk-v5');
+const nodeCrypto = require('crypto');
+const https = require('https');
 const path = require('path');
-const { query } = require('./shared/db.js');
+const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate } = require('./shared/jwt.js');
+const { createProvider } = require('./shared/storage.js');
+const buckets = require('./shared/buckets.js');
+const { encrypt } = require('./shared/crypto.js');
 
-// COS 配置
-const hostingBucket = 'resource-game-1307257815';
-const hostingRegion = 'ap-chengdu';
 const defaultDomain = 'demox.site';
+const VISIBILITY_PUBLIC = 'public';
+const VISIBILITY_PRIVATE = 'private';
 
-// 初始化 COS
-const cos = new COS({
-  SecretId: process.env.COS_SECRET_ID || process.env.TENCENTCLOUD_SECRETID,
-  SecretKey: process.env.COS_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY,
-  SecurityToken: process.env.COS_SECRET_KEY ? undefined : process.env.TENCENTCLOUD_SESSIONTOKEN,
-  UserAgent: 'Demox-Website-API'
-});
+function buildDefaultSiteUrl(websiteId) {
+  const label = String(websiteId || '').trim().toLowerCase();
+  return label ? `https://${label}.${defaultDomain}/` : '';
+}
+
+function buildCustomSiteUrl(subdomain) {
+  const label = String(subdomain || '').trim().toLowerCase();
+  return label ? `https://${label}.${defaultDomain}/` : '';
+}
+
+function formatWebsiteForClient(row) {
+  const defaultUrl = buildDefaultSiteUrl(row.website_id || row.websiteId);
+  const customUrl = buildCustomSiteUrl(row.subdomain);
+  const preferredUrl = customUrl || defaultUrl || row.url || '';
+  const visibility = normalizeVisibility(row.visibility);
+  const userNickname = String(row.user_nickname || row.userNickname || '').trim();
+
+  return {
+    ...row,
+    visibility,
+    user_nickname: userNickname,
+    userNickname,
+    url: preferredUrl,
+    default_url: defaultUrl,
+    custom_url: customUrl || null,
+    preferred_url: preferredUrl,
+    defaultUrl,
+    customUrl: customUrl || null,
+    preferredUrl
+  };
+}
+
+// 旧默认桶的兜底配置（storage_buckets 表未建/未注册时仍能部署，保证迁移期不中断）。
+// 迁移完成后这只是 fallback：正常流程一律走 storage_buckets 注册表。
+const LEGACY_BUCKET = {
+  provider: 'cos',
+  bucket: 'resource-game-1307257815',
+  region: 'ap-chengdu',
+  endpoint: null,
+  originHost: 'sites.demox.site',
+  hasOwnCreds: false // 用 SCF 环境变量凭证
+};
+
+/**
+ * 解析"该用哪个桶"。优先 storage_buckets 注册表；表不存在或为空时回退 LEGACY_BUCKET。
+ * @param {number|null} bucketId 指定桶 id；为空则取默认桶。
+ * @returns {Promise<object>} buckets.rowToConfig 形态的配置
+ */
+async function resolveBucketConfig(bucketId) {
+  try {
+    let cfg = bucketId ? await buckets.getBucketById(bucketId) : await buckets.getDefaultBucket();
+    if (!cfg && bucketId) cfg = await buckets.getDefaultBucket();
+    if (cfg) return cfg;
+  } catch (e) {
+    // storage_buckets 表还没建（迁移前），回退旧桶
+    console.warn('读取 storage_buckets 失败，回退旧默认桶:', e.message);
+  }
+  return LEGACY_BUCKET;
+}
+
+/** 按桶配置造 provider（解析凭证 → createProvider）。 */
+function providerFor(cfg) {
+  return createProvider(buckets.resolveCreds(cfg));
+}
+
+/**
+ * 腾讯云 TC3-HMAC-SHA256 请求。这里不用引入完整 SDK，避免拉大 SCF 包体积。
+ * @param {{ service:string, host:string, version:string, action:string, payload:object, region?:string }} opts
+ */
+async function callTencentCloudApi(opts) {
+  const secretId =
+    process.env.TENCENTCLOUD_SECRETID ||
+    process.env.TENCENT_SECRET_ID ||
+    process.env.COS_SECRET_ID;
+  const secretKey =
+    process.env.TENCENTCLOUD_SECRETKEY ||
+    process.env.TENCENT_SECRET_KEY ||
+    process.env.COS_SECRET_KEY;
+  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
+
+  if (!secretId || !secretKey) {
+    throw new Error('缺少腾讯云 API 密钥，无法提交缓存清除任务');
+  }
+
+  const body = JSON.stringify(opts.payload || {});
+  const timestamp = Math.floor(Date.now() / 1000);
+  const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+  const contentType = 'application/json; charset=utf-8';
+  const signedHeaders = 'content-type;host;x-tc-action';
+  const canonicalHeaders = [
+    `content-type:${contentType}`,
+    `host:${opts.host}`,
+    `x-tc-action:${opts.action.toLowerCase()}`
+  ].join('\n') + '\n';
+  const hashedPayload = nodeCrypto.createHash('sha256').update(body).digest('hex');
+  const canonicalRequest = [
+    'POST',
+    '/',
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    hashedPayload
+  ].join('\n');
+
+  const credentialScope = `${date}/${opts.service}/tc3_request`;
+  const hashedCanonicalRequest = nodeCrypto.createHash('sha256').update(canonicalRequest).digest('hex');
+  const stringToSign = [
+    'TC3-HMAC-SHA256',
+    String(timestamp),
+    credentialScope,
+    hashedCanonicalRequest
+  ].join('\n');
+
+  const sign = (key, msg, enc) => nodeCrypto.createHmac('sha256', key).update(msg).digest(enc);
+  const secretDate = sign(`TC3${secretKey}`, date);
+  const secretService = sign(secretDate, opts.service);
+  const secretSigning = sign(secretService, 'tc3_request');
+  const signature = sign(secretSigning, stringToSign, 'hex');
+  const authorization =
+    `TC3-HMAC-SHA256 Credential=${secretId}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const headers = {
+    Authorization: authorization,
+    'Content-Type': contentType,
+    Host: opts.host,
+    'X-TC-Action': opts.action,
+    'X-TC-Timestamp': String(timestamp),
+    'X-TC-Version': opts.version,
+    'X-TC-Region': opts.region || process.env.SCF_REGION || 'ap-guangzhou'
+  };
+  if (token) headers['X-TC-Token'] = token;
+
+  const raw = await new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        method: 'POST',
+        host: opts.host,
+        path: '/',
+        headers,
+        timeout: 10000
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`腾讯云 API HTTP ${res.statusCode}: ${data}`));
+            return;
+          }
+          resolve(data);
+        });
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('腾讯云 API 请求超时')));
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+
+  const parsed = JSON.parse(raw);
+  if (parsed.Response && parsed.Response.Error) {
+    const err = parsed.Response.Error;
+    throw new Error(`${err.Code || 'TencentCloudError'}: ${err.Message || '请求失败'}`);
+  }
+  return parsed.Response || parsed;
+}
+
+async function createEdgeOnePurgeTask({ type, targets, method }) {
+  const zoneId = process.env.EDGEONE_ZONE_ID || process.env.TEO_ZONE_ID || 'zone-3kplfkbflnd6';
+  const payload = { ZoneId: zoneId, Type: type, Targets: targets };
+  if (method) payload.Method = method;
+  const resp = await callTencentCloudApi({
+    service: 'teo',
+    host: 'teo.tencentcloudapi.com',
+    version: '2022-09-01',
+    action: 'CreatePurgeTask',
+    region: process.env.EDGEONE_REGION || process.env.TEO_REGION || process.env.SCF_REGION || 'ap-guangzhou',
+    payload
+  });
+  return {
+    type,
+    targets,
+    jobId: resp.JobId || null,
+    requestId: resp.RequestId || null,
+    failedList: resp.FailedList || []
+  };
+}
+
+/**
+ * 部署完成后主动清理 EdgeOne 缓存，替代 URL 上拼 ?v=timestamp 的缓存绕过方案。
+ * - purge_prefix: 清理默认域名和自定义前缀域名下的页面/资源缓存。
+ * - purge_url: 清理边缘函数 resolveSite 使用的 label->path 解析缓存 key（best effort）。
+ *
+ * 缓存清理失败不阻断部署，但会写入日志并返回给调用方，便于 CI 里排查。
+ */
+async function purgeSiteCache({ websiteId, subdomain }) {
+  const labels = new Set();
+  const defaultLabel = String(websiteId || '').trim().toLowerCase();
+  const customLabel = String(subdomain || '').trim().toLowerCase();
+  if (defaultLabel) labels.add(defaultLabel);
+  if (customLabel) labels.add(customLabel);
+
+  const safeLabels = Array.from(labels).filter(label => /^[a-z0-9-]{1,63}$/.test(label));
+  if (safeLabels.length === 0) {
+    return { success: true, skipped: true, reason: 'no_valid_labels' };
+  }
+
+  const publicTargets = safeLabels.map(label => `https://${label}.${defaultDomain}/`);
+  const resolveTargets = safeLabels.map(label =>
+    `https://resolve.${defaultDomain}/label/${encodeURIComponent(label)}`
+  );
+  const tasks = [];
+
+  for (const task of [
+    { type: 'purge_prefix', method: 'delete', targets: publicTargets },
+    { type: 'purge_url', targets: resolveTargets }
+  ]) {
+    try {
+      const result = await createEdgeOnePurgeTask(task);
+      tasks.push({ ...result, success: true });
+    } catch (e) {
+      console.warn(`EdgeOne ${task.type} 缓存清理失败:`, e.message);
+      tasks.push({ type: task.type, targets: task.targets, success: false, message: e.message });
+    }
+  }
+
+  return {
+    success: tasks.every(t => t.success),
+    skipped: false,
+    labels: safeLabels,
+    tasks
+  };
+}
 
 /**
  * SCF 云函数入口
@@ -60,8 +291,17 @@ exports.main = async (event, context) => {
       set_subdomain: handleSetSubdomain,
       check_subdomain: handleCheckSubdomain,
       clear_subdomain: handleClearSubdomain,
+      update_visibility: handleUpdateWebsiteVisibility,
       resolve_subdomain: handleResolveSubdomain,
+      check_site_access: handleCheckSiteAccess,
+      list_projects: handleListProjects,
+      create_project: handleCreateProject,
+      update_project: handleUpdateProject,
+      archive_project: handleArchiveProject,
+      set_website_project: handleSetWebsiteProject,
       migrate_subdomain: handleMigrateSubdomain,
+      migrate_default_projects: handleMigrateDefaultProjects,
+      migrate_site_visibility: handleMigrateSiteVisibility,
       bucket_stats: handleBucketStats,
       list_user_roles: handleListUserRoles,
       set_user_role: handleSetUserRole,
@@ -70,7 +310,14 @@ exports.main = async (event, context) => {
       set_role_limit: handleSetRoleLimit,
       delete_role_limit: handleDeleteRoleLimit,
       resolve_user_emails: handleResolveUserEmails,
-      get_role_limits: handleGetRoleLimits
+      get_role_limits: handleGetRoleLimits,
+      // 多云存储桶注册制
+      list_buckets: handleListBuckets,
+      register_bucket: handleRegisterBucket,
+      update_bucket: handleUpdateBucket,
+      delete_bucket: handleDeleteBucket,
+      set_default_bucket: handleSetDefaultBucket,
+      migrate_buckets: handleMigrateBuckets
     };
 
     if (action && actionMap[action]) {
@@ -84,6 +331,16 @@ exports.main = async (event, context) => {
       return await handleListUserRoles(event);
     } else if (pathUrl.includes('/list-role-limits')) {
       return await handleListRoleLimits(event);
+    } else if (pathUrl.includes('/list-projects')) {
+      return await handleListProjects(event);
+    } else if (pathUrl.includes('/create-project')) {
+      return await handleCreateProject(event);
+    } else if (pathUrl.includes('/update-project')) {
+      return await handleUpdateProject(event);
+    } else if (pathUrl.includes('/archive-project')) {
+      return await handleArchiveProject(event);
+    } else if (pathUrl.includes('/set-website-project')) {
+      return await handleSetWebsiteProject(event);
     } else if (pathUrl.includes('/list-all')) {
       return await handleListAllWebsites(event);
     } else if (pathUrl.includes('/list')) {
@@ -100,10 +357,18 @@ exports.main = async (event, context) => {
       return await handleCheckSubdomain(event);
     } else if (pathUrl.includes('/clear-subdomain')) {
       return await handleClearSubdomain(event);
+    } else if (pathUrl.includes('/update-visibility')) {
+      return await handleUpdateWebsiteVisibility(event);
     } else if (pathUrl.includes('/resolve-subdomain')) {
       return await handleResolveSubdomain(event);
+    } else if (pathUrl.includes('/check-site-access')) {
+      return await handleCheckSiteAccess(event);
     } else if (pathUrl.includes('/migrate-subdomain')) {
       return await handleMigrateSubdomain(event);
+    } else if (pathUrl.includes('/migrate-default-projects')) {
+      return await handleMigrateDefaultProjects(event);
+    } else if (pathUrl.includes('/migrate-site-visibility')) {
+      return await handleMigrateSiteVisibility(event);
     } else {
       return {
         statusCode: 404,
@@ -210,6 +475,56 @@ async function checkAdmin(userId) {
 }
 
 /**
+ * 查询站点列表并附带项目展示字段。项目表未迁移时自动降级为只查 websites。
+ */
+async function queryWebsitesWithProjects({ userId = null, includeAll = false, projectId = null } = {}) {
+  const params = [];
+  const where = [];
+  if (!includeAll) {
+    where.push('w.user_id = ?');
+    params.push(userId);
+  }
+  if (projectId) {
+    where.push('w.project_id = ?');
+    params.push(projectId);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  try {
+    return await query(
+      `SELECT w.*,
+              p.name AS project_name,
+              p.slug AS project_slug,
+              p.archived AS project_archived,
+              u.nickname AS user_nickname
+       FROM websites w
+       LEFT JOIN projects p ON p.id = w.project_id
+       LEFT JOIN users u ON u.id = w.user_id
+       ${whereSql}
+       ORDER BY w.created_at DESC`,
+      params
+    );
+  } catch (e) {
+    console.warn('查询站点项目字段失败，降级只查 websites:', e.message);
+    const fallbackWhere = [];
+    const fallbackParams = [];
+    if (!includeAll) {
+      fallbackWhere.push('user_id = ?');
+      fallbackParams.push(userId);
+    }
+    if (projectId) {
+      fallbackWhere.push('project_id = ?');
+      fallbackParams.push(projectId);
+    }
+    const fallbackWhereSql = fallbackWhere.length ? `WHERE ${fallbackWhere.join(' AND ')}` : '';
+    return await query(
+      `SELECT * FROM websites ${fallbackWhereSql} ORDER BY created_at DESC`,
+      fallbackParams
+    );
+  }
+}
+
+/**
  * 获取用户网站列表
  */
 async function handleListWebsites(event) {
@@ -222,17 +537,15 @@ async function handleListWebsites(event) {
     };
   }
 
-  const websites = await query(
-    'SELECT * FROM websites WHERE user_id = ? ORDER BY created_at DESC',
-    [userId]
-  );
+  const projectId = normalizePositiveId((event.body || event).projectId);
+  const websites = await queryWebsitesWithProjects({ userId, projectId });
 
   return {
     statusCode: 200,
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      websites,
+      websites: websites.map(formatWebsiteForClient),
       count: websites.length
     })
   };
@@ -260,14 +573,15 @@ async function handleListAllWebsites(event) {
     };
   }
 
-  const websites = await query('SELECT * FROM websites ORDER BY created_at DESC');
+  const projectId = normalizePositiveId((event.body || event).projectId);
+  const websites = await queryWebsitesWithProjects({ includeAll: true, projectId });
 
   return {
     statusCode: 200,
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      websites,
+      websites: websites.map(formatWebsiteForClient),
       count: websites.length
     })
   };
@@ -718,6 +1032,70 @@ async function handleClearSubdomain(event) {
 }
 
 /**
+ * 设置站点访问级别。public 可匿名访问；private 仅 owner/admin 可访问。
+ */
+async function handleUpdateWebsiteVisibility(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, error: '未登录或token已过期' })
+    };
+  }
+
+  const body = event.body || event;
+  const docId = normalizePositiveId(body.docId || body.id);
+  const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
+  const rawVisibility = String(body.visibility || '').trim().toLowerCase();
+  if (![VISIBILITY_PUBLIC, VISIBILITY_PRIVATE].includes(rawVisibility)) {
+    return ok({ success: false, message: 'visibility 只能是 public 或 private' });
+  }
+  if (!docId && !websiteId) {
+    return ok({ success: false, message: '缺少 docId 或 websiteId' });
+  }
+
+  try {
+    const isAdmin = await checkAdmin(userId);
+    const where = [];
+    const params = [];
+    if (docId) {
+      where.push('id = ?');
+      params.push(docId);
+    } else {
+      where.push('website_id = ?');
+      params.push(websiteId);
+    }
+    if (!isAdmin) {
+      where.push('user_id = ?');
+      params.push(userId);
+    }
+
+    const rows = await query(
+      `SELECT id, user_id, website_id, subdomain, visibility FROM websites WHERE ${where.join(' AND ')} LIMIT 1`,
+      params
+    );
+    if (rows.length === 0) {
+      return ok({ success: false, message: '站点不存在或无权限' });
+    }
+
+    const site = rows[0];
+    await query('UPDATE websites SET visibility = ?, updated_at = NOW() WHERE id = ?', [rawVisibility, site.id]);
+    const cachePurge = await purgeSiteCache({ websiteId: site.website_id, subdomain: site.subdomain });
+    return ok({
+      success: true,
+      visibility: rawVisibility,
+      websiteId: site.website_id,
+      cachePurge,
+      message: rawVisibility === VISIBILITY_PRIVATE ? '站点已设为私有' : '站点已公开'
+    });
+  } catch (error) {
+    console.error('更新站点访问级别失败:', error);
+    return ok({ success: false, message: error.message || '更新访问级别失败' });
+  }
+}
+
+/**
  * 管理员鉴权辅助：返回 { userId } 或 错误响应对象。
  */
 async function requireAdmin(event) {
@@ -734,6 +1112,226 @@ async function requireAdmin(event) {
 
 function ok(obj) {
   return { statusCode: 200, headers: getCORSHeaders(), body: JSON.stringify(obj) };
+}
+
+function formatProjectForClient(row) {
+  return {
+    id: row.id == null ? null : String(row.id),
+    _id: row.id == null ? null : String(row.id),
+    userId: row.user_id,
+    name: row.name || 'default',
+    slug: row.slug || 'default',
+    description: row.description || '',
+    color: row.color || null,
+    icon: row.icon || null,
+    archived: !!row.archived,
+    websitesCount: Number(row.websites_count || row.websitesCount || 0),
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined
+  };
+}
+
+function normalizeProjectSlug(input) {
+  const slug = String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug || 'project';
+}
+
+async function getProjectForUser(userId, projectId) {
+  const id = normalizePositiveId(projectId);
+  if (!id) return null;
+  const rows = await query(
+    'SELECT * FROM projects WHERE id = ? AND user_id = ? LIMIT 1',
+    [id, userId]
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function getSiteForProjectMove({ userId, docId, websiteId, isAdmin }) {
+  const params = [];
+  const where = [];
+  if (docId) {
+    where.push('id = ?');
+    params.push(docId);
+  } else if (websiteId) {
+    where.push('website_id = ?');
+    params.push(websiteId);
+  } else {
+    return null;
+  }
+  if (!isAdmin) {
+    where.push('user_id = ?');
+    params.push(userId);
+  }
+  const rows = await query(`SELECT * FROM websites WHERE ${where.join(' AND ')} LIMIT 1`, params);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+/**
+ * 当前用户项目列表。调用时会先确保该用户至少有一个 default 项目。
+ */
+async function handleListProjects(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const includeArchived = !!body.includeArchived;
+  const includeAll = !!body.includeAll;
+  const isAdmin = includeAll ? await checkAdmin(userId) : false;
+  if (includeAll && !isAdmin) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '仅管理员可访问' }) };
+  }
+
+  try {
+    if (!includeAll) await ensureDefaultProjectForUser(userId);
+    const params = [];
+    const where = [];
+    if (!includeAll) {
+      where.push('p.user_id = ?');
+      params.push(userId);
+    }
+    if (!includeArchived) where.push('p.archived = 0');
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const rows = await query(
+      `SELECT p.*, COUNT(w.id) AS websites_count
+       FROM projects p
+       LEFT JOIN websites w ON w.project_id = p.id
+       ${whereSql}
+       GROUP BY p.id
+       ORDER BY p.archived ASC, p.updated_at DESC, p.id ASC`,
+      params
+    );
+    return ok({ success: true, projects: rows.map(formatProjectForClient), count: rows.length });
+  } catch (e) {
+    return ok({ success: false, message: '项目表未初始化，请先执行 migrate_default_projects', error: e.message });
+  }
+}
+
+async function handleCreateProject(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const name = String(body.name || '').trim();
+  if (!name) return ok({ success: false, message: '项目名称不能为空' });
+  if (name.length > 80) return ok({ success: false, message: '项目名称不能超过80个字符' });
+
+  const baseSlug = normalizeProjectSlug(body.slug || name);
+  const description = body.description ? String(body.description).trim().slice(0, 500) : null;
+  const color = body.color ? String(body.color).trim().slice(0, 32) : null;
+  const icon = body.icon ? String(body.icon).trim().slice(0, 64) : null;
+
+  try {
+    let slug = baseSlug;
+    let suffix = 1;
+    while (true) {
+      try {
+        const res = await query(
+          `INSERT INTO projects (user_id, name, slug, description, color, icon)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [userId, name, slug, description, color, icon]
+        );
+        const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [res.insertId]);
+        return ok({ success: true, project: formatProjectForClient(rows[0]), message: '项目已创建' });
+      } catch (e) {
+        if (!/Duplicate entry/i.test(e.message || '') || suffix >= 20) throw e;
+        suffix += 1;
+        slug = `${baseSlug.slice(0, 58)}-${suffix}`;
+      }
+    }
+  } catch (e) {
+    return ok({ success: false, message: '创建项目失败：' + e.message });
+  }
+}
+
+async function handleUpdateProject(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const id = normalizePositiveId(body.id || body.projectId);
+  if (!id) return ok({ success: false, message: '缺少 projectId' });
+
+  const sets = [];
+  const params = [];
+  const setField = (col, val) => { sets.push(`${col} = ?`); params.push(val); };
+  if (body.name !== undefined) {
+    const name = String(body.name || '').trim();
+    if (!name) return ok({ success: false, message: '项目名称不能为空' });
+    if (name.length > 80) return ok({ success: false, message: '项目名称不能超过80个字符' });
+    setField('name', name);
+  }
+  if (body.description !== undefined) setField('description', body.description ? String(body.description).trim().slice(0, 500) : null);
+  if (body.color !== undefined) setField('color', body.color ? String(body.color).trim().slice(0, 32) : null);
+  if (body.icon !== undefined) setField('icon', body.icon ? String(body.icon).trim().slice(0, 64) : null);
+  if (sets.length === 0) return ok({ success: false, message: '没有要更新的字段' });
+
+  try {
+    params.push(id, userId);
+    const res = await query(`UPDATE projects SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ? AND user_id = ?`, params);
+    if (!res.affectedRows) return ok({ success: false, message: '项目不存在或无权限' });
+    const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [id]);
+    return ok({ success: true, project: formatProjectForClient(rows[0]), message: '项目已更新' });
+  } catch (e) {
+    return ok({ success: false, message: '更新项目失败：' + e.message });
+  }
+}
+
+async function handleArchiveProject(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const id = normalizePositiveId(body.id || body.projectId);
+  if (!id) return ok({ success: false, message: '缺少 projectId' });
+  const archived = body.archived === undefined ? 1 : (body.archived ? 1 : 0);
+
+  try {
+    const rows = await query('SELECT slug FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+    if (rows.length === 0) return ok({ success: false, message: '项目不存在或无权限' });
+    if (rows[0].slug === 'default' && archived) return ok({ success: false, message: 'default 项目不能归档' });
+    await query('UPDATE projects SET archived = ?, updated_at = NOW() WHERE id = ? AND user_id = ?', [archived, id, userId]);
+    return ok({ success: true, archived: !!archived, message: archived ? '项目已归档' : '项目已恢复' });
+  } catch (e) {
+    return ok({ success: false, message: '归档项目失败：' + e.message });
+  }
+}
+
+async function handleSetWebsiteProject(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const docId = normalizePositiveId(body.docId || body.id);
+  const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
+  let projectId = normalizePositiveId(body.projectId);
+
+  if (!docId && !websiteId) return ok({ success: false, message: '缺少 docId 或 websiteId' });
+
+  try {
+    const isAdmin = await checkAdmin(userId);
+    const site = await getSiteForProjectMove({ userId, docId, websiteId, isAdmin });
+    if (!site) return ok({ success: false, message: '站点不存在或无权限' });
+
+    if (!projectId) {
+      projectId = await ensureDefaultProjectForUser(site.user_id);
+    }
+    const project = await getProjectForUser(site.user_id, projectId);
+    if (!project || project.archived) return ok({ success: false, message: '目标项目不存在或已归档' });
+
+    await query('UPDATE websites SET project_id = ?, updated_at = NOW() WHERE id = ?', [project.id, site.id]);
+    return ok({
+      success: true,
+      project: formatProjectForClient(project),
+      websiteId: site.website_id,
+      docId: String(site.id),
+      message: '站点已移动到项目'
+    });
+  } catch (e) {
+    return ok({ success: false, message: '移动站点失败：' + e.message });
+  }
 }
 
 /** 列出所有用户角色(user_roles 表),带 email(LEFT JOIN users) */
@@ -839,40 +1437,57 @@ async function handleSetRoleLimit(event) {
 }
 
 /**
- * 大盘统计：COS 存储用量/对象数 + 用户数/项目数(来自 DB)。
- * 流量时序需云监控,SCF 默认无权限,做 best-effort:拿不到返回 null,前端显示"暂无数据"。
+ * 大盘统计：各存储桶 sites/ 用量/对象数 + 用户数/项目数(来自 DB)。
+ * 多云后按桶聚合：遍历 storage_buckets，逐桶 provider.list('sites/') 求和，
+ * 并返回每桶明细 perBucket[]。表未建/为空时回退旧默认桶。
+ * 流量时序需云监控,SCF 默认无权限,best-effort:拿不到返回 null。
  */
 async function handleBucketStats(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
 
-  // 1) COS: 统计 sites/ 前缀下的对象数与总字节
+  // 1) 列出要统计的桶：注册表优先，空则回退 LEGACY_BUCKET
+  let bucketCfgs = [];
+  try {
+    const rows = await query('SELECT * FROM storage_buckets WHERE enabled = 1 ORDER BY is_default DESC, id ASC');
+    bucketCfgs = rows.map(buckets.rowToConfig);
+  } catch (e) {
+    console.warn('读取 storage_buckets 失败，回退旧默认桶统计:', e.message);
+  }
+  if (bucketCfgs.length === 0) bucketCfgs = [LEGACY_BUCKET];
+
+  // 2) 逐桶统计 sites/ 前缀。单桶失败不影响其它桶（best-effort）。
   let sitesBytes = 0;
   let sitesCount = 0;
-  try {
-    let marker = '';
-    let truncated = true;
-    while (truncated) {
-      const page = await new Promise((resolve, reject) => {
-        cos.getBucket(
-          { Bucket: hostingBucket, Region: hostingRegion, Prefix: 'sites/', Marker: marker, MaxKeys: 1000 },
-          (err, data) => (err ? reject(err) : resolve(data))
-        );
-      });
-      const contents = page.Contents || [];
-      for (const o of contents) {
-        sitesBytes += Number(o.Size || 0);
-        sitesCount += 1;
+  const perBucket = [];
+  for (const cfg of bucketCfgs) {
+    let bytes = 0;
+    let count = 0;
+    let error = null;
+    try {
+      const objs = await providerFor(cfg).list('sites/');
+      for (const o of objs) {
+        bytes += o.size;
+        count += 1;
       }
-      truncated = page.IsTruncated === 'true' || page.IsTruncated === true;
-      marker = page.NextMarker || (contents.length ? contents[contents.length - 1].Key : '');
-      if (!marker) break;
+    } catch (e) {
+      error = e.message;
+      console.error(`桶 ${cfg.name || cfg.bucket} 统计失败:`, e.message);
     }
-  } catch (e) {
-    console.error('COS 统计失败:', e.message);
+    sitesBytes += bytes;
+    sitesCount += count;
+    perBucket.push({
+      id: cfg.id || null,
+      name: cfg.name || cfg.bucket,
+      provider: cfg.provider,
+      bucket: cfg.bucket,
+      bytes,
+      count,
+      error
+    });
   }
 
-  // 2) DB: 在用用户数(有站点的不同 user)、项目数(站点总数)
+  // 3) DB: 在用用户数(有站点的不同 user)、项目数(站点总数)
   let usersCount = 0;
   let projectsCount = 0;
   try {
@@ -888,6 +1503,7 @@ async function handleBucketStats(event) {
     success: true,
     sitesBytes,
     sitesCount,
+    perBucket,
     usersCount,
     projectsCount,
     traffic: { timestamps: [], inbound: null, outbound: null }
@@ -962,9 +1578,57 @@ async function handleResolveUserEmails(event) {
   }
 }
 
+async function queryResolvedSiteByLabel(label, { withBucket = true, withVisibility = true } = {}) {
+  const visibilityExpr = withVisibility
+    ? `COALESCE(NULLIF(w.visibility, ''), '${VISIBILITY_PUBLIC}')`
+    : `'${VISIBILITY_PUBLIC}'`;
+  const originExpr = withBucket ? 'b.origin_host' : 'NULL';
+  const bucketJoin = withBucket ? 'LEFT JOIN storage_buckets b ON b.id = w.bucket_id' : '';
+  const selectSql =
+    `SELECT w.path AS path,
+            w.user_id AS user_id,
+            w.website_id AS website_id,
+            w.subdomain AS subdomain,
+            ${visibilityExpr} AS visibility,
+            ${originExpr} AS origin_host
+     FROM websites w ${bucketJoin}`;
+
+  let rows = await query(`${selectSql} WHERE w.subdomain = ? LIMIT 1`, [label]);
+  if (rows.length === 0) {
+    rows = await query(`${selectSql} WHERE LOWER(w.website_id) = ? LIMIT 1`, [label]);
+  }
+  return rows;
+}
+
+/**
+ * 解析公开 label 到站点元数据。按能力降级：
+ * 1) storage_buckets + visibility
+ * 2) visibility
+ * 3) 旧表结构(public)
+ */
+async function resolveSiteMetadataByLabel(label) {
+  const modes = [
+    { withBucket: true, withVisibility: true },
+    { withBucket: false, withVisibility: true },
+    { withBucket: false, withVisibility: false }
+  ];
+  let lastErr = null;
+  for (const mode of modes) {
+    try {
+      const rows = await queryResolvedSiteByLabel(label, mode);
+      return rows.length > 0 ? rows[0] : null;
+    } catch (e) {
+      lastErr = e;
+      console.warn('解析站点元数据失败，尝试降级:', e.message);
+    }
+  }
+  if (lastErr) throw lastErr;
+  return null;
+}
+
 /**
  * 公开解析接口：label -> COS path。供 subdomain-router 边缘函数查表。
- * 无需鉴权：只返回站点的 COS 路径前缀，该信息本就通过公开 URL 暴露。
+ * 无需鉴权：只返回站点路由必要信息，供边缘函数判断 public/private 与回源。
  */
 async function handleResolveSubdomain(event) {
   const { subdomain } = event.body || event;
@@ -979,19 +1643,8 @@ async function handleResolveSubdomain(event) {
   }
 
   try {
-    // label 可能是自定义前缀(websites.subdomain)或默认域名(websites.website_id 小写)。
-    // 自定义前缀优先;都查不到返回 not found。
-    let rows = await query(
-      'SELECT path FROM websites WHERE subdomain = ? LIMIT 1',
-      [label]
-    );
-    if (rows.length === 0) {
-      rows = await query(
-        'SELECT path FROM websites WHERE LOWER(website_id) = ? LIMIT 1',
-        [label]
-      );
-    }
-    if (rows.length === 0 || !rows[0].path) {
+    const site = await resolveSiteMetadataByLabel(label);
+    if (!site || !site.path) {
       return {
         statusCode: 200,
         headers: getCORSHeaders(),
@@ -1001,7 +1654,12 @@ async function handleResolveSubdomain(event) {
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ success: true, path: rows[0].path })
+      body: JSON.stringify({
+        success: true,
+        path: site.path,
+        origin: site.origin_host || null,
+        visibility: normalizeVisibility(site.visibility)
+      })
     };
   } catch (error) {
     console.error('解析子域名失败:', error);
@@ -1010,6 +1668,59 @@ async function handleResolveSubdomain(event) {
       headers: getCORSHeaders(),
       body: JSON.stringify({ success: false, message: error.message })
     };
+  }
+}
+
+/**
+ * 边缘函数调用：检查当前 token 是否可访问 label 对应站点。
+ * public 永远允许；private 仅 owner 或 admin 可访问。
+ */
+async function handleCheckSiteAccess(event) {
+  const body = event.body || event;
+  const label = String(body.label || body.subdomain || '').trim().toLowerCase();
+  if (!label) return ok({ success: false, allowed: false, message: 'Missing label' });
+
+  try {
+    const site = await resolveSiteMetadataByLabel(label);
+    if (!site || !site.path) {
+      return ok({ success: true, allowed: false, reason: 'not_found' });
+    }
+
+    const visibility = normalizeVisibility(site.visibility);
+    if (visibility !== VISIBILITY_PRIVATE) {
+      return ok({ success: true, allowed: true, visibility });
+    }
+
+    const user = authenticate(event);
+    if (!user || !user.userId) {
+      return ok({
+        success: true,
+        allowed: false,
+        visibility,
+        loginRequired: true,
+        reason: 'login_required'
+      });
+    }
+
+    if (String(user.userId) === String(site.user_id)) {
+      return ok({ success: true, allowed: true, visibility, role: 'owner' });
+    }
+
+    const isAdmin = await checkAdmin(user.userId);
+    if (isAdmin) {
+      return ok({ success: true, allowed: true, visibility, role: 'admin' });
+    }
+
+    return ok({
+      success: true,
+      allowed: false,
+      visibility,
+      loginRequired: false,
+      reason: 'forbidden'
+    });
+  } catch (error) {
+    console.error('检查站点访问权限失败:', error);
+    return ok({ success: false, allowed: false, message: error.message });
   }
 }
 
@@ -1073,6 +1784,541 @@ async function handleMigrateSubdomain(event) {
 }
 
 /**
+ * 项目维度迁移：创建 projects 表、给 websites 增加 project_id，
+ * 为每个用户创建 default 项目，并把既有站点回填到各自 default。
+ *
+ * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
+ */
+async function handleMigrateDefaultProjects(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '迁移密钥无效' })
+    };
+  }
+
+  const steps = [];
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS projects (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id     VARCHAR(64) NOT NULL COMMENT '项目归属用户ID',
+        name        VARCHAR(255) NOT NULL DEFAULT 'default' COMMENT '项目显示名称',
+        slug        VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '用户内唯一项目标识',
+        description TEXT DEFAULT NULL,
+        color       VARCHAR(32) DEFAULT NULL,
+        icon        VARCHAR(64) DEFAULT NULL,
+        archived    TINYINT(1) NOT NULL DEFAULT 0,
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_project_slug (user_id, slug),
+        INDEX idx_projects_user_id (user_id),
+        INDEX idx_projects_archived (archived)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户项目表'`
+    );
+    steps.push('ensured projects table');
+
+    const projectUniqueIdx = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND INDEX_NAME = 'uniq_user_project_slug'`
+    );
+    if (projectUniqueIdx[0].c === 0) {
+      await query('ALTER TABLE projects ADD UNIQUE KEY uniq_user_project_slug (user_id, slug)');
+      steps.push('added projects unique index uniq_user_project_slug');
+    } else {
+      steps.push('projects unique index already exists');
+    }
+
+    const col = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'project_id'`
+    );
+    if (col[0].c === 0) {
+      await query(`ALTER TABLE websites ADD COLUMN project_id BIGINT DEFAULT NULL COMMENT '所属项目(projects.id)'`);
+      steps.push('added websites.project_id column');
+    } else {
+      steps.push('websites.project_id already exists');
+    }
+
+    const addWebsiteIndexIfMissing = async (indexName, ddl) => {
+      const idx = await query(
+        `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = ?`,
+        [indexName]
+      );
+      if (idx[0].c === 0) {
+        await query(ddl);
+        steps.push(`added websites index ${indexName}`);
+      } else {
+        steps.push(`websites index ${indexName} already exists`);
+      }
+    };
+    await addWebsiteIndexIfMissing('idx_project_id', 'ALTER TABLE websites ADD INDEX idx_project_id (project_id)');
+    await addWebsiteIndexIfMissing(
+      'idx_user_project_updated',
+      'ALTER TABLE websites ADD INDEX idx_user_project_updated (user_id, project_id, updated_at)'
+    );
+
+    const beforeDefaultRows = await query(`SELECT COUNT(*) AS c FROM projects WHERE slug = 'default'`);
+    const usersTable = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+    if (usersTable[0].c > 0) {
+      await query(
+        `INSERT INTO projects (user_id, name, slug)
+         SELECT DISTINCT id, 'default', 'default'
+         FROM users
+         WHERE id IS NOT NULL AND id <> ''
+         ON DUPLICATE KEY UPDATE slug = slug`
+      );
+      steps.push('ensured default projects for users table');
+    } else {
+      steps.push('users table not found, skipped users table defaults');
+    }
+
+    await query(
+      `INSERT INTO projects (user_id, name, slug)
+       SELECT DISTINCT user_id, 'default', 'default'
+       FROM websites
+       WHERE user_id IS NOT NULL AND user_id <> ''
+       ON DUPLICATE KEY UPDATE slug = slug`
+    );
+    steps.push('ensured default projects for website owners');
+
+    const afterDefaultRows = await query(`SELECT COUNT(*) AS c FROM projects WHERE slug = 'default'`);
+    const backfill = await query(
+      `UPDATE websites w
+       JOIN projects p ON p.user_id = w.user_id AND p.slug = 'default'
+       SET w.project_id = p.id
+       WHERE w.project_id IS NULL`
+    );
+    steps.push(`backfilled ${backfill.affectedRows || 0} websites to default projects`);
+
+    const totals = await query(
+      `SELECT
+         (SELECT COUNT(*) FROM projects WHERE slug = 'default') AS defaultProjects,
+         (SELECT COUNT(*) FROM websites WHERE project_id IS NULL) AS websitesWithoutProject,
+         (SELECT COUNT(*) FROM websites) AS websitesTotal`
+    );
+
+    return ok({
+      success: true,
+      steps,
+      createdDefaultProjects: (afterDefaultRows[0]?.c || 0) - (beforeDefaultRows[0]?.c || 0),
+      backfilledWebsites: backfill.affectedRows || 0,
+      defaultProjects: totals[0]?.defaultProjects || 0,
+      websitesWithoutProject: totals[0]?.websitesWithoutProject || 0,
+      websitesTotal: totals[0]?.websitesTotal || 0
+    });
+  } catch (error) {
+    console.error('默认项目迁移失败:', error);
+    return ok({ success: false, steps, message: error.message });
+  }
+}
+
+/**
+ * 站点可见性迁移：websites.visibility = public/private。
+ * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
+ */
+async function handleMigrateSiteVisibility(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '迁移密钥无效' })
+    };
+  }
+
+  const steps = [];
+  try {
+    const col = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'visibility'`
+    );
+    if (col[0].c === 0) {
+      await query(
+        `ALTER TABLE websites
+         ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT '${VISIBILITY_PUBLIC}'
+         COMMENT '站点访问级别: public/private'`
+      );
+      steps.push('added websites.visibility column');
+    } else {
+      steps.push('websites.visibility already exists');
+    }
+
+    await query(
+      `UPDATE websites
+       SET visibility = '${VISIBILITY_PUBLIC}'
+       WHERE visibility IS NULL OR visibility NOT IN ('${VISIBILITY_PUBLIC}', '${VISIBILITY_PRIVATE}')`
+    );
+    steps.push('normalized invalid visibility values');
+
+    const idx = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'idx_visibility'`
+    );
+    if (idx[0].c === 0) {
+      await query('ALTER TABLE websites ADD INDEX idx_visibility (visibility)');
+      steps.push('added websites idx_visibility');
+    } else {
+      steps.push('websites idx_visibility already exists');
+    }
+
+    const totals = await query(
+      `SELECT
+         SUM(visibility = '${VISIBILITY_PUBLIC}') AS publicCount,
+         SUM(visibility = '${VISIBILITY_PRIVATE}') AS privateCount,
+         COUNT(*) AS total
+       FROM websites`
+    );
+
+    return ok({
+      success: true,
+      steps,
+      publicCount: Number(totals[0]?.publicCount || 0),
+      privateCount: Number(totals[0]?.privateCount || 0),
+      total: Number(totals[0]?.total || 0)
+    });
+  } catch (error) {
+    console.error('站点可见性迁移失败:', error);
+    return ok({ success: false, steps, message: error.message });
+  }
+}
+
+/**
+ * 确保用户有 default 项目。项目表未迁移时静默降级，避免影响部署主流程。
+ * @returns {Promise<number|null>} default project id
+ */
+async function ensureDefaultProjectForUser(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  try {
+    await query(
+      `INSERT INTO projects (user_id, name, slug)
+       VALUES (?, 'default', 'default')
+       ON DUPLICATE KEY UPDATE slug = slug`,
+      [uid]
+    );
+    const rows = await query(
+      `SELECT id FROM projects WHERE user_id = ? AND slug = 'default' LIMIT 1`,
+      [uid]
+    );
+    return rows.length > 0 ? rows[0].id : null;
+  } catch (e) {
+    console.warn('确保 default 项目失败，跳过项目归属写入:', e.message);
+    return null;
+  }
+}
+
+/**
+ * 给站点补默认项目；若站点已有 project_id，不覆盖。
+ * 该步骤是 best-effort：项目迁移未执行时不影响上传/重部署。
+ */
+async function ensureWebsiteDefaultProject(userId, websiteId) {
+  const projectId = await ensureDefaultProjectForUser(userId);
+  if (!projectId) return null;
+  try {
+    await query(
+      `UPDATE websites
+       SET project_id = COALESCE(project_id, ?)
+       WHERE user_id = ? AND website_id = ?`,
+      [projectId, userId, websiteId]
+    );
+    return projectId;
+  } catch (e) {
+    console.warn('写入站点 default 项目失败，跳过项目归属写入:', e.message);
+    return null;
+  }
+}
+
+async function assignWebsiteProject(userId, websiteId, projectId) {
+  const pid = normalizePositiveId(projectId);
+  if (!pid) return await ensureWebsiteDefaultProject(userId, websiteId);
+  try {
+    const project = await getProjectForUser(userId, pid);
+    if (!project || project.archived) {
+      throw new Error('目标项目不存在或已归档');
+    }
+    await query(
+      `UPDATE websites SET project_id = ? WHERE user_id = ? AND website_id = ?`,
+      [project.id, userId, websiteId]
+    );
+    return project.id;
+  } catch (e) {
+    console.warn('写入站点项目失败:', e.message);
+    throw e;
+  }
+}
+
+// ===========================================================================
+// 多云存储桶注册制：CRUD + 数据迁移
+// ===========================================================================
+
+/** 列出所有存储桶（管理员）。不返回任何密钥/密文。 */
+async function handleListBuckets(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  try {
+    const list = await buckets.listBuckets();
+    return ok({ success: true, data: list });
+  } catch (e) {
+    // 表未建时给出明确提示，引导先跑迁移
+    return ok({ success: false, message: 'storage_buckets 表不存在，请先执行 migrate_buckets', error: e.message });
+  }
+}
+
+/**
+ * 注册新存储桶（管理员）。
+ * body: { name, provider, bucket, region?, endpoint?, originHost?, forcePathStyle?,
+ *         secretId?, secretKey?, isDefault?, enabled? }
+ * 密钥(secretId/secretKey)用 AES-GCM 加密后入库；留空则该桶用 SCF env 凭证(仅适合旧默认桶)。
+ * 设为默认桶时，事务内把其它桶 is_default 清零。
+ */
+async function handleRegisterBucket(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const b = event.body || event;
+  const name = String(b.name || '').trim();
+  const provider = String(b.provider || 'cos').trim().toLowerCase();
+  const bucket = String(b.bucket || '').trim();
+  if (!name || !bucket) return ok({ success: false, message: '缺少必要参数: name, bucket' });
+  if (!['cos', 's3'].includes(provider)) return ok({ success: false, message: 'provider 只能是 cos 或 s3' });
+
+  // 加密密钥（两者要么都给要么都不给）
+  let secretIdEnc = null;
+  let secretKeyEnc = null;
+  try {
+    if (b.secretId && b.secretKey) {
+      secretIdEnc = encrypt(String(b.secretId));
+      secretKeyEnc = encrypt(String(b.secretKey));
+    } else if (b.secretId || b.secretKey) {
+      return ok({ success: false, message: 'secretId 与 secretKey 必须同时提供' });
+    }
+  } catch (e) {
+    return ok({ success: false, message: '密钥加密失败：' + e.message });
+  }
+
+  const region = b.region ? String(b.region).trim() : null;
+  const endpoint = b.endpoint ? String(b.endpoint).trim() : null;
+  const originHost = b.originHost ? String(b.originHost).trim() : null;
+  const forcePathStyle = b.forcePathStyle === undefined || b.forcePathStyle === null
+    ? null : (b.forcePathStyle ? 1 : 0);
+  const isDefault = b.isDefault ? 1 : 0;
+  const enabled = b.enabled === undefined ? 1 : (b.enabled ? 1 : 0);
+
+  try {
+    const insertId = await transaction(async (conn) => {
+      if (isDefault) {
+        await conn.query('UPDATE storage_buckets SET is_default = 0 WHERE is_default = 1');
+      }
+      const [res] = await conn.query(
+        `INSERT INTO storage_buckets
+         (name, provider, bucket, region, endpoint, origin_host, force_path_style,
+          secret_id_enc, secret_key_enc, is_default, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, provider, bucket, region, endpoint, originHost, forcePathStyle,
+         secretIdEnc, secretKeyEnc, isDefault, enabled]
+      );
+      return res.insertId;
+    });
+    return ok({ success: true, id: insertId, message: '存储桶已注册' });
+  } catch (e) {
+    return ok({ success: false, message: '注册失败：' + e.message });
+  }
+}
+
+/**
+ * 更新存储桶（管理员）。body.id 必填；其余字段按需更新。
+ * 密钥：传 secretId+secretKey 则重新加密覆盖；传空字符串 '' 显式清空(改回用 env)；不传则保持原值。
+ */
+async function handleUpdateBucket(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const b = event.body || event;
+  const id = b.id;
+  if (!id && id !== 0) return ok({ success: false, message: '缺少 id' });
+
+  const sets = [];
+  const params = [];
+  const setField = (col, val) => { sets.push(`${col} = ?`); params.push(val); };
+
+  if (b.name !== undefined) setField('name', String(b.name).trim());
+  if (b.provider !== undefined) {
+    const p = String(b.provider).trim().toLowerCase();
+    if (!['cos', 's3'].includes(p)) return ok({ success: false, message: 'provider 只能是 cos 或 s3' });
+    setField('provider', p);
+  }
+  if (b.bucket !== undefined) setField('bucket', String(b.bucket).trim());
+  if (b.region !== undefined) setField('region', b.region ? String(b.region).trim() : null);
+  if (b.endpoint !== undefined) setField('endpoint', b.endpoint ? String(b.endpoint).trim() : null);
+  if (b.originHost !== undefined) setField('origin_host', b.originHost ? String(b.originHost).trim() : null);
+  if (b.forcePathStyle !== undefined) {
+    setField('force_path_style', b.forcePathStyle === null ? null : (b.forcePathStyle ? 1 : 0));
+  }
+  if (b.enabled !== undefined) setField('enabled', b.enabled ? 1 : 0);
+
+  // 密钥更新：同时传两个=重新加密；同时传两个空串=清空回 env；只传一个=报错
+  const hasId = b.secretId !== undefined;
+  const hasKey = b.secretKey !== undefined;
+  if (hasId || hasKey) {
+    if (!hasId || !hasKey) return ok({ success: false, message: 'secretId 与 secretKey 需同时提供或同时省略' });
+    try {
+      if (b.secretId === '' && b.secretKey === '') {
+        setField('secret_id_enc', null);
+        setField('secret_key_enc', null);
+      } else {
+        setField('secret_id_enc', encrypt(String(b.secretId)));
+        setField('secret_key_enc', encrypt(String(b.secretKey)));
+      }
+    } catch (e) {
+      return ok({ success: false, message: '密钥加密失败：' + e.message });
+    }
+  }
+
+  if (sets.length === 0) return ok({ success: false, message: '没有要更新的字段' });
+
+  try {
+    // 改默认桶单独走 set_default_bucket（带清零逻辑），此处不处理 is_default
+    params.push(id);
+    await query(`UPDATE storage_buckets SET ${sets.join(', ')} WHERE id = ?`, params);
+    return ok({ success: true, message: '已更新' });
+  } catch (e) {
+    return ok({ success: false, message: '更新失败：' + e.message });
+  }
+}
+
+/**
+ * 删除存储桶（管理员）。只删注册记录，不动桶里的对象（避免误删线上文件）。
+ * 拦截条件：1) 默认桶不可删；2) 仍有 websites 关联时不可删（先迁移站点）。
+ */
+async function handleDeleteBucket(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const id = (event.body || event).id;
+  if (!id && id !== 0) return ok({ success: false, message: '缺少 id' });
+
+  try {
+    const rows = await query('SELECT is_default FROM storage_buckets WHERE id = ?', [id]);
+    if (rows.length === 0) return ok({ success: false, message: '桶不存在' });
+    if (rows[0].is_default) return ok({ success: false, message: '默认桶不可删除，请先指定其它桶为默认' });
+
+    const used = await query('SELECT COUNT(*) AS c FROM websites WHERE bucket_id = ?', [id]);
+    if ((used[0]?.c || 0) > 0) {
+      return ok({ success: false, message: `仍有 ${used[0].c} 个站点关联此桶，无法删除` });
+    }
+    await query('DELETE FROM storage_buckets WHERE id = ?', [id]);
+    return ok({ success: true, message: '已删除' });
+  } catch (e) {
+    return ok({ success: false, message: '删除失败：' + e.message });
+  }
+}
+
+/** 设为默认桶（管理员）。事务内把其它桶清零，保证全局唯一默认。 */
+async function handleSetDefaultBucket(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const id = (event.body || event).id;
+  if (!id && id !== 0) return ok({ success: false, message: '缺少 id' });
+
+  try {
+    await transaction(async (conn) => {
+      const [rows] = await conn.query('SELECT enabled FROM storage_buckets WHERE id = ?', [id]);
+      if (rows.length === 0) throw new Error('桶不存在');
+      if (!rows[0].enabled) throw new Error('已禁用的桶不能设为默认');
+      await conn.query('UPDATE storage_buckets SET is_default = 0 WHERE is_default = 1');
+      await conn.query('UPDATE storage_buckets SET is_default = 1 WHERE id = ?', [id]);
+    });
+    return ok({ success: true, message: '已设为默认桶' });
+  } catch (e) {
+    return ok({ success: false, message: e.message });
+  }
+}
+
+/**
+ * 数据迁移（一次性，密钥授权）：把现有 COS 桶注册为默认桶 + 回填存量站点 bucket_id。
+ * 用 body.migrationKey === env.MIGRATION_KEY 授权（复用 001 迁移的模式，不依赖 DB 角色）。
+ * 幂等：已存在默认桶则跳过注册，仅补回填。注册时密钥留空 → 该桶沿用 SCF env 凭证(密钥不入库)。
+ */
+async function handleMigrateBuckets(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
+  }
+
+  const steps = [];
+  try {
+    // 0) DDL：建表 + 给 websites 加列（幂等）。自包含，无需直连 MySQL 跑 .sql。
+    await query(
+      `CREATE TABLE IF NOT EXISTS storage_buckets (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        name          VARCHAR(64)  NOT NULL,
+        provider      VARCHAR(16)  NOT NULL DEFAULT 'cos',
+        bucket        VARCHAR(128) NOT NULL,
+        region        VARCHAR(64)  DEFAULT NULL,
+        endpoint      VARCHAR(255) DEFAULT NULL,
+        origin_host   VARCHAR(255) DEFAULT NULL,
+        force_path_style TINYINT(1) DEFAULT NULL,
+        secret_id_enc  TEXT DEFAULT NULL,
+        secret_key_enc TEXT DEFAULT NULL,
+        is_default    TINYINT(1) NOT NULL DEFAULT 0,
+        enabled       TINYINT(1) NOT NULL DEFAULT 1,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='多云存储桶注册表'`
+    );
+    steps.push('ensured storage_buckets table');
+
+    // websites.bucket_id（列已存在则跳过）
+    const col = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'bucket_id'`
+    );
+    if (col[0].c === 0) {
+      await query(`ALTER TABLE websites ADD COLUMN bucket_id INT DEFAULT NULL COMMENT '所属存储桶(storage_buckets.id)'`);
+      await query(`ALTER TABLE websites ADD INDEX idx_bucket_id (bucket_id)`);
+      steps.push('added websites.bucket_id column + index');
+    } else {
+      steps.push('websites.bucket_id already exists');
+    }
+
+    // 1) 确保有默认桶；没有则把现有 COS 桶注册进去（密钥留空 → 用 env）
+    let def = await query('SELECT * FROM storage_buckets WHERE is_default = 1 LIMIT 1');
+    let defaultId;
+    if (def.length === 0) {
+      // query() 直接返回 mysql2 结果首元素：INSERT 时为含 insertId 的 ResultSetHeader
+      const res = await query(
+        `INSERT INTO storage_buckets (name, provider, bucket, region, origin_host, is_default, enabled)
+         VALUES (?, 'cos', ?, ?, ?, 1, 1)`,
+        ['腾讯云 COS（默认）', LEGACY_BUCKET.bucket, LEGACY_BUCKET.region, LEGACY_BUCKET.originHost]
+      );
+      defaultId = res.insertId;
+      steps.push(`registered default bucket id=${defaultId}`);
+    } else {
+      defaultId = def[0].id;
+      steps.push(`default bucket already exists id=${defaultId}`);
+    }
+
+    // 2) 回填存量站点：bucket_id 为 NULL 的全部指向默认桶
+    const upd = await query('UPDATE websites SET bucket_id = ? WHERE bucket_id IS NULL', [defaultId]);
+    steps.push(`backfilled ${upd.affectedRows} websites → bucket_id=${defaultId}`);
+
+    return ok({ success: true, steps });
+  } catch (error) {
+    console.error('存储桶迁移失败:', error);
+    return ok({ success: false, steps, message: error.message });
+  }
+}
+
+
+
+/**
  * 处理上传并部署
  */
 async function handleUploadAndDeploy(event) {
@@ -1085,7 +2331,7 @@ async function handleUploadAndDeploy(event) {
     };
   }
 
-  const { fileContentBase64, websiteId: inputWebsiteId, fileName } = event.body || event;
+  const { fileContentBase64, websiteId: inputWebsiteId, fileName, projectId: inputProjectId } = event.body || event;
 
   if (!fileContentBase64 || !fileName) {
     return {
@@ -1172,19 +2418,48 @@ async function handleUploadAndDeploy(event) {
     const fileNameNoExt = normalizeFileNameNoExt(fileName);
     const targetPrefix = `sites/${userId}/${websiteId}/${fileNameNoExt}`;
 
-    // 部署到 COS
-    const uploadedCount = await deployZipToCos(zipEntries, targetPrefix);
-    console.log(`部署完成，上传了 ${uploadedCount} 个文件`);
+    // 选桶：重部署沿用站点已绑定的桶（避免文件分裂在两个桶）；新部署落默认桶。
+    // existing 同时拿 bucket_id 给下面选桶与 UPDATE 用。
+    const existing = await query(
+      'SELECT id, subdomain, name, file_name, bucket_id FROM websites WHERE user_id = ? AND website_id = ?',
+      [userId, websiteId]
+    );
+    const requestedProjectId = normalizePositiveId(inputProjectId);
+    if (inputProjectId && !requestedProjectId) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, message: '目标项目不合法' })
+      };
+    }
+    if (requestedProjectId) {
+      const project = await getProjectForUser(userId, requestedProjectId);
+      if (!project || project.archived) {
+        return {
+          statusCode: 200,
+          headers: getCORSHeaders(),
+          body: JSON.stringify({ success: false, message: '目标项目不存在或已归档' })
+        };
+      }
+    }
+    const existingBucketId = existing.length > 0 ? existing[0].bucket_id : null;
+    const bucketCfg = await resolveBucketConfig(existingBucketId);
+    // bucketCfg.id 可能不存在（迁移前回退 LEGACY_BUCKET）；此时 bucket_id 写 NULL（= 默认桶语义）
+    const bucketIdToStore = bucketCfg.id || null;
 
-    // 默认访问域名 = <websiteId 小写>.demox.site(由边缘函数 resolve 路由到 COS path)
-    const finalUrl = `https://${websiteId.toLowerCase()}.${defaultDomain}/index.html?v=${Date.now()}`;
+    // 部署到目标桶（COS 或 S3 兼容，由 provider 决定）
+    const uploadedCount = await deployZipToBucket(bucketCfg, zipEntries, targetPrefix);
+    console.log(`部署完成，上传了 ${uploadedCount} 个文件 → 桶 ${bucketCfg.name || bucketCfg.bucket}`);
+
+    // 默认访问域名 = <websiteId 小写>.demox.site(由边缘函数 resolve 路由到桶 path)
+    // 缓存刷新由部署流程主动提交 EdgeOne 清理任务，不再通过 ?v=timestamp 绕过。
+    const finalUrl = buildDefaultSiteUrl(websiteId);
 
     // 默认名称:优先用 index.html 的 <title>,其次文件名
     const extractedTitle = extractTitleFromZip(zipEntries);
     const defaultName = extractedTitle || fileName;
 
     // 保存到数据库
-    const existing = await query('SELECT id, subdomain, name, file_name FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
     if (existing.length > 0) {
       // 重部署:仅当用户从未自定义过名称(name 为空或等于旧 file_name)时,才用新默认名覆盖
       const prev = existing[0];
@@ -1192,28 +2467,43 @@ async function handleUploadAndDeploy(event) {
       const userCustomized = prevName && prevName !== (prev.file_name || '').trim();
       const nextName = userCustomized ? prevName : defaultName;
       await query(
-        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
-        [fileName, nextName, targetPrefix, finalUrl, userId, websiteId]
+        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
+        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, userId, websiteId]
       );
       // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
       // （边缘缓存最长 60s 后自然刷新）
     } else {
       await query(
-        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([])]
+        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags, bucket_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([]), bucketIdToStore]
       );
     }
+
+    const projectId = requestedProjectId
+      ? await assignWebsiteProject(userId, websiteId, requestedProjectId)
+      : await ensureWebsiteDefaultProject(userId, websiteId);
+    const cachePurge = await purgeSiteCache({
+      websiteId,
+      subdomain: existing.length > 0 ? existing[0].subdomain : null
+    });
+    const customUrl = existing.length > 0 ? buildCustomSiteUrl(existing[0].subdomain) : '';
+    const preferredUrl = customUrl || finalUrl;
 
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
       body: JSON.stringify({
         success: true,
-        url: finalUrl,
+        url: preferredUrl,
+        defaultUrl: finalUrl,
+        customUrl: customUrl || null,
+        preferredUrl,
         message: '部署成功',
         websiteId: websiteId,
+        projectId,
         path: targetPrefix,
-        uploadedCount
+        uploadedCount,
+        cachePurge
       })
     };
   } catch (error) {
@@ -1230,9 +2520,12 @@ async function handleUploadAndDeploy(event) {
 }
 
 /**
- * 部署 ZIP 到 COS
+ * 部署 ZIP 到指定桶（COS / S3 兼容，由 provider 抽象屏蔽差异）。
+ * getCacheHeaders 返回的 Cache-Control 透传给 provider，由各适配器映射到自家字段。
  */
-async function deployZipToCos(zipEntries, targetPrefix) {
+async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix) {
+  const provider = providerFor(bucketCfg);
+
   const validEntries = zipEntries.filter(entry => {
     if (entry.isDirectory) return false;
     const name = entry.entryName;
@@ -1254,35 +2547,15 @@ async function deployZipToCos(zipEntries, targetPrefix) {
   }
 
   const uploadTasks = validEntries.map(entry => {
-    return new Promise((resolve, reject) => {
-      let entryName = entry.entryName;
-      if (commonPrefix && entryName.startsWith(commonPrefix)) {
-        entryName = entryName.slice(commonPrefix.length);
-      }
-      const key = `${targetPrefix}/${entryName}`;
-      const contentType = getContentType(key);
-      const headers = getCacheHeaders(key);
-
-      const putParams = {
-        Bucket: hostingBucket,
-        Region: hostingRegion,
-        Key: key,
-        Body: entry.getData()
-      };
-      if (contentType) {
-        putParams.ContentType = contentType;
-      }
-      if (headers) {
-        putParams.Headers = headers;
-      }
-
-      cos.putObject(putParams, (err, data) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(data);
-        }
-      });
+    let entryName = entry.entryName;
+    if (commonPrefix && entryName.startsWith(commonPrefix)) {
+      entryName = entryName.slice(commonPrefix.length);
+    }
+    const key = `${targetPrefix}/${entryName}`;
+    const cacheHeaders = getCacheHeaders(key);
+    return provider.put(key, entry.getData(), {
+      contentType: getContentType(key),
+      cacheControl: cacheHeaders && cacheHeaders['Cache-Control']
     });
   });
 
@@ -1346,6 +2619,19 @@ function normalizeWebsiteId(id) {
   return generateWebsiteId();
 }
 
+function normalizePositiveId(id) {
+  if (id === null || id === undefined || id === '') return null;
+  const n = Number(id);
+  if (!Number.isSafeInteger(n) || n <= 0) return null;
+  return n;
+}
+
+function normalizeVisibility(value) {
+  return String(value || '').trim().toLowerCase() === VISIBILITY_PRIVATE
+    ? VISIBILITY_PRIVATE
+    : VISIBILITY_PUBLIC;
+}
+
 /**
  * 规范化文件名
  */
@@ -1380,7 +2666,8 @@ function getContentType(key) {
     '.woff2': 'font/woff2',
     '.ttf': 'font/ttf',
     '.mp4': 'video/mp4',
-    '.txt': 'text/plain; charset=utf-8'
+    '.txt': 'text/plain; charset=utf-8',
+    '.pdf': 'application/pdf'
   };
   return types[ext];
 }

@@ -33,11 +33,36 @@ export function useAuth(t) {
           ...storedUser,
           userId: storedUser.userId,
           openId: storedUser.userId,
-          nickName: storedUser.nickName || storedUser.email?.split("@")[0],
+          nickname: storedUser.nickname || "",
+          nickName: storedUser.nickname || "",
           email: storedUser.email
         };
 
         try {
+          try {
+            const me = await authApi.getCurrentUser();
+            if (me?.success && me.user) {
+              u.userId = me.user.id || u.userId;
+              u.openId = u.userId;
+              u.email = me.user.email || u.email;
+              u.nickname = me.user.nickname || "";
+              u.nickName = u.nickname;
+              u.roles = me.user.roles || u.roles;
+              userManager.set({
+                ...storedUser,
+                userId: u.userId,
+                email: u.email,
+                nickname: u.nickname,
+                githubId: me.user.githubId || null,
+                githubLogin: me.user.githubLogin || null,
+                avatarUrl: me.user.avatarUrl || null,
+                roles: u.roles
+              });
+            }
+          } catch (profileError) {
+            console.warn("Fetch current user profile failed:", profileError);
+          }
+
           // 角色已存于登录态;无则默认普通用户
           if (!Array.isArray(u.roles) || u.roles.length === 0) {
             u.roles = ["user"];

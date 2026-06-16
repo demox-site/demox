@@ -139,7 +139,7 @@ export function useRedeploy({
           .sort((a, b) => getComparableTimestamp(b) - getComparableTimestamp(a))
       );
       setDeploying((prev) => ({ ...prev, [website._id]: true }));
-      navigate("/console/sites");
+      navigate("/console/projects");
 
       const token = tokenManager.get();
       const storedUser = userManager.get();

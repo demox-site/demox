@@ -23,10 +23,10 @@ const recomputeAllTags = (list) => {
 /**
  * useWebsites
  * 站点列表的加载与维护：拉取、名称内联编辑、标签内联编辑、删除。
- * 同时维护派生的 allTags / allUsers（供筛选区使用）。
- * @param {{ user:any, t:Record<string,any>, handleAuthError:Function }} deps
+ * 同时维护派生的 allTags（供筛选区使用）。
+ * @param {{ t:Record<string,any>, handleAuthError:Function }} deps
  */
-export function useWebsites({ user, t, handleAuthError }) {
+export function useWebsites({ t, handleAuthError }) {
   const { toast } = useToast();
   const [websites, setWebsites] = useState([]);
   const [allTags, setAllTags] = useState([]);
@@ -45,12 +45,11 @@ export function useWebsites({ user, t, handleAuthError }) {
   const [websiteToDelete, setWebsiteToDelete] = useState(null);
 
   /**
-   * 加载站点列表：普通用户仅加载自己的，管理员加载所有人的
+   * 加载“我的站点”：管理员在这里也只看自己的站点。
    */
   const loadWebsites = async () => {
     try {
-      const isAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
-      const result = isAdmin ? await websiteApi.listAll() : await websiteApi.list();
+      const result = await websiteApi.list();
       if (result && result.success) {
         const mapped = (result.websites || []).map((row) => ({
           ...mapWebsiteRow(row),
@@ -61,28 +60,7 @@ export function useWebsites({ user, t, handleAuthError }) {
         );
         setWebsites(sorted);
         setAllTags(recomputeAllTags(sorted));
-
-        // 管理员解析用户邮箱用于筛选
-        if (isAdmin) {
-          const uidSet = new Set(sorted.map((w) => w.userId).filter(Boolean));
-          const uniqueUids = Array.from(uidSet);
-          if (uniqueUids.length > 0) {
-            try {
-              const emailRes = await websiteApi.resolveUserEmails(uniqueUids);
-              if (emailRes && emailRes.success) {
-                setAllUsers(emailRes.users || []);
-              } else {
-                setAllUsers(uniqueUids.map((uid) => ({ userId: uid, email: "" })));
-              }
-            } catch {
-              setAllUsers(uniqueUids.map((uid) => ({ userId: uid, email: "" })));
-            }
-          } else {
-            setAllUsers([]);
-          }
-        } else {
-          setAllUsers([]);
-        }
+        setAllUsers([]);
       } else {
         throw new Error(result?.message || t.loadListFailed);
       }
@@ -184,6 +162,90 @@ export function useWebsites({ user, t, handleAuthError }) {
     }
   };
 
+  // 项目归属 ---------------------------------------------------------------
+  const moveWebsiteToProject = async (website, project) => {
+    if (!website || !project) return;
+    try {
+      const res = await websiteApi.setWebsiteProject({
+        docId: website._id,
+        projectId: project.id || project._id
+      });
+      if (res && res.success) {
+        const nextProject = res.project || project;
+        setWebsites((prev) =>
+          prev.map((w) =>
+            w._id === website._id
+              ? {
+                  ...w,
+                  projectId: String(nextProject.id || nextProject._id || project.id),
+                  projectName: nextProject.name || project.name,
+                  projectSlug: nextProject.slug || project.slug,
+                  updatedAt: Date.now()
+                }
+              : w
+          )
+        );
+        toast({
+          title: t.projectMoveSuccessTitle,
+          description: t.projectMoveSuccessDesc(nextProject.name || project.name)
+        });
+      } else {
+        throw new Error(res?.message || t.projectMoveFailedTitle);
+      }
+    } catch (error) {
+      toast({
+        title: t.projectMoveFailedTitle,
+        description: error.message || t.projectMoveFailedDesc,
+        variant: "destructive"
+      });
+    }
+  };
+
+  // 访问级别 ---------------------------------------------------------------
+  const setWebsiteVisibility = async (website, visibility) => {
+    if (!website) return;
+    const nextVisibility = visibility === "private" ? "private" : "public";
+    const previousVisibility = website.visibility === "private" ? "private" : "public";
+
+    setWebsites((prev) =>
+      prev.map((w) =>
+        w._id === website._id
+          ? { ...w, visibility: nextVisibility, updatedAt: Date.now() }
+          : w
+      )
+    );
+
+    try {
+      const res = await websiteApi.updateVisibility({
+        docId: website._id,
+        visibility: nextVisibility
+      });
+      if (!res || !res.success) {
+        throw new Error(res?.message || t.visibilitySaveFailedTitle);
+      }
+      toast({
+        title: nextVisibility === "private" ? t.visibilityPrivateTitle : t.visibilityPublicTitle,
+        description:
+          nextVisibility === "private"
+            ? t.visibilityPrivateDesc
+            : t.visibilityPublicDesc
+      });
+    } catch (error) {
+      setWebsites((prev) =>
+        prev.map((w) =>
+          w._id === website._id
+            ? { ...w, visibility: previousVisibility, updatedAt: Date.now() }
+            : w
+        )
+      );
+      toast({
+        title: t.visibilitySaveFailedTitle,
+        description: error.message || t.visibilitySaveFailedDesc,
+        variant: "destructive"
+      });
+    }
+  };
+
   // 删除 -------------------------------------------------------------------
   const confirmDeleteWebsite = (websiteId) => {
     const website = websites.find((w) => w._id === websiteId);
@@ -252,6 +314,10 @@ export function useWebsites({ user, t, handleAuthError }) {
     startEditTags,
     saveEditTags,
     cancelEditTags,
+    // 项目
+    moveWebsiteToProject,
+    // 访问级别
+    setWebsiteVisibility,
     // 删除
     deleteConfirmOpen,
     setDeleteConfirmOpen,

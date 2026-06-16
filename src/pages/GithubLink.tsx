@@ -4,6 +4,7 @@ import { authApi } from "../api";
 import { EmailLoginForm } from "@/components/EmailLoginForm";
 import { Button, useToast } from "@/components/ui";
 import { Github, UserPlus, Link2, Loader2, ArrowLeft } from "lucide-react";
+import { consumeSiteAuthNext } from "@/lib/site-auth";
 
 interface LinkCtx {
   ticket: string;
@@ -40,8 +41,13 @@ export function GithubLink() {
       const res = await authApi.githubFinalize(ctx.ticket, "create");
       if (!res.success) throw new Error("创建失败");
       sessionStorage.removeItem("github_link_ctx");
+      const privateSiteNext = consumeSiteAuthNext();
       toast({ title: "注册成功", description: "正在进入控制台..." });
-      navigate("/console/sites", { replace: true });
+      if (privateSiteNext) {
+        window.location.href = privateSiteNext;
+        return;
+      }
+      navigate("/console/projects", { replace: true });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "创建失败";
       toast({ title: "创建失败", description: msg, variant: "destructive" });
@@ -55,7 +61,12 @@ export function GithubLink() {
       const res = await authApi.githubFinalize(ctx.ticket, "link");
       if (!res.success) throw new Error("关联失败");
       sessionStorage.removeItem("github_link_ctx");
+      const privateSiteNext = consumeSiteAuthNext();
       toast({ title: "关联成功", description: "GitHub 已绑定到该账号" });
+      if (privateSiteNext) {
+        window.location.href = privateSiteNext;
+        return;
+      }
       navigate("/console/settings", { replace: true });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "关联失败";

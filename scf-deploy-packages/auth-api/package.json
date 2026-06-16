@@ -1,0 +1,11 @@
+{
+  "name": "auth-api",
+  "version": "1.0.0",
+  "dependencies": {
+    "bcrypt": "*",
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "*",
+    "mysql2": "*",
+    "tencentcloud-sdk-nodejs-ses": "^4.1.188"
+  }
+}

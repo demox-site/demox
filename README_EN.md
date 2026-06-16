@@ -18,7 +18,7 @@ It solves a simple but common problem for frontend developers:
 > Your frontend is already built.  
 > You just need a link that works.
 
-With Demox, you don’t need to care about servers, object storage,
+With Demox, you don't need to care about servers, object storage,
 CDN configuration, HTTPS, or cache headers.
 
 Just upload a `.zip` file.  
@@ -34,15 +34,21 @@ Demox handles everything else.
 3. Upload the `.zip` to Demox
 4. **Get a publicly accessible URL instantly**
 
-No configuration files.  
-No DevOps knowledge required.
+### Upload methods
+
+| Method | Description |
+|--------|-------------|
+| **Web Console** | Open [demox.site](https://demox.site), log in, and drag & drop |
+| **CLI** | One-command deploy from terminal, great for CI/CD |
+| **MCP Server** | Deploy directly from Claude Code, Cursor, or other AI tools |
+| **API** | Programmatic deployment via REST API |
 
 ---
 
 ## 🎯 When should you use Demox?
 
 > Demox is not a replacement for Netlify or Vercel —
-> it’s what you use when you just need a working link, now.
+> it's what you use when you just need a working link, now.
 
 Demox focuses on **fast delivery**, not complex pipelines.
 
@@ -53,12 +59,86 @@ It is ideal for:
 - Sharing work with clients or teammates
 - Indie hackers shipping ideas quickly
 - Internal previews and reviews
+- Converting PDF, Markdown, or DOCX documents into shareable web pages
 
 If your goal is simply:
 
-> **“Give someone a link they can open”**
+> **"Give someone a link they can open"**
 
 Demox is the fastest way.
+
+---
+
+## 📦 Toolchain
+
+Demox provides a complete set of deployment tools for different workflows.
+
+### CLI
+
+```bash
+# Install
+npm install -g @demox-site/cli@latest
+
+# Login
+demox login
+
+# Deploy
+demox deploy ./dist
+
+# Deploy documents (PDF, Markdown, DOCX auto-converted to web pages)
+demox deploy ./document.pdf
+demox deploy ./notes.md --template warm
+```
+
+See [CLI README](../cli/README.md) for full usage.
+
+### MCP Server (AI Tool Integration)
+
+Deploy directly from Claude Code, Cursor, or other AI tools:
+
+```json
+{
+  "mcpServers": {
+    "demox": {
+      "command": "npx",
+      "args": ["-y", "@demox-site/mcp-server@latest"],
+      "env": {
+        "DEMOX_SITE_URL": "https://demox.site",
+        "DEMOX_API_URL": "https://your-api-url"
+      }
+    }
+  }
+}
+```
+
+See [MCP Server README](../mcp-server/README.md) for full usage.
+
+### API Token
+
+Generate an API token in Console → Settings → API Tokens for script or CI/CD integration.
+
+---
+
+## 🗂️ Projects & Site Management
+
+### Projects
+
+Group multiple sites into projects for better organization and batch operations.
+
+### Custom Subdomains
+
+Assign a custom subdomain prefix to any site:
+
+```
+https://my-demo.demox.site
+```
+
+Set it up from the console or CLI — no DNS configuration needed.
+
+### Site Visibility
+
+- **Public**: Anyone with the link can access
+- **Private**: Only logged-in users can access (great for internal previews)
 
 ---
 
@@ -102,7 +182,7 @@ Demox handles the rest.
 - Frontend developers (React, Vue, or any static site)
 - Indie hackers and solo builders
 - Teams that want fast previews
-- Anyone who doesn’t want to manage servers
+- Anyone who doesn't want to manage servers
 
 Demox is not trying to replace full CI/CD systems.  
 It makes **publishing a frontend page trivial**.
@@ -120,8 +200,25 @@ It is a fully engineered platform:
 - Directory traversal and invalid structures are blocked
 - Uploaded content is checked via COS content security
 - Sites can be taken down or removed at any time
+- Private site access control (login required)
+- Subdomain routing with SPA fallback
 
 This is a service designed for long-term use.
+
+---
+
+## 🧩 Supported File Types
+
+| Type | Description |
+|------|-------------|
+| Directory | Auto-packaged into ZIP |
+| ZIP | Uploaded directly |
+| PDF | Auto-generates preview page |
+| Markdown | Auto-generates page with template |
+| TXT | Auto-generates page with template |
+| DOCX | Auto-converted to web page |
+
+Document templates: `insight`, `warm`, `dark` (via `--template` flag).
 
 ---
 
@@ -138,9 +235,17 @@ Cloud functions handle:
 
 - Authentication and role checks
 - Deployment and redeployment
-- Site management
+- Site and project management
+- Custom subdomain routing
 - Traffic metrics
 - Basic cost estimation
+
+Edge functions handle:
+
+- `*.demox.site` subdomain routing resolution
+- Private site access control
+- SPA fallback (navigation vs static resources via Accept header)
+- "Powered by Demox" badge injection
 
 This is a real production system, not a sample project.
 

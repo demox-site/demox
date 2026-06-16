@@ -4,11 +4,12 @@ import { useState, useMemo } from "react";
  * useFilters
  * 站点列表的标签筛选与用户筛选（管理员）。
  * 暴露已筛选的 visibleWebsites，避免在 JSX 里重复写两遍 filter。
- * @param {{ websites:any[], allUsers:any[] }} deps
+ * @param {{ websites:any[], allUsers:any[], enableProjectFilter?:boolean }} deps
  */
-export function useFilters({ websites, allUsers }) {
+export function useFilters({ websites, allUsers, enableProjectFilter = true }) {
   const [selectedTags, setSelectedTags] = useState([]);
   const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
 
   // 标签筛选 ---------------------------------------------------------------
   const toggleFilterTag = (tag) => {
@@ -28,6 +29,13 @@ export function useFilters({ websites, allUsers }) {
   };
   const clearSelectedUserIds = () => setSelectedUserIds([]);
 
+  // 项目上下文：必选单选，不提供清空态。
+  const selectProjectId = (projectId) => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+    setSelectedProjectId(id);
+  };
+
   /**
    * getUsersWithEmail
    * 仅保留有邮箱的用户列表（用于筛选下拉框展示）
@@ -45,14 +53,20 @@ export function useFilters({ websites, allUsers }) {
         const userOk =
           selectedUserIds.length === 0 ||
           (w.userId && selectedUserIds.includes(w.userId));
-        return tagOk && userOk;
+        const projectOk =
+          !enableProjectFilter ||
+          !selectedProjectId ||
+          (w.projectId && String(w.projectId) === String(selectedProjectId));
+        return tagOk && userOk && projectOk;
       }),
-    [websites, selectedTags, selectedUserIds]
+    [websites, selectedTags, selectedUserIds, selectedProjectId, enableProjectFilter]
   );
 
   return {
     selectedTags,
     selectedUserIds,
+    selectedProjectId,
+    selectProjectId,
     toggleFilterTag,
     clearFilterTags,
     toggleSelectUserId,

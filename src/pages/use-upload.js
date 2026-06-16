@@ -35,7 +35,7 @@ const fileToBase64 = (file, onProgress) =>
  * useUpload
  * 首页上传区的状态机：校验、读文件、调用部署、进度与趣味文案。
  * @param {{
- *   user:any, roleLimits:any, websites:any[], t:Record<string,any>,
+ *   user:any, roleLimits:any, websites:any[], project:any, t:Record<string,any>,
  *   navigate:Function, loadWebsites:Function,
  *   setWebsites:Function, setDeploying:Function
  * }} deps
@@ -44,6 +44,7 @@ export function useUpload({
   user,
   roleLimits,
   websites,
+  project,
   t,
   navigate,
   loadWebsites,
@@ -134,6 +135,15 @@ export function useUpload({
       }
     }
 
+    if (!project?.id) {
+      toast({
+        title: t.projectRequiredTitle,
+        description: t.projectRequiredDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
     setUploading(true);
     setUploadProgress(0);
     setUploadStatusText("");
@@ -162,8 +172,11 @@ export function useUpload({
       const now = Date.now();
       const websiteData = {
         userId: user.userId,
-        userName: user.nickName || user.name,
+        userName: user.nickname || "",
         fileName: safeFileName,
+        projectId: project?.id ? String(project.id) : null,
+        projectName: project?.name || null,
+        projectSlug: project?.slug || null,
         status: "processing",
         createdAt: now,
         updatedAt: now
@@ -195,7 +208,8 @@ export function useUpload({
       const deployResult = await websiteApi.uploadAndDeploy({
         fileContentBase64,
         fileName: safeFileName,
-        websiteId
+        websiteId,
+        projectId: project?.id || undefined
       });
 
       setDeploying((prev) => ({ ...prev, [websiteId]: false }));

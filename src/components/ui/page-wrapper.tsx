@@ -42,6 +42,10 @@ export function PageWrapper({
         return {
           title: isZh ? '更新日志' : 'Changelog',
         };
+      case 'site-auth':
+        return {
+          title: isZh ? '私有站点登录' : 'Private Site Sign-in',
+        };
       case 'admin':
         return {
           title: isZh ? '管理控制台' : 'Admin Dashboard',

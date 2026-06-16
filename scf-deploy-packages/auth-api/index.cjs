@@ -46,6 +46,10 @@ exports.main = async (event, context) => {
       return await handleGithubFinalize(event);
     } else if (path === '/auth/me' || event.body?.action === 'me') {
       return await handleGetCurrentUser(event);
+    } else if (path === '/auth/update-profile' || event.body?.action === 'update_profile') {
+      return await handleUpdateProfile(event);
+    } else if (path === '/auth/migrate-nicknames' || event.body?.action === 'migrate_nicknames') {
+      return await handleMigrateNicknames(event);
     } else if (path === '/auth/verify' || event.body?.action === 'verify') {
       return await handleVerifyToken(event);
     } else if (path === '/auth/refresh' || event.body?.action === 'refresh') {
@@ -80,8 +84,9 @@ exports.main = async (event, context) => {
  */
 async function handleRegister(event) {
   const { email, password } = event.body || event;
+  const cleanEmail = normalizeEmail(email);
 
-  if (!email || !password) {
+  if (!cleanEmail || !password) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
@@ -90,7 +95,7 @@ async function handleRegister(event) {
   }
 
   // 检查邮箱是否已存在
-  const existingUsers = await query('SELECT id FROM users WHERE email = ?', [email]);
+  const existingUsers = await query('SELECT id FROM users WHERE email = ?', [cleanEmail]);
   if (existingUsers.length > 0) {
     return {
       statusCode: 409,
@@ -102,11 +107,12 @@ async function handleRegister(event) {
   // 加密密码
   const passwordHash = await bcrypt.hash(password, 10);
   const userId = generateUserId();
+  const nickname = defaultNicknameFromEmail(cleanEmail);
 
   // 插入用户
   await query(
-    'INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, FALSE)',
-    [userId, email, passwordHash]
+    'INSERT INTO users (id, email, password_hash, email_verified, nickname) VALUES (?, ?, ?, FALSE, ?)',
+    [userId, cleanEmail, passwordHash, nickname]
   );
 
   // 分配默认角色
@@ -116,7 +122,7 @@ async function handleRegister(event) {
   );
 
   // 生成token
-  const token = sign({ userId, email });
+  const token = sign({ userId, email: cleanEmail });
 
   return {
     statusCode: 201,
@@ -125,7 +131,8 @@ async function handleRegister(event) {
       success: true,
       token,
       userId,
-      email,
+      email: cleanEmail,
+      nickname,
       message: '注册成功'
     })
   };
@@ -136,8 +143,9 @@ async function handleRegister(event) {
  */
 async function handleLogin(event) {
   const { email, password } = event.body || event;
+  const cleanEmail = normalizeEmail(email);
 
-  if (!email || !password) {
+  if (!cleanEmail || !password) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
@@ -146,7 +154,7 @@ async function handleLogin(event) {
   }
 
   // 查询用户
-  const users = await query('SELECT id, email, password_hash FROM users WHERE email = ?', [email]);
+  const users = await query('SELECT id, email, password_hash, nickname FROM users WHERE email = ?', [cleanEmail]);
   if (users.length === 0) {
     return {
       statusCode: 401,
@@ -156,6 +164,7 @@ async function handleLogin(event) {
   }
 
   const user = users[0];
+  const nickname = await ensureUserNickname(user);
 
   // 验证密码
   const valid = await bcrypt.compare(password, user.password_hash);
@@ -178,6 +187,7 @@ async function handleLogin(event) {
       token,
       userId: user.id,
       email: user.email,
+      nickname,
       message: '登录成功'
     })
   };
@@ -188,8 +198,9 @@ async function handleLogin(event) {
  */
 async function handleSendCode(event) {
   const { email, type = 'login' } = event.body || event;
+  const cleanEmail = normalizeEmail(email);
 
-  if (!email) {
+  if (!cleanEmail) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
@@ -199,7 +210,7 @@ async function handleSendCode(event) {
 
   // 验证邮箱格式
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
+  if (!emailRegex.test(cleanEmail)) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
@@ -210,7 +221,7 @@ async function handleSendCode(event) {
   // 检查发送频率限制（1分钟内只能发1次）
   const recentCodes = await query(
     'SELECT id FROM verification_codes WHERE email = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE)',
-    [email]
+    [cleanEmail]
   );
 
   if (recentCodes.length > 0) {
@@ -225,16 +236,16 @@ async function handleSendCode(event) {
   const code = Math.random().toString().slice(-6);
 
   // 删除该邮箱之前的未使用验证码
-  await query('DELETE FROM verification_codes WHERE email = ? AND used_at IS NULL', [email]);
+  await query('DELETE FROM verification_codes WHERE email = ? AND used_at IS NULL', [cleanEmail]);
 
   // 保存验证码（使用 MySQL 的 DATE_ADD 函数设置过期时间，避免时区问题）
   await query(
     'INSERT INTO verification_codes (email, code, type, expires_at) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))',
-    [email, code, type]
+    [cleanEmail, code, type]
   );
 
   // 发送邮件（使用腾讯云 SES 或其他邮件服务）
-  const emailSent = await sendEmail(email, code, type);
+  const emailSent = await sendEmail(cleanEmail, code, type);
 
   if (!emailSent) {
     // 如果邮件发送失败，仍然返回成功（开发阶段）
@@ -242,7 +253,7 @@ async function handleSendCode(event) {
     console.log('邮件发送失败，验证码:', code);
   }
 
-  console.log(`验证码已生成: ${email} -> ${code}`);
+  console.log(`验证码已生成: ${cleanEmail} -> ${code}`);
 
   return {
     statusCode: 200,
@@ -261,8 +272,9 @@ async function handleSendCode(event) {
  */
 async function handleLoginWithCode(event) {
   const { email, code } = event.body || event;
+  const cleanEmail = normalizeEmail(email);
 
-  if (!email || !code) {
+  if (!cleanEmail || !code) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
@@ -273,7 +285,7 @@ async function handleLoginWithCode(event) {
   // 查询验证码
   const codes = await query(
     'SELECT * FROM verification_codes WHERE email = ? AND code = ? AND used_at IS NULL AND expires_at > NOW()',
-    [email, code]
+    [cleanEmail, code]
   );
 
   if (codes.length === 0) {
@@ -288,7 +300,7 @@ async function handleLoginWithCode(event) {
   await query('UPDATE verification_codes SET used_at = NOW() WHERE id = ?', [codes[0].id]);
 
   // 查询用户是否存在
-  const users = await query('SELECT id, email FROM users WHERE email = ?', [email]);
+  const users = await query('SELECT id, email, nickname FROM users WHERE email = ?', [cleanEmail]);
 
   let user;
   let isNewUser = false;
@@ -297,10 +309,11 @@ async function handleLoginWithCode(event) {
     // 新用户，自动注册
     isNewUser = true;
     const userId = generateUserId();
+    const nickname = defaultNicknameFromEmail(cleanEmail);
 
     await query(
-      'INSERT INTO users (id, email, email_verified, password_hash) VALUES (?, ?, TRUE, ?)',
-      [userId, email, ''] // 验证码登录的用户没有密码
+      'INSERT INTO users (id, email, email_verified, password_hash, nickname) VALUES (?, ?, TRUE, ?, ?)',
+      [userId, cleanEmail, '', nickname] // 验证码登录的用户没有密码
     );
 
     // 分配默认角色
@@ -309,9 +322,10 @@ async function handleLoginWithCode(event) {
       [userId, JSON.stringify(['user'])]
     );
 
-    user = { id: userId, email };
+    user = { id: userId, email: cleanEmail, nickname };
   } else {
     user = users[0];
+    user.nickname = await ensureUserNickname(user);
 
     // 更新邮箱验证状态
     await query('UPDATE users SET email_verified = TRUE WHERE id = ?', [user.id]);
@@ -328,6 +342,7 @@ async function handleLoginWithCode(event) {
       token,
       userId: user.id,
       email: user.email,
+      nickname: user.nickname,
       isNewUser,
       message: isNewUser ? '注册成功' : '登录成功'
     })
@@ -431,7 +446,9 @@ async function handleGithubLogin(event) {
   const githubId = String(ghUser.id);
   const githubLogin = ghUser.login;
   const avatarUrl = ghUser.avatar_url || null;
-  const nickname = ghUser.name || ghUser.login || null;
+  const nickname =
+    normalizeNickname(ghUser.name || ghUser.login) ||
+    defaultNicknameFromEmail(ghEmail || `gh_${githubId}@users.noreply.github.com`);
 
   return await resolveGithubUser(event, { githubId, githubLogin, avatarUrl, nickname, ghEmail });
 }
@@ -474,6 +491,9 @@ async function handleGithubFinalize(event) {
   }
 
   const { githubId, githubLogin, avatarUrl, nickname, ghEmail } = payload;
+  const cleanGithubNickname =
+    normalizeNickname(nickname) ||
+    defaultNicknameFromEmail(ghEmail || `gh_${githubId}@users.noreply.github.com`);
 
   // 该 github_id 在选择期间可能已被占用，统一先查一次
   const owned = await query('SELECT id FROM users WHERE github_id = ?', [githubId]);
@@ -487,10 +507,10 @@ async function handleGithubFinalize(event) {
       };
     }
     const userId = generateUserId();
-    const email = ghEmail || `gh_${githubId}@users.noreply.github.com`;
+    const email = normalizeEmail(ghEmail) || `gh_${githubId}@users.noreply.github.com`;
     await query(
       'INSERT INTO users (id, email, password_hash, email_verified, github_id, github_login, avatar_url, nickname) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [userId, email, '', ghEmail ? true : false, githubId, githubLogin, avatarUrl, nickname]
+      [userId, email, '', ghEmail ? true : false, githubId, githubLogin, avatarUrl, cleanGithubNickname]
     );
     await query('INSERT INTO user_roles (user_id, roles) VALUES (?, ?)', [userId, JSON.stringify(['user'])]);
     const token = sign({ userId, email });
@@ -502,6 +522,7 @@ async function handleGithubFinalize(event) {
         token,
         userId,
         email,
+        nickname: cleanGithubNickname,
         isNewUser: true,
         message: '注册成功'
       })
@@ -527,11 +548,18 @@ async function handleGithubFinalize(event) {
       };
     }
     await query(
-      'UPDATE users SET github_id = ?, github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?) WHERE id = ?',
-      [githubId, githubLogin, avatarUrl, nickname, current.userId]
+      `UPDATE users
+       SET github_id = ?,
+           github_login = ?,
+           avatar_url = COALESCE(?, avatar_url),
+           nickname = CASE WHEN nickname IS NULL OR TRIM(nickname) = '' THEN ? ELSE nickname END
+       WHERE id = ?`,
+      [githubId, githubLogin, avatarUrl, cleanGithubNickname, current.userId]
     );
-    const users = await query('SELECT id, email FROM users WHERE id = ?', [current.userId]);
-    const token = sign({ userId: current.userId, email: users[0]?.email });
+    const users = await query('SELECT id, email, nickname FROM users WHERE id = ?', [current.userId]);
+    const user = users[0] || {};
+    const finalNickname = await ensureUserNickname(user);
+    const token = sign({ userId: current.userId, email: user.email });
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
@@ -540,7 +568,8 @@ async function handleGithubFinalize(event) {
         bound: true,
         token,
         userId: current.userId,
-        email: users[0]?.email,
+        email: user.email,
+        nickname: finalNickname,
         message: 'GitHub 账号关联成功'
       })
     };
@@ -560,6 +589,9 @@ async function handleGithubFinalize(event) {
  */
 async function resolveGithubUser(event, profile) {
   const { githubId, githubLogin, avatarUrl, nickname, ghEmail } = profile;
+  const cleanGithubNickname =
+    normalizeNickname(nickname) ||
+    defaultNicknameFromEmail(ghEmail || `gh_${githubId}@users.noreply.github.com`);
 
   // 绑定模式：已登录用户把 GitHub 账号绑定到自身
   const current = authenticate(event);
@@ -574,11 +606,18 @@ async function resolveGithubUser(event, profile) {
       };
     }
     await query(
-      'UPDATE users SET github_id = ?, github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?) WHERE id = ?',
-      [githubId, githubLogin, avatarUrl, nickname, current.userId]
+      `UPDATE users
+       SET github_id = ?,
+           github_login = ?,
+           avatar_url = COALESCE(?, avatar_url),
+           nickname = CASE WHEN nickname IS NULL OR TRIM(nickname) = '' THEN ? ELSE nickname END
+       WHERE id = ?`,
+      [githubId, githubLogin, avatarUrl, cleanGithubNickname, current.userId]
     );
-    const users = await query('SELECT id, email FROM users WHERE id = ?', [current.userId]);
-    const token = sign({ userId: current.userId, email: users[0]?.email });
+    const users = await query('SELECT id, email, nickname FROM users WHERE id = ?', [current.userId]);
+    const user = users[0] || {};
+    const finalNickname = await ensureUserNickname(user);
+    const token = sign({ userId: current.userId, email: user.email });
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
@@ -587,21 +626,27 @@ async function resolveGithubUser(event, profile) {
         bound: true,
         token,
         userId: current.userId,
-        email: users[0]?.email,
+        email: user.email,
+        nickname: finalNickname,
         message: 'GitHub 账号绑定成功'
       })
     };
   }
 
   // 登录模式 1：github_id 已绑定某账号 → 回头客，直接登录
-  let users = await query('SELECT id, email FROM users WHERE github_id = ?', [githubId]);
+  let users = await query('SELECT id, email, nickname FROM users WHERE github_id = ?', [githubId]);
   if (users.length > 0) {
     const user = users[0];
     // 资料回填（头像/昵称可能更新）
     await query(
-      'UPDATE users SET github_login = ?, avatar_url = COALESCE(?, avatar_url), nickname = COALESCE(nickname, ?) WHERE id = ?',
-      [githubLogin, avatarUrl, nickname, user.id]
+      `UPDATE users
+       SET github_login = ?,
+           avatar_url = COALESCE(?, avatar_url),
+           nickname = CASE WHEN nickname IS NULL OR TRIM(nickname) = '' THEN ? ELSE nickname END
+       WHERE id = ?`,
+      [githubLogin, avatarUrl, cleanGithubNickname, user.id]
     );
+    user.nickname = await ensureUserNickname(user);
     const token = sign({ userId: user.id, email: user.email });
     return {
       statusCode: 200,
@@ -611,6 +656,7 @@ async function resolveGithubUser(event, profile) {
         token,
         userId: user.id,
         email: user.email,
+        nickname: user.nickname,
         isNewUser: false,
         message: '登录成功'
       })
@@ -620,7 +666,7 @@ async function resolveGithubUser(event, profile) {
   // github_id 无主：不自动建号，签发短期票据让前端引导用户选择
   // （创建新账号 / 关联到已有账号）。统一处理，无论邮箱是否匹配。
   const ticket = sign(
-    { kind: 'github_link', githubId, githubLogin, avatarUrl, nickname, ghEmail: ghEmail || null },
+    { kind: 'github_link', githubId, githubLogin, avatarUrl, nickname: cleanGithubNickname, ghEmail: ghEmail || null },
     '5m'
   );
 
@@ -654,6 +700,36 @@ function maskEmail(email) {
   const [name, domain] = email.split('@');
   const masked = name.length > 2 ? `${name.slice(0, 2)}...${name.slice(-1)}` : name;
   return `${masked}@${domain}`;
+}
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function normalizeNickname(value) {
+  return String(value || '').trim();
+}
+
+function defaultNicknameFromEmail(email) {
+  const cleanEmail = normalizeEmail(email);
+  const prefix = cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail;
+  return normalizeNickname(prefix).slice(0, 80) || 'user';
+}
+
+async function ensureUserNickname(user) {
+  const existing = normalizeNickname(user?.nickname);
+  if (existing) return existing;
+
+  const fallback = defaultNicknameFromEmail(user?.email);
+  if (user?.id) {
+    await query(
+      `UPDATE users
+       SET nickname = ?
+       WHERE id = ? AND (nickname IS NULL OR TRIM(nickname) = '')`,
+      [fallback, user.id]
+    );
+  }
+  return fallback;
 }
 
 /**
@@ -763,6 +839,7 @@ async function handleGetCurrentUser(event) {
   }
 
   const userData = users[0];
+  const nickname = await ensureUserNickname(userData);
 
   // 获取用户角色（MySQL JSON 列可能已被驱动解析为数组，也可能是字符串）
   const roles = await query('SELECT roles FROM user_roles WHERE user_id = ?', [user.userId]);
@@ -784,10 +861,126 @@ async function handleGetCurrentUser(event) {
         githubId: userData.github_id,
         githubLogin: userData.github_login,
         avatarUrl: userData.avatar_url,
-        nickname: userData.nickname,
+        nickname,
         roles: userRoles,
         createdAt: userData.created_at
       }
+    })
+  };
+}
+
+/**
+ * 更新当前用户资料
+ */
+async function handleUpdateProfile(event) {
+  const current = authenticate(event);
+  if (!current) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const rawNickname = String((event.body || event).nickname || '').trim();
+  if (!rawNickname) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '昵称不能为空' })
+    };
+  }
+
+  if (rawNickname.length > 80) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '昵称不能超过80个字符' })
+    };
+  }
+
+  await query('UPDATE users SET nickname = ?, updated_at = NOW() WHERE id = ?', [rawNickname, current.userId]);
+
+  const users = await query(
+    'SELECT id, email, email_verified, github_id, github_login, avatar_url, nickname, created_at FROM users WHERE id = ?',
+    [current.userId]
+  );
+
+  if (users.length === 0) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '用户不存在' })
+    };
+  }
+
+  const userData = users[0];
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      user: {
+        id: userData.id,
+        email: userData.email,
+        emailVerified: userData.email_verified,
+        githubId: userData.github_id,
+        githubLogin: userData.github_login,
+        avatarUrl: userData.avatar_url,
+        nickname: userData.nickname,
+        createdAt: userData.created_at
+      },
+      nickname: userData.nickname,
+      message: '资料已更新'
+    })
+  };
+}
+
+/**
+ * 一次性补齐历史账号昵称。
+ * 仅允许通过 SCF Invoke 传入顶层 internalMigration，公网 HTTP 请求无法设置该顶层字段。
+ */
+async function handleMigrateNicknames(event) {
+  if (event.internalMigration !== true) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '无权限执行迁移' })
+    };
+  }
+
+  const before = await query(
+    `SELECT COUNT(*) AS count
+     FROM users
+     WHERE (nickname IS NULL OR TRIM(nickname) = '')
+       AND email IS NOT NULL
+       AND email <> ''`
+  );
+
+  const result = await query(
+    `UPDATE users
+     SET nickname = COALESCE(NULLIF(LEFT(SUBSTRING_INDEX(email, '@', 1), 80), ''), 'user')
+     WHERE (nickname IS NULL OR TRIM(nickname) = '')
+       AND email IS NOT NULL
+       AND email <> ''`
+  );
+
+  const after = await query(
+    `SELECT COUNT(*) AS count
+     FROM users
+     WHERE (nickname IS NULL OR TRIM(nickname) = '')
+       AND email IS NOT NULL
+       AND email <> ''`
+  );
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      before: Number(before[0]?.count || 0),
+      affectedRows: result.affectedRows || 0,
+      after: Number(after[0]?.count || 0)
     })
   };
 }
