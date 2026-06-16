@@ -48,7 +48,8 @@ import {
   ShieldCheck,
   UploadCloud,
   FolderKanban,
-  ArrowLeft
+  ArrowLeft,
+  UsersRound
 } from "lucide-react";
 
 const navTexts = {
@@ -60,6 +61,7 @@ const navTexts = {
     projects: "项目",
     deploy: "部署新项目",
     sites: "我的站点",
+    members: "成员",
     usage: "用量套餐",
     tokens: "访问令牌",
     settings: "账号设置",
@@ -83,6 +85,7 @@ const navTexts = {
     projects: "Projects",
     deploy: "Deploy New Project",
     sites: "My Sites",
+    members: "Members",
     usage: "Usage & Plan",
     tokens: "Access Tokens",
     settings: "Settings",
@@ -220,7 +223,7 @@ export const ConsoleLayout: React.FC = () => {
   };
 
   const projectMatch = location.pathname.match(
-    /^\/console\/projects\/([^/]+)\/(deploy|sites)(?:\/|$)/
+    /^\/console\/projects\/([^/]+)\/(deploy|sites|members)(?:\/|$)/
   );
   const currentProjectId = projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
@@ -245,6 +248,12 @@ export const ConsoleLayout: React.FC = () => {
           path: `/console/projects/${currentProjectId}/sites`,
           label: t.sites,
           icon: Globe
+        },
+        {
+          key: "members",
+          path: `/console/projects/${currentProjectId}/members`,
+          label: t.members,
+          icon: UsersRound
         }
       ]
     : [];
