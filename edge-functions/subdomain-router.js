@@ -1,10 +1,10 @@
 /**
  * EdgeOne 边缘函数：subdomain-router
  * ---------------------------------------------------------------------------
- * 作用：处理 *.demox.site 的访问。每个站点默认域名 = <websiteId 小写>.demox.site，
+ * 作用：处理官方域名池的访问。每个站点默认域名 = <websiteId 小写>.demox.site，
  * 另可选配一个自定义前缀。两者都查同一张路由表(websites 表):
- *   {label}.demox.site → 调 website-api /resolve-subdomain 查 label→path
- *   (label 匹配 websites.subdomain 或 LOWER(website_id))→ 回源 /{path}/{rest}
+ *   {label}.{officialDomain} → 调 website-api /resolve-subdomain 查 label+domain→path
+ *   (demox.site 下 label 可匹配 websites.subdomain 或 LOWER(website_id))→ 回源 /{path}/{rest}
  * 结果走边缘 Cache(默认 60s)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
  * 路由表用现有 MySQL，不用 KV(标准版 EdgeOne 边缘函数无法绑定 Pages KV,
@@ -25,6 +25,8 @@ var VISIBILITY_PRIVATE = 'private';
 //     resolve 失败时用 WWW_FALLBACK_PATH 兜底，绝不放行回源已清空的桶根。
 var APEX_HOST = 'demox.site';        // 跳转源
 var WWW_HOST = 'www.demox.site';     // 主站承载域名
+var DEFAULT_OFFICIAL_DOMAIN = 'demox.site';
+var OFFICIAL_DOMAINS = ['demox.site', 'vibeme.cn'];
 var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底 path（改绑主站时同步改 DB 与此）
 var DEMOX_BADGE_MARKER = 'data-demox-site-badge';
 var DEMOX_AUTH_COOKIE = 'demox_access';
@@ -50,6 +52,20 @@ function backendUrl(path) {
 
 function demoxHomeUrl() {
   return (runtimeEnv('DEMOX_HOME_URL') || ('https://' + WWW_HOST)).replace(/\/+$/, '') + '/';
+}
+
+function parseOfficialHost(host) {
+  const normalized = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
+  for (let i = 0; i < OFFICIAL_DOMAINS.length; i += 1) {
+    const domain = OFFICIAL_DOMAINS[i];
+    const suffix = '.' + domain;
+    if (!normalized.endsWith(suffix)) continue;
+    const label = normalized.slice(0, -suffix.length);
+    if (label && label.indexOf('.') === -1) {
+      return { label: label, domain: domain };
+    }
+  }
+  return null;
 }
 
 addEventListener('fetch', (event) => {
@@ -173,7 +189,7 @@ function getDemoxBadgeHtml() {
   a[${DEMOX_BADGE_MARKER}="link"] { display: none !important; }
 }
 </style>
-<a ${DEMOX_BADGE_MARKER}="link" href="${DEMOX_HOME_URL}" target="_blank" rel="noopener noreferrer" aria-label="Go to Demox homepage">Powered by Demox</a>`;
+<a ${DEMOX_BADGE_MARKER}="link" href="${demoxHomeUrl()}" target="_blank" rel="noopener noreferrer" aria-label="Go to Demox homepage">Powered by Demox</a>`;
 }
 
 function injectDemoxBadge(html) {
@@ -319,7 +335,7 @@ function accessDeniedPage(req) {
   });
 }
 
-async function checkPrivateSiteAccess(req, label) {
+async function checkPrivateSiteAccess(req, label, domain) {
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
@@ -327,7 +343,7 @@ async function checkPrivateSiteAccess(req, label) {
     const resp = await fetch(backendUrl('/check-site-access'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'check_site_access', label: label, token: token })
+      body: JSON.stringify({ action: 'check_site_access', label: label, domain: domain, token: token })
     });
     if (!resp.ok) return { allowed: false, loginRequired: false };
     const data = await resp.json();
@@ -341,12 +357,15 @@ async function checkPrivateSiteAccess(req, label) {
 }
 
 /**
- * 查 label -> { path, origin }，带边缘缓存。
+ * 查 label+domain -> { path, origin }，带边缘缓存。
  * path = 桶内路径前缀；origin = 该站点所属桶的回源域(多云)，为空时回退默认回源域。
  * 用 caches.default 把解析结果缓存 RESOLVE_CACHE_TTL 秒，避免每请求打 SCF。
  */
-async function resolveSite(label) {
-  const cacheKey = new Request('https://resolve.demox.site/label/' + encodeURIComponent(label));
+async function resolveSite(label, domain) {
+  const suffix = domain || DEFAULT_OFFICIAL_DOMAIN;
+  const cacheKey = new Request(
+    'https://resolve.demox.site/host/' + encodeURIComponent(suffix) + '/' + encodeURIComponent(label)
+  );
   let cache = null;
   try { cache = caches.default; } catch (e) { cache = null; }
 
@@ -372,7 +391,7 @@ async function resolveSite(label) {
     const resp = await fetch(backendUrl('/resolve-subdomain'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'resolve_subdomain', subdomain: label })
+      body: JSON.stringify({ action: 'resolve_subdomain', subdomain: label, domain: suffix })
     });
     if (resp.ok) {
       const data = await resp.json();
@@ -416,12 +435,13 @@ async function handle(req) {
     });
   }
 
+  // 只处理官方域名池的一层子域名；多层放行回源。
   // www.demox.site 不写死：label='www' 走下方通用路由表逻辑（DB websites.subdomain='www'）
-  // 只处理 xxx.demox.site 这种单层子域名；多层放行回源
-  const m = host.match(/^([^.]+)\.demox\.site$/);
-  if (!m) return fetch(req);
+  const parsedHost = parseOfficialHost(host);
+  if (!parsedHost) return fetch(req);
 
-  const label = m[1];
+  const label = parsedHost.label;
+  const domain = parsedHost.domain;
   let rest = u.pathname.replace(/^\/+/, '');
 
   // 目录请求(根 / 或结尾 /)直接补 index.html，避免回源到「目录」让 COS 慢解析
@@ -430,20 +450,21 @@ async function handle(req) {
     rest += 'index.html';
   }
 
-  // 查路由表：label 可能是站点默认域名(websiteId 小写)或自定义前缀。
+  // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
+  // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, origin, visibility } = await resolveSite(label);
+  let { path, origin, visibility } = await resolveSite(label, domain);
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
   // 用硬编码兜底。改绑主站时同时改 DB 与此常量。
-  if (!path && label === 'www') {
+  if (!path && domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') {
     path = WWW_FALLBACK_PATH;
   }
 
   if (path) {
-    if (label !== 'www' && visibility === VISIBILITY_PRIVATE) {
-      const access = await checkPrivateSiteAccess(req, label);
+    if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
+      const access = await checkPrivateSiteAccess(req, label, domain);
       if (!access.allowed) {
         return access.loginRequired ? redirectToLogin(req) : accessDeniedPage(req);
       }

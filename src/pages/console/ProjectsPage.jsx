@@ -11,13 +11,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  Input
+  Input,
+  Badge
 } from "@/components/ui";
 // @ts-ignore;
-import { FolderKanban, Loader2, Plus, ArrowRight, Globe2, Sparkles } from "lucide-react";
+import { FolderKanban, Loader2, Plus, ArrowRight, Globe2, Sparkles, UsersRound } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "../home-translations";
 import { useProjects } from "../use-projects";
+import { userManager } from "@/api";
+import ProjectMembersDialog from "@/components/console/ProjectMembersDialog";
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
@@ -28,6 +31,8 @@ export default function ProjectsPage() {
     handleAuthError: (error) => console.warn("Project page auth error:", error)
   });
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [membersProject, setMembersProject] = React.useState(null);
+  const currentUser = React.useMemo(() => userManager.get(), []);
 
   React.useEffect(() => {
     projects.loadProjects();
@@ -52,6 +57,13 @@ export default function ProjectsPage() {
       setCreateOpen(false);
       navigate(`/console/projects/${project.id}/sites`);
     }
+  };
+
+  const roleLabel = (role) => {
+    if (role === "owner") return t.projectRoleOwner;
+    if (role === "admin") return t.projectRoleAdmin;
+    if (role === "member") return t.projectRoleMember;
+    return role || "";
   };
 
   return (
@@ -108,16 +120,38 @@ export default function ProjectsPage() {
                       </div>
                     </div>
                   </div>
-                  <ArrowRight className="mt-2 h-4 w-4 text-[var(--stitch-muted)] transition-transform group-hover:translate-x-1 group-hover:text-[var(--stitch-blue)]" />
+                  <div className="flex items-center gap-2">
+                    {project.role && (
+                      <Badge className="border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
+                        {roleLabel(project.role)}
+                      </Badge>
+                    )}
+                    <ArrowRight className="h-4 w-4 text-[var(--stitch-muted)] transition-transform group-hover:translate-x-1 group-hover:text-[var(--stitch-blue)]" />
+                  </div>
                 </div>
-                <div className="mt-6 flex items-center justify-between rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 py-2 text-sm text-[var(--stitch-muted)]">
-                  <span className="inline-flex items-center gap-2">
-                    <Globe2 className="h-4 w-4 text-[var(--stitch-blue)]" />
-                    {t.projectSiteCount}
-                  </span>
-                  <span className="font-mono text-[var(--stitch-ink)]">
-                    {project.websitesCount || 0}
-                  </span>
+                <div className="mt-6 grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <div className="flex items-center justify-between rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 py-2 text-sm text-[var(--stitch-muted)]">
+                    <span className="inline-flex items-center gap-2">
+                      <Globe2 className="h-4 w-4 text-[var(--stitch-blue)]" />
+                      {t.projectSiteCount}
+                    </span>
+                    <span className="font-mono text-[var(--stitch-ink)]">
+                      {project.websitesCount || 0}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setMembersProject(project);
+                    }}
+                    className="stitch-action rounded-2xl"
+                  >
+                    <UsersRound className="mr-2 h-4 w-4" />
+                    {t.projectMembers}
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -177,6 +211,15 @@ export default function ProjectsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      <ProjectMembersDialog
+        open={!!membersProject}
+        onOpenChange={(open) => {
+          if (!open) setMembersProject(null);
+        }}
+        project={membersProject}
+        currentUser={currentUser}
+        t={t}
+      />
     </div>
   );
 }

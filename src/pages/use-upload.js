@@ -8,6 +8,7 @@ import {
 } from "@/lib/website-utils";
 import { buildSiteZipFile, isSupportedDoc } from "@/lib/doc-to-site";
 import { buildPdfSiteZipFile, isSupportedPdf } from "@/lib/pdf-to-site";
+import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
  * fileToBase64
@@ -46,6 +47,7 @@ export function useUpload({
   websites,
   project,
   t,
+  lang,
   navigate,
   loadWebsites,
   setWebsites,
@@ -139,6 +141,16 @@ export function useUpload({
       toast({
         title: t.projectRequiredTitle,
         description: t.projectRequiredDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const zipCheck = await validateStaticZipFile(file, lang);
+    if (!zipCheck.valid) {
+      toast({
+        title: zipCheck.title || t.toastInvalidFileTitle,
+        description: zipCheck.message || t.toastInvalidFileDesc,
         variant: "destructive"
       });
       return;

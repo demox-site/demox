@@ -125,7 +125,7 @@ const LogPage: React.FC = () => {
                 <Feature
                   tag="Feature"
                   title="自定义子域名"
-                  desc="每个站点除了默认域名，还能挑一个好记的前缀 {label}.demox.site。泛域名 + 证书已就位，无需备案和 CNAME。"
+                  desc="每个站点除了默认域名，还能挑一个好记的官方域名前缀，例如 {label}.demox.site 或 {label}.vibeme.cn。"
                   note="抢一个好听的名字，手慢无。"
                 />
                 <Feature

@@ -1,3 +1,5 @@
+import { normalizeOfficialDomain } from "./official-domains";
+
 /**
  * website-utils
  * 站点相关的纯工具函数（无状态、无副作用），从 pages/home.jsx 抽离以便复用与测试。
@@ -122,7 +124,7 @@ export const getDisplayName = (w) => {
 /**
  * getSiteDomains
  * 返回站点的域名列表(最多 2 个):
- *   - 自定义前缀 <subdomain>.demox.site(可选，优先展示)
+ *   - 自定义前缀 <subdomain>.<official-domain>(可选，优先展示)
  *   - 默认域名 <websiteId 小写>.demox.site(始终存在)
  * 每项 { host, url, isDefault }。
  */
@@ -131,7 +133,7 @@ export const getSiteDomains = (w) => {
   const list = [];
   const sub = (w.subdomain || "").trim();
   if (sub && sub !== "undefined") {
-    const host = `${sub}.demox.site`;
+    const host = `${sub}.${normalizeOfficialDomain(w.subdomainDomain || w.subdomain_domain)}`;
     list.push({ host, url: `https://${host}/`, isDefault: false });
   }
   const wid = (w.websiteId || "").trim();

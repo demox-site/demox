@@ -3,10 +3,11 @@
 # 自定义子域名前缀功能 —— 部署记录 / 重建参考(非一键脚本)
 # ===========================================================================
 # 已于 2026-06-12 部署并端到端验证通过。访问 {label}.demox.site 命中对应站点。
+# 2026-06 新增官方域名池设计：{label}.vibeme.cn 也走同一套 label+domain 查表。
 #
 # 最终架构(不用 KV):
-#   - 路由表 = MySQL websites.subdomain 列(唯一索引)。
-#   - 边缘函数 subdomain-router 接管 *.demox.site:
+#   - 路由表 = MySQL websites.subdomain + websites.subdomain_domain(联合唯一索引)。
+#   - 边缘函数 subdomain-router 接管 *.demox.site / *.vibeme.cn:
 #       · 旧格式 sites-{userId}-{fileId}-{dir} 走内置正则(老站点零改动)
 #       · 自定义前缀 {label} → fetch website-api /resolve-subdomain 查 path
 #         → 回源 sites.demox.site/{path}/{uri};解析结果走边缘 Cache 60s。
@@ -23,7 +24,7 @@
 #   - 触发规则 rule-fxfyqmn5(host=*.demox.site)指向 ef-1281msyw
 #     (原指向老函数 ef-7ej45f3q;ef-7ej45f3q 代码未改,留作回滚)
 #   - website-api(SCF demox-website-api / lam-ixkn6jpq)已含新 action
-#   - DB:websites.subdomain 列 + uniq_subdomain 索引
+#   - DB:websites.subdomain + subdomain_domain 列 + uniq_official_subdomain 索引
 #
 # 回滚:把 rule-fxfyqmn5 的 FunctionId 改回 ef-7ej45f3q:
 #   tccli teo ModifyFunctionRule --ZoneId zone-3kplfkbflnd6 \

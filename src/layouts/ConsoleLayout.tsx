@@ -131,6 +131,8 @@ interface ConsoleProject {
   id: string;
   name: string;
   slug?: string;
+  role?: string | null;
+  ownerUserId?: string | null;
   websitesCount?: number;
   archived?: boolean;
 }
@@ -139,6 +141,8 @@ const normalizeProject = (project: any): ConsoleProject => ({
   id: String(project?.id || project?._id || ""),
   name: project?.name || "default",
   slug: project?.slug || "default",
+  role: project?.role || project?.projectRole || null,
+  ownerUserId: project?.ownerUserId || project?.userId || null,
   websitesCount: Number(project?.websitesCount || project?.websites_count || 0),
   archived: !!project?.archived
 });

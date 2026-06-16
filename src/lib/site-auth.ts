@@ -1,3 +1,5 @@
+import { OFFICIAL_DOMAINS } from "./official-domains";
+
 export const SITE_AUTH_NEXT_KEY = "demox_site_auth_next";
 
 export function isAllowedSiteReturnUrl(value: string | null | undefined): value is string {
@@ -5,7 +7,11 @@ export function isAllowedSiteReturnUrl(value: string | null | undefined): value 
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
-    return url.protocol === "https:" && host !== "www.demox.site" && /^[^.]+\.demox\.site$/.test(host);
+    return url.protocol === "https:" && OFFICIAL_DOMAINS.some((domain) =>
+      host !== `www.${domain}` &&
+      host.endsWith(`.${domain}`) &&
+      host.slice(0, -domain.length - 1).indexOf(".") === -1
+    );
   } catch {
     return false;
   }

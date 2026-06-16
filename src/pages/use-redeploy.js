@@ -2,6 +2,7 @@ import { useState } from "react";
 import { websiteApi, tokenManager, userManager } from "../api";
 import { useToast } from "@/components/ui";
 import { sanitizeFileName, getComparableTimestamp } from "@/lib/website-utils";
+import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
  * fileToBase64
@@ -22,13 +23,14 @@ const fileToBase64 = (file) =>
  * useRedeploy
  * 重新部署弹窗：选择/拖拽 .zip 覆盖原站点。
  * @param {{
- *   roleLimits:any, t:Record<string,any>, navigate:Function,
+ *   roleLimits:any, t:Record<string,any>, lang:string, navigate:Function,
  *   loadWebsites:Function, setWebsites:Function, setDeploying:Function
  * }} deps
  */
 export function useRedeploy({
   roleLimits,
   t,
+  lang,
   navigate,
   loadWebsites,
   setWebsites,
@@ -121,6 +123,16 @@ export function useRedeploy({
         description: t.toastFileTooLargeDesc(
           Math.round(roleLimits.max_file_size / 1024 / 1024)
         ),
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const zipCheck = await validateStaticZipFile(file, lang);
+    if (!zipCheck.valid) {
+      toast({
+        title: zipCheck.title || t.toastInvalidFileTitle,
+        description: zipCheck.message || t.toastInvalidFileDesc,
         variant: "destructive"
       });
       return;

@@ -2,6 +2,7 @@
  * Demox API 服务 - 连接SCF HTTP触发器
  */
 import config from "./configs/env";
+import { OFFICIAL_DOMAINS, normalizeOfficialDomain } from "./lib/official-domains";
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
@@ -15,8 +16,9 @@ const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 function getCookieDomainAttr(): string {
   if (typeof window === "undefined") return "";
   const host = window.location.hostname.toLowerCase();
-  if (host === "demox.site" || host.endsWith(".demox.site")) {
-    return "Domain=.demox.site; ";
+  const officialDomain = OFFICIAL_DOMAINS.find((domain) => host === domain || host.endsWith(`.${domain}`));
+  if (officialDomain) {
+    return `Domain=.${officialDomain}; `;
   }
   return "";
 }
@@ -361,8 +363,8 @@ export const websiteApi = {
   },
 
   // 设置自定义子域名前缀
-  setSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string }) => {
-    return request<{ success: boolean; subdomain?: string; url?: string; code?: string; message?: string }>(
+  setSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string; domain?: string }) => {
+    return request<{ success: boolean; subdomain?: string; subdomainDomain?: string; subdomain_domain?: string; url?: string; code?: string; message?: string }>(
       WEBSITE_API_URL,
       "/website/set-subdomain",
       { method: "POST", body: { action: "set_subdomain", ...data } }
@@ -370,8 +372,8 @@ export const websiteApi = {
   },
 
   // 实时检测前缀是否可用
-  checkSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string }) => {
-    return request<{ success: boolean; available: boolean; reason?: string; message?: string }>(
+  checkSubdomain: async (data: { docId?: string; websiteId?: string; subdomain: string; domain?: string }) => {
+    return request<{ success: boolean; available: boolean; domain?: string; reason?: string; message?: string }>(
       WEBSITE_API_URL,
       "/website/check-subdomain",
       { method: "POST", body: { action: "check_subdomain", ...data } }
@@ -456,6 +458,42 @@ export const websiteApi = {
       WEBSITE_API_URL,
       "/website/set-website-project",
       { method: "POST", body: { action: "set_website_project", ...data } }
+    );
+  },
+
+  // 项目成员列表
+  listProjectMembers: async (projectId: string | number) => {
+    return request<{ success: boolean; project?: any; role?: string; members: any[]; invitations: any[]; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/list-project-members",
+      { method: "POST", body: { action: "list_project_members", projectId } }
+    );
+  },
+
+  // 邀请项目成员
+  inviteProjectMember: async (data: { projectId: string | number; email: string; role: "admin" | "member" }) => {
+    return request<{ success: boolean; member?: any; invitation?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/invite-project-member",
+      { method: "POST", body: { action: "invite_project_member", ...data } }
+    );
+  },
+
+  // 更新项目成员角色
+  updateProjectMemberRole: async (data: { projectId: string | number; userId: string; role: "admin" | "member" }) => {
+    return request<{ success: boolean; member?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-project-member-role",
+      { method: "POST", body: { action: "update_project_member_role", ...data } }
+    );
+  },
+
+  // 移除项目成员
+  removeProjectMember: async (data: { projectId: string | number; userId: string }) => {
+    return request<{ success: boolean; removedUserId?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/remove-project-member",
+      { method: "POST", body: { action: "remove_project_member", ...data } }
     );
   }
 };
@@ -564,7 +602,9 @@ export function mapWebsiteRow(row: any): any {
     projectId: row.project_id ? String(row.project_id) : null,
     projectName: row.project_name || row.projectName || null,
     projectSlug: row.project_slug || row.projectSlug || null,
+    projectRole: row.project_role || row.projectRole || null,
     subdomain: row.subdomain || null,
+    subdomainDomain: normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain),
     visibility: row.visibility === "private" ? "private" : "public",
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined

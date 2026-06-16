@@ -71,19 +71,20 @@ export default function WebsiteCard({
   confirmDeleteWebsite
 }) {
   const isProcessing = website.status === "processing" || deploying[website._id];
+  const isPlatformAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
+  const isSiteOwner = !website.userId || website.userId === user?.userId;
+  const canManageByProject = ["owner", "admin"].includes(website.projectRole || "");
+  const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
   const canMoveProject =
+    canManageSite &&
     showProjectInfo &&
     Array.isArray(projects) &&
-    projects.length > 0 &&
-    (!website.userId || website.userId === user?.userId);
+    projects.length > 0;
   const currentProjectName = website.projectName || (website.projectId ? t.defaultProjectName : "");
   const isPrivate = website.visibility === "private";
   const isPublic = !isPrivate;
   const creatorName = String(website.userNickname || "").trim();
-  const canChangeVisibility =
-    !website.userId ||
-    website.userId === user?.userId ||
-    (Array.isArray(user?.roles) && user.roles.includes("admin"));
+  const canChangeVisibility = canManageSite;
 
   return (
     <div className="stitch-site-row p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 group">
@@ -119,13 +120,15 @@ export default function WebsiteCard({
                   <h3 className="text-[var(--stitch-ink)] font-bold truncate">
                     {getDisplayName(website)}
                   </h3>
-                  <button
-                    onClick={() => startEditName(website)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--stitch-muted)] hover:text-[var(--stitch-blue)]"
-                    title={t.editName}
-                  >
-                    <Pencil className="w-4 h-4" />
-                  </button>
+                  {canManageSite && (
+                    <button
+                      onClick={() => startEditName(website)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--stitch-muted)] hover:text-[var(--stitch-blue)]"
+                      title={t.editName}
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 {(website.websiteId || website._id) && (
                   <span className="text-[11px] text-[var(--stitch-muted)] font-mono leading-none">
@@ -232,22 +235,24 @@ export default function WebsiteCard({
                   ))}
                 </div>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className={`h-5 w-5 p-0 hover:bg-[var(--stitch-blue-soft)] ${
-                  Array.isArray(website.tags) && website.tags.length > 0
-                    ? "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] opacity-0 group-hover:opacity-100 transition-opacity"
-                    : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
-                }`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startEditTags(website);
-                }}
-                title="编辑标签"
-              >
-                <Tag className="w-3 h-3" />
-              </Button>
+              {canManageSite && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={`h-5 w-5 p-0 hover:bg-[var(--stitch-blue-soft)] ${
+                    Array.isArray(website.tags) && website.tags.length > 0
+                      ? "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] opacity-0 group-hover:opacity-100 transition-opacity"
+                      : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEditTags(website);
+                  }}
+                  title="编辑标签"
+                >
+                  <Tag className="w-3 h-3" />
+                </Button>
+              )}
             </div>
           )}
         </div>
@@ -260,7 +265,7 @@ export default function WebsiteCard({
               {currentProjectName}
             </span>
           )}
-          {Array.isArray(user?.roles) && user.roles.includes("admin") && website.userId && (
+          {isPlatformAdmin && website.userId && (
             <span>
               {t.creator}
               {creatorName || "—"}
@@ -357,59 +362,63 @@ export default function WebsiteCard({
           </div>
         )}
 
-        <TooltipProvider delayDuration={0}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span tabIndex={-1}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (isProcessing) return;
-                    openRedeployDialog(website);
-                  }}
-                  className={`stitch-action rounded-full ${
-                    isProcessing
-                      ? "opacity-50 cursor-not-allowed"
-                      : ""
-                  }`}
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  {t.redeployButton}
-                </Button>
-              </span>
-            </TooltipTrigger>
-            {isProcessing && (
-              <TooltipContent className="bg-zinc-100 text-zinc-900 border-zinc-200 font-bold">
-                <p>{t.redeployDisabledTooltip}</p>
-              </TooltipContent>
-            )}
-          </Tooltip>
-        </TooltipProvider>
+        {canManageSite && (
+          <>
+            <TooltipProvider delayDuration={0}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={-1}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (isProcessing) return;
+                        openRedeployDialog(website);
+                      }}
+                      className={`stitch-action rounded-full ${
+                        isProcessing
+                          ? "opacity-50 cursor-not-allowed"
+                          : ""
+                      }`}
+                    >
+                      <Upload className="w-4 h-4 mr-2" />
+                      {t.redeployButton}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {isProcessing && (
+                  <TooltipContent className="bg-zinc-100 text-zinc-900 border-zinc-200 font-bold">
+                    <p>{t.redeployDisabledTooltip}</p>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => openDomainDialog(website)}
-          className={`stitch-action rounded-full ${
-            website.subdomain
-              ? "!text-[var(--stitch-ink)]"
-              : ""
-          }`}
-          title={t.customDomain}
-        >
-          <Link2 className="w-4 h-4 mr-2" />
-          {website.subdomain ? t.domainBound : t.customDomain}
-        </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openDomainDialog(website)}
+              className={`stitch-action rounded-full ${
+                website.subdomain
+                  ? "!text-[var(--stitch-ink)]"
+                  : ""
+              }`}
+              title={t.customDomain}
+            >
+              <Link2 className="w-4 h-4 mr-2" />
+              {website.subdomain ? t.domainBound : t.customDomain}
+            </Button>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => confirmDeleteWebsite(website._id)}
-          className="text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
-        >
-          <Trash2 className="w-4 h-4" />
-        </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => confirmDeleteWebsite(website._id)}
+              className="text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );

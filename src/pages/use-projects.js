@@ -8,6 +8,10 @@ const normalizeProject = (project) => ({
   _id: String(project?._id || project?.id || ""),
   name: project?.name || "default",
   slug: project?.slug || "default",
+  role: project?.role || project?.projectRole || null,
+  ownerUserId: project?.ownerUserId || project?.userId || null,
+  ownerEmail: project?.ownerEmail || "",
+  ownerNickname: project?.ownerNickname || "",
   websitesCount: Number(project?.websitesCount || project?.websites_count || 0)
 });
 

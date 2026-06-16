@@ -9,7 +9,7 @@ import {
   Badge
 } from "@/components/ui";
 // @ts-ignore;
-import { Globe, RefreshCw, Tag, UploadCloud, Rocket, FolderKanban } from "lucide-react";
+import { Globe, RefreshCw, Tag, UploadCloud, Rocket, FolderKanban, UsersRound } from "lucide-react";
 import { Navigate, useParams } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "./home-translations";
@@ -19,6 +19,7 @@ import RedeployDialog from "@/components/home/RedeployDialog";
 import DomainDialog from "@/components/home/DomainDialog";
 import UploadSection from "@/components/home/UploadSection";
 import WebsiteCard from "@/components/home/WebsiteCard";
+import ProjectMembersDialog from "@/components/console/ProjectMembersDialog";
 import { useAuth } from "./use-auth";
 import { useWebsites } from "./use-websites";
 import { useProjects } from "./use-projects";
@@ -73,6 +74,7 @@ export default function Home(props) {
     websites,
     project: uploadProject,
     t,
+    lang,
     navigate,
     loadWebsites,
     setWebsites,
@@ -82,6 +84,7 @@ export default function Home(props) {
   const redeploy = useRedeploy({
     roleLimits,
     t,
+    lang,
     navigate,
     loadWebsites,
     setWebsites,
@@ -89,6 +92,7 @@ export default function Home(props) {
   });
 
   const domain = useDomainDialog({ t, setWebsites });
+  const [membersOpen, setMembersOpen] = React.useState(false);
 
   // 登录成功后加载站点和项目列表。
   React.useEffect(() => {
@@ -157,15 +161,27 @@ export default function Home(props) {
                 <p className="stitch-subtitle">{pageSubtitle}</p>
               </div>
               {!isDeployMode && (
-                <Button
-                  size="sm"
-                  onClick={loadWebsites}
-                  variant="outline"
-                  className="stitch-action rounded-full px-4"
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  {t.refresh}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => setMembersOpen(true)}
+                    variant="outline"
+                    className="stitch-action rounded-full px-4"
+                    disabled={!uploadProject?.id}
+                  >
+                    <UsersRound className="w-4 h-4 mr-2" />
+                    {t.projectMembers}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={loadWebsites}
+                    variant="outline"
+                    className="stitch-action rounded-full px-4"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    {t.refresh}
+                  </Button>
+                </div>
               )}
             </div>
           </div>
@@ -316,9 +332,11 @@ export default function Home(props) {
                 onOpenChange={domain.setDomainOpen}
                 domainInfo={domain.domainInfo}
                 setDomainInfo={domain.setDomainInfo}
-                domainInput={domain.domainInput}
-                setDomainInput={domain.setDomainInput}
-                domainCheck={domain.domainCheck}
+	                domainInput={domain.domainInput}
+	                setDomainInput={domain.setDomainInput}
+	                domainSuffix={domain.domainSuffix}
+	                setDomainSuffix={domain.setDomainSuffix}
+	                domainCheck={domain.domainCheck}
                 domainBusy={domain.domainBusy}
                 onBind={domain.bindDomain}
                 onUnbind={domain.unbindDomain}
@@ -345,6 +363,14 @@ export default function Home(props) {
                 open={sites.deleteConfirmOpen}
                 onOpenChange={sites.setDeleteConfirmOpen}
                 onConfirm={sites.executeDeleteWebsite}
+                t={t}
+              />
+
+              <ProjectMembersDialog
+                open={membersOpen}
+                onOpenChange={setMembersOpen}
+                project={uploadProject}
+                currentUser={user}
                 t={t}
               />
             </>

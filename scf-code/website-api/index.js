@@ -14,22 +14,67 @@ const buckets = require('./shared/buckets.js');
 const { encrypt } = require('./shared/crypto.js');
 
 const defaultDomain = 'demox.site';
+const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
+const officialDomains = Array.from(new Set([
+  defaultDomain,
+  ...builtinOfficialDomains,
+  ...(process.env.OFFICIAL_SITE_DOMAINS || '').split(',')
+])).map(normalizeDomainValue).filter(Boolean);
+const officialDomainSet = new Set(officialDomains);
 const VISIBILITY_PUBLIC = 'public';
 const VISIBILITY_PRIVATE = 'private';
+const PROJECT_ROLE_OWNER = 'owner';
+const PROJECT_ROLE_ADMIN = 'admin';
+const PROJECT_ROLE_MEMBER = 'member';
+const PROJECT_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN, PROJECT_ROLE_MEMBER];
+const PROJECT_WRITE_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN];
+
+function normalizeDomainValue(input) {
+  return String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .replace(/^\.+|\.+$/g, '');
+}
+
+function normalizeOfficialDomain(input) {
+  const domain = normalizeDomainValue(input) || defaultDomain;
+  return officialDomainSet.has(domain) ? domain : null;
+}
+
+function parseOfficialHost(host) {
+  const normalized = normalizeDomainValue(host);
+  for (const domain of officialDomains) {
+    const suffix = `.${domain}`;
+    if (!normalized.endsWith(suffix)) continue;
+    const label = normalized.slice(0, -suffix.length);
+    if (label && !label.includes('.')) {
+      return { label, domain };
+    }
+  }
+  return null;
+}
+
+function getRowSubdomainDomain(row) {
+  return normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain) || defaultDomain;
+}
 
 function buildDefaultSiteUrl(websiteId) {
   const label = String(websiteId || '').trim().toLowerCase();
   return label ? `https://${label}.${defaultDomain}/` : '';
 }
 
-function buildCustomSiteUrl(subdomain) {
+function buildCustomSiteUrl(subdomain, domain) {
   const label = String(subdomain || '').trim().toLowerCase();
-  return label ? `https://${label}.${defaultDomain}/` : '';
+  const suffix = normalizeOfficialDomain(domain) || defaultDomain;
+  return label ? `https://${label}.${suffix}/` : '';
 }
 
 function formatWebsiteForClient(row) {
   const defaultUrl = buildDefaultSiteUrl(row.website_id || row.websiteId);
-  const customUrl = buildCustomSiteUrl(row.subdomain);
+  const subdomainDomain = getRowSubdomainDomain(row);
+  const customUrl = buildCustomSiteUrl(row.subdomain, subdomainDomain);
   const preferredUrl = customUrl || defaultUrl || row.url || '';
   const visibility = normalizeVisibility(row.visibility);
   const userNickname = String(row.user_nickname || row.userNickname || '').trim();
@@ -37,9 +82,12 @@ function formatWebsiteForClient(row) {
   return {
     ...row,
     visibility,
+    projectRole: row.project_role || row.projectRole || null,
     user_nickname: userNickname,
     userNickname,
     url: preferredUrl,
+    subdomain_domain: subdomainDomain,
+    subdomainDomain,
     default_url: defaultUrl,
     custom_url: customUrl || null,
     preferred_url: preferredUrl,
@@ -214,22 +262,31 @@ async function createEdgeOnePurgeTask({ type, targets, method }) {
  *
  * 缓存清理失败不阻断部署，但会写入日志并返回给调用方，便于 CI 里排查。
  */
-async function purgeSiteCache({ websiteId, subdomain }) {
-  const labels = new Set();
+async function purgeSiteCache({ websiteId, subdomain, subdomainDomain }) {
+  const hosts = new Set();
+  const resolveKeys = new Set();
   const defaultLabel = String(websiteId || '').trim().toLowerCase();
   const customLabel = String(subdomain || '').trim().toLowerCase();
-  if (defaultLabel) labels.add(defaultLabel);
-  if (customLabel) labels.add(customLabel);
-
-  const safeLabels = Array.from(labels).filter(label => /^[a-z0-9-]{1,63}$/.test(label));
-  if (safeLabels.length === 0) {
-    return { success: true, skipped: true, reason: 'no_valid_labels' };
+  const customDomain = normalizeOfficialDomain(subdomainDomain) || defaultDomain;
+  if (defaultLabel) {
+    hosts.add(`${defaultLabel}.${defaultDomain}`);
+    resolveKeys.add(`${defaultDomain}|${defaultLabel}`);
+  }
+  if (customLabel) {
+    hosts.add(`${customLabel}.${customDomain}`);
+    resolveKeys.add(`${customDomain}|${customLabel}`);
   }
 
-  const publicTargets = safeLabels.map(label => `https://${label}.${defaultDomain}/`);
-  const resolveTargets = safeLabels.map(label =>
-    `https://resolve.${defaultDomain}/label/${encodeURIComponent(label)}`
-  );
+  const safeHosts = Array.from(hosts).filter(host => /^[a-z0-9-]{1,63}\.[a-z0-9.-]+$/.test(host));
+  if (safeHosts.length === 0) {
+    return { success: true, skipped: true, reason: 'no_valid_hosts' };
+  }
+
+  const publicTargets = safeHosts.map(host => `https://${host}/`);
+  const resolveTargets = Array.from(resolveKeys).map(key => {
+    const [domain, label] = key.split('|');
+    return `https://resolve.${defaultDomain}/host/${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
+  });
   const tasks = [];
 
   for (const task of [
@@ -248,7 +305,7 @@ async function purgeSiteCache({ websiteId, subdomain }) {
   return {
     success: tasks.every(t => t.success),
     skipped: false,
-    labels: safeLabels,
+    hosts: safeHosts,
     tasks
   };
 }
@@ -299,9 +356,14 @@ exports.main = async (event, context) => {
       update_project: handleUpdateProject,
       archive_project: handleArchiveProject,
       set_website_project: handleSetWebsiteProject,
+      list_project_members: handleListProjectMembers,
+      invite_project_member: handleInviteProjectMember,
+      update_project_member_role: handleUpdateProjectMemberRole,
+      remove_project_member: handleRemoveProjectMember,
       migrate_subdomain: handleMigrateSubdomain,
       migrate_default_projects: handleMigrateDefaultProjects,
       migrate_site_visibility: handleMigrateSiteVisibility,
+      migrate_project_collaboration: handleMigrateProjectCollaboration,
       bucket_stats: handleBucketStats,
       list_user_roles: handleListUserRoles,
       set_user_role: handleSetUserRole,
@@ -341,6 +403,14 @@ exports.main = async (event, context) => {
       return await handleArchiveProject(event);
     } else if (pathUrl.includes('/set-website-project')) {
       return await handleSetWebsiteProject(event);
+    } else if (pathUrl.includes('/list-project-members')) {
+      return await handleListProjectMembers(event);
+    } else if (pathUrl.includes('/invite-project-member')) {
+      return await handleInviteProjectMember(event);
+    } else if (pathUrl.includes('/update-project-member-role')) {
+      return await handleUpdateProjectMemberRole(event);
+    } else if (pathUrl.includes('/remove-project-member')) {
+      return await handleRemoveProjectMember(event);
     } else if (pathUrl.includes('/list-all')) {
       return await handleListAllWebsites(event);
     } else if (pathUrl.includes('/list')) {
@@ -369,6 +439,8 @@ exports.main = async (event, context) => {
       return await handleMigrateDefaultProjects(event);
     } else if (pathUrl.includes('/migrate-site-visibility')) {
       return await handleMigrateSiteVisibility(event);
+    } else if (pathUrl.includes('/migrate-project-collaboration')) {
+      return await handleMigrateProjectCollaboration(event);
     } else {
       return {
         statusCode: 404,
@@ -478,43 +550,59 @@ async function checkAdmin(userId) {
  * 查询站点列表并附带项目展示字段。项目表未迁移时自动降级为只查 websites。
  */
 async function queryWebsitesWithProjects({ userId = null, includeAll = false, projectId = null } = {}) {
-  const params = [];
-  const where = [];
-  if (!includeAll) {
-    where.push('w.user_id = ?');
-    params.push(userId);
-  }
-  if (projectId) {
-    where.push('w.project_id = ?');
-    params.push(projectId);
-  }
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const normalizedProjectId = normalizePositiveId(projectId);
 
   try {
+    const params = [];
+    const where = [];
+    let roleSelect = 'NULL AS project_role';
+    let memberJoin = '';
+
+    if (!includeAll) {
+      roleSelect =
+        `CASE
+           WHEN p.user_id = ? THEN '${PROJECT_ROLE_OWNER}'
+           WHEN pm.role IN ('${PROJECT_ROLE_ADMIN}', '${PROJECT_ROLE_MEMBER}') THEN pm.role
+           ELSE NULL
+         END AS project_role`;
+      params.push(userId);
+      memberJoin = 'LEFT JOIN project_members pm ON pm.project_id = w.project_id AND pm.user_id = ?';
+      params.push(userId);
+      where.push('(w.user_id = ? OR p.user_id = ? OR pm.user_id = ?)');
+      params.push(userId, userId, userId);
+    }
+    if (normalizedProjectId) {
+      where.push('w.project_id = ?');
+      params.push(normalizedProjectId);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
     return await query(
       `SELECT w.*,
               p.name AS project_name,
               p.slug AS project_slug,
               p.archived AS project_archived,
+              ${roleSelect},
               u.nickname AS user_nickname
        FROM websites w
        LEFT JOIN projects p ON p.id = w.project_id
+       ${memberJoin}
        LEFT JOIN users u ON u.id = w.user_id
        ${whereSql}
        ORDER BY w.created_at DESC`,
       params
     );
   } catch (e) {
-    console.warn('查询站点项目字段失败，降级只查 websites:', e.message);
+    console.warn('查询站点项目/协作字段失败，降级只查归属站点:', e.message);
     const fallbackWhere = [];
     const fallbackParams = [];
     if (!includeAll) {
       fallbackWhere.push('user_id = ?');
       fallbackParams.push(userId);
     }
-    if (projectId) {
+    if (normalizedProjectId) {
       fallbackWhere.push('project_id = ?');
-      fallbackParams.push(projectId);
+      fallbackParams.push(normalizedProjectId);
     }
     const fallbackWhereSql = fallbackWhere.length ? `WHERE ${fallbackWhere.join(' AND ')}` : '';
     return await query(
@@ -610,22 +698,32 @@ async function handleDeleteWebsite(event) {
     };
   }
 
-  let whereClause = 'user_id = ?';
-  const params = [userId];
+  const where = [];
+  const params = [];
 
   if (id) {
-    whereClause += ' AND id = ?';
+    where.push('id = ?');
     params.push(id);
   } else if (websiteId) {
-    whereClause += ' AND website_id = ?';
+    where.push('website_id = ?');
     params.push(websiteId);
   } else if (key) {
-    whereClause += ' AND path = ?';
+    where.push('path = ?');
     params.push(key);
   }
 
+  const rows = await query(`SELECT * FROM websites WHERE ${where.join(' AND ')} LIMIT 1`, params);
+  const site = rows[0];
+  if (!site || !(await canUserManageSite(userId, site))) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '无权限删除该记录' })
+    };
+  }
+
   // 路由表在 websites.subdomain 列里，删除行即清理；边缘缓存 60s 内自然失效。
-  const result = await query(`DELETE FROM websites WHERE ${whereClause}`, params);
+  const result = await query('DELETE FROM websites WHERE id = ?', [site.id]);
 
   return {
     statusCode: 200,
@@ -670,7 +768,7 @@ async function handleUpdateWebsiteName(event) {
     };
   }
 
-  if (websites[0].user_id !== userId) {
+  if (!(await canUserManageSite(userId, websites[0]))) {
     return {
       statusCode: 403,
       headers: getCORSHeaders(),
@@ -738,7 +836,7 @@ async function handleUpdateWebsiteTags(event) {
     };
   }
 
-  if (websites[0].user_id !== userId) {
+  if (!(await canUserManageSite(userId, websites[0]))) {
     return {
       statusCode: 403,
       headers: getCORSHeaders(),
@@ -792,7 +890,7 @@ function isValidLabel(label) {
 /**
  * 设置/修改站点的自定义子域名前缀。
  * 流程：校验归属 + 前缀合法/未占用 → 写 KV(label->{path}) → 删旧 label 的 KV → 落库。
- * 访问地址：https://{label}.demox.site
+ * 访问地址：https://{label}.{officialDomain}
  */
 /**
  * 实时检测前缀是否可用(供前端输入时防抖调用)。
@@ -809,7 +907,9 @@ async function handleCheckSubdomain(event) {
   }
 
   const { docId, websiteId, subdomain } = event.body || event;
+  const body = event.body || event;
   const label = normalizeLabel(subdomain);
+  const domain = normalizeOfficialDomain(body.domain || body.subdomainDomain || body.subdomain_domain);
 
   if (!isValidLabel(label)) {
     return {
@@ -823,26 +923,44 @@ async function handleCheckSubdomain(event) {
       })
     };
   }
+  if (!domain) {
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        available: false,
+        reason: 'invalid_domain',
+        message: `不支持的官方域名，可选：${officialDomains.join(', ')}`
+      })
+    };
+  }
 
   // 找出当前站点(用于判断"前缀已属于自己"算可用)
   let selfId = null;
   try {
     if (docId) {
-      const rows = await query('SELECT id, user_id FROM websites WHERE id = ?', [docId]);
-      if (rows[0] && rows[0].user_id === userId) selfId = String(rows[0].id);
+      const rows = await query('SELECT * FROM websites WHERE id = ?', [docId]);
+      if (rows[0] && (await canUserManageSite(userId, rows[0]))) selfId = String(rows[0].id);
     } else if (websiteId) {
-      const rows = await query('SELECT id FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
-      if (rows[0]) selfId = String(rows[0].id);
+      const rows = await query('SELECT * FROM websites WHERE website_id = ? LIMIT 1', [websiteId]);
+      if (rows[0] && (await canUserManageSite(userId, rows[0]))) selfId = String(rows[0].id);
     }
   } catch (e) {}
 
-  // 占用判断:① 被别的站点用作自定义前缀 ② 撞到任意站点的 websiteId(已是默认域名,保留)
-  const occupied = await query('SELECT id FROM websites WHERE subdomain = ? LIMIT 1', [label]);
+  // 占用判断:① 被别的站点用作同一官方域名下的自定义前缀 ② 撞到默认域名 websiteId(仅 demox.site)
+  const occupied = await query(
+    'SELECT id FROM websites WHERE subdomain = ? AND COALESCE(NULLIF(subdomain_domain, \'\'), ?) = ? LIMIT 1',
+    [label, defaultDomain, domain]
+  );
   const takenByOther = occupied.length > 0 && String(occupied[0].id) !== selfId;
 
-  // 自己站点的 websiteId(小写)允许作为前缀(等于默认域名,无意义但不算冲突);别人的 websiteId 则冲突
-  const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
-  const widConflict = widHit.length > 0 && String(widHit[0].id) !== selfId;
+  // 自己站点的 websiteId(小写)允许作为 demox.site 前缀(等于默认域名,无意义但不算冲突);别人的 websiteId 则冲突
+  let widConflict = false;
+  if (domain === defaultDomain) {
+    const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
+    widConflict = widHit.length > 0 && String(widHit[0].id) !== selfId;
+  }
 
   const blocked = takenByOther || widConflict;
   return {
@@ -851,6 +969,7 @@ async function handleCheckSubdomain(event) {
     body: JSON.stringify({
       success: true,
       available: !blocked,
+      domain,
       reason: blocked ? 'taken' : 'ok',
       message: blocked ? '该前缀已被占用' : '可用'
     })
@@ -868,7 +987,9 @@ async function handleSetSubdomain(event) {
   }
 
   const { docId, websiteId, subdomain } = event.body || event;
+  const body = event.body || event;
   const label = normalizeLabel(subdomain);
+  const domain = normalizeOfficialDomain(body.domain || body.subdomainDomain || body.subdomain_domain);
 
   if (!isValidLabel(label)) {
     return {
@@ -876,7 +997,19 @@ async function handleSetSubdomain(event) {
       headers: getCORSHeaders(),
       body: JSON.stringify({
         success: false,
+        reason: 'invalid',
         message: `前缀不合法：${SUBDOMAIN_RULE_MESSAGE}`
+      })
+    };
+  }
+  if (!domain) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: false,
+        reason: 'invalid_domain',
+        message: `不支持的官方域名，可选：${officialDomains.join(', ')}`
       })
     };
   }
@@ -887,7 +1020,7 @@ async function handleSetSubdomain(event) {
     const rows = await query('SELECT * FROM websites WHERE id = ?', [docId]);
     site = rows[0];
   } else if (websiteId) {
-    const rows = await query('SELECT * FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    const rows = await query('SELECT * FROM websites WHERE website_id = ? LIMIT 1', [websiteId]);
     site = rows[0];
   }
 
@@ -898,7 +1031,7 @@ async function handleSetSubdomain(event) {
       body: JSON.stringify({ success: false, message: '站点不存在' })
     };
   }
-  if (site.user_id !== userId) {
+  if (!(await canUserManageSite(userId, site))) {
     return {
       statusCode: 403,
       headers: getCORSHeaders(),
@@ -909,25 +1042,30 @@ async function handleSetSubdomain(event) {
   // 并发安全：不做"先查后写"（有 TOCTOU 竞争），直接靠 subdomain 列的唯一索引兜底。
   // 用条件 UPDATE：仅当目标前缀未被别人占用(不存在 / 或就是本站点)时才写入。
   try {
-    // 前缀不能撞别的站点的 websiteId(那是它的默认域名,保留)
-    const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
-    if (widHit.length > 0 && String(widHit[0].id) !== String(site.id)) {
-      return {
-        statusCode: 409,
-        headers: getCORSHeaders(),
-        body: JSON.stringify({ success: false, code: 'DUPLICATE', message: '该前缀已被占用，请换一个' })
-      };
+    // 前缀不能撞 demox.site 下别的站点 websiteId(那是它的默认域名,保留)
+    if (domain === defaultDomain) {
+      const widHit = await query('SELECT id FROM websites WHERE LOWER(website_id) = ? LIMIT 1', [label]);
+      if (widHit.length > 0 && String(widHit[0].id) !== String(site.id)) {
+        return {
+          statusCode: 409,
+          headers: getCORSHeaders(),
+          body: JSON.stringify({ success: false, code: 'DUPLICATE', message: '该前缀已被占用，请换一个' })
+        };
+      }
     }
 
     // 先确认该前缀当前是否已属于本站点（幂等：重复设置同一个前缀直接成功）
-    if (site.subdomain === label) {
+    const currentDomain = normalizeOfficialDomain(site.subdomain_domain) || defaultDomain;
+    if (site.subdomain === label && currentDomain === domain) {
       return {
         statusCode: 200,
         headers: getCORSHeaders(),
         body: JSON.stringify({
           success: true,
           subdomain: label,
-          url: `https://${label}.demox.site`,
+          subdomainDomain: domain,
+          subdomain_domain: domain,
+          url: buildCustomSiteUrl(label, domain),
           message: '该前缀已是当前站点'
         })
       };
@@ -935,8 +1073,8 @@ async function handleSetSubdomain(event) {
 
     // 条件写入：唯一索引保证并发下只有一个请求能成功；重复会抛 ER_DUP_ENTRY
     await query(
-      'UPDATE websites SET subdomain = ?, updated_at = NOW() WHERE id = ?',
-      [label, site.id]
+      'UPDATE websites SET subdomain = ?, subdomain_domain = ?, updated_at = NOW() WHERE id = ?',
+      [label, domain, site.id]
     );
 
     return {
@@ -945,7 +1083,9 @@ async function handleSetSubdomain(event) {
       body: JSON.stringify({
         success: true,
         subdomain: label,
-        url: `https://${label}.demox.site`,
+        subdomainDomain: domain,
+        subdomain_domain: domain,
+        url: buildCustomSiteUrl(label, domain),
         message: '设置成功，访问可能有最长 60 秒的边缘缓存同步延迟'
       })
     };
@@ -987,7 +1127,7 @@ async function handleClearSubdomain(event) {
     const rows = await query('SELECT * FROM websites WHERE id = ?', [docId]);
     site = rows[0];
   } else if (websiteId) {
-    const rows = await query('SELECT * FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
+    const rows = await query('SELECT * FROM websites WHERE website_id = ? LIMIT 1', [websiteId]);
     site = rows[0];
   }
 
@@ -998,7 +1138,7 @@ async function handleClearSubdomain(event) {
       body: JSON.stringify({ success: false, message: '站点不存在' })
     };
   }
-  if (site.user_id !== userId) {
+  if (!(await canUserManageSite(userId, site))) {
     return {
       statusCode: 403,
       headers: getCORSHeaders(),
@@ -1015,7 +1155,10 @@ async function handleClearSubdomain(event) {
   }
 
   try {
-    await query('UPDATE websites SET subdomain = NULL, updated_at = NOW() WHERE id = ?', [site.id]);
+    await query(
+      'UPDATE websites SET subdomain = NULL, subdomain_domain = ?, updated_at = NOW() WHERE id = ?',
+      [defaultDomain, site.id]
+    );
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
@@ -1056,32 +1199,17 @@ async function handleUpdateWebsiteVisibility(event) {
   }
 
   try {
-    const isAdmin = await checkAdmin(userId);
-    const where = [];
-    const params = [];
-    if (docId) {
-      where.push('id = ?');
-      params.push(docId);
-    } else {
-      where.push('website_id = ?');
-      params.push(websiteId);
-    }
-    if (!isAdmin) {
-      where.push('user_id = ?');
-      params.push(userId);
-    }
-
-    const rows = await query(
-      `SELECT id, user_id, website_id, subdomain, visibility FROM websites WHERE ${where.join(' AND ')} LIMIT 1`,
-      params
-    );
-    if (rows.length === 0) {
+    const site = await getWebsiteByIdentity({ docId, websiteId });
+    if (!site || !(await canUserManageSite(userId, site))) {
       return ok({ success: false, message: '站点不存在或无权限' });
     }
 
-    const site = rows[0];
     await query('UPDATE websites SET visibility = ?, updated_at = NOW() WHERE id = ?', [rawVisibility, site.id]);
-    const cachePurge = await purgeSiteCache({ websiteId: site.website_id, subdomain: site.subdomain });
+    const cachePurge = await purgeSiteCache({
+      websiteId: site.website_id,
+      subdomain: site.subdomain,
+      subdomainDomain: site.subdomain_domain
+    });
     return ok({
       success: true,
       visibility: rawVisibility,
@@ -1124,6 +1252,10 @@ function formatProjectForClient(row) {
     description: row.description || '',
     color: row.color || null,
     icon: row.icon || null,
+    role: row.project_role || row.role || null,
+    ownerUserId: row.user_id || null,
+    ownerEmail: row.owner_email || row.ownerEmail || '',
+    ownerNickname: row.owner_nickname || row.ownerNickname || '',
     archived: !!row.archived,
     websitesCount: Number(row.websites_count || row.websitesCount || 0),
     createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
@@ -1139,6 +1271,221 @@ function normalizeProjectSlug(input) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
   return slug || 'project';
+}
+
+function normalizeProjectRole(input) {
+  const role = String(input || PROJECT_ROLE_MEMBER).trim().toLowerCase();
+  return PROJECT_ROLES.includes(role) ? role : PROJECT_ROLE_MEMBER;
+}
+
+function projectRoleRank(role) {
+  if (role === PROJECT_ROLE_OWNER) return 3;
+  if (role === PROJECT_ROLE_ADMIN) return 2;
+  if (role === PROJECT_ROLE_MEMBER) return 1;
+  return 0;
+}
+
+function formatProjectMemberForClient(row) {
+  const role = normalizeProjectRole(row.role);
+  const email = String(row.email || '').trim();
+  const nickname = String(row.nickname || '').trim();
+  return {
+    userId: row.user_id || row.userId,
+    email,
+    nickname,
+    role,
+    isOwner: role === PROJECT_ROLE_OWNER,
+    joinedAt: row.joined_at ? new Date(row.joined_at).getTime() : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined
+  };
+}
+
+function formatProjectInvitationForClient(row) {
+  return {
+    id: row.id == null ? null : String(row.id),
+    projectId: row.project_id == null ? null : String(row.project_id),
+    email: row.email || '',
+    role: normalizeProjectRole(row.role),
+    status: row.status || 'pending',
+    invitedBy: row.invited_by || null,
+    acceptedBy: row.accepted_by || null,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
+    expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : undefined
+  };
+}
+
+function normalizeEmail(input) {
+  return String(input || '').trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
+}
+
+async function getUserById(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  try {
+    const rows = await query('SELECT id, email, nickname FROM users WHERE id = ? LIMIT 1', [uid]);
+    return rows[0] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function getUserByEmail(email) {
+  const clean = normalizeEmail(email);
+  if (!clean) return null;
+  const rows = await query('SELECT id, email, nickname FROM users WHERE email = ? LIMIT 1', [clean]);
+  return rows[0] || null;
+}
+
+async function ensureProjectOwnerMembership(projectId, ownerId) {
+  const pid = normalizePositiveId(projectId);
+  const uid = String(ownerId || '').trim();
+  if (!pid || !uid) return;
+  await query(
+    `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
+     VALUES (?, ?, '${PROJECT_ROLE_OWNER}', ?, NOW(), NOW())
+     ON DUPLICATE KEY UPDATE role = '${PROJECT_ROLE_OWNER}', updated_at = NOW()`,
+    [pid, uid, uid]
+  );
+}
+
+async function ensureProjectOwnerMembershipBestEffort(projectId, ownerId) {
+  try {
+    await ensureProjectOwnerMembership(projectId, ownerId);
+  } catch (e) {
+    // Collaboration migration may not be applied yet. Keep legacy project flows working.
+    console.warn('确保项目 owner 成员关系失败，跳过:', e.message);
+  }
+}
+
+async function getProjectWithUserRole(userId, projectId, { includeArchived = true } = {}) {
+  const pid = normalizePositiveId(projectId);
+  const uid = String(userId || '').trim();
+  if (!pid || !uid) return null;
+
+  const archivedSql = includeArchived ? '' : 'AND p.archived = 0';
+  try {
+    const rows = await query(
+      `SELECT p.*,
+              CASE
+                WHEN p.user_id = ? THEN '${PROJECT_ROLE_OWNER}'
+                WHEN pm.role IN ('${PROJECT_ROLE_ADMIN}', '${PROJECT_ROLE_MEMBER}') THEN pm.role
+                ELSE NULL
+              END AS project_role
+       FROM projects p
+       LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+       WHERE p.id = ? ${archivedSql}
+         AND (p.user_id = ? OR pm.user_id = ?)
+       LIMIT 1`,
+      [uid, uid, pid, uid, uid]
+    );
+    if (!rows[0]) return null;
+    return { ...rows[0], project_role: normalizeProjectRole(rows[0].project_role) };
+  } catch (e) {
+    const rows = await query(
+      `SELECT *, '${PROJECT_ROLE_OWNER}' AS project_role
+       FROM projects
+       WHERE id = ? AND user_id = ? ${includeArchived ? '' : 'AND archived = 0'}
+       LIMIT 1`,
+      [pid, uid]
+    );
+    if (!rows[0]) return null;
+    return { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+  }
+}
+
+async function getProjectRoleForUser(userId, projectId) {
+  const project = await getProjectWithUserRole(userId, projectId);
+  return project ? project.project_role : null;
+}
+
+async function canUserReadProject(userId, projectId) {
+  if (!userId || !projectId) return false;
+  if (await checkAdmin(userId)) return true;
+  return !!(await getProjectWithUserRole(userId, projectId));
+}
+
+async function canUserWriteProject(userId, projectId) {
+  if (!userId || !projectId) return false;
+  if (await checkAdmin(userId)) {
+    const rows = await query('SELECT id FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [projectId]);
+    return rows.length > 0;
+  }
+  const project = await getProjectWithUserRole(userId, projectId, { includeArchived: false });
+  return !!(project && PROJECT_WRITE_ROLES.includes(project.project_role));
+}
+
+async function getWebsiteByIdentity({ docId, websiteId }) {
+  const params = [];
+  const where = [];
+  const id = normalizePositiveId(docId);
+  if (id) {
+    where.push('id = ?');
+    params.push(id);
+  } else if (websiteId) {
+    where.push('website_id = ?');
+    params.push(String(websiteId).trim());
+  } else {
+    return null;
+  }
+  const rows = await query(`SELECT * FROM websites WHERE ${where.join(' AND ')} LIMIT 1`, params);
+  return rows[0] || null;
+}
+
+async function canUserManageSite(userId, site) {
+  if (!userId || !site) return false;
+  if (String(site.user_id || '') === String(userId)) return true;
+  if (await checkAdmin(userId)) return true;
+  if (!site.project_id) return false;
+  return await canUserWriteProject(userId, site.project_id);
+}
+
+async function acceptPendingProjectInvitationsForUser(userId) {
+  const user = await getUserById(userId);
+  const email = normalizeEmail(user?.email);
+  if (!email) return 0;
+
+  try {
+    const invitations = await query(
+      `SELECT pi.*
+       FROM project_invitations pi
+       JOIN projects p ON p.id = pi.project_id
+       WHERE pi.email = ?
+         AND pi.status = 'pending'
+         AND (pi.expires_at IS NULL OR pi.expires_at > NOW())
+         AND p.archived = 0`,
+      [email]
+    );
+    if (invitations.length === 0) return 0;
+
+    await transaction(async (conn) => {
+      for (const inv of invitations) {
+        const role = normalizeProjectRole(inv.role);
+        const safeRole = role === PROJECT_ROLE_OWNER ? PROJECT_ROLE_MEMBER : role;
+        await conn.query(
+          `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
+           VALUES (?, ?, ?, ?, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE
+             role = IF(role = '${PROJECT_ROLE_OWNER}', role, VALUES(role)),
+             updated_at = NOW()`,
+          [inv.project_id, userId, safeRole, inv.invited_by || null]
+        );
+        await conn.query(
+          `UPDATE project_invitations
+           SET status = 'accepted', accepted_by = ?, accepted_at = NOW(), updated_at = NOW()
+           WHERE id = ? AND status = 'pending'`,
+          [userId, inv.id]
+        );
+      }
+    });
+    return invitations.length;
+  } catch (e) {
+    console.warn('自动接受项目邀请失败，可能尚未执行协作迁移:', e.message);
+    return 0;
+  }
 }
 
 async function getProjectForUser(userId, projectId) {
@@ -1187,27 +1534,63 @@ async function handleListProjects(event) {
   }
 
   try {
-    if (!includeAll) await ensureDefaultProjectForUser(userId);
-    const params = [];
+    if (!includeAll) {
+      await ensureDefaultProjectForUser(userId);
+      await acceptPendingProjectInvitationsForUser(userId);
+    }
+    const params = [userId, userId];
     const where = [];
     if (!includeAll) {
-      where.push('p.user_id = ?');
-      params.push(userId);
+      where.push('(p.user_id = ? OR pm.user_id = ?)');
+      params.push(userId, userId);
     }
     if (!includeArchived) where.push('p.archived = 0');
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const rows = await query(
-      `SELECT p.*, COUNT(w.id) AS websites_count
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM websites w WHERE w.project_id = p.id) AS websites_count,
+              CASE
+                WHEN p.user_id = ? THEN '${PROJECT_ROLE_OWNER}'
+                WHEN pm.role IN ('${PROJECT_ROLE_ADMIN}', '${PROJECT_ROLE_MEMBER}') THEN pm.role
+                ELSE NULL
+              END AS project_role,
+              owner.email AS owner_email,
+              owner.nickname AS owner_nickname
        FROM projects p
-       LEFT JOIN websites w ON w.project_id = p.id
+       LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+       LEFT JOIN users owner ON owner.id = p.user_id
        ${whereSql}
-       GROUP BY p.id
        ORDER BY p.archived ASC, p.updated_at DESC, p.id ASC`,
       params
     );
     return ok({ success: true, projects: rows.map(formatProjectForClient), count: rows.length });
   } catch (e) {
-    return ok({ success: false, message: '项目表未初始化，请先执行 migrate_default_projects', error: e.message });
+    console.warn('协作项目列表查询失败，尝试 owner-only 降级:', e.message);
+    try {
+      const params = [];
+      const where = [];
+      if (!includeAll) {
+        where.push('p.user_id = ?');
+        params.push(userId);
+      }
+      if (!includeArchived) where.push('p.archived = 0');
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const rows = await query(
+        `SELECT p.*,
+                (SELECT COUNT(*) FROM websites w WHERE w.project_id = p.id) AS websites_count,
+                '${PROJECT_ROLE_OWNER}' AS project_role,
+                owner.email AS owner_email,
+                owner.nickname AS owner_nickname
+         FROM projects p
+         LEFT JOIN users owner ON owner.id = p.user_id
+         ${whereSql}
+         ORDER BY p.archived ASC, p.updated_at DESC, p.id ASC`,
+        params
+      );
+      return ok({ success: true, projects: rows.map(formatProjectForClient), count: rows.length, collaborationReady: false });
+    } catch (fallbackError) {
+      return ok({ success: false, message: '项目表未初始化，请先执行 migrate_default_projects', error: fallbackError.message });
+    }
   }
 }
 
@@ -1236,7 +1619,8 @@ async function handleCreateProject(event) {
           [userId, name, slug, description, color, icon]
         );
         const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [res.insertId]);
-        return ok({ success: true, project: formatProjectForClient(rows[0]), message: '项目已创建' });
+        await ensureProjectOwnerMembershipBestEffort(res.insertId, userId);
+        return ok({ success: true, project: formatProjectForClient({ ...rows[0], project_role: PROJECT_ROLE_OWNER }), message: '项目已创建' });
       } catch (e) {
         if (!/Duplicate entry/i.test(e.message || '') || suffix >= 20) throw e;
         suffix += 1;
@@ -1270,11 +1654,17 @@ async function handleUpdateProject(event) {
   if (sets.length === 0) return ok({ success: false, message: '没有要更新的字段' });
 
   try {
-    params.push(id, userId);
-    const res = await query(`UPDATE projects SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ? AND user_id = ?`, params);
+    const project = await getProjectWithUserRole(userId, id);
+    const isPlatformAdmin = await checkAdmin(userId);
+    if (!project && !isPlatformAdmin) return ok({ success: false, message: '项目不存在或无权限' });
+    if (project && !PROJECT_WRITE_ROLES.includes(project.project_role) && !isPlatformAdmin) {
+      return ok({ success: false, message: '只有项目 owner/admin 可以更新项目' });
+    }
+    params.push(id);
+    const res = await query(`UPDATE projects SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ?`, params);
     if (!res.affectedRows) return ok({ success: false, message: '项目不存在或无权限' });
     const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [id]);
-    return ok({ success: true, project: formatProjectForClient(rows[0]), message: '项目已更新' });
+    return ok({ success: true, project: formatProjectForClient({ ...rows[0], project_role: project?.project_role || PROJECT_ROLE_OWNER }), message: '项目已更新' });
   } catch (e) {
     return ok({ success: false, message: '更新项目失败：' + e.message });
   }
@@ -1289,10 +1679,16 @@ async function handleArchiveProject(event) {
   const archived = body.archived === undefined ? 1 : (body.archived ? 1 : 0);
 
   try {
-    const rows = await query('SELECT slug FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+    const project = await getProjectWithUserRole(userId, id);
+    const isPlatformAdmin = await checkAdmin(userId);
+    if (!project && !isPlatformAdmin) return ok({ success: false, message: '项目不存在或无权限' });
+    const rows = await query('SELECT slug FROM projects WHERE id = ? LIMIT 1', [id]);
     if (rows.length === 0) return ok({ success: false, message: '项目不存在或无权限' });
+    if (project && project.project_role !== PROJECT_ROLE_OWNER && !isPlatformAdmin) {
+      return ok({ success: false, message: '只有项目 owner 可以归档项目' });
+    }
     if (rows[0].slug === 'default' && archived) return ok({ success: false, message: 'default 项目不能归档' });
-    await query('UPDATE projects SET archived = ?, updated_at = NOW() WHERE id = ? AND user_id = ?', [archived, id, userId]);
+    await query('UPDATE projects SET archived = ?, updated_at = NOW() WHERE id = ?', [archived, id]);
     return ok({ success: true, archived: !!archived, message: archived ? '项目已归档' : '项目已恢复' });
   } catch (e) {
     return ok({ success: false, message: '归档项目失败：' + e.message });
@@ -1311,15 +1707,24 @@ async function handleSetWebsiteProject(event) {
   if (!docId && !websiteId) return ok({ success: false, message: '缺少 docId 或 websiteId' });
 
   try {
-    const isAdmin = await checkAdmin(userId);
-    const site = await getSiteForProjectMove({ userId, docId, websiteId, isAdmin });
+    const site = await getWebsiteByIdentity({ docId, websiteId });
     if (!site) return ok({ success: false, message: '站点不存在或无权限' });
+    const canManage = await canUserManageSite(userId, site);
+    if (!canManage) return ok({ success: false, message: '站点不存在或无权限' });
 
     if (!projectId) {
       projectId = await ensureDefaultProjectForUser(site.user_id);
     }
-    const project = await getProjectForUser(site.user_id, projectId);
-    if (!project || project.archived) return ok({ success: false, message: '目标项目不存在或已归档' });
+    const isPlatformAdmin = await checkAdmin(userId);
+    let project = await getProjectWithUserRole(userId, projectId, { includeArchived: false });
+    if (!project && isPlatformAdmin) {
+      const rows = await query('SELECT * FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [projectId]);
+      if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+    }
+    if (!project) return ok({ success: false, message: '目标项目不存在或已归档' });
+    if (!isPlatformAdmin && !PROJECT_WRITE_ROLES.includes(project.project_role)) {
+      return ok({ success: false, message: '只有目标项目 owner/admin 可以移动站点' });
+    }
 
     await query('UPDATE websites SET project_id = ?, updated_at = NOW() WHERE id = ?', [project.id, site.id]);
     return ok({
@@ -1331,6 +1736,244 @@ async function handleSetWebsiteProject(event) {
     });
   } catch (e) {
     return ok({ success: false, message: '移动站点失败：' + e.message });
+  }
+}
+
+async function requireProjectMembershipManager(userId, projectId) {
+  const isPlatformAdmin = await checkAdmin(userId);
+  let project = await getProjectWithUserRole(userId, projectId);
+  if (!project && isPlatformAdmin) {
+    const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
+    if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+  }
+  if (!project) {
+    return { error: '项目不存在或无权限' };
+  }
+  if (!isPlatformAdmin && !PROJECT_WRITE_ROLES.includes(project.project_role)) {
+    return { error: '只有项目 owner/admin 可以管理成员' };
+  }
+  return { project, role: project.project_role, isPlatformAdmin };
+}
+
+async function handleListProjectMembers(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = normalizePositiveId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+
+  try {
+    const project = await getProjectWithUserRole(userId, projectId);
+    const isPlatformAdmin = await checkAdmin(userId);
+    if (!project && !isPlatformAdmin) return ok({ success: false, message: '项目不存在或无权限' });
+    if (project) await ensureProjectOwnerMembershipBestEffort(project.id, project.user_id);
+
+    const members = await query(
+      `SELECT pm.project_id, pm.user_id, pm.role, pm.joined_at, pm.updated_at,
+              u.email, u.nickname
+       FROM project_members pm
+       LEFT JOIN users u ON u.id = pm.user_id
+       WHERE pm.project_id = ?
+       ORDER BY
+         CASE pm.role
+           WHEN '${PROJECT_ROLE_OWNER}' THEN 1
+           WHEN '${PROJECT_ROLE_ADMIN}' THEN 2
+           ELSE 3
+         END,
+         pm.joined_at ASC`,
+      [projectId]
+    );
+    const invitations = await query(
+      `SELECT *
+       FROM project_invitations
+       WHERE project_id = ? AND status = 'pending'
+       ORDER BY created_at DESC`,
+      [projectId]
+    );
+
+    return ok({
+      success: true,
+      project: project ? formatProjectForClient(project) : null,
+      role: project?.project_role || (isPlatformAdmin ? PROJECT_ROLE_OWNER : null),
+      members: members.map(formatProjectMemberForClient),
+      invitations: invitations.map(formatProjectInvitationForClient)
+    });
+  } catch (e) {
+    return ok({ success: false, message: '协作表未初始化，请先执行 migrate_project_collaboration', error: e.message });
+  }
+}
+
+async function handleInviteProjectMember(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = normalizePositiveId(body.projectId || body.id);
+  const email = normalizeEmail(body.email);
+  const role = normalizeProjectRole(body.role);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!isValidEmail(email)) return ok({ success: false, message: '请输入有效邮箱' });
+  if (role === PROJECT_ROLE_OWNER) return ok({ success: false, message: 'owner 只能由项目创建者担任' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && role === PROJECT_ROLE_ADMIN) {
+      return ok({ success: false, message: 'admin 只能邀请 member' });
+    }
+    await ensureProjectOwnerMembershipBestEffort(projectId, access.project.user_id);
+
+    const targetUser = await getUserByEmail(email);
+    if (targetUser) {
+      if (String(targetUser.id) === String(access.project.user_id)) {
+        return ok({ success: true, member: formatProjectMemberForClient({
+          user_id: targetUser.id,
+          email: targetUser.email,
+          nickname: targetUser.nickname,
+          role: PROJECT_ROLE_OWNER
+        }), message: '该用户已经是项目 owner' });
+      }
+
+      const currentRows = await query('SELECT role FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1', [projectId, targetUser.id]);
+      if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && currentRows.length > 0) {
+        const currentRole = normalizeProjectRole(currentRows[0].role);
+        if (currentRole !== PROJECT_ROLE_MEMBER) {
+          return ok({ success: false, message: 'admin 只能管理 member' });
+        }
+      }
+
+      await query(
+        `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
+         VALUES (?, ?, ?, ?, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE
+           role = IF(role = '${PROJECT_ROLE_OWNER}', role, VALUES(role)),
+           invited_by = VALUES(invited_by),
+           updated_at = NOW()`,
+        [projectId, targetUser.id, role, userId]
+      );
+      await query(
+        `UPDATE project_invitations
+         SET status = 'accepted', accepted_by = ?, accepted_at = NOW(), updated_at = NOW()
+         WHERE project_id = ? AND email = ? AND status = 'pending'`,
+        [targetUser.id, projectId, email]
+      );
+      return ok({
+        success: true,
+        member: formatProjectMemberForClient({
+          user_id: targetUser.id,
+          email: targetUser.email,
+          nickname: targetUser.nickname,
+          role
+        }),
+        message: '成员已加入项目'
+      });
+    }
+
+    const token = nodeCrypto.randomBytes(24).toString('hex');
+    await query(
+      `INSERT INTO project_invitations (project_id, email, role, token, invited_by, status, expires_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', DATE_ADD(NOW(), INTERVAL 30 DAY))
+       ON DUPLICATE KEY UPDATE role = VALUES(role), token = VALUES(token), invited_by = VALUES(invited_by),
+         status = 'pending', expires_at = VALUES(expires_at), updated_at = NOW()`,
+      [projectId, email, role, token, userId]
+    );
+    const rows = await query(
+      `SELECT * FROM project_invitations WHERE project_id = ? AND email = ? AND status = 'pending' LIMIT 1`,
+      [projectId, email]
+    );
+    return ok({
+      success: true,
+      invitation: rows[0] ? formatProjectInvitationForClient(rows[0]) : { email, role, status: 'pending' },
+      message: '邀请已记录，对方注册或登录该邮箱后会自动加入项目'
+    });
+  } catch (e) {
+    return ok({ success: false, message: '邀请失败：' + e.message });
+  }
+}
+
+async function handleUpdateProjectMemberRole(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = normalizePositiveId(body.projectId || body.id);
+  const targetUserId = String(body.userId || body.uid || '').trim();
+  const role = normalizeProjectRole(body.role);
+  if (!projectId || !targetUserId) return ok({ success: false, message: '缺少 projectId 或 userId' });
+  if (role === PROJECT_ROLE_OWNER) return ok({ success: false, message: '不能把成员设置为 owner' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    if (String(targetUserId) === String(access.project.user_id)) {
+      return ok({ success: false, message: '不能修改项目 owner 的角色' });
+    }
+
+    const currentRows = await query('SELECT role FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1', [projectId, targetUserId]);
+    if (currentRows.length === 0) return ok({ success: false, message: '成员不存在' });
+    const currentRole = normalizeProjectRole(currentRows[0].role);
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN) {
+      if (projectRoleRank(currentRole) >= projectRoleRank(PROJECT_ROLE_ADMIN) || role === PROJECT_ROLE_ADMIN) {
+        return ok({ success: false, message: 'admin 只能管理 member' });
+      }
+    }
+
+    await query(
+      `UPDATE project_members SET role = ?, updated_at = NOW()
+       WHERE project_id = ? AND user_id = ? AND role <> '${PROJECT_ROLE_OWNER}'`,
+      [role, projectId, targetUserId]
+    );
+    const target = await getUserById(targetUserId);
+    return ok({
+      success: true,
+      member: formatProjectMemberForClient({
+        user_id: targetUserId,
+        email: target?.email || '',
+        nickname: target?.nickname || '',
+        role
+      }),
+      message: '成员角色已更新'
+    });
+  } catch (e) {
+    return ok({ success: false, message: '更新成员角色失败：' + e.message });
+  }
+}
+
+async function handleRemoveProjectMember(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = normalizePositiveId(body.projectId || body.id);
+  const targetUserId = String(body.userId || body.uid || '').trim();
+  if (!projectId || !targetUserId) return ok({ success: false, message: '缺少 projectId 或 userId' });
+
+  try {
+    const projectRows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
+    const project = projectRows[0];
+    if (!project) return ok({ success: false, message: '项目不存在' });
+    if (String(targetUserId) === String(project.user_id)) {
+      return ok({ success: false, message: '不能移除项目 owner' });
+    }
+
+    const currentRows = await query('SELECT role FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1', [projectId, targetUserId]);
+    if (currentRows.length === 0) return ok({ success: false, message: '成员不存在' });
+    const targetRole = normalizeProjectRole(currentRows[0].role);
+    const leavingSelf = String(targetUserId) === String(userId);
+    let access = null;
+    if (!leavingSelf) {
+      access = await requireProjectMembershipManager(userId, projectId);
+      if (access.error) return ok({ success: false, message: access.error });
+      if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && targetRole !== PROJECT_ROLE_MEMBER) {
+        return ok({ success: false, message: 'admin 只能移除 member' });
+      }
+    }
+
+    await query('DELETE FROM project_members WHERE project_id = ? AND user_id = ? AND role <> ?', [projectId, targetUserId, PROJECT_ROLE_OWNER]);
+    return ok({ success: true, removedUserId: targetUserId, message: leavingSelf ? '已退出项目' : '成员已移除' });
+  } catch (e) {
+    return ok({ success: false, message: '移除成员失败：' + e.message });
   }
 }
 
@@ -1578,23 +2221,36 @@ async function handleResolveUserEmails(event) {
   }
 }
 
-async function queryResolvedSiteByLabel(label, { withBucket = true, withVisibility = true } = {}) {
+async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBucket = true, withVisibility = true, withSubdomainDomain = true } = {}) {
   const visibilityExpr = withVisibility
     ? `COALESCE(NULLIF(w.visibility, ''), '${VISIBILITY_PUBLIC}')`
     : `'${VISIBILITY_PUBLIC}'`;
   const originExpr = withBucket ? 'b.origin_host' : 'NULL';
   const bucketJoin = withBucket ? 'LEFT JOIN storage_buckets b ON b.id = w.bucket_id' : '';
+  const subdomainDomainExpr = withSubdomainDomain
+    ? `COALESCE(NULLIF(w.subdomain_domain, ''), '${defaultDomain}')`
+    : `'${defaultDomain}'`;
   const selectSql =
     `SELECT w.path AS path,
             w.user_id AS user_id,
+            w.project_id AS project_id,
             w.website_id AS website_id,
             w.subdomain AS subdomain,
+            ${subdomainDomainExpr} AS subdomain_domain,
             ${visibilityExpr} AS visibility,
             ${originExpr} AS origin_host
      FROM websites w ${bucketJoin}`;
 
-  let rows = await query(`${selectSql} WHERE w.subdomain = ? LIMIT 1`, [label]);
-  if (rows.length === 0) {
+  let rows = [];
+  if (withSubdomainDomain) {
+    rows = await query(
+      `${selectSql} WHERE w.subdomain = ? AND ${subdomainDomainExpr} = ? LIMIT 1`,
+      [label, domain]
+    );
+  } else if (domain === defaultDomain) {
+    rows = await query(`${selectSql} WHERE w.subdomain = ? LIMIT 1`, [label]);
+  }
+  if (rows.length === 0 && domain === defaultDomain) {
     rows = await query(`${selectSql} WHERE LOWER(w.website_id) = ? LIMIT 1`, [label]);
   }
   return rows;
@@ -1606,16 +2262,17 @@ async function queryResolvedSiteByLabel(label, { withBucket = true, withVisibili
  * 2) visibility
  * 3) 旧表结构(public)
  */
-async function resolveSiteMetadataByLabel(label) {
+async function resolveSiteMetadataByLabel(label, domain = defaultDomain) {
   const modes = [
-    { withBucket: true, withVisibility: true },
-    { withBucket: false, withVisibility: true },
-    { withBucket: false, withVisibility: false }
+    { withBucket: true, withVisibility: true, withSubdomainDomain: true },
+    { withBucket: false, withVisibility: true, withSubdomainDomain: true },
+    { withBucket: false, withVisibility: false, withSubdomainDomain: true },
+    { withBucket: false, withVisibility: false, withSubdomainDomain: false }
   ];
   let lastErr = null;
   for (const mode of modes) {
     try {
-      const rows = await queryResolvedSiteByLabel(label, mode);
+      const rows = await queryResolvedSiteByLabel(label, domain, mode);
       return rows.length > 0 ? rows[0] : null;
     } catch (e) {
       lastErr = e;
@@ -1631,8 +2288,17 @@ async function resolveSiteMetadataByLabel(label) {
  * 无需鉴权：只返回站点路由必要信息，供边缘函数判断 public/private 与回源。
  */
 async function handleResolveSubdomain(event) {
-  const { subdomain } = event.body || event;
+  const body = event.body || event;
+  let { subdomain, domain } = body;
+  if (body.host && !subdomain) {
+    const parsed = parseOfficialHost(body.host);
+    if (parsed) {
+      subdomain = parsed.label;
+      domain = parsed.domain;
+    }
+  }
   const label = String(subdomain || '').trim().toLowerCase();
+  const suffix = normalizeOfficialDomain(domain);
 
   if (!label) {
     return {
@@ -1641,9 +2307,16 @@ async function handleResolveSubdomain(event) {
       body: JSON.stringify({ success: false, message: 'Missing subdomain' })
     };
   }
+  if (!suffix) {
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: 'unsupported official domain' })
+    };
+  }
 
   try {
-    const site = await resolveSiteMetadataByLabel(label);
+    const site = await resolveSiteMetadataByLabel(label, suffix);
     if (!site || !site.path) {
       return {
         statusCode: 200,
@@ -1658,6 +2331,8 @@ async function handleResolveSubdomain(event) {
         success: true,
         path: site.path,
         origin: site.origin_host || null,
+        domain: suffix,
+        host: `${label}.${suffix}`,
         visibility: normalizeVisibility(site.visibility)
       })
     };
@@ -1673,15 +2348,25 @@ async function handleResolveSubdomain(event) {
 
 /**
  * 边缘函数调用：检查当前 token 是否可访问 label 对应站点。
- * public 永远允许；private 仅 owner 或 admin 可访问。
+ * public 永远允许；private 仅站点 owner、平台 admin 或项目成员可访问。
  */
 async function handleCheckSiteAccess(event) {
   const body = event.body || event;
-  const label = String(body.label || body.subdomain || '').trim().toLowerCase();
+  let label = String(body.label || body.subdomain || '').trim().toLowerCase();
+  let domain = body.domain || body.subdomainDomain || body.subdomain_domain;
+  if (body.host && !label) {
+    const parsed = parseOfficialHost(body.host);
+    if (parsed) {
+      label = parsed.label;
+      domain = parsed.domain;
+    }
+  }
+  const suffix = normalizeOfficialDomain(domain);
   if (!label) return ok({ success: false, allowed: false, message: 'Missing label' });
+  if (!suffix) return ok({ success: false, allowed: false, message: 'Unsupported official domain' });
 
   try {
-    const site = await resolveSiteMetadataByLabel(label);
+    const site = await resolveSiteMetadataByLabel(label, suffix);
     if (!site || !site.path) {
       return ok({ success: true, allowed: false, reason: 'not_found' });
     }
@@ -1708,7 +2393,14 @@ async function handleCheckSiteAccess(event) {
 
     const isAdmin = await checkAdmin(user.userId);
     if (isAdmin) {
-      return ok({ success: true, allowed: true, visibility, role: 'admin' });
+      return ok({ success: true, allowed: true, visibility, role: 'platform_admin' });
+    }
+
+    if (site.project_id) {
+      const role = await getProjectRoleForUser(user.userId, site.project_id);
+      if (role) {
+        return ok({ success: true, allowed: true, visibility, role });
+      }
     }
 
     return ok({
@@ -1725,7 +2417,7 @@ async function handleCheckSiteAccess(event) {
 }
 
 /**
- * 临时迁移：给 websites 表加 subdomain 列 + 唯一索引（幂等）。
+ * 临时迁移：给 websites 表加 subdomain/subdomain_domain 列 + 官方域名唯一索引（幂等）。
  * 用一次性密钥授权（body.migrationKey === env.MIGRATION_KEY），不依赖 DB 角色，
  * 避免“查 admin 需先连库”的鸡生蛋问题。迁移完成后可删除本 handler、路由和环境变量。
  */
@@ -1756,16 +2448,49 @@ async function handleMigrateSubdomain(event) {
       steps.push('column subdomain already exists');
     }
 
-    // 唯一索引是否已存在
+    const domainCol = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'subdomain_domain'`
+    );
+    if (domainCol[0].c === 0) {
+      await query(
+        `ALTER TABLE websites
+         ADD COLUMN subdomain_domain VARCHAR(255) NOT NULL DEFAULT '${defaultDomain}'
+         COMMENT '官方域名后缀，如 demox.site / vibeme.cn'`
+      );
+      steps.push('added column subdomain_domain');
+    } else {
+      steps.push('column subdomain_domain already exists');
+    }
+
+    await query(
+      `UPDATE websites
+       SET subdomain_domain = '${defaultDomain}'
+       WHERE subdomain_domain IS NULL OR subdomain_domain = ''`
+    );
+    steps.push('normalized empty subdomain_domain');
+
+    // 旧索引全局唯一 subdomain；新模型改为同一官方域名下唯一。
     const idx = await query(
       `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'uniq_subdomain'`
     );
-    if (idx[0].c === 0) {
-      await query(`ALTER TABLE websites ADD UNIQUE KEY uniq_subdomain (subdomain)`);
-      steps.push('added unique index uniq_subdomain');
+    if (idx[0].c > 0) {
+      await query(`ALTER TABLE websites DROP INDEX uniq_subdomain`);
+      steps.push('dropped legacy unique index uniq_subdomain');
     } else {
-      steps.push('index uniq_subdomain already exists');
+      steps.push('legacy index uniq_subdomain not found');
+    }
+
+    const scopedIdx = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'uniq_official_subdomain'`
+    );
+    if (scopedIdx[0].c === 0) {
+      await query(`ALTER TABLE websites ADD UNIQUE KEY uniq_official_subdomain (subdomain_domain, subdomain)`);
+      steps.push('added unique index uniq_official_subdomain');
+    } else {
+      steps.push('index uniq_official_subdomain already exists');
     }
 
     return {
@@ -1992,6 +2717,97 @@ async function handleMigrateSiteVisibility(event) {
 }
 
 /**
+ * 项目协作迁移：项目成员 + 邀请。项目创建者会被回填为 owner。
+ * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
+ */
+async function handleMigrateProjectCollaboration(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return {
+      statusCode: 403,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '迁移密钥无效' })
+    };
+  }
+
+  const steps = [];
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS project_members (
+        project_id BIGINT NOT NULL COMMENT 'projects.id',
+        user_id    VARCHAR(64) NOT NULL COMMENT '成员用户ID',
+        role       VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'owner/admin/member',
+        invited_by VARCHAR(64) DEFAULT NULL,
+        joined_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, user_id),
+        INDEX idx_project_members_user (user_id, role),
+        INDEX idx_project_members_project_role (project_id, role)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目成员表'`
+    );
+    steps.push('ensured project_members table');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS project_invitations (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_id  BIGINT NOT NULL COMMENT 'projects.id',
+        email       VARCHAR(255) NOT NULL COMMENT '受邀邮箱，小写',
+        role        VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'admin/member',
+        token       VARCHAR(64) DEFAULT NULL,
+        invited_by  VARCHAR(64) NOT NULL,
+        status      VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/accepted/canceled/expired',
+        accepted_by VARCHAR(64) DEFAULT NULL,
+        accepted_at TIMESTAMP NULL DEFAULT NULL,
+        expires_at  TIMESTAMP NULL DEFAULT NULL,
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_project_invite_status (project_id, email, status),
+        INDEX idx_project_invitations_email_status (email, status),
+        INDEX idx_project_invitations_project_status (project_id, status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目邀请表'`
+    );
+    steps.push('ensured project_invitations table');
+
+    const ownerRowsBefore = await query(`SELECT COUNT(*) AS c FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}'`);
+    const backfill = await query(
+      `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
+       SELECT id, user_id, '${PROJECT_ROLE_OWNER}', user_id, created_at, NOW()
+       FROM projects
+       WHERE user_id IS NOT NULL AND user_id <> ''
+       ON DUPLICATE KEY UPDATE role = '${PROJECT_ROLE_OWNER}', updated_at = NOW()`
+    );
+    steps.push(`backfilled owner memberships: ${backfill.affectedRows || 0}`);
+
+    await query(
+      `UPDATE project_members
+       SET role = '${PROJECT_ROLE_MEMBER}'
+       WHERE role NOT IN ('${PROJECT_ROLE_OWNER}', '${PROJECT_ROLE_ADMIN}', '${PROJECT_ROLE_MEMBER}')`
+    );
+    steps.push('normalized invalid member roles');
+
+    const totals = await query(
+      `SELECT
+         (SELECT COUNT(*) FROM project_members) AS membersTotal,
+         (SELECT COUNT(*) FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}') AS ownersTotal,
+         (SELECT COUNT(*) FROM project_invitations WHERE status = 'pending') AS pendingInvitations`
+    );
+
+    return ok({
+      success: true,
+      steps,
+      createdOwnerMemberships: Math.max(0, Number(totals[0]?.ownersTotal || 0) - Number(ownerRowsBefore[0]?.c || 0)),
+      membersTotal: Number(totals[0]?.membersTotal || 0),
+      ownersTotal: Number(totals[0]?.ownersTotal || 0),
+      pendingInvitations: Number(totals[0]?.pendingInvitations || 0)
+    });
+  } catch (error) {
+    console.error('项目协作迁移失败:', error);
+    return ok({ success: false, steps, message: error.message });
+  }
+}
+
+/**
  * 确保用户有 default 项目。项目表未迁移时静默降级，避免影响部署主流程。
  * @returns {Promise<number|null>} default project id
  */
@@ -2009,7 +2825,11 @@ async function ensureDefaultProjectForUser(userId) {
       `SELECT id FROM projects WHERE user_id = ? AND slug = 'default' LIMIT 1`,
       [uid]
     );
-    return rows.length > 0 ? rows[0].id : null;
+    if (rows.length > 0) {
+      await ensureProjectOwnerMembershipBestEffort(rows[0].id, uid);
+      return rows[0].id;
+    }
+    return null;
   } catch (e) {
     console.warn('确保 default 项目失败，跳过项目归属写入:', e.message);
     return null;
@@ -2041,19 +2861,295 @@ async function assignWebsiteProject(userId, websiteId, projectId) {
   const pid = normalizePositiveId(projectId);
   if (!pid) return await ensureWebsiteDefaultProject(userId, websiteId);
   try {
-    const project = await getProjectForUser(userId, pid);
-    if (!project || project.archived) {
+    let project = await getProjectWithUserRole(userId, pid, { includeArchived: false });
+    const isPlatformAdmin = await checkAdmin(userId);
+    if (!project && isPlatformAdmin) {
+      const rows = await query('SELECT * FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [pid]);
+      if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+    }
+    if (!project && !isPlatformAdmin) {
+      throw new Error('目标项目不存在、已归档或无权限');
+    }
+    if (!project) {
       throw new Error('目标项目不存在或已归档');
     }
+    if (project && !PROJECT_WRITE_ROLES.includes(project.project_role) && !isPlatformAdmin) {
+      throw new Error('只有项目 owner/admin 可以写入站点');
+    }
     await query(
-      `UPDATE websites SET project_id = ? WHERE user_id = ? AND website_id = ?`,
-      [project.id, userId, websiteId]
+      `UPDATE websites SET project_id = ? WHERE website_id = ?`,
+      [pid, websiteId]
     );
-    return project.id;
+    return pid;
   } catch (e) {
     console.warn('写入站点项目失败:', e.message);
     throw e;
   }
+}
+
+function isSafeZipEntry(entry) {
+  if (!entry || entry.isDirectory) return false;
+  const name = String(entry.entryName || '').replace(/\\/g, '/');
+  if (!name || name.startsWith('/') || name.includes('..')) return false;
+  if (name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
+  return true;
+}
+
+function getDeployEntryRecords(zipEntries) {
+  const validEntries = zipEntries.filter(isSafeZipEntry);
+  let commonPrefix = '';
+  if (validEntries.length > 0) {
+    const parts = String(validEntries[0].entryName || '').replace(/\\/g, '/').split('/');
+    if (parts.length > 1) {
+      const potentialPrefix = parts[0] + '/';
+      const allMatch = validEntries.every(e =>
+        String(e.entryName || '').replace(/\\/g, '/').startsWith(potentialPrefix)
+      );
+      if (allMatch) commonPrefix = potentialPrefix;
+    }
+  }
+
+  return validEntries.map((entry) => {
+    let name = String(entry.entryName || '').replace(/\\/g, '/');
+    if (commonPrefix && name.startsWith(commonPrefix)) {
+      name = name.slice(commonPrefix.length);
+    }
+    return {
+      entry,
+      originalName: String(entry.entryName || '').replace(/\\/g, '/'),
+      name,
+      lowerName: name.toLowerCase()
+    };
+  }).filter(r => r.name && !r.name.endsWith('/'));
+}
+
+function readEntryText(entry, maxBytes = 1024 * 1024) {
+  try {
+    const buf = entry.getData();
+    return buf.slice(0, maxBytes).toString('utf8');
+  } catch (e) {
+    return '';
+  }
+}
+
+function stripUrlNoise(value) {
+  try {
+    return decodeURIComponent(String(value || '').split('#')[0].split('?')[0]);
+  } catch (e) {
+    return String(value || '').split('#')[0].split('?')[0];
+  }
+}
+
+function isExternalOrSpecialUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.startsWith('#')) return true;
+  return /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(raw) ||
+    /^(?:data|mailto|tel|javascript|blob):/i.test(raw);
+}
+
+function normalizeHtmlRef(ref, htmlPath) {
+  if (isExternalOrSpecialUrl(ref)) return '';
+  const cleaned = stripUrlNoise(ref).trim();
+  if (!cleaned || cleaned.startsWith('#')) return '';
+  const withoutLeading = cleaned.startsWith('/') ? cleaned.slice(1) : cleaned;
+  const baseDir = String(htmlPath || '').includes('/')
+    ? String(htmlPath).split('/').slice(0, -1).join('/')
+    : '';
+  const combined = cleaned.startsWith('/')
+    ? withoutLeading
+    : (baseDir ? `${baseDir}/${withoutLeading}` : withoutLeading);
+  const parts = [];
+  for (const part of combined.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function extractHtmlAssetRefs(html) {
+  const refs = [];
+  const add = (kind, value) => {
+    if (value) refs.push({ kind, value: String(value).trim() });
+  };
+
+  const scriptRe = /<script\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1[^>]*>/gi;
+  let m;
+  while ((m = scriptRe.exec(html))) add('script', m[2]);
+
+  const linkRe = /<link\b[^>]*>/gi;
+  while ((m = linkRe.exec(html))) {
+    const tag = m[0];
+    const href = /\bhref\s*=\s*(['"])(.*?)\1/i.exec(tag);
+    if (!href) continue;
+    const rel = (/\brel\s*=\s*(['"])(.*?)\1/i.exec(tag)?.[2] || '').toLowerCase();
+    if (/(stylesheet|modulepreload|preload|icon)/.test(rel)) {
+      add(rel || 'link', href[2]);
+    }
+  }
+
+  return refs;
+}
+
+function collectSourcePackageSignals(records) {
+  const names = new Set(records.map(r => r.lowerName));
+  const rootPackage = records.find(r => r.lowerName === 'package.json');
+  const configMarkers = records
+    .filter(r => /^(vite|next|nuxt|astro|svelte|webpack|rollup|parcel|rsbuild|rspack|angular|vue|tailwind|postcss)\.config\.(js|cjs|mjs|ts|mts|cts)$/i.test(r.name))
+    .map(r => r.name);
+  const sourceDirs = ['src/', 'app/', 'pages/', 'components/'];
+  const sourceDirHits = sourceDirs.filter(prefix => records.some(r => r.lowerName.startsWith(prefix)));
+  const lockFiles = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb']
+    .filter(name => names.has(name));
+  const nodeModules = records.some(r => r.lowerName.startsWith('node_modules/'));
+
+  let packageLooksLikeFrontend = false;
+  let packageHints = [];
+  if (rootPackage) {
+    try {
+      const pkg = JSON.parse(readEntryText(rootPackage.entry, 256 * 1024) || '{}');
+      const deps = {
+        ...(pkg.dependencies || {}),
+        ...(pkg.devDependencies || {}),
+        ...(pkg.peerDependencies || {})
+      };
+      const depNames = Object.keys(deps);
+      packageHints = depNames.filter(name =>
+        /^(vite|next|nuxt|astro|svelte|react|react-dom|vue|@vitejs\/|@sveltejs\/|@astrojs\/|@angular\/|webpack|parcel|tailwindcss)$/i.test(name)
+      );
+      const scripts = pkg.scripts || {};
+      packageLooksLikeFrontend = packageHints.length > 0 ||
+        Boolean(scripts.build || scripts.dev || scripts.start);
+    } catch (e) {
+      packageLooksLikeFrontend = true;
+    }
+  }
+
+  return {
+    rootPackage: !!rootPackage,
+    configMarkers,
+    sourceDirHits,
+    lockFiles,
+    nodeModules,
+    packageLooksLikeFrontend,
+    packageHints
+  };
+}
+
+function sourcePackageMessage(reasons = []) {
+  const detail = reasons.length ? `\n检测到：${reasons.slice(0, 8).join('、')}` : '';
+  return [
+    '检测到你上传的是前端源码项目，而不是静态构建产物，已停止部署。',
+    detail,
+    'Demox 当前只托管可直接访问的静态文件。',
+    '请在本地项目根目录执行：npm install && npm run build',
+    '然后上传构建输出目录的压缩包：Vite/React/Vue/Astro 通常是 dist.zip，Next 静态导出通常是 out.zip。',
+    '不要上传 package.json、src/、node_modules/ 或 vite.config.ts 所在的项目根目录。'
+  ].filter(Boolean).join('\n');
+}
+
+function validateStaticSiteZip(zipEntries) {
+  const records = getDeployEntryRecords(zipEntries);
+  const names = new Set(records.map(r => r.lowerName));
+  const sourceSignals = collectSourcePackageSignals(records);
+  const sourceReasons = [];
+
+  if (sourceSignals.nodeModules) {
+    return {
+      valid: false,
+      code: 'NODE_MODULES_UPLOADED',
+      message: [
+        '检测到压缩包里包含 node_modules，已停止部署。',
+        '请不要上传依赖目录。静态站点只需要上传构建后的 dist/build/out 目录。'
+      ].join('\n')
+    };
+  }
+
+  if (sourceSignals.rootPackage && sourceSignals.packageLooksLikeFrontend) sourceReasons.push('package.json');
+  if (sourceSignals.configMarkers.length) sourceReasons.push(...sourceSignals.configMarkers.slice(0, 4));
+  if (sourceSignals.sourceDirHits.length) sourceReasons.push(...sourceSignals.sourceDirHits.map(x => x.replace(/\/$/, '/ 目录')));
+  if (sourceSignals.lockFiles.length) sourceReasons.push(...sourceSignals.lockFiles.slice(0, 3));
+  if (sourceSignals.packageHints.length) sourceReasons.push(...sourceSignals.packageHints.slice(0, 4));
+
+  const rootIndex = records.find(r => r.lowerName === 'index.html');
+  if (!rootIndex) {
+    if (sourceReasons.length || names.has('dist/index.html') || names.has('build/index.html') || names.has('out/index.html')) {
+      return {
+        valid: false,
+        code: 'SOURCE_PACKAGE_NO_ROOT_INDEX',
+        message: sourcePackageMessage(sourceReasons.length ? sourceReasons : ['未在压缩包根目录找到 index.html'])
+      };
+    }
+    return {
+      valid: false,
+      code: 'MISSING_INDEX',
+      message: [
+        'ZIP 根目录必须包含 index.html，已停止部署。',
+        '如果这是前端项目，请先运行 npm run build，然后只上传构建输出目录（例如 dist.zip / build.zip / out.zip）。'
+      ].join('\n')
+    };
+  }
+
+  const htmlRecords = records.filter(r => /\.html?$/i.test(r.name));
+  const sourceRefs = [];
+  const missingAssets = [];
+  for (const htmlRecord of htmlRecords) {
+    const html = readEntryText(htmlRecord.entry);
+    const refs = extractHtmlAssetRefs(html);
+    for (const ref of refs) {
+      const normalized = normalizeHtmlRef(ref.value, htmlRecord.name);
+      if (!normalized) continue;
+      const lower = normalized.toLowerCase();
+      if (
+        lower.startsWith('src/') ||
+        /\.(ts|tsx|jsx|vue|svelte|astro)$/i.test(lower) ||
+        /(^|\/)(vite|webpack|next)\.config\./i.test(lower)
+      ) {
+        sourceRefs.push(`${htmlRecord.name} -> ${ref.value}`);
+        continue;
+      }
+
+      if (ref.kind === 'script' || ref.kind === 'stylesheet' || ref.kind === 'modulepreload') {
+        const ext = path.extname(lower);
+        if (['.js', '.mjs', '.css'].includes(ext) && !names.has(lower)) {
+          missingAssets.push(`${htmlRecord.name} -> ${ref.value}`);
+        }
+      }
+    }
+  }
+
+  if (sourceRefs.length > 0) {
+    return {
+      valid: false,
+      code: 'HTML_REFERENCES_SOURCE',
+      message: sourcePackageMessage([...sourceReasons, ...sourceRefs.slice(0, 4)])
+    };
+  }
+
+  if (sourceReasons.length > 0) {
+    return {
+      valid: false,
+      code: 'SOURCE_PACKAGE',
+      message: sourcePackageMessage(sourceReasons)
+    };
+  }
+
+  if (missingAssets.length > 0) {
+    return {
+      valid: false,
+      code: 'MISSING_STATIC_ASSETS',
+      message: [
+        '检测到 index.html 引用了不存在的 JS/CSS 文件，已停止部署。',
+        `缺失资源：${missingAssets.slice(0, 6).join('、')}`,
+        '请确认上传的是完整构建产物目录，而不是只上传了 index.html。'
+      ].join('\n')
+    };
+  }
+
+  return { valid: true };
 }
 
 // ===========================================================================
@@ -2352,12 +3448,20 @@ async function handleUploadAndDeploy(event) {
     const zipEntries = zip.getEntries();
 
     // 检查文件数量限制
-    const validEntries = zipEntries.filter(e =>
-      !e.isDirectory &&
-      !e.entryName.includes('..') &&
-      !e.entryName.includes('__MACOSX') &&
-      !e.entryName.includes('.DS_Store')
-    );
+    const validEntries = zipEntries.filter(isSafeZipEntry);
+
+    const staticValidation = validateStaticSiteZip(zipEntries);
+    if (!staticValidation.valid) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({
+          success: false,
+          code: staticValidation.code || 'INVALID_STATIC_SITE',
+          message: staticValidation.message || '上传包不是可直接访问的静态站点'
+        })
+      };
+    }
 
     if (roleConfig.max_file_count && validEntries.length > roleConfig.max_file_count) {
       return {
@@ -2383,25 +3487,42 @@ async function handleUploadAndDeploy(event) {
       };
     }
 
-    // 检查部署数量限制
+    // 生成或使用现有的 websiteId；重部署允许项目 owner/admin 操作协作项目中的站点。
+    const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : generateWebsiteId();
+    const existing = inputWebsiteId
+      ? await query('SELECT * FROM websites WHERE website_id = ? LIMIT 1', [websiteId])
+      : [];
+    if (existing.length > 0 && !(await canUserManageSite(userId, existing[0]))) {
+      return {
+        statusCode: 403,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, message: '无权限重新部署该站点' })
+      };
+    }
+
+    const requestedProjectId = normalizePositiveId(inputProjectId);
+    if (inputProjectId && !requestedProjectId) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, message: '目标项目不合法' })
+      };
+    }
+    if (requestedProjectId) {
+      const canWriteTarget = await canUserWriteProject(userId, requestedProjectId);
+      if (!canWriteTarget) {
+        return {
+          statusCode: 200,
+          headers: getCORSHeaders(),
+          body: JSON.stringify({ success: false, message: '目标项目不存在、已归档或无写入权限' })
+        };
+      }
+    }
+
+    // 检查部署数量限制。重部署已有站点不计入新部署数量。
     if (roleConfig.deployment_limit) {
       const countRes = await query('SELECT COUNT(*) as count FROM websites WHERE user_id = ?', [userId]);
-      const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : null;
-
-      // 如果是更新现有网站，不算入新部署
-      if (websiteId) {
-        const existing = await query('SELECT id FROM websites WHERE user_id = ? AND website_id = ?', [userId, websiteId]);
-        if (existing.length === 0 && countRes[0].count >= roleConfig.deployment_limit) {
-          return {
-            statusCode: 200,
-            headers: getCORSHeaders(),
-            body: JSON.stringify({
-              success: false,
-              message: `已达到部署上限！您的角色限制为 ${roleConfig.deployment_limit} 个网站。`
-            })
-          };
-        }
-      } else if (countRes[0].count >= roleConfig.deployment_limit) {
+      if (existing.length === 0 && countRes[0].count >= roleConfig.deployment_limit) {
         return {
           statusCode: 200,
           headers: getCORSHeaders(),
@@ -2413,35 +3534,11 @@ async function handleUploadAndDeploy(event) {
       }
     }
 
-    // 生成或使用现有的 websiteId
-    const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : generateWebsiteId();
     const fileNameNoExt = normalizeFileNameNoExt(fileName);
-    const targetPrefix = `sites/${userId}/${websiteId}/${fileNameNoExt}`;
+    const deploymentOwnerId = existing.length > 0 ? existing[0].user_id : userId;
+    const targetPrefix = `sites/${deploymentOwnerId}/${websiteId}/${fileNameNoExt}`;
 
     // 选桶：重部署沿用站点已绑定的桶（避免文件分裂在两个桶）；新部署落默认桶。
-    // existing 同时拿 bucket_id 给下面选桶与 UPDATE 用。
-    const existing = await query(
-      'SELECT id, subdomain, name, file_name, bucket_id FROM websites WHERE user_id = ? AND website_id = ?',
-      [userId, websiteId]
-    );
-    const requestedProjectId = normalizePositiveId(inputProjectId);
-    if (inputProjectId && !requestedProjectId) {
-      return {
-        statusCode: 200,
-        headers: getCORSHeaders(),
-        body: JSON.stringify({ success: false, message: '目标项目不合法' })
-      };
-    }
-    if (requestedProjectId) {
-      const project = await getProjectForUser(userId, requestedProjectId);
-      if (!project || project.archived) {
-        return {
-          statusCode: 200,
-          headers: getCORSHeaders(),
-          body: JSON.stringify({ success: false, message: '目标项目不存在或已归档' })
-        };
-      }
-    }
     const existingBucketId = existing.length > 0 ? existing[0].bucket_id : null;
     const bucketCfg = await resolveBucketConfig(existingBucketId);
     // bucketCfg.id 可能不存在（迁移前回退 LEGACY_BUCKET）；此时 bucket_id 写 NULL（= 默认桶语义）
@@ -2467,8 +3564,8 @@ async function handleUploadAndDeploy(event) {
       const userCustomized = prevName && prevName !== (prev.file_name || '').trim();
       const nextName = userCustomized ? prevName : defaultName;
       await query(
-        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, updated_at = NOW() WHERE user_id = ? AND website_id = ?`,
-        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, userId, websiteId]
+        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, updated_at = NOW() WHERE id = ?`,
+        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, prev.id]
       );
       // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
       // （边缘缓存最长 60s 后自然刷新）
@@ -2481,12 +3578,18 @@ async function handleUploadAndDeploy(event) {
 
     const projectId = requestedProjectId
       ? await assignWebsiteProject(userId, websiteId, requestedProjectId)
-      : await ensureWebsiteDefaultProject(userId, websiteId);
+      : (existing.length > 0
+          ? (existing[0].project_id || await ensureWebsiteDefaultProject(existing[0].user_id, websiteId))
+          : await ensureWebsiteDefaultProject(userId, websiteId));
     const cachePurge = await purgeSiteCache({
       websiteId,
-      subdomain: existing.length > 0 ? existing[0].subdomain : null
+      subdomain: existing.length > 0 ? existing[0].subdomain : null,
+      subdomainDomain: existing.length > 0 ? getRowSubdomainDomain(existing[0]) : null
     });
-    const customUrl = existing.length > 0 ? buildCustomSiteUrl(existing[0].subdomain) : '';
+    const existingSubdomainDomain = existing.length > 0 ? getRowSubdomainDomain(existing[0]) : defaultDomain;
+    const customUrl = existing.length > 0
+      ? buildCustomSiteUrl(existing[0].subdomain, existingSubdomainDomain)
+      : '';
     const preferredUrl = customUrl || finalUrl;
 
     return {
@@ -2497,6 +3600,7 @@ async function handleUploadAndDeploy(event) {
         url: preferredUrl,
         defaultUrl: finalUrl,
         customUrl: customUrl || null,
+        subdomainDomain: existing.length > 0 ? existingSubdomainDomain : null,
         preferredUrl,
         message: '部署成功',
         websiteId: websiteId,
