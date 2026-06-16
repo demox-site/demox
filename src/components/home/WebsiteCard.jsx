@@ -41,14 +41,12 @@ export default function WebsiteCard({
   t,
   user,
   deploying,
-  // 名称编辑
   editingId,
   editingName,
   setEditingName,
   startEditName,
   saveEditName,
   cancelEditName,
-  // 标签编辑
   editingTagsId,
   editingTagsValue,
   setEditingTagsValue,
@@ -57,7 +55,6 @@ export default function WebsiteCard({
   cancelEditTags,
   parseTags,
   joinTags,
-  // 其它
   getEmailByUserId,
   openRedeployDialog,
   openDomainDialog,
@@ -66,7 +63,7 @@ export default function WebsiteCard({
   const isProcessing = website.status === "processing" || deploying[website._id];
 
   return (
-    <div className="p-6 hover:bg-zinc-900/20 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 group">
+    <div className="p-6 hover:bg-muted/30 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 group">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-3 mb-2">
           <div className="flex flex-col items-start gap-0.5 group">
@@ -76,18 +73,18 @@ export default function WebsiteCard({
                   type="text"
                   value={editingName}
                   onChange={(e) => setEditingName(e.target.value)}
-                  className="bg-zinc-900 border border-zinc-800 text-zinc-100 text-sm rounded px-2 py-1 w-48 focus:outline-none focus:border-zinc-600"
+                  className="bg-background border border-border text-foreground text-sm rounded px-2 py-1 w-48 focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <button
                   onClick={() => saveEditName(website)}
-                  className="text-green-400 hover:text-green-300"
+                  className="text-success hover:opacity-80"
                   title={t.save}
                 >
                   <CheckCircle className="w-4 h-4" />
                 </button>
                 <button
                   onClick={cancelEditName}
-                  className="text-zinc-400 hover:text-zinc-300"
+                  className="text-muted-foreground hover:text-foreground"
                   title={t.cancel}
                 >
                   <XCircle className="w-4 h-4" />
@@ -96,19 +93,19 @@ export default function WebsiteCard({
             ) : (
               <>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-zinc-100 font-bold truncate">
+                  <h3 className="text-foreground font-bold truncate">
                     {getDisplayName(website)}
                   </h3>
                   <button
                     onClick={() => startEditName(website)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-zinc-200"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
                     title={t.editName}
                   >
                     <Pencil className="w-4 h-4" />
                   </button>
                 </div>
                 {(website.websiteId || website._id) && (
-                  <span className="text-[11px] text-zinc-600 font-mono leading-none">
+                  <span className="text-[11px] text-muted-foreground font-mono leading-none">
                     ID: {website.websiteId || website._id}
                   </span>
                 )}
@@ -117,14 +114,13 @@ export default function WebsiteCard({
           </div>
           <StatusBadge status={website.status} t={t} />
           {deploying[website._id] && (
-            <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+            <Badge variant="warning">
               <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
               {t.processingBadge}
             </Badge>
           )}
         </div>
 
-        {/* Tags Section */}
         <div className="flex items-center flex-wrap gap-2 mt-2">
           {editingTagsId === website._id ? (
             <div className="flex items-center gap-2 w-full max-w-md my-1">
@@ -132,7 +128,7 @@ export default function WebsiteCard({
                 value={editingTagsValue}
                 onChange={(e) => setEditingTagsValue(e.target.value)}
                 placeholder="输入标签，用逗号分隔"
-                className="h-7 text-xs bg-zinc-900/50 border-zinc-800 focus:border-zinc-600 text-zinc-100 placeholder:text-zinc-500"
+                className="h-7 text-xs"
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === "Enter") saveEditTags(website);
@@ -144,11 +140,11 @@ export default function WebsiteCard({
                 {parseTags(editingTagsValue).map((tag, idx) => (
                   <span
                     key={idx}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 transition-colors"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-foreground border border-border"
                   >
                     {tag}
                     <button
-                      className="ml-1 text-zinc-400 hover:text-zinc-200"
+                      className="ml-1 text-muted-foreground hover:text-foreground"
                       title="删除该标签"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -164,7 +160,7 @@ export default function WebsiteCard({
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 w-7 p-0 text-green-500 hover:text-green-400 hover:bg-green-500/10"
+                className="h-7 w-7 p-0 text-success"
                 onClick={(e) => {
                   e.stopPropagation();
                   saveEditTags(website);
@@ -175,7 +171,7 @@ export default function WebsiteCard({
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 w-7 p-0 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-800"
+                className="h-7 w-7 p-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   cancelEditTags();
@@ -191,7 +187,7 @@ export default function WebsiteCard({
                   {website.tags.map((tag, idx) => (
                     <span
                       key={idx}
-                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-700 transition-colors cursor-default"
+                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground border border-border cursor-default"
                     >
                       {tag}
                     </span>
@@ -201,10 +197,10 @@ export default function WebsiteCard({
               <Button
                 variant="ghost"
                 size="sm"
-                className={`h-5 w-5 p-0 hover:bg-zinc-800 ${
+                className={`h-5 w-5 p-0 text-muted-foreground ${
                   Array.isArray(website.tags) && website.tags.length > 0
-                    ? "text-zinc-600 hover:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                    : "text-zinc-600 hover:text-zinc-400"
+                    ? "opacity-0 group-hover:opacity-100 transition-opacity"
+                    : ""
                 }`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -218,7 +214,7 @@ export default function WebsiteCard({
           )}
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-4 text-sm text-zinc-500 font-mono mt-3">
+        <div className="flex flex-col sm:flex-row gap-4 text-sm text-muted-foreground font-mono mt-3">
           {Array.isArray(user?.roles) && user.roles.includes("admin") && website.userId && (
             <span>
               {t.creator}
@@ -241,31 +237,25 @@ export default function WebsiteCard({
           <div className="flex flex-col gap-2 mt-3">
             {getSiteDomains(website).map((d) => (
               <div key={d.host} className="flex items-center gap-2">
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 max-w-full">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-muted border border-border max-w-full">
+                  <span className="w-2 h-2 rounded-full bg-success animate-pulse"></span>
                   <a
                     href={d.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-zinc-300 hover:text-white text-sm font-mono truncate hover:underline underline-offset-4 decoration-zinc-600"
+                    className="text-foreground hover:text-link text-sm font-mono truncate hover:underline underline-offset-4"
                   >
                     {d.host}
                   </a>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
-                      d.isDefault
-                        ? "bg-zinc-800 text-zinc-400 border border-zinc-700/50"
-                        : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                    }`}
-                  >
+                  <Badge variant={d.isDefault ? "outline" : "secondary"} className="text-[10px] shrink-0">
                     {d.isDefault ? t.domainDefaultTag : t.domainCustomTag}
-                  </span>
+                  </Badge>
                 </div>
                 <a
                   href={d.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                  className="p-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />
                 </a>
@@ -286,11 +276,7 @@ export default function WebsiteCard({
                     if (isProcessing) return;
                     openRedeployDialog(website);
                   }}
-                  className={`border-zinc-800 bg-zinc-900 text-zinc-400 ${
-                    isProcessing
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
-                  }`}
+                  disabled={isProcessing}
                 >
                   <Upload className="w-4 h-4 mr-2" />
                   {t.redeployButton}
@@ -298,7 +284,7 @@ export default function WebsiteCard({
               </span>
             </TooltipTrigger>
             {isProcessing && (
-              <TooltipContent className="bg-zinc-100 text-zinc-900 border-zinc-200 font-bold">
+              <TooltipContent>
                 <p>{t.redeployDisabledTooltip}</p>
               </TooltipContent>
             )}
@@ -306,14 +292,9 @@ export default function WebsiteCard({
         </TooltipProvider>
 
         <Button
-          variant="outline"
+          variant={website.subdomain ? "default" : "outline"}
           size="sm"
           onClick={() => openDomainDialog(website)}
-          className={`border-zinc-800 bg-zinc-900 ${
-            website.subdomain
-              ? "text-green-400 hover:text-green-300 hover:bg-zinc-100 hover:!text-zinc-900"
-              : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
-          }`}
           title={t.customDomain}
         >
           <Link2 className="w-4 h-4 mr-2" />
@@ -324,7 +305,7 @@ export default function WebsiteCard({
           variant="ghost"
           size="sm"
           onClick={() => confirmDeleteWebsite(website._id)}
-          className="text-zinc-500 hover:text-red-400 hover:bg-red-950/30"
+          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
         >
           <Trash2 className="w-4 h-4" />
         </Button>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { FeatureIcon } from "@/components/ui/feature-icon";
 import { Star, Twitter, Megaphone, Check } from "lucide-react";
 import { MainLayout } from "@/layouts/MainLayout";
 
@@ -24,81 +25,81 @@ const MemberPrice = () => {
       <div className="pt-12 pb-20 px-4">
         <div className="max-w-7xl mx-auto">
           <div className="grid md:grid-cols-3 gap-8 mb-32">
-            <div className="p-8 rounded-lg border border-zinc-800 bg-zinc-950/50 flex flex-col">
+            <div className="p-8 rounded-lg border border-border bg-card flex flex-col">
               <h3 className="text-xl font-bold mb-2">基础版 (Basic)</h3>
               <div className="text-4xl font-bold mb-6">
-                $0<span className="text-lg text-zinc-500 font-normal">/月</span>
+                $0<span className="text-lg text-muted-foreground font-normal">/月</span>
               </div>
               <ul className="space-y-4 mb-8 flex-1">
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   极速部署
                 </li>
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   全球CDN
                 </li>
               </ul>
-              <button className="w-full py-3 border border-zinc-800 text-zinc-300 rounded-md hover:border-zinc-600 hover:text-zinc-100 transition-colors">
+              <button className="w-full py-3 border border-border text-muted-foreground rounded-md hover:border-foreground/30 hover:text-foreground transition-colors">
                 [ 没钱 ]
               </button>
             </div>
 
-            <div className="p-8 rounded-lg border border-zinc-700 bg-zinc-900/50 flex flex-col relative transform md:-translate-y-4">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-zinc-100 text-black text-xs font-bold rounded-full tracking-wider">
+            <div className="p-8 rounded-lg border border-border bg-muted/40 flex flex-col relative transform md:-translate-y-4">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-foreground text-background text-xs font-bold rounded-full tracking-wider">
                 RECOMMENDED
               </div>
               <h3 className="text-xl font-bold mb-2">专业版 (Pro)</h3>
               <div className="text-4xl font-bold mb-6">
-                $0<span className="text-lg text-zinc-500 font-normal">/月</span>
+                $0<span className="text-lg text-muted-foreground font-normal">/月</span>
               </div>
               <ul className="space-y-4 mb-8 flex-1">
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   包含基础版所有功能
                 </li>
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   你会感觉自己更专业一点
                 </li>
               </ul>
-              <button className="w-full py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)]">
+              <button className="w-full py-3 bg-primary text-primary-foreground font-semibold rounded-md hover:opacity-90 transition-opacity">
                 [ 也没钱 ]
               </button>
             </div>
 
-            <div className="p-8 rounded-lg border border-zinc-800 bg-zinc-950/50 flex flex-col">
+            <div className="p-8 rounded-lg border border-border bg-card flex flex-col">
               <h3 className="text-xl font-bold mb-2">
                 尊贵土豪版 (Enterprise)
               </h3>
               <div className="text-4xl font-bold mb-6">
-                $0<span className="text-lg text-zinc-500 font-normal">/月</span>
+                $0<span className="text-lg text-muted-foreground font-normal">/月</span>
               </div>
               <ul className="space-y-4 mb-8 flex-1">
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   包含专业版所有功能
                 </li>
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   我们会在此刻心里默默感谢你
                 </li>
-                <li className="flex items-center gap-2 text-zinc-400">
-                  <Check size={16} className="text-green-400" />
+                <li className="flex items-center gap-2 text-muted-foreground">
+                  <Check size={16} className="text-success shrink-0" />
                   除了名字好听没有任何区别
                 </li>
               </ul>
-              <button className="w-full py-3 border border-zinc-800 text-zinc-300 rounded-md hover:border-zinc-600 hover:text-zinc-100 transition-colors">
+              <button className="w-full py-3 border border-border text-muted-foreground rounded-md hover:border-foreground/30 hover:text-foreground transition-colors">
                 [ 真的没钱 ]
               </button>
             </div>
           </div>
 
-          <div className="py-20 border-t border-zinc-900 border-b mb-20">
+          <div className="py-20 border-t border-border border-b mb-20">
             <div className="max-w-3xl mx-auto text-center px-4">
-              <p className="text-xl md:text-2xl leading-relaxed font-mono text-zinc-100 min-h-[120px]">
+              <p className="text-xl md:text-2xl leading-relaxed font-mono text-foreground min-h-[120px]">
                 {displayedText}
-                <span className="animate-pulse text-zinc-500">_</span>
+                <span className="animate-pulse text-muted-foreground">_</span>
               </p>
             </div>
           </div>
@@ -109,37 +110,31 @@ const MemberPrice = () => {
             </h2>
             <div className="grid md:grid-cols-3 gap-8">
               <a href="#" className="flex flex-col items-center group">
-                <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform group-hover:border-zinc-600">
-                  <Star className="text-yellow-400" size={32} />
-                </div>
+                <FeatureIcon icon={Star} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">GitHub Star</div>
-                <div className="text-zinc-400 text-sm">
+                <div className="text-muted-foreground text-sm">
                   汇率：1 Star = 永久免费
                 </div>
               </a>
 
               <a href="#" className="flex flex-col items-center group">
-                <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform group-hover:border-zinc-600">
-                  <Twitter className="text-blue-400" size={32} />
-                </div>
+                <FeatureIcon icon={Twitter} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">Twitter 吐槽</div>
-                <div className="text-zinc-400 text-sm">告诉我们哪里做得烂</div>
+                <div className="text-muted-foreground text-sm">告诉我们哪里做得烂</div>
               </a>
 
               <a href="#" className="flex flex-col items-center group">
-                <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform group-hover:border-zinc-600">
-                  <Megaphone className="text-green-400" size={32} />
-                </div>
+                <FeatureIcon icon={Megaphone} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">向朋友炫耀</div>
-                <div className="text-zinc-400 text-sm">
+                <div className="text-muted-foreground text-sm">
                   即使他们听不懂你在说什么
                 </div>
               </a>
             </div>
           </div>
 
-          <div className="text-center pt-10 border-t border-zinc-900">
-            <p className="text-zinc-500 text-sm italic">
+          <div className="text-center pt-10 border-t border-border">
+            <p className="text-muted-foreground text-sm italic">
               “如果非要给我们钱，请把钱拿去买杯咖啡，边喝边写代码。”
             </p>
           </div>

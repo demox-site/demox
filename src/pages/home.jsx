@@ -93,8 +93,8 @@ export default function Home(props) {
     return (
       <div style={style} className="flex items-center justify-center py-24">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-4 border-zinc-800 border-t-zinc-100 rounded-full animate-spin"></div>
-          <span className="text-zinc-500 font-mono text-sm animate-pulse">
+          <div className="w-8 h-8 border-4 border-muted border-t-foreground rounded-full animate-spin"></div>
+          <span className="text-muted-foreground font-mono text-sm animate-pulse">
             {t.loading}
           </span>
         </div>
@@ -116,7 +116,7 @@ export default function Home(props) {
             <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
               {t.pageTitle}
             </h1>
-            <p className="text-sm text-zinc-500 mt-2">
+            <p className="text-sm text-muted-foreground mt-2">
               {user?.role_name
                 ? `${t.pageSubtitlePrefix}${user.role_name}`
                 : t.pageSubtitleFallback}
@@ -141,14 +141,14 @@ export default function Home(props) {
           />
 
           {/* Websites List */}
-          <Card className="bg-zinc-950/50 border-zinc-900 backdrop-blur-sm">
-            <CardHeader className="border-b border-zinc-900 bg-zinc-900/30">
-              <CardTitle className="text-zinc-100 flex items-center justify-between">
+          <Card className="border-border">
+            <CardHeader className="border-b border-border bg-muted/30">
+              <CardTitle className="text-foreground flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Globe className="w-5 h-5 text-zinc-400" />
+                  <Globe className="w-5 h-5 text-muted-foreground" />
                   {t.deploymentsTitle}
                   {roleLimits && (
-                    <span className="text-sm text-zinc-500 font-mono ml-2">
+                    <span className="text-sm text-muted-foreground font-mono ml-2">
                       ({websites.length}/
                       {roleLimits.deployment_limit === null ||
                       roleLimits.deployment_limit === undefined
@@ -162,7 +162,6 @@ export default function Home(props) {
                   size="sm"
                   onClick={loadWebsites}
                   variant="outline"
-                  className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
                 >
                   <RefreshCw className="w-4 h-4 mr-2" />
                   {t.refresh}
@@ -171,8 +170,8 @@ export default function Home(props) {
             </CardHeader>
             <CardContent className="p-0">
               {isAdmin && allUsers.length > 0 && (
-                <div className="p-4 border-b border-zinc-900 flex flex-wrap gap-2 items-center bg-zinc-900/10">
-                  <span className="text-xs text-zinc-500 mr-2 flex items-center gap-1">
+                <div className="p-4 border-b border-border flex flex-wrap gap-2 items-center bg-muted/20">
+                  <span className="text-xs text-muted-foreground mr-2 flex items-center gap-1">
                     <User className="w-3 h-3" />
                     用户:
                   </span>
@@ -181,7 +180,6 @@ export default function Home(props) {
                       <Button
                         variant="outline"
                         size="sm"
-                        className="border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 hover:border-zinc-100"
                       >
                         {filters.selectedUserIds.length === 0
                           ? "全部用户"
@@ -217,7 +215,7 @@ export default function Home(props) {
                   {filters.selectedUserIds.length > 0 && (
                     <Badge
                       variant="outline"
-                      className="ml-2 cursor-pointer text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                      className="ml-2 cursor-pointer"
                       onClick={filters.clearSelectedUserIds}
                     >
                       清空
@@ -226,18 +224,14 @@ export default function Home(props) {
                 </div>
               )}
               {allTags.length > 0 && (
-                <div className="p-4 border-b border-zinc-900 flex flex-wrap gap-2 items-center bg-zinc-900/10">
-                  <span className="text-xs text-zinc-500 mr-2 flex items-center gap-1">
+                <div className="p-4 border-b border-border flex flex-wrap gap-2 items-center bg-muted/20">
+                  <span className="text-xs text-muted-foreground mr-2 flex items-center gap-1">
                     <Tag className="w-3 h-3" />
                     筛选:
                   </span>
                   <Badge
                     variant={filters.selectedTags.length === 0 ? "default" : "outline"}
-                    className={`cursor-pointer transition-all ${
-                      filters.selectedTags.length === 0
-                        ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                        : "text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
-                    }`}
+                    className="cursor-pointer"
                     onClick={filters.clearFilterTags}
                   >
                     全部
@@ -248,11 +242,7 @@ export default function Home(props) {
                       <Badge
                         key={tag}
                         variant={active ? "default" : "outline"}
-                        className={`cursor-pointer transition-all ${
-                          active
-                            ? "bg-zinc-100 text-zinc-900 hover:bg-zinc-200"
-                            : "text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
-                        }`}
+                        className="cursor-pointer"
                         onClick={() => filters.toggleFilterTag(tag)}
                       >
                         {tag}
@@ -262,7 +252,7 @@ export default function Home(props) {
                   {filters.selectedTags.length > 0 && (
                     <Badge
                       variant="outline"
-                      className="ml-2 cursor-pointer text-zinc-400 border-zinc-800 bg-zinc-900/50 hover:text-zinc-200 hover:border-zinc-700"
+                      className="ml-2 cursor-pointer"
                       onClick={filters.clearFilterTags}
                     >
                       清空
@@ -272,17 +262,17 @@ export default function Home(props) {
               )}
               {websites.length === 0 ? (
                 <div className="text-center py-16">
-                  <div className="w-16 h-16 rounded-full bg-zinc-900/50 flex items-center justify-center mx-auto mb-4 border border-zinc-800">
-                    <Globe className="w-8 h-8 text-zinc-600" />
+                  <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4 border border-border">
+                    <Globe className="w-8 h-8 text-muted-foreground/50" />
                   </div>
-                  <p className="text-zinc-400 font-medium">{t.emptyTitle}</p>
-                  <p className="text-zinc-600 text-sm mt-2">{t.emptyDesc}</p>
+                  <p className="text-muted-foreground font-medium">{t.emptyTitle}</p>
+                  <p className="text-muted-foreground/70 text-sm mt-2">{t.emptyDesc}</p>
                 </div>
               ) : (
-                <div className="divide-y divide-zinc-900">
+                <div className="divide-y divide-border">
                   {visibleWebsites.length === 0 && (
                     <div className="text-center py-12">
-                      <p className="text-zinc-500 text-sm">
+                      <p className="text-muted-foreground text-sm">
                         未找到包含标签 [{filters.selectedTags.join(", ")}] 的项目
                       </p>
                     </div>

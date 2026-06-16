@@ -208,7 +208,7 @@ export const ConsoleLayout: React.FC = () => {
 
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon" className="border-zinc-800">
+      <Sidebar collapsible="icon" className="border-border">
         <SidebarHeader>
           <button
             type="button"
@@ -259,16 +259,16 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="bg-black text-zinc-100">
-        <header className="sticky top-0 z-40 flex h-16 items-center gap-2 border-b border-zinc-800 bg-black/50 backdrop-blur-md px-4">
-          <SidebarTrigger className="text-zinc-400 hover:text-zinc-100" />
-          <div className="w-px h-4 bg-zinc-800 mx-1" />
+      <SidebarInset className="bg-background text-foreground">
+        <header className="sticky top-0 z-40 flex h-16 items-center gap-2 border-b border-border bg-background/80 backdrop-blur-md px-4">
+          <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
+          <div className="w-px h-4 bg-border mx-1" />
           <div className="flex-1" />
 
           <button
             type="button"
             onClick={toggleLang}
-            className="text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-zinc-900/50"
+            className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-muted/80"
           >
             <Languages size={16} />
             <span className="text-xs font-mono uppercase">{lang}</span>
@@ -278,30 +278,30 @@ export const ConsoleLayout: React.FC = () => {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="ml-1 outline-none rounded-full ring-offset-2 ring-offset-black focus:ring-2 focus:ring-zinc-700 transition-all">
-                <Avatar className="h-9 w-9 border border-zinc-800 hover:border-zinc-600 transition-colors">
-                  <AvatarFallback className="bg-zinc-900 text-zinc-400 text-xs font-mono">
+              <button className="ml-1 outline-none rounded-full ring-offset-2 ring-offset-background focus:ring-2 focus:ring-ring transition-all">
+                <Avatar className="h-9 w-9 border border-border hover:border-foreground/20 transition-colors">
+                  <AvatarFallback className="bg-muted text-muted-foreground text-xs font-mono">
                     {user?.email?.[0]?.toUpperCase() || <User size={16} />}
                   </AvatarFallback>
                 </Avatar>
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
-              className="w-64 bg-zinc-950/95 backdrop-blur-xl border-zinc-800 text-zinc-400 p-1.5 shadow-2xl"
+              className="w-64 p-1.5"
               align="end"
               sideOffset={8}
             >
-              <div className="flex items-center gap-3 p-2 mb-1 border-b border-zinc-900 pb-3">
-                <Avatar className="h-8 w-8 border border-zinc-800">
-                  <AvatarFallback className="bg-zinc-900 text-zinc-500 text-xs">
+              <div className="flex items-center gap-3 p-2 mb-1 border-b border-border pb-3">
+                <Avatar className="h-8 w-8 border border-border">
+                  <AvatarFallback className="bg-muted text-muted-foreground text-xs">
                     <User size={14} />
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex flex-col overflow-hidden">
-                  <span className="text-sm font-medium text-zinc-100 truncate">
+                  <span className="text-sm font-medium text-foreground truncate">
                     {isAdmin ? "Admin" : "User"}
                   </span>
-                  <span className="text-xs text-zinc-500 truncate font-mono">
+                  <span className="text-xs text-muted-foreground truncate font-mono">
                     {maskEmail(user?.email)}
                   </span>
                 </div>
@@ -309,17 +309,17 @@ export const ConsoleLayout: React.FC = () => {
 
               <DropdownMenuItem
                 onClick={() => navigate("/console/settings")}
-                className="cursor-pointer focus:bg-zinc-900 focus:text-zinc-100 my-0.5"
+                className="cursor-pointer my-0.5"
               >
                 <Settings className="mr-2 h-4 w-4" />
                 <span>{t.settings}</span>
               </DropdownMenuItem>
 
-              <DropdownMenuSeparator className="bg-zinc-900 my-1" />
+              <DropdownMenuSeparator className="my-1" />
 
               <DropdownMenuItem
                 onClick={handleLogout}
-                className="cursor-pointer text-red-400 focus:bg-red-950/20 focus:text-red-300 my-0.5"
+                className="cursor-pointer text-destructive focus:text-destructive my-0.5"
               >
                 <LogOut className="mr-2 h-4 w-4" />
                 <span>{t.logout}</span>

@@ -82,13 +82,11 @@ const SettingsPage: React.FC = () => {
   const [nickname, setNickname] = useState(
     user?.nickname || user?.email?.split("@")[0] || ""
   );
-  // 绑定状态以后端 /auth/me 为准；localStorage 的 user 不一定含 githubId
   const [githubBound, setGithubBound] = useState<boolean>(!!user?.githubId);
   const [githubLogin, setGithubLogin] = useState<string | null>(
     user?.githubLogin || null
   );
 
-  // 进入页面时拉取真实账号信息，刷新绑定状态并回写本地
   useEffect(() => {
     let alive = true;
     authApi
@@ -99,7 +97,6 @@ const SettingsPage: React.FC = () => {
         setGithubBound(!!u.githubId);
         setGithubLogin(u.githubLogin || null);
         if (u.nickname) setNickname((prev) => prev || u.nickname);
-        // 回写本地，保持其它页面一致
         const local = userManager.get() || {};
         userManager.set({
           ...local,
@@ -127,112 +124,87 @@ const SettingsPage: React.FC = () => {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight">{t.title}</h1>
-        <p className="text-sm text-zinc-500 mt-2">{t.subtitle}</p>
+        <p className="text-sm text-muted-foreground mt-2">{t.subtitle}</p>
       </div>
 
       <Tabs defaultValue="profile" className="w-full">
-        <TabsList className="bg-zinc-900/50 border border-zinc-800">
+        <TabsList>
           <TabsTrigger value="profile">{t.tabProfile}</TabsTrigger>
           <TabsTrigger value="security">{t.tabSecurity}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="profile" className="mt-6">
-          <Card className="bg-zinc-950/50 border-zinc-900">
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-zinc-100">
-                <UserIcon className="w-4 h-4 text-zinc-400" />
+              <CardTitle className="flex items-center gap-2">
+                <UserIcon className="w-4 h-4 text-muted-foreground" />
                 {t.profileTitle}
               </CardTitle>
-              <CardDescription className="text-zinc-500">
-                {t.profileDesc}
-              </CardDescription>
+              <CardDescription>{t.profileDesc}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label className="text-zinc-300">{t.nickname}</Label>
+                <Label>{t.nickname}</Label>
                 <Input
                   value={nickname}
                   onChange={(e) => setNickname(e.target.value)}
-                  className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-sm"
+                  className="max-w-sm"
                 />
               </div>
               <div className="space-y-2">
-                <Label className="text-zinc-300">{t.email}</Label>
+                <Label>{t.email}</Label>
                 <Input
                   value={user?.email || ""}
                   disabled
-                  className="bg-zinc-900 border-zinc-800 text-zinc-500 max-w-sm"
+                  className="max-w-sm"
                 />
               </div>
-              <Button
-                onClick={notImplemented}
-                className="bg-zinc-100 text-black hover:bg-white"
-              >
-                {t.save}
-              </Button>
+              <Button onClick={notImplemented}>{t.save}</Button>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="security" className="mt-6 space-y-6">
-          <Card className="bg-zinc-950/50 border-zinc-900">
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-zinc-100">
-                <Lock className="w-4 h-4 text-zinc-400" />
+              <CardTitle className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-muted-foreground" />
                 {t.passwordTitle}
               </CardTitle>
-              <CardDescription className="text-zinc-500">
-                {t.passwordDesc}
-              </CardDescription>
+              <CardDescription>{t.passwordDesc}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 max-w-sm">
               <div className="space-y-2">
-                <Label className="text-zinc-300">{t.currentPassword}</Label>
-                <Input
-                  type="password"
-                  className="bg-zinc-900 border-zinc-800 text-zinc-100"
-                />
+                <Label>{t.currentPassword}</Label>
+                <Input type="password" />
               </div>
               <div className="space-y-2">
-                <Label className="text-zinc-300">{t.newPassword}</Label>
-                <Input
-                  type="password"
-                  className="bg-zinc-900 border-zinc-800 text-zinc-100"
-                />
+                <Label>{t.newPassword}</Label>
+                <Input type="password" />
               </div>
               <div className="space-y-2">
-                <Label className="text-zinc-300">{t.confirmPassword}</Label>
-                <Input
-                  type="password"
-                  className="bg-zinc-900 border-zinc-800 text-zinc-100"
-                />
+                <Label>{t.confirmPassword}</Label>
+                <Input type="password" />
               </div>
-              <Button
-                onClick={notImplemented}
-                className="bg-zinc-100 text-black hover:bg-white"
-              >
-                {t.updatePassword}
-              </Button>
+              <Button onClick={notImplemented}>{t.updatePassword}</Button>
             </CardContent>
           </Card>
 
-          <Card className="bg-zinc-950/50 border-zinc-900">
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-zinc-100">
-                <Github className="w-4 h-4 text-zinc-400" />
+              <CardTitle className="flex items-center gap-2">
+                <Github className="w-4 h-4 text-muted-foreground" />
                 {t.bindingTitle}
               </CardTitle>
-              <CardDescription className="text-zinc-500">
-                {t.bindingDesc}
-              </CardDescription>
+              <CardDescription>{t.bindingDesc}</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 p-4">
                 <div className="flex items-center gap-3">
-                  <Github className="w-5 h-5 text-zinc-300" />
+                  <Github className="w-5 h-5 text-muted-foreground" />
                   <div className="flex flex-col">
-                    <span className="text-sm text-zinc-100">{t.github}</span>
-                    <span className="text-xs text-zinc-500">
+                    <span className="text-sm">{t.github}</span>
+                    <span className="text-xs text-muted-foreground">
                       {githubBound
                         ? githubLogin
                           ? `${t.bound} · @${githubLogin}`
@@ -248,7 +220,6 @@ const SettingsPage: React.FC = () => {
                       ? notImplemented()
                       : authApi.startGithubLogin("bind")
                   }
-                  className="bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800"
                 >
                   {githubBound ? t.unbind : t.bind}
                 </Button>

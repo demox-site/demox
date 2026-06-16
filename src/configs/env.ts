@@ -23,7 +23,7 @@ const siteUrl = readEnv("VITE_DEMOX_SITE_URL") || currentOrigin();
 
 export const siteConfig = {
   name: "Demox",
-  version: "0.9.1",
+  version: "0.9.2",
   domain: readEnv("VITE_DEMOX_SITE_DOMAIN") || (typeof window !== "undefined" ? window.location.hostname : ""),
   url: withTrailingSlash(siteUrl)
 };

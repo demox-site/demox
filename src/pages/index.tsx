@@ -12,12 +12,14 @@ import {
   Package,
   UploadCloud,
   Rocket,
-  CheckCircle2
+  CheckCircle2,
+  ChevronRight
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
 import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
+import { FeatureIcon } from "@/components/ui/feature-icon";
 
 const translations = {
   zh: {
@@ -165,47 +167,55 @@ const CloudHostLanding: React.FC = () => {
     <MainLayout>
       <section className="pt-24 pb-20 md:pt-32 md:pb-32 px-4 relative overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,var(--grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-line)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10" />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[min(100%,42rem)] h-80 bg-brand/12 rounded-full blur-[100px] -z-10 pointer-events-none" />
+        <div className="absolute top-32 right-[8%] w-64 h-64 bg-step-2/8 rounded-full blur-[80px] -z-10 pointer-events-none hidden md:block" />
+        <div className="absolute top-48 left-[6%] w-48 h-48 bg-step-3/8 rounded-full blur-[70px] -z-10 pointer-events-none hidden md:block" />
 
         <div className="max-w-4xl mx-auto text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-zinc-800 bg-zinc-900/50 mb-8">
-            <span className="flex h-2 w-2 rounded-full bg-zinc-400 animate-pulse"></span>
-            <span className="text-xs font-mono text-zinc-400">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-brand/25 bg-brand/5 mb-8">
+            <span className="flex h-2 w-2 rounded-full bg-brand animate-pulse shadow-[0_0_8px_hsl(var(--brand)/0.7)]" />
+            <span className="text-xs font-mono text-brand">
               {t.hero.version}
             </span>
           </div>
 
           <h1
-            className={`font-bold tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-zinc-100 to-zinc-500 ${
+            className={`font-bold tracking-tight mb-6 ${
               lang === "zh"
                 ? "text-4xl md:text-5xl lg:text-6xl"
                 : "text-5xl md:text-7xl"
             }`}
           >
             {lang === "zh" ? (
-              t.hero.title_start
+              <>
+                <span className="text-foreground">部署，从未如此</span>
+                <span className="text-brand">简单</span>
+              </>
             ) : (
               <>
-                {t.hero.title_start}
+                <span className="bg-clip-text text-transparent bg-gradient-to-b from-foreground to-foreground/60">
+                  {t.hero.title_start}
+                </span>
                 <br />
-                <span className="text-white">{t.hero.title_end}</span>
+                <span className="text-brand">{t.hero.title_end}</span>
               </>
             )}
           </h1>
 
-          <p className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed">
+          <p className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed">
             {t.hero.desc}
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
             <button
               onClick={() => (user ? navigate("/console/sites") : setIsLoginOpen(true))}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
+              className="w-full sm:w-auto px-8 py-3 bg-brand text-brand-foreground font-semibold rounded-md shadow-[0_0_24px_hsl(var(--brand)/0.35)] hover:shadow-[0_0_36px_hsl(var(--brand)/0.5)] hover:-translate-y-0.5 transition-all duration-300"
             >
               {t.hero.start_btn}
             </button>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-500 rounded-md transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-zinc-500 opacity-50">
+                <button className="w-full sm:w-auto px-8 py-3 border border-border text-muted-foreground rounded-md transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-muted-foreground opacity-50">
                   <Terminal size={16} />
                   {t.hero.install_cmd}
                 </button>
@@ -216,80 +226,86 @@ const CloudHostLanding: React.FC = () => {
             </Tooltip>
           </div>
 
-          <div className="max-w-2xl mx-auto rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 shadow-2xl relative group">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 bg-zinc-900/50">
+          <div className="max-w-2xl mx-auto rounded-lg overflow-hidden border border-brand/20 bg-card shadow-[0_0_40px_-10px_hsl(var(--brand)/0.25)] relative group">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-muted/50">
               <div className="flex gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
+                <div className="w-3 h-3 rounded-full bg-red-500/70" />
+                <div className="w-3 h-3 rounded-full bg-yellow-500/70" />
+                <div className="w-3 h-3 rounded-full bg-green-500/70" />
               </div>
               <div className="flex-1 text-center">
-                <span className="text-xs text-zinc-500 font-mono">
+                <span className="text-xs text-muted-foreground font-mono">
                   {t.terminal.title}
                 </span>
               </div>
             </div>
             <div className="p-6 text-left font-mono text-sm md:text-base space-y-2">
-              <div className="flex items-center gap-2 text-zinc-400">
-                <span className="text-green-500">➜</span>
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <ChevronRight className="w-4 h-4 text-success shrink-0" />
                 <span>~/project</span>
-                <span className="text-zinc-600">$</span>
-                <span className="text-zinc-100">{t.terminal.cmd}</span>
+                <span className="text-muted-foreground/70">$</span>
+                <span className="text-foreground">{t.terminal.cmd}</span>
               </div>
-              <div className="text-zinc-500">{t.terminal.init}</div>
-              <div className="text-zinc-500">
+              <div className="text-muted-foreground">{t.terminal.init}</div>
+              <div className="text-muted-foreground">
                 {t.terminal.bundling}{" "}
-                <span className="text-zinc-300">
+                <span className="text-foreground/80">
                   {t.terminal.bundling_done}
                 </span>
               </div>
-              <div className="text-zinc-500">
+              <div className="text-muted-foreground">
                 {t.terminal.uploading}{" "}
-                <span className="text-zinc-300">
+                <span className="text-foreground/80">
                   {t.terminal.uploading_done}
                 </span>
               </div>
-              <div className="pt-2 flex items-center gap-2 text-green-400">
+              <div className="pt-2 flex items-center gap-2 text-success">
                 <CheckCircle2 size={16} />
                 <span>{t.terminal.success}</span>
               </div>
-              <div className="text-blue-400 underline decoration-blue-400/30 underline-offset-4 cursor-pointer hover:text-blue-300">
+              <div className="text-link underline decoration-link/30 underline-offset-4 cursor-pointer hover:opacity-80">
                 {t.terminal.url}
               </div>
             </div>
 
-            <div className="absolute inset-0 bg-gradient-to-t from-zinc-900/20 to-transparent pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-t from-brand/5 to-transparent pointer-events-none" />
           </div>
         </div>
       </section>
 
-      <section className="py-24 px-4 bg-black relative overflow-hidden">
-        {/* Neon accent lines background */}
-        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/50 to-transparent -translate-y-1/2 hidden md:block" />
-        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-purple-500/50 to-transparent translate-y-[2px] blur-[2px] hidden md:block" />
+      <section className="py-24 px-4 bg-muted/30 relative overflow-hidden border-y border-border">
+        <div className="absolute top-1/2 left-0 w-full h-px bg-gradient-to-r from-transparent via-step-2/40 to-transparent -translate-y-1/2 hidden md:block pointer-events-none" />
+        <div className="absolute top-1/2 left-0 w-full h-px bg-gradient-to-r from-transparent via-step-3/30 to-transparent translate-y-px hidden md:block blur-sm pointer-events-none" />
+        <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-[min(100%,36rem)] h-48 bg-brand/8 rounded-full blur-[80px] pointer-events-none" />
 
         <div className="max-w-6xl mx-auto relative z-10">
           <div className="text-center mb-20">
-            <h2 className="text-3xl md:text-5xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-zinc-500">
-              {t.workflow.title}
+            <h2 className="text-3xl md:text-5xl font-bold mb-6">
+              <span className="text-foreground">{lang === "zh" ? "从代码到" : "From Code to "}</span>
+              <span className="text-brand">{lang === "zh" ? "全球" : "Global"}</span>
             </h2>
-            <p className="text-zinc-400 text-lg max-w-2xl mx-auto">
+            <p className="text-muted-foreground text-lg max-w-2xl mx-auto">
               {t.workflow.subtitle}
             </p>
           </div>
 
           <div className="grid md:grid-cols-3 gap-12 relative">
+            <div className="hidden md:block absolute top-12 left-[20%] right-[20%] h-px bg-gradient-to-r from-step-1/50 via-step-2/50 to-step-3/50 pointer-events-none" />
+
             {[
               {
-                icon: <Package className="text-blue-400" size={32} />,
+                icon: Package,
+                variant: "step-1" as const,
                 ...t.workflow.steps[0]
               },
               {
-                icon: <UploadCloud className="text-purple-400" size={32} />,
+                icon: UploadCloud,
+                variant: "step-2" as const,
                 ...t.workflow.steps[1]
               },
               {
-                icon: <Rocket className="text-pink-400" size={32} />,
+                icon: Rocket,
+                variant: "step-3" as const,
                 ...t.workflow.steps[2]
               }
             ].map((step, i) => (
@@ -297,29 +313,30 @@ const CloudHostLanding: React.FC = () => {
                 key={i}
                 className="flex flex-col items-center text-center group"
               >
-                {/* Glassmorphism Icon Circle */}
-                <div className="w-24 h-24 rounded-full bg-white/5 backdrop-blur-md border border-white/10 flex items-center justify-center mb-8 relative z-10 transition-transform duration-500 group-hover:scale-110 group-hover:border-white/20 shadow-[0_0_30px_-10px_rgba(255,255,255,0.1)]">
-                  <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                  {step.icon}
-                  {/* Step Number Badge */}
-                  <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-400 flex items-center justify-center font-mono text-sm font-bold">
+                <div className="relative mb-8">
+                  <FeatureIcon
+                    icon={step.icon}
+                    size="lg"
+                    variant={step.variant}
+                    className="group-hover:scale-110 transition-transform duration-500"
+                  />
+                  <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-background border border-border text-muted-foreground flex items-center justify-center font-mono text-sm font-bold shadow-sm">
                     {i + 1}
                   </div>
                 </div>
 
-                <h3 className="text-xl font-bold mb-3 text-white">
+                <h3 className="text-xl font-bold mb-3 text-foreground">
                   {step.title}
                 </h3>
-                <p className="text-zinc-400 leading-relaxed mb-6 h-12">
+                <p className="text-muted-foreground leading-relaxed mb-6 h-12">
                   {step.desc}
                 </p>
 
-                {/* Tech Badges */}
                 <div className="flex flex-wrap justify-center gap-2">
                   {step.tags.map((tag, tagIndex) => (
                     <span
                       key={tagIndex}
-                      className="px-3 py-1 rounded-full text-xs font-medium bg-zinc-900/50 border border-zinc-800 text-zinc-400 group-hover:border-zinc-600 transition-colors"
+                      className="px-3 py-1 rounded-full text-xs font-medium bg-muted/80 border border-border text-muted-foreground group-hover:border-foreground/20 transition-colors"
                     >
                       {tag}
                     </span>
@@ -331,20 +348,21 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <section className="py-24 px-4 border-t border-zinc-900">
-        <div className="max-w-4xl mx-auto text-center">
+      <section className="py-24 px-4 border-t border-border relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-b from-brand/5 via-transparent to-transparent pointer-events-none" />
+        <div className="max-w-4xl mx-auto text-center relative z-10">
           <h2 className="text-4xl font-bold mb-6">{t.cta.title}</h2>
-          <p className="text-zinc-400 mb-8">{t.cta.subtitle}</p>
+          <p className="text-muted-foreground mb-8">{t.cta.subtitle}</p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
               onClick={() => (user ? navigate("/console/sites") : setIsLoginOpen(true))}
-              className="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold rounded-md hover:bg-zinc-200 transition-colors"
+              className="w-full sm:w-auto px-8 py-3 bg-brand text-brand-foreground font-bold rounded-md shadow-[0_0_24px_hsl(var(--brand)/0.35)] hover:shadow-[0_0_36px_hsl(var(--brand)/0.5)] hover:-translate-y-0.5 transition-all duration-300"
             >
               {t.cta.start_btn}
             </button>
             <button
               onClick={() => navigate("/pricing")}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-900 text-white font-medium rounded-md border border-zinc-800 hover:bg-zinc-800 transition-colors"
+              className="w-full sm:w-auto px-8 py-3 bg-muted text-foreground font-medium rounded-md border border-border hover:bg-muted/80 transition-colors"
             >
               {t.cta.contact_btn}
             </button>

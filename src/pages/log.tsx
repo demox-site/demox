@@ -54,6 +54,38 @@ const LogPage: React.FC = () => {
             >
               <TimelineItem
                 version={`v${siteConfig.version}`}
+                name="不再素面朝天 (No More Plain)"
+                date="2026-06-16"
+                dateNote="(黑白灰太无聊了)"
+              >
+                <Feature
+                  tag="Style"
+                  title="全站语义色重构"
+                  desc="把散落在各处的 zinc/black/white 硬编码，统一换成 foreground、muted、border、primary 等设计 token。明暗主题终于说同一种语言了。"
+                  note="改完发现以前写颜色像在玩填字游戏。"
+                />
+                <Feature
+                  tag="Style"
+                  title="品牌色体系上线"
+                  desc="新增 brand、success、link、warning 语义变量，并注册到 Tailwind。成功状态、链接、CTA 不再各唱各的调。"
+                  note="绿色终于不只是终端里的 ✓ 了。"
+                />
+                <Feature
+                  tag="Style"
+                  title="首页视觉加点料"
+                  desc="Hero 区加品牌光晕和关键词高亮，终端窗口恢复红黄绿按钮，Workflow 三步图标分别用绿/蓝/紫 accent，CTA 按钮带光晕。"
+                  note="之前太素了，像没化妆就出门。"
+                />
+                <Feature
+                  tag="Component"
+                  title="FeatureIcon 组件"
+                  desc="抽出营销区块通用图标容器，支持 step-1/2/3 变体，带 hover 光晕和缩放，首页和定价页复用。"
+                  note="一个圆搞不定的事，三个颜色的圆可以。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version="v0.9.1"
                 name="海纳百川 (The Great Migration)"
                 date="2026-06-13"
                 dateNote="(吃自己的狗粮，真香)"

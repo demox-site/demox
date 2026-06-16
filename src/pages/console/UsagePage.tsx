@@ -41,8 +41,7 @@ const texts = {
     unlimited: "Unlimited",
     of: "of",
     loading: "Loading...",
-    todoNote:
-      "Usage metering endpoint pending; showing quota limits below."
+    todoNote: "Usage metering endpoint pending; showing quota limits below."
   }
 } as const;
 
@@ -67,9 +66,9 @@ const UsagePage: React.FC = () => {
         const roles = (user?.roles as string[]) || ["user"];
         const res = await websiteApi.getRoleLimits(roles);
         if (res?.code === 0 && res.data?.length > 0) {
-          const sorted = (res.data as (RoleLimits & {
-            priority?: number;
-          })[]).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+          const sorted = (res.data as (RoleLimits & { priority?: number })[]).sort(
+            (a, b) => (b.priority || 0) - (a.priority || 0)
+          );
           setLimits(sorted[0]);
         }
       } catch {
@@ -88,14 +87,13 @@ const UsagePage: React.FC = () => {
   ) => (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-2 text-zinc-300">
+        <span className="flex items-center gap-2 text-foreground">
           {icon}
           {label}
         </span>
-        <span className="text-zinc-500 font-mono text-xs">{limitText}</span>
+        <span className="text-muted-foreground font-mono text-xs">{limitText}</span>
       </div>
-      {/* Usage value pending backend; bar shown at 0 for now */}
-      <Progress value={0} className="h-1.5 bg-zinc-900" />
+      <Progress value={0} className="h-1.5" />
     </div>
   );
 
@@ -103,60 +101,49 @@ const UsagePage: React.FC = () => {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <Gauge className="w-7 h-7 text-zinc-400" />
+          <Gauge className="w-7 h-7 text-muted-foreground" />
           {t.title}
         </h1>
-        <p className="text-sm text-zinc-500 mt-2">{t.subtitle}</p>
+        <p className="text-sm text-muted-foreground mt-2">{t.subtitle}</p>
       </div>
 
-      <Card className="bg-zinc-950/50 border-zinc-900 mb-6">
+      <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-zinc-100">{t.planTitle}</CardTitle>
+          <CardTitle>{t.planTitle}</CardTitle>
         </CardHeader>
         <CardContent className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-              <Crown className="w-5 h-5 text-zinc-300" />
+            <div className="w-10 h-10 rounded-lg bg-muted border border-border flex items-center justify-center">
+              <Crown className="w-5 h-5 text-muted-foreground" />
             </div>
-            <span className="text-lg font-bold text-zinc-100 capitalize">
+            <span className="text-lg font-bold capitalize">
               {loading ? t.loading : limits?.name || "user"}
             </span>
           </div>
-          <Button
-            onClick={() => navigate("/pricing")}
-            className="bg-zinc-100 text-black hover:bg-white"
-          >
-            {t.upgrade}
-          </Button>
+          <Button onClick={() => navigate("/pricing")}>{t.upgrade}</Button>
         </CardContent>
       </Card>
 
-      <Card className="bg-zinc-950/50 border-zinc-900">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-zinc-100">{t.quotaTitle}</CardTitle>
-          <CardDescription className="text-zinc-500">
-            {t.todoNote}
-          </CardDescription>
+          <CardTitle>{t.quotaTitle}</CardTitle>
+          <CardDescription>{t.todoNote}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {quotaRow(
-            <HardDrive className="w-4 h-4 text-zinc-500" />,
+            <HardDrive className="w-4 h-4 text-muted-foreground" />,
             t.storage,
-            limits?.max_file_size
-              ? formatBytes(limits.max_file_size)
-              : t.unlimited
+            limits?.max_file_size ? formatBytes(limits.max_file_size) : t.unlimited
           )}
           {quotaRow(
-            <FileStack className="w-4 h-4 text-zinc-500" />,
+            <FileStack className="w-4 h-4 text-muted-foreground" />,
             t.files,
             limits?.max_file_count ? String(limits.max_file_count) : t.unlimited
           )}
           {quotaRow(
-            <Rocket className="w-4 h-4 text-zinc-500" />,
+            <Rocket className="w-4 h-4 text-muted-foreground" />,
             t.deployments,
-            limits?.deployment_limit
-              ? String(limits.deployment_limit)
-              : t.unlimited
+            limits?.deployment_limit ? String(limits.deployment_limit) : t.unlimited
           )}
         </CardContent>
       </Card>

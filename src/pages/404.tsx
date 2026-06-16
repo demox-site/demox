@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Terminal,
   AlertTriangle,
   Home,
   ArrowRight,
   Activity,
-  Languages
+  Languages,
+  ChevronRight
 } from "lucide-react";
+import { Button } from "@/components/ui";
 import { useLanguage } from "../hooks/use-language";
 
 const translations = {
@@ -44,104 +45,95 @@ const NotFoundPage: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white flex flex-col items-center justify-center relative overflow-hidden">
-      {/* Background Grid Effect */}
+    <div className="min-h-screen bg-background text-foreground font-sans flex flex-col items-center justify-center relative overflow-hidden">
       <div className="absolute inset-0 bg-[linear-gradient(to_right,var(--grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-line)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] -z-10" />
 
-      {/* Language Switcher */}
       <button
         onClick={toggleLang}
-        className="absolute top-6 right-6 z-50 text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-900"
+        className="absolute top-6 right-6 z-50 text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-card/50 hover:bg-card"
       >
         <Languages size={14} />
-        <span className="text-xs font-mono uppercase tracking-wider">
-          {lang}
-        </span>
+        <span className="text-xs font-mono uppercase tracking-wider">{lang}</span>
       </button>
 
-      {/* Main Content */}
       <div className="max-w-3xl w-full px-4 relative z-10">
-        {/* Terminal Window */}
-        <div className="rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 shadow-2xl relative group mb-12">
-          {/* Terminal Header */}
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 bg-zinc-900/50">
+        <div className="rounded-lg overflow-hidden border border-border bg-card shadow-2xl relative group mb-12">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-muted/50">
             <div className="flex gap-1.5">
-              <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+              <div className="w-3 h-3 rounded-full bg-destructive/80"></div>
+              <div className="w-3 h-3 rounded-full bg-warning/80"></div>
+              <div className="w-3 h-3 rounded-full bg-success/80"></div>
             </div>
             <div className="flex-1 text-center">
-              <span className="text-xs text-zinc-500 font-mono">
+              <span className="text-xs text-muted-foreground font-mono">
                 system_log — error_trace
               </span>
             </div>
           </div>
 
-          {/* Terminal Body */}
           <div className="p-6 font-mono text-sm md:text-base space-y-4 min-h-[300px]">
-            <div className="flex items-center gap-2 text-zinc-500">
+            <div className="flex items-center gap-2 text-muted-foreground">
               <span>$</span>
-              <span className="text-zinc-300">
-                initiate_connection_protocol
-              </span>
+              <span className="text-foreground">initiate_connection_protocol</span>
             </div>
 
-            <div className="text-zinc-500">
+            <div className="text-muted-foreground">
               &gt; Resolving routing table...{" "}
-              <span className="text-green-500">done</span>
+              <span className="text-success">done</span>
             </div>
-            <div className="text-zinc-500">
+            <div className="text-muted-foreground">
               &gt; Locating deployment artifact...{" "}
-              <span className="text-yellow-500">searching</span>
+              <span className="text-warning">searching</span>
             </div>
-            <div className="text-zinc-500">
+            <div className="text-muted-foreground">
               &gt; Verifying integrity hash...
             </div>
 
-            <div className="pl-4 border-l-2 border-red-500/30 my-4">
-              <div className="text-red-500 font-bold mb-1 flex items-center gap-2">
+            <div className="pl-4 border-l-2 border-destructive/30 my-4">
+              <div className="text-destructive font-bold mb-1 flex items-center gap-2">
                 <AlertTriangle size={16} />
                 CRITICAL_FAILURE
               </div>
-              <div className="text-zinc-400">
+              <div className="text-muted-foreground">
                 Target deployment not found in the active registry.
                 <br />
                 The project may have been deleted, moved, or never existed.
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-zinc-100 mt-8">
-              <span className="text-red-500">➜</span>
+            <div className="flex items-center gap-2 text-foreground mt-8">
+              <ChevronRight className="w-4 h-4 text-destructive shrink-0" />
               <span className="animate-pulse">_</span>
-              <span className="text-red-400 font-bold">{typedText}</span>
+              <span className="text-destructive font-bold">{typedText}</span>
             </div>
           </div>
 
-          {/* Glow effect */}
-          <div className="absolute inset-0 bg-gradient-to-t from-red-900/5 to-transparent pointer-events-none" />
+          <div className="absolute inset-0 bg-gradient-to-t from-destructive/5 to-transparent pointer-events-none" />
         </div>
 
-        {/* Action Area */}
         <div className="text-center space-y-8">
           <div className="space-y-2">
             <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
               {t.title}
             </h1>
-            <p className="text-zinc-400 max-w-lg mx-auto">{t.desc}</p>
+            <p className="text-muted-foreground max-w-lg mx-auto">{t.desc}</p>
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <button
+            <Button
+              size="lg"
               onClick={() => navigate("/")}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)] flex items-center justify-center gap-2"
+              className="w-full sm:w-auto gap-2"
             >
               <Home size={18} />
               {t.home_btn}
-            </button>
+            </Button>
 
-            <button
+            <Button
+              size="lg"
+              variant="outline"
               onClick={() => navigate("/console/sites")}
-              className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-300 rounded-md hover:border-zinc-600 hover:text-zinc-100 transition-colors flex items-center justify-center gap-2 group"
+              className="w-full sm:w-auto gap-2 group"
             >
               <Activity size={18} />
               {t.status_btn}
@@ -149,13 +141,12 @@ const NotFoundPage: React.FC = () => {
                 size={16}
                 className="group-hover:translate-x-1 transition-transform"
               />
-            </button>
+            </Button>
           </div>
         </div>
       </div>
 
-      {/* Decorative Bottom */}
-      <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
+      <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
     </div>
   );
 };

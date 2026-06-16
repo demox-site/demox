@@ -20,7 +20,7 @@ interface AuthDialogProps {
   onLoginSuccess: () => void;
 }
 
-type LoginMode = 'password' | 'code';
+type LoginMode = "password" | "code";
 
 export function AuthDialog({
   isOpen,
@@ -46,7 +46,6 @@ export function AuthDialog({
     }
   }, [isOpen]);
 
-  // 倒计时
   useEffect(() => {
     if (countdown > 0) {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
@@ -54,7 +53,6 @@ export function AuthDialog({
     }
   }, [countdown]);
 
-  // 发送验证码
   const handleSendCode = async () => {
     if (!email) {
       toast({ title: "请输入邮箱", variant: "destructive" });
@@ -63,7 +61,7 @@ export function AuthDialog({
 
     setLoading(true);
     try {
-      await authApi.sendCode(email, 'login');
+      await authApi.sendCode(email, "login");
       setCountdown(60);
       toast({ title: "验证码已发送", description: "请查收邮件" });
     } catch (error: any) {
@@ -90,19 +88,19 @@ export function AuthDialog({
       return;
     }
 
-    if (loginMode === 'code' && !code) {
+    if (loginMode === "code" && !code) {
       toast({ title: "请输入验证码", variant: "destructive" });
       return;
     }
 
-    if (loginMode === 'password' && !password) {
+    if (loginMode === "password" && !password) {
       toast({ title: "请输入密码", variant: "destructive" });
       return;
     }
 
     setLoading(true);
     try {
-      if (loginMode === 'code') {
+      if (loginMode === "code") {
         const result = await authApi.loginWithCode(email, code);
         toast({
           title: result.isNewUser ? "注册成功" : "登录成功",
@@ -127,39 +125,36 @@ export function AuthDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px] border-zinc-800 bg-zinc-900 text-zinc-100">
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>登录 Demox</DialogTitle>
-          <DialogDescription className="text-zinc-400">
-            登录您的 Demox 账号
-          </DialogDescription>
+          <DialogDescription>登录您的 Demox 账号</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="email" className="text-zinc-300">邮箱</Label>
+            <Label htmlFor="email">邮箱</Label>
             <Input
               id="email"
               type="email"
               placeholder="name@example.com"
               value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-              }}
-              className="bg-zinc-800 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
+              onChange={(e) => setEmail(e.target.value)}
             />
           </div>
 
-          {loginMode === 'code' ? (
+          {loginMode === "code" ? (
             <div className="space-y-2">
-              <Label htmlFor="code" className="text-zinc-300">验证码</Label>
+              <Label htmlFor="code">验证码</Label>
               <div className="flex gap-2">
                 <Input
                   id="code"
                   type="text"
                   placeholder="6位验证码"
                   value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="flex-1 bg-zinc-800 border-zinc-700 text-zinc-100 focus:border-zinc-500 placeholder:text-zinc-600"
+                  onChange={(e) =>
+                    setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  className="flex-1"
                   maxLength={6}
                 />
                 <Button
@@ -167,7 +162,7 @@ export function AuthDialog({
                   variant="outline"
                   onClick={handleSendCode}
                   disabled={countdown > 0 || loading}
-                  className="shrink-0 bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100"
+                  className="shrink-0"
                 >
                   {countdown > 0 ? `${countdown}s` : "发送验证码"}
                 </Button>
@@ -175,19 +170,18 @@ export function AuthDialog({
             </div>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="password" className="text-zinc-300">密码</Label>
+              <Label htmlFor="password">密码</Label>
               <Input
                 id="password"
                 type="password"
                 placeholder="请输入密码"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="bg-zinc-800 border-zinc-700 text-zinc-100 focus:border-zinc-500"
               />
             </div>
           )}
 
-          <div className="flex items-start gap-2 text-xs text-zinc-500">
+          <div className="flex items-start gap-2 text-xs text-muted-foreground">
             <Checkbox
               id="agree"
               checked={agreed}
@@ -196,28 +190,30 @@ export function AuthDialog({
             />
             <label htmlFor="agree" className="leading-relaxed">
               我已阅读并同意{" "}
-              <a href="/terms" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
+              <a
+                href="/terms"
+                className="underline underline-offset-4 hover:text-foreground"
+              >
                 《服务条款》
               </a>{" "}
               和{" "}
-              <a href="/privacy" className="underline underline-offset-4 decoration-zinc-600 hover:text-zinc-200">
+              <a
+                href="/privacy"
+                className="underline underline-offset-4 hover:text-foreground"
+              >
                 《隐私政策》
               </a>
             </label>
           </div>
 
-          <Button
-            type="submit"
-            className="w-full bg-zinc-100 text-zinc-900 hover:bg-white"
-            disabled={loading}
-          >
-            {loading ? "处理中..." : (loginMode === 'code' ? "登录 / 注册" : "登录")}
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? "处理中..." : loginMode === "code" ? "登录 / 注册" : "登录"}
           </Button>
 
           <div className="flex items-center gap-3 py-1">
-            <div className="h-px flex-1 bg-zinc-800" />
-            <span className="text-xs text-zinc-600">或</span>
-            <div className="h-px flex-1 bg-zinc-800" />
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">或</span>
+            <div className="h-px flex-1 bg-border" />
           </div>
 
           <Button
@@ -226,12 +222,15 @@ export function AuthDialog({
             disabled={loading}
             onClick={() => {
               if (!agreed) {
-                toast({ title: "请先同意用户协议和隐私政策", variant: "destructive" });
+                toast({
+                  title: "请先同意用户协议和隐私政策",
+                  variant: "destructive"
+                });
                 return;
               }
               authApi.startGithubLogin("login");
             }}
-            className="w-full bg-zinc-800 border-zinc-700 text-zinc-100 hover:bg-zinc-700"
+            className="w-full"
           >
             <Github className="w-4 h-4 mr-2" />
             使用 GitHub 登录
@@ -241,10 +240,12 @@ export function AuthDialog({
             <Button
               type="button"
               variant="link"
-              className="p-0 h-auto text-zinc-300 hover:text-zinc-100"
-              onClick={() => setLoginMode(loginMode === 'code' ? 'password' : 'code')}
+              className="p-0 h-auto"
+              onClick={() =>
+                setLoginMode(loginMode === "code" ? "password" : "code")
+              }
             >
-              {loginMode === 'code' ? "使用密码登录" : "使用验证码登录 / 注册"}
+              {loginMode === "code" ? "使用密码登录" : "使用验证码登录 / 注册"}
             </Button>
           </div>
         </form>

@@ -35,6 +35,20 @@
 
     --radius: 0.5rem;
 
+    /* Brand & status — shared across light/dark (use sparingly). */
+    --brand: 142 71% 40%;
+    --brand-foreground: 0 0% 100%;
+    --success: 142 71% 40%;
+    --success-foreground: 0 0% 100%;
+    --link: 142 71% 35%;
+    --warning: 38 92% 45%;
+    --warning-foreground: 24 10% 10%;
+
+    /* Workflow step accents */
+    --step-1: 142 71% 40%;
+    --step-2: 199 89% 48%;
+    --step-3: 280 68% 52%;
+
     /*
      * Neutral scale (zinc / black / white).
      * The product was designed dark-first with hardcoded zinc/black/white
@@ -101,6 +115,18 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
+
+    --brand: 142 69% 58%;
+    --brand-foreground: 240 10% 3.9%;
+    --success: 142 69% 58%;
+    --success-foreground: 240 10% 3.9%;
+    --link: 142 69% 58%;
+    --warning: 45 93% 58%;
+    --warning-foreground: 240 10% 3.9%;
+
+    --step-1: 142 69% 58%;
+    --step-2: 199 89% 58%;
+    --step-3: 280 68% 62%;
 
     /* Neutral scale — identity (true Tailwind zinc values, original look). */
     --black: 0 0 0;

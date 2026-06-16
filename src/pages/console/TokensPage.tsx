@@ -7,7 +7,6 @@ import {
   CardDescription,
   Button,
   Input,
-  Label,
   useToast
 } from "@/components/ui";
 import { KeyRound, Copy, Trash2, Plus, Terminal } from "lucide-react";
@@ -64,7 +63,6 @@ const TokensPage: React.FC = () => {
   const t = texts[language];
   const { toast } = useToast();
 
-  // NOTE: backend endpoints (GET/POST/DELETE /auth/tokens) are not wired yet.
   const [tokens] = useState<TokenRow[]>([]);
   const [name, setName] = useState("");
 
@@ -80,18 +78,16 @@ const TokensPage: React.FC = () => {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <KeyRound className="w-7 h-7 text-zinc-400" />
+          <KeyRound className="w-7 h-7 text-muted-foreground" />
           {t.title}
         </h1>
-        <p className="text-sm text-zinc-500 mt-2">{t.subtitle}</p>
+        <p className="text-sm text-muted-foreground mt-2">{t.subtitle}</p>
       </div>
 
-      <Card className="bg-zinc-950/50 border-zinc-900 mb-6">
+      <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-zinc-100">{t.createTitle}</CardTitle>
-          <CardDescription className="text-zinc-500">
-            {t.createDesc}
-          </CardDescription>
+          <CardTitle>{t.createTitle}</CardTitle>
+          <CardDescription>{t.createDesc}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex gap-2 max-w-lg">
@@ -99,12 +95,8 @@ const TokensPage: React.FC = () => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={t.namePlaceholder}
-              className="bg-zinc-900 border-zinc-800 text-zinc-100"
             />
-            <Button
-              onClick={notImplemented}
-              className="shrink-0 bg-zinc-100 text-black hover:bg-white"
-            >
+            <Button onClick={notImplemented} className="shrink-0">
               <Plus className="w-4 h-4 mr-1" />
               {t.create}
             </Button>
@@ -112,49 +104,42 @@ const TokensPage: React.FC = () => {
         </CardContent>
       </Card>
 
-      <Card className="bg-zinc-950/50 border-zinc-900">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-zinc-100">{t.listTitle}</CardTitle>
+          <CardTitle>{t.listTitle}</CardTitle>
         </CardHeader>
         <CardContent>
           {tokens.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Terminal className="w-10 h-10 text-zinc-700 mb-3" />
-              <p className="text-sm text-zinc-500">{t.empty}</p>
+              <Terminal className="w-10 h-10 text-muted-foreground/40 mb-3" />
+              <p className="text-sm text-muted-foreground">{t.empty}</p>
             </div>
           ) : (
-            <div className="divide-y divide-zinc-900">
+            <div className="divide-y divide-border">
               {tokens.map((tok) => (
                 <div
                   key={tok.id}
                   className="flex items-center justify-between py-3"
                 >
                   <div className="flex flex-col">
-                    <span className="text-sm text-zinc-100 font-medium">
-                      {tok.name}
-                    </span>
-                    <span className="text-xs text-zinc-500 font-mono">
+                    <span className="text-sm font-medium">{tok.name}</span>
+                    <span className="text-xs text-muted-foreground font-mono">
                       {tok.prefix}••••••••
                     </span>
-                    <span className="text-xs text-zinc-600 mt-0.5">
+                    <span className="text-xs text-muted-foreground mt-0.5">
                       {t.created} {fmt(tok.createdAt)} · {t.lastUsed}{" "}
                       {fmt(tok.lastUsedAt)}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={notImplemented}
-                      className="bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-                    >
+                    <Button size="sm" variant="outline" onClick={notImplemented}>
                       <Copy className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={notImplemented}
-                      className="bg-zinc-900 border-zinc-700 text-red-400 hover:bg-red-950/20 hover:text-red-300"
+                      className="text-destructive hover:text-destructive"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>

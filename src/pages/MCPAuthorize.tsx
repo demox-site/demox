@@ -80,10 +80,10 @@ export function MCPAuthorize() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-black to-zinc-900 text-white flex items-center justify-center">
+    <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
       <div className="text-center">
-        <Loader2 className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
-        <p className="text-zinc-400">
+        <Loader2 className="w-12 h-12 animate-spin text-muted-foreground mx-auto mb-4" />
+        <p className="text-muted-foreground">
           {status === "checking" ? "正在检查登录状态..." : "正在处理授权..."}
         </p>
       </div>

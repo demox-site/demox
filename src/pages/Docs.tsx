@@ -379,7 +379,7 @@ export const Docs: React.FC = () => {
                       </p>
                       <div className="text-sm text-zinc-400 space-y-1 border-t border-zinc-800 pt-3">
                         <p className="text-zinc-500">{isZh ? "AI 助手：" : "Assistant:"}</p>
-                        <p>{isZh ? "[正在打包 ./dist…] ✅ 部署成功！" : "[Packing ./dist…] ✅ Deployed!"}</p>
+                        <p>{isZh ? "[正在打包 ./dist…] 部署成功" : "[Packing ./dist…] Deployed"}</p>
                         <p className="text-zinc-300">https://xyz67890.demox.site</p>
                       </div>
                     </div>

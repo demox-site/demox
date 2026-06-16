@@ -93,23 +93,20 @@ export function GithubCallback() {
   }, [navigate]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black text-zinc-100 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-background text-foreground px-4">
       <div className="flex flex-col items-center gap-5 max-w-sm text-center">
         {status === "logging" && (
-          <Loader2 className="w-10 h-10 text-zinc-400 animate-spin" />
+          <Loader2 className="w-10 h-10 text-muted-foreground animate-spin" />
         )}
         {status === "success" && (
-          <CheckCircle className="w-10 h-10 text-emerald-400" />
+          <CheckCircle className="w-10 h-10 text-success" />
         )}
-        {status === "error" && <XCircle className="w-10 h-10 text-red-400" />}
+        {status === "error" && <XCircle className="w-10 h-10 text-destructive" />}
 
-        <p className="text-sm text-zinc-400">{message}</p>
+        <p className="text-sm text-muted-foreground">{message}</p>
 
         {status === "error" && (
-          <Button
-            onClick={() => navigate("/index", { replace: true })}
-            className="bg-zinc-100 text-black hover:bg-white"
-          >
+          <Button onClick={() => navigate("/index", { replace: true })}>
             返回首页
           </Button>
         )}
