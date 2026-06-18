@@ -14,10 +14,11 @@ import {
   Progress
 } from "@/components/ui";
 // @ts-ignore;
-import { Upload, FolderOpen, FileText, FileType, Archive, Check } from "lucide-react";
+import { Upload, FolderOpen, FileText, FileType, Archive, Check, Table } from "lucide-react";
 import { docTemplates, defaultTemplateId } from "@/lib/doc-templates";
 import { isSupportedDoc, SUPPORTED_DOC_EXTENSIONS } from "@/lib/doc-to-site";
 import { isSupportedPdf, SUPPORTED_PDF_EXTENSIONS } from "@/lib/pdf-to-site";
+import { isSupportedSpreadsheet, SUPPORTED_SPREADSHEET_EXTENSIONS } from "@/lib/spreadsheet-to-site";
 
 /**
  * UploadSection
@@ -43,6 +44,7 @@ export default function UploadSection({
   uploadZipFile,
   uploadDocFile,
   uploadPdfFile,
+  uploadSpreadsheetFile,
   fileInputRef,
   uploading,
   uploadStatusText,
@@ -54,7 +56,7 @@ export default function UploadSection({
   const [pendingDocFile, setPendingDocFile] = React.useState(null);
   const [templateDialogOpen, setTemplateDialogOpen] = React.useState(false);
   const L = lang === "en" ? "en" : "zh";
-  const allAccept = [".zip", ...SUPPORTED_DOC_EXTENSIONS, ...SUPPORTED_PDF_EXTENSIONS].join(",");
+  const allAccept = [".zip", ...SUPPORTED_DOC_EXTENSIONS, ...SUPPORTED_PDF_EXTENSIONS, ...SUPPORTED_SPREADSHEET_EXTENSIONS].join(",");
 
   const isZipFile = (file) =>
     !!file && String(file.name || "").toLowerCase().endsWith(".zip");
@@ -85,6 +87,11 @@ export default function UploadSection({
 
     if (isSupportedPdf(file)) {
       await uploadPdfFile(file);
+      return;
+    }
+
+    if (isSupportedSpreadsheet(file)) {
+      await uploadSpreadsheetFile(file);
       return;
     }
 
@@ -199,6 +206,14 @@ export default function UploadSection({
             <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
               <FileType className="h-3.5 w-3.5" />
               {t.uploadFormatPdf}
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
+              <Table className="h-3.5 w-3.5" />
+              {t.uploadFormatSheet}
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
+              <Code className="h-3.5 w-3.5" />
+              {t.uploadFormatHtml}
             </span>
             <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1">
               <FileText className="h-3.5 w-3.5" />

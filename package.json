@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp dist/index.html dist/404.html",
+    "build": "vite build && cp dist/index.html dist/404.html && mkdir -p dist/pricing && cp dist/index.html dist/pricing/index.html",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -65,6 +65,7 @@
     "mysql2": "^3.17.0",
     "next-themes": "^0.3.0",
     "papaparse": "^5.5.3",
+    "pdfjs-dist": "^4.7.76",
     "query-string": "^9.2.0",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",

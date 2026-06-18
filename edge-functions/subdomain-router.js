@@ -130,11 +130,19 @@ function getDemoxBadgeHtml() {
   return `
 <style data-demox-site-badge-style>
 @media screen {
-  a[${DEMOX_BADGE_MARKER}="link"] {
+  div[${DEMOX_BADGE_MARKER}="wrap"] {
     position: fixed !important;
     left: max(14px, calc(env(safe-area-inset-left) + 12px)) !important;
     bottom: max(14px, calc(env(safe-area-inset-bottom) + 12px)) !important;
     z-index: 2147483647 !important;
+    opacity: .94 !important;
+    transition: opacity .18s ease !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="wrap"].dragging {
+    transition: none !important;
+    opacity: 1 !important;
+  }
+  a[${DEMOX_BADGE_MARKER}="link"] {
     display: inline-flex !important;
     align-items: center !important;
     gap: 8px !important;
@@ -154,8 +162,9 @@ function getDemoxBadgeHtml() {
     letter-spacing: .01em !important;
     text-decoration: none !important;
     text-transform: none !important;
-    opacity: .94 !important;
-    transition: transform .18s ease, opacity .18s ease, box-shadow .18s ease !important;
+    cursor: grab !important;
+    touch-action: none !important;
+    transition: transform .18s ease, box-shadow .18s ease !important;
   }
   a[${DEMOX_BADGE_MARKER}="link"]::before {
     content: "" !important;
@@ -167,17 +176,22 @@ function getDemoxBadgeHtml() {
     flex: 0 0 auto !important;
   }
   a[${DEMOX_BADGE_MARKER}="link"]:hover {
-    opacity: 1 !important;
-    transform: translateY(-2px) !important;
     box-shadow: 0 18px 40px rgba(2,12,27,.28), inset 0 1px 0 rgba(255,255,255,.2) !important;
   }
   a[${DEMOX_BADGE_MARKER}="link"]:focus-visible {
     outline: 3px solid rgba(125,249,212,.86) !important;
     outline-offset: 3px !important;
   }
+  div[${DEMOX_BADGE_MARKER}="wrap"].dragging,
+  div[${DEMOX_BADGE_MARKER}="wrap"].dragging a[${DEMOX_BADGE_MARKER}="link"] {
+    cursor: grabbing !important;
+    transform: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+  }
 }
 @media screen and (prefers-reduced-motion: no-preference) {
-  a[${DEMOX_BADGE_MARKER}="link"] {
+  div[${DEMOX_BADGE_MARKER}="wrap"]:not(.dragging) {
     animation: demoxBadgeRise .34s cubic-bezier(.2,.8,.2,1) both !important;
   }
   @keyframes demoxBadgeRise {
@@ -186,10 +200,95 @@ function getDemoxBadgeHtml() {
   }
 }
 @media print {
-  a[${DEMOX_BADGE_MARKER}="link"] { display: none !important; }
+  div[${DEMOX_BADGE_MARKER}="wrap"] { display: none !important; }
 }
 </style>
-<a ${DEMOX_BADGE_MARKER}="link" href="${demoxHomeUrl()}" target="_blank" rel="noopener noreferrer" aria-label="Go to Demox homepage">Powered by Demox</a>`;
+<div ${DEMOX_BADGE_MARKER}="wrap">
+  <a ${DEMOX_BADGE_MARKER}="link" href="${demoxHomeUrl()}" target="_blank" rel="noopener noreferrer" aria-label="Go to Demox homepage">Powered by Demox</a>
+</div>
+<script data-demox-site-badge-script>
+(function () {
+  var wrap = document.querySelector('div[${DEMOX_BADGE_MARKER}="wrap"]');
+  if (!wrap) return;
+  var link = wrap.querySelector('a[${DEMOX_BADGE_MARKER}="link"]');
+  if (!link) return;
+  var STORAGE_KEY = 'demox-badge-pos';
+  var DRAG_THRESHOLD = 5;
+  // 读取持久化位置：有则用 left/top 接管定位，无则保留 CSS 默认左下角
+  try {
+    var saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+      wrap.style.left = saved.left + 'px';
+      wrap.style.top = saved.top + 'px';
+      wrap.style.bottom = 'auto';
+      wrap.style.right = 'auto';
+    }
+  } catch (e) {}
+  // 约束在 viewport 内
+  function clamp(left, top) {
+    var w = wrap.offsetWidth || 130, h = wrap.offsetHeight || 34;
+    return {
+      left: Math.max(0, Math.min(left, window.innerWidth - w)),
+      top: Math.max(0, Math.min(top, window.innerHeight - h))
+    };
+  }
+  function applyPos(left, top) {
+    var c = clamp(left, top);
+    wrap.style.left = c.left + 'px';
+    wrap.style.top = c.top + 'px';
+    wrap.style.bottom = 'auto';
+    wrap.style.right = 'auto';
+    return c;
+  }
+  var dragging = false, moved = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  function getPoint(e) {
+    if (e.touches && e.touches[0]) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.changedTouches && e.changedTouches[0]) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+  function onDown(e) {
+    dragging = true; moved = false;
+    var p = getPoint(e);
+    startX = p.x; startY = p.y;
+    var r = wrap.getBoundingClientRect();
+    startLeft = r.left; startTop = r.top;
+    wrap.classList.add('dragging');
+    if (e.cancelable) e.preventDefault();
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    var p = getPoint(e);
+    var dx = p.x - startX, dy = p.y - startY;
+    if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) moved = true;
+    applyPos(startLeft + dx, startTop + dy);
+    if (e.cancelable) e.preventDefault();
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    wrap.classList.remove('dragging');
+    if (moved) {
+      var r = wrap.getBoundingClientRect();
+      var c = applyPos(r.left, r.top);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); } catch (e) {}
+      // 拖动后阻止本次 click 跳转
+      link.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); }, { capture: true, once: true });
+    }
+  }
+  link.addEventListener('mousedown', onDown);
+  link.addEventListener('touchstart', onDown, { passive: false });
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchend', onUp);
+  document.addEventListener('touchcancel', onUp);
+  // 视口变化时把徽章拉回可见区
+  window.addEventListener('resize', function () {
+    var r = wrap.getBoundingClientRect();
+    applyPos(r.left, r.top);
+  });
+})();
+</script>`;
 }
 
 function injectDemoxBadge(html) {

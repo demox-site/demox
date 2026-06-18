@@ -8,6 +8,11 @@ import {
 } from "@/lib/website-utils";
 import { buildSiteZipFile, isSupportedDoc } from "@/lib/doc-to-site";
 import { buildPdfSiteZipFile, isSupportedPdf } from "@/lib/pdf-to-site";
+import {
+  buildSpreadsheetSiteZipFile,
+  isSupportedSpreadsheet
+} from "@/lib/spreadsheet-to-site";
+import { buildHtmlSiteZipFile, isSupportedHtml } from "@/lib/html-to-site";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
@@ -293,7 +298,7 @@ export function useUpload({
 
   /**
    * uploadPdfFile
-   * PDF 模式入口：保留原始 PDF，生成内联预览的 index.html，
+   * PDF 模式入口：用 pdf.js 逐页渲染成图片，生成画册式 index.html，
    * 在浏览器端打包为 .zip 后复用 uploadZipFile 走既有部署流程。
    * @param {File|null} file PDF 文件
    */
@@ -310,10 +315,26 @@ export function useUpload({
 
     let zipFile;
     try {
-      const built = await buildPdfSiteZipFile({ file });
+      // 渲染阶段：先进入 uploading 状态，显示逐页渲染进度
+      setUploading(true);
+      setUploadProgress(0);
+      setUploadStage(1);
+      setUploadFileSize(file.size);
+      setUploadStatusText(`${t.statusRenderingPdf} (0/0)`);
+
+      const built = await buildPdfSiteZipFile({
+        file,
+        onProgress: (current, total) => {
+          setUploadStatusText(`${t.statusRenderingPdf} (${current}/${total})`);
+          setUploadProgress(Math.round((current / total) * 100));
+        }
+      });
       zipFile = built.zipFile;
     } catch (error) {
-      console.error("PDF pack failed:", error);
+      console.error("PDF render failed:", error);
+      setUploading(false);
+      setUploadStatusText("");
+      setUploadProgress(0);
       toast({
         title: t.toastPdfPackFailedTitle,
         description: t.toastPdfPackFailedDesc,
@@ -322,6 +343,95 @@ export function useUpload({
       return;
     }
 
+    // 渲染完成，交给 uploadZipFile 走上传/部署流程（其内部会重置状态）
+    await uploadZipFile(zipFile);
+  };
+
+  /**
+   * uploadSpreadsheetFile
+   * 表格模式入口：解析 CSV/Excel 为多 sheet 表格网页，
+   * 在浏览器端打包为 .zip 后复用 uploadZipFile 走既有部署流程。
+   * @param {File|null} file 表格文件
+   */
+  const uploadSpreadsheetFile = async (file) => {
+    if (!file) return;
+    if (!isSupportedSpreadsheet(file)) {
+      toast({
+        title: t.toastInvalidSheetTitle,
+        description: t.toastInvalidSheetDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    let zipFile;
+    try {
+      setUploading(true);
+      setUploadProgress(0);
+      setUploadStage(1);
+      setUploadFileSize(file.size);
+      setUploadStatusText(t.statusParsingSheet);
+
+      const built = await buildSpreadsheetSiteZipFile({ file });
+      zipFile = built.zipFile;
+    } catch (error) {
+      console.error("Spreadsheet parse failed:", error);
+      setUploading(false);
+      setUploadStatusText("");
+      setUploadProgress(0);
+      toast({
+        title: t.toastSheetParseFailedTitle,
+        description: t.toastSheetParseFailedDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // 解析完成，交给 uploadZipFile 走上传/部署流程
+    await uploadZipFile(zipFile);
+  };
+
+  /**
+   * uploadHtmlFile
+   * 单 HTML 模式入口：把单个 .html/.htm 文件作为 index.html 打包成 .zip，
+   * 复用 uploadZipFile 走既有部署流程。
+   * @param {File|null} file HTML 文件
+   */
+  const uploadHtmlFile = async (file) => {
+    if (!file) return;
+    if (!isSupportedHtml(file)) {
+      toast({
+        title: t.toastInvalidHtmlTitle,
+        description: t.toastInvalidHtmlDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    let zipFile;
+    try {
+      setUploading(true);
+      setUploadProgress(0);
+      setUploadStage(1);
+      setUploadFileSize(file.size);
+      setUploadStatusText(t.statusPackagingHtml);
+
+      const built = await buildHtmlSiteZipFile({ file });
+      zipFile = built.zipFile;
+    } catch (error) {
+      console.error("HTML pack failed:", error);
+      setUploading(false);
+      setUploadStatusText("");
+      setUploadProgress(0);
+      toast({
+        title: t.toastHtmlPackFailedTitle,
+        description: t.toastHtmlPackFailedDesc,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // 打包完成，交给 uploadZipFile 走上传/部署流程
     await uploadZipFile(zipFile);
   };
 
@@ -336,6 +446,8 @@ export function useUpload({
     fileInputRef,
     uploadZipFile,
     uploadDocFile,
-    uploadPdfFile
+    uploadPdfFile,
+    uploadSpreadsheetFile,
+    uploadHtmlFile
   };
 }

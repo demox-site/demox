@@ -148,6 +148,8 @@ export default function Home(props) {
               uploadZipFile={upload.uploadZipFile}
               uploadDocFile={upload.uploadDocFile}
               uploadPdfFile={upload.uploadPdfFile}
+              uploadSpreadsheetFile={upload.uploadSpreadsheetFile}
+              uploadHtmlFile={upload.uploadHtmlFile}
               fileInputRef={upload.fileInputRef}
               uploading={upload.uploading}
               uploadStatusText={upload.uploadStatusText}
