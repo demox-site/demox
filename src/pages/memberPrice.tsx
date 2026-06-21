@@ -1,12 +1,21 @@
 import React, { useState, useEffect } from "react";
 import { FeatureIcon } from "@/components/ui/feature-icon";
-import { Star, Twitter, Megaphone, Check } from "lucide-react";
+import { Star, X, Megaphone, Check } from "lucide-react";
 import { MainLayout } from "@/layouts/MainLayout";
+import { useToast } from "@/components/ui";
 
 const MemberPrice = () => {
+  const { toast } = useToast();
   const [displayedText, setDisplayedText] = useState("");
   const fullText =
     "“我们甚至没有雇佣设计师来设计这个‘价格’页面。因为它是免费的。我们把设计支付页面的时间，都用来优化你的 CDN 速度了。别找了，去部署吧。”";
+
+  const showAccountPendingToast = () => {
+    toast({
+      title: "暂未创建账号",
+      description: "Demox 的 X 账号还在路上，先去部署点什么吧。",
+    });
+  };
 
   useEffect(() => {
     let index = 0;
@@ -109,7 +118,12 @@ const MemberPrice = () => {
               你可以通过以下方式支持我们：
             </h2>
             <div className="grid md:grid-cols-3 gap-8">
-              <a href="#" className="flex flex-col items-center group">
+              <a
+                href="https://github.com/demox-site/demox"
+                target="_blank"
+                rel="noreferrer"
+                className="flex flex-col items-center group"
+              >
                 <FeatureIcon icon={Star} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">GitHub Star</div>
                 <div className="text-muted-foreground text-sm">
@@ -117,13 +131,20 @@ const MemberPrice = () => {
                 </div>
               </a>
 
-              <a href="#" className="flex flex-col items-center group">
-                <FeatureIcon icon={Twitter} className="mb-4 group-hover:scale-105 transition-transform" />
-                <div className="font-bold mb-2">Twitter 吐槽</div>
+              <button
+                type="button"
+                onClick={showAccountPendingToast}
+                className="flex flex-col items-center group"
+              >
+                <FeatureIcon icon={X} className="mb-4 group-hover:scale-105 transition-transform" />
+                <div className="font-bold mb-2">X 吐槽</div>
                 <div className="text-muted-foreground text-sm">告诉我们哪里做得烂</div>
-              </a>
+              </button>
 
-              <a href="#" className="flex flex-col items-center group">
+              <a
+                href="https://demox-promo.demox.site/"
+                className="flex flex-col items-center group"
+              >
                 <FeatureIcon icon={Megaphone} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">向朋友炫耀</div>
                 <div className="text-muted-foreground text-sm">

@@ -27,6 +27,13 @@ dist-ssr
 webpack.config.js
 project.zip
 
+# Generated deployment/test artifacts
+.tmp-*.png
+scf-code/**/*.zip
+scf-deploy-packages/*.zip
+scripts/*.zip
+scripts/*.tgz
+
 .trae
 .datasources
 scripts/scf-deploy*.cjs
