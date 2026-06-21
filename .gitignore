@@ -33,6 +33,20 @@ scf-code/**/*.zip
 scf-deploy-packages/*.zip
 scripts/*.zip
 scripts/*.tgz
+API_REFERENCE.md
+DEMOX_PROMO_SCRIPT.md
+postman/
+scf-code/cert-renew/
+scf-deploy-packages/website-api/
+scf-deploy-packages/auth-api/*test*.cjs
+scripts/QUICKSTART.md
+scripts/README.md
+scripts/*proxy*.cjs
+scripts/local-server.cjs
+scripts/quick-deploy.cjs
+scripts/scf-cli.cjs
+scripts/test-*.cjs
+scripts/validate-scf-packages.cjs
 
 .trae
 .datasources
