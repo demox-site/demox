@@ -2537,7 +2537,9 @@ function normalizeAnalyticsPath(input) {
 function isScannerProbePath(input) {
   const value = normalizeAnalyticsPath(input).toLowerCase();
   return (
+    value === '/xmlrpc' ||
     value === '/xmlrpc.php' ||
+    value === '/wp-login' ||
     value === '/wp-login.php' ||
     value.startsWith('/wp-admin') ||
     value.startsWith('/wp-content') ||
@@ -2548,6 +2550,19 @@ function isScannerProbePath(input) {
     value.includes('/phpinfo') ||
     value.includes('/vendor/phpunit')
   );
+}
+
+function scannerPathSqlPredicate(columnName = 'path') {
+  return `NOT (
+    ${columnName} IN ('/xmlrpc', '/xmlrpc.php', '/wp-login', '/wp-login.php', '/.env') OR
+    ${columnName} LIKE '/wp-admin%' OR
+    ${columnName} LIKE '/wp-content%' OR
+    ${columnName} LIKE '/wp-includes%' OR
+    ${columnName} LIKE '/.git%' OR
+    ${columnName} LIKE '%/phpmyadmin%' OR
+    ${columnName} LIKE '%/phpinfo%' OR
+    ${columnName} LIKE '%/vendor/phpunit%'
+  )`;
 }
 
 function maskIpForDisplay(input) {
@@ -2718,16 +2733,30 @@ async function handleGetSiteStats(event) {
   }
 
   try {
-    const daily = await query(
-      `SELECT stat_date, views, badge_clicks
+    const cleanDailyViews = await query(
+      `SELECT stat_date, SUM(views) AS views
+       FROM site_path_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND ${scannerPathSqlPredicate('path')}
+       GROUP BY stat_date
+       ORDER BY stat_date ASC`,
+      [websiteId, days - 1]
+    );
+    const dailyBadges = await query(
+      `SELECT stat_date, badge_clicks
        FROM site_daily_stats
        WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
        ORDER BY stat_date ASC`,
       [websiteId, days - 1]
     );
-    const totals = await query(
-      `SELECT COALESCE(SUM(views), 0) AS views,
-              COALESCE(SUM(badge_clicks), 0) AS badge_clicks
+    const cleanTotals = await query(
+      `SELECT COALESCE(SUM(views), 0) AS views
+       FROM site_path_daily_stats
+       WHERE website_id = ? AND ${scannerPathSqlPredicate('path')}`,
+      [websiteId]
+    );
+    const badgeTotals = await query(
+      `SELECT COALESCE(SUM(badge_clicks), 0) AS badge_clicks
        FROM site_daily_stats
        WHERE website_id = ?`,
       [websiteId]
@@ -2774,14 +2803,14 @@ async function handleGetSiteStats(event) {
       websiteId,
       rangeDays: days,
       totals: {
-        views: Number(totals[0]?.views || 0),
-        badgeClicks: Number(totals[0]?.badge_clicks || 0)
+        views: Number(cleanTotals[0]?.views || 0),
+        badgeClicks: Number(badgeTotals[0]?.badge_clicks || 0)
       },
-      daily: daily.map((r) => ({
-        date: r.stat_date instanceof Date ? r.stat_date.toISOString().slice(0, 10) : String(r.stat_date).slice(0, 10),
-        views: Number(r.views || 0),
-        badgeClicks: Number(r.badge_clicks || 0)
-      })),
+      daily: cleanDailyViews.map((r) => {
+        const date = r.stat_date instanceof Date ? r.stat_date.toISOString().slice(0, 10) : String(r.stat_date).slice(0, 10);
+        const badgeRow = dailyBadges.find((b) => (b.stat_date instanceof Date ? b.stat_date.toISOString().slice(0, 10) : String(b.stat_date).slice(0, 10)) === date);
+        return { date, views: Number(r.views || 0), badgeClicks: Number(badgeRow?.badge_clicks || 0) };
+      }),
       referrers: referrers.map((r) => ({ host: r.referrer_host || 'direct', views: Number(r.views || 0) })),
       paths: paths
         .map((r) => ({ path: r.path || '/', views: Number(r.views || 0) }))
@@ -2887,14 +2916,16 @@ function addRollupCount(map, keyParts, field, amount) {
 function normalizeRawAnalyticsEvent(item) {
   const websiteId = normalizeAnalyticsWebsiteId(item.websiteId || item.website_id);
   if (!websiteId) return null;
-  const type = normalizeAnalyticsEventType(item.type || item.eventType);
+  const pathValue = normalizeAnalyticsPath(item.path || '/');
+  const requestedType = normalizeAnalyticsEventType(item.type || item.eventType);
+  const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
   const ts = Number(item.ts || 0) || Date.now();
   const statDate = new Date(ts).toISOString().slice(0, 10);
   return {
     websiteId,
     type,
     statDate,
-    path: normalizeAnalyticsPath(item.path || '/'),
+    path: pathValue,
     referrerHost: normalizeReferrerHost(item.referrerHost || item.referrer || ''),
     country: normalizeCountry(item.country || item.countryCode),
     province: normalizeProvince(item.province || item.region || item.subdivision),

@@ -207,9 +207,13 @@ async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, me
 }
 
 function shouldInjectDemoxBadge(req, resp) {
-  if (req.method !== 'GET' || resp.status !== 200) return false;
   const host = new URL(req.url).hostname.toLowerCase();
   if (host === WWW_HOST) return false;
+  return shouldTrackSiteView(req, resp);
+}
+
+function shouldTrackSiteView(req, resp) {
+  if (req.method !== 'GET' || resp.status !== 200) return false;
   const type = (resp.headers.get('content-type') || '').toLowerCase();
   if (!type.includes('text/html')) return false;
   const disposition = (resp.headers.get('content-disposition') || '').toLowerCase();
@@ -419,9 +423,10 @@ function injectDemoxBadge(html, meta) {
 }
 
 async function withDemoxBadge(req, event, resp, meta) {
+  if (shouldTrackSiteView(req, resp)) {
+    trackSiteEvent(req, event, meta, 'view');
+  }
   if (!shouldInjectDemoxBadge(req, resp)) return resp;
-
-  trackSiteEvent(req, event, meta, 'view');
   const html = await resp.text();
   const headers = new Headers(resp.headers);
   headers.delete('content-length');
