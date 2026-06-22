@@ -2873,7 +2873,7 @@ async function handleRollupSiteAnalytics(event) {
     const bucketCfg = await resolveBucketConfig(bucketId);
     const provider = createProvider(buckets.resolveCreds(bucketCfg));
     const objects = await listRawAnalyticsObjects(provider, body);
-    const candidates = [];
+    let candidates = [];
     for (const obj of objects) {
       if (Number(obj.size || 0) > 256 * 1024) continue;
       const text = await provider.get(obj.key);
@@ -2883,6 +2883,15 @@ async function handleRollupSiteAnalytics(event) {
         if (!item) continue;
         candidates.push({ key: obj.key, item });
       }
+    }
+    const websiteIds = Array.from(new Set(candidates.map((c) => c.item.websiteId)));
+    if (websiteIds.length) {
+      const validRows = await query(
+        `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
+        websiteIds
+      );
+      const validIds = new Set(validRows.map((r) => String(r.website_id || '')));
+      candidates = candidates.filter((c) => validIds.has(c.item.websiteId));
     }
 
     const summary = await transaction(async (conn) => {
