@@ -93,7 +93,7 @@ export default function WebsiteCard({
     ? `/console/projects/${website.projectId}/sites/${website.websiteId || website._id}/analytics`
     : "";
   const settingsActionClass =
-    "rounded-xl border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-950 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-white";
+    "rounded-xl border-border bg-background text-foreground hover:bg-accent hover:text-accent-foreground";
 
   return (
     <div className="stitch-site-row p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 group">
@@ -130,9 +130,15 @@ export default function WebsiteCard({
                     {getDisplayName(website)}
                   </h3>
                   {canManageSite && (
-                    <span className="text-[11px] font-medium text-[var(--stitch-muted)] opacity-0 transition-opacity group-hover:opacity-100">
-                      {t.siteSettingsHint || "在设置中编辑"}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => startEditName(website)}
+                      className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
+                      title={t.editName || "编辑名称"}
+                    >
+                      <Pencil className="h-3 w-3" />
+                      {t.editName || "编辑名称"}
+                    </button>
                   )}
                 </div>
                 {(website.websiteId || website._id) && (
@@ -227,7 +233,7 @@ export default function WebsiteCard({
               </Button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 my-1">
+            <div className="flex items-center gap-2 my-1 flex-wrap">
               {Array.isArray(website.tags) && website.tags.length > 0 && (
                 <div className="flex gap-1 flex-wrap">
                   {website.tags.map((tag, idx) => (
@@ -239,6 +245,17 @@ export default function WebsiteCard({
                     </span>
                   ))}
                 </div>
+              )}
+              {canManageSite && (
+                <button
+                  type="button"
+                  onClick={() => startEditTags(website)}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-[var(--stitch-blue-soft)] text-[var(--stitch-muted)] border border-[var(--stitch-line)] transition-colors hover:text-[var(--stitch-ink)]"
+                  title={t.editTags || "编辑标签"}
+                >
+                  <Tag className="h-3 w-3" />
+                  {t.editTags || "编辑标签"}
+                </button>
               )}
             </div>
           )}
@@ -318,11 +335,11 @@ export default function WebsiteCard({
             </PopoverTrigger>
             <PopoverContent
               align="end"
-              className="w-[330px] rounded-2xl border-zinc-200 bg-white p-3 text-zinc-950 shadow-[0_24px_70px_rgba(0,0,0,.18)] dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+              className="w-[330px] rounded-2xl border-border bg-popover p-3 text-popover-foreground shadow-[0_24px_70px_rgba(0,0,0,.18)]"
             >
               <div className="mb-3 px-1">
                 <div className="text-sm font-black">{t.siteSettingsTitle || "站点设置"}</div>
-                <div className="mt-0.5 truncate text-xs text-zinc-500 dark:text-zinc-400">
+                <div className="mt-0.5 truncate text-xs text-muted-foreground">
                   {getDisplayName(website)}
                 </div>
               </div>
@@ -340,32 +357,9 @@ export default function WebsiteCard({
                   </Button>
                 )}
 
-                {canManageSite && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => startEditName(website)}
-                      className={`${settingsActionClass} justify-start`}
-                    >
-                      <Pencil className="w-4 h-4 mr-2" />
-                      {t.editName || "改名"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => startEditTags(website)}
-                      className={`${settingsActionClass} justify-start`}
-                    >
-                      <Tag className="w-4 h-4 mr-2" />
-                      {t.editTags || "标签"}
-                    </Button>
-                  </div>
-                )}
-
                 {canMoveProject && (
-                  <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/70">
-                    <label className="mb-2 flex items-center gap-2 text-xs font-bold text-zinc-500 dark:text-zinc-400">
+                  <div className="rounded-xl border border-border bg-muted/50 p-3">
+                    <label className="mb-2 flex items-center gap-2 text-xs font-bold text-muted-foreground">
                       <FolderKanban className="h-3.5 w-3.5" />
                       {t.moveToProject}
                     </label>
@@ -378,7 +372,7 @@ export default function WebsiteCard({
                         const project = projects.find((p) => String(p.id) === nextProjectId);
                         if (project && moveWebsiteToProject) moveWebsiteToProject(website, project);
                       }}
-                      className="h-9 w-full rounded-lg border border-zinc-200 bg-white px-2 text-sm text-zinc-950 outline-none transition-colors focus:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-500"
+                      className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-50"
                       title={t.moveToProject}
                     >
                       {!website.projectId && <option value="">{t.noProject}</option>}
@@ -393,7 +387,7 @@ export default function WebsiteCard({
 
                 {canChangeVisibility && (
                   <div
-                    className="flex items-center justify-between rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900/70 dark:text-zinc-200"
+                    className="flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground"
                     title={t.visibilityToggleTitle}
                   >
                     <span className="flex items-center gap-2">
