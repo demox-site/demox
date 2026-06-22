@@ -11,6 +11,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
+import { ComposableMap, Geographies, Geography } from "react-simple-maps";
 import { ArrowLeft, BarChart3, Clock3, Globe2, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
 import { websiteApi, mapWebsiteRow } from "@/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
@@ -44,6 +45,7 @@ type AccessLog = {
 };
 
 const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#f43f5e", "#a78bfa", "#14b8a6", "#eab308", "#fb7185"];
+const WORLD_GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
 const countryNames: Record<string, string> = {
   CN: "中国",
@@ -69,14 +71,6 @@ const provinceAliases: Record<string, string> = {
   Ningxia: "宁夏", Xinjiang: "新疆", HongKong: "香港", Macau: "澳门", Macao: "澳门"
 };
 
-const provinceTiles = [
-  { name: "新疆", x: 0, y: 1 }, { name: "甘肃", x: 2, y: 2 }, { name: "内蒙古", x: 3, y: 1 }, { name: "黑龙江", x: 6, y: 0 },
-  { name: "青海", x: 1, y: 3 }, { name: "宁夏", x: 3, y: 3 }, { name: "陕西", x: 4, y: 3 }, { name: "山西", x: 5, y: 2 }, { name: "河北", x: 6, y: 2 }, { name: "北京", x: 7, y: 1 }, { name: "天津", x: 7, y: 2 }, { name: "吉林", x: 7, y: 0 }, { name: "辽宁", x: 8, y: 1 },
-  { name: "西藏", x: 0, y: 4 }, { name: "四川", x: 3, y: 4 }, { name: "重庆", x: 4, y: 4 }, { name: "河南", x: 5, y: 3 }, { name: "山东", x: 7, y: 3 },
-  { name: "云南", x: 2, y: 5 }, { name: "贵州", x: 4, y: 5 }, { name: "湖北", x: 5, y: 4 }, { name: "安徽", x: 6, y: 4 }, { name: "江苏", x: 7, y: 4 }, { name: "上海", x: 8, y: 4 },
-  { name: "广西", x: 4, y: 6 }, { name: "湖南", x: 5, y: 5 }, { name: "江西", x: 6, y: 5 }, { name: "浙江", x: 7, y: 5 },
-  { name: "广东", x: 5, y: 6 }, { name: "福建", x: 6, y: 6 }, { name: "台湾", x: 8, y: 6 }, { name: "香港", x: 6, y: 7 }, { name: "澳门", x: 5, y: 7 }, { name: "海南", x: 4, y: 7 }
-];
 
 function normalizeProvinceName(input: string) {
   const raw = String(input || "UNKNOWN").trim();
@@ -84,6 +78,166 @@ function normalizeProvinceName(input: string) {
   const compact = raw.replace(/省|市|自治区|特别行政区|壮族|回族|维吾尔/g, "");
   return provinceAliases[raw] || provinceAliases[compact] || compact;
 }
+
+const countryDisplayNames =
+  typeof Intl !== "undefined" && "DisplayNames" in Intl ? new Intl.DisplayNames(["zh-CN"], { type: "region" }) : null;
+const countryEnglishNames =
+  typeof Intl !== "undefined" && "DisplayNames" in Intl ? new Intl.DisplayNames(["en"], { type: "region" }) : null;
+
+const worldNameAliases: Record<string, string> = {
+  "United States of America": "US",
+  "United States": "US",
+  China: "CN",
+  Taiwan: "TW",
+  "Hong Kong": "HK",
+  Macau: "MO",
+  Macao: "MO",
+  "United Kingdom": "GB",
+  England: "GB",
+  "S. Korea": "KR",
+  "South Korea": "KR",
+  "N. Korea": "KP",
+  "North Korea": "KP",
+  Russia: "RU",
+  Vietnam: "VN",
+  Czechia: "CZ",
+  "Dem. Rep. Congo": "CD",
+  Congo: "CG",
+  "Dominican Rep.": "DO",
+  "Central African Rep.": "CF",
+  "Eq. Guinea": "GQ",
+  eSwatini: "SZ",
+  "Bosnia and Herz.": "BA",
+  "Solomon Is.": "SB",
+  "W. Sahara": "EH",
+  Palestine: "PS",
+  Somaliland: "SO"
+};
+
+function normalizeMapName(input: string) {
+  return String(input || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function getCountryLabel(code: string) {
+  const normalized = String(code || "UNKNOWN").toUpperCase();
+  if (!normalized || normalized === "UNKNOWN") return "未知地区";
+  return countryNames[normalized] || countryDisplayNames?.of(normalized) || normalized;
+}
+
+function getMapFill(views: number, max: number) {
+  if (!views) return "rgba(148,163,184,.10)";
+  const intensity = views / Math.max(1, max);
+  if (intensity > 0.8) return "#22d3ee";
+  if (intensity > 0.55) return "#38bdf8";
+  if (intensity > 0.3) return "#0ea5e9";
+  return "rgba(56,189,248,.42)";
+}
+
+function LoadingPanel({ text = "加载统计数据中..." }: { text?: string }) {
+  return (
+    <div className="relative grid h-[260px] place-items-center overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)]">
+      <div className="absolute inset-0 bg-[linear-gradient(110deg,transparent,rgba(56,189,248,.12),transparent)] animate-[pulse_1.6s_ease-in-out_infinite]" />
+      <div className="relative flex flex-col items-center gap-4 text-sm text-[var(--stitch-muted)]">
+        <div className="relative h-14 w-14 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
+          <div className="absolute inset-2 rounded-full border-2 border-transparent border-t-[var(--stitch-blue)] animate-spin" />
+          <div className="absolute inset-5 rounded-full bg-[var(--stitch-blue-soft)]" />
+        </div>
+        <span>{text}</span>
+      </div>
+    </div>
+  );
+}
+
+function StatCardSkeleton() {
+  return (
+    <div className="rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-5 shadow-[0_18px_45px_rgba(0,0,0,.08)]">
+      <div className="mb-5 h-3 w-24 animate-pulse rounded-full bg-[var(--stitch-blue-soft)]" />
+      <div className="h-9 w-28 animate-pulse rounded-xl bg-[var(--stitch-blue-soft)]" />
+      <div className="mt-3 h-3 w-40 animate-pulse rounded-full bg-[var(--stitch-blue-soft)]" />
+    </div>
+  );
+}
+
+function WorldTrafficMap({ data }: { data: { country: string; views: number }[] }) {
+  const normalizedData = React.useMemo(
+    () => data.filter((item) => item.country && item.country !== "UNKNOWN"),
+    [data]
+  );
+  const viewsByCountry = React.useMemo(
+    () => new Map(normalizedData.map((item) => [String(item.country).toUpperCase(), item.views])),
+    [normalizedData]
+  );
+  const codeByMapName = React.useMemo(() => {
+    const out = new Map<string, string>();
+    for (const item of normalizedData) {
+      const code = String(item.country || "").toUpperCase();
+      const english = countryEnglishNames?.of(code);
+      if (english) out.set(normalizeMapName(english), code);
+    }
+    for (const [name, code] of Object.entries(worldNameAliases)) out.set(normalizeMapName(name), code);
+    return out;
+  }, [normalizedData]);
+  const max = Math.max(1, ...normalizedData.map((item) => item.views));
+
+  return (
+    <div className="relative overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)] bg-[radial-gradient(circle_at_50%_35%,rgba(56,189,248,.18),transparent_42%),linear-gradient(135deg,rgba(15,23,42,.92),rgba(8,13,24,.98))] p-3">
+      <div className="pointer-events-none absolute inset-x-10 top-6 h-24 rounded-full bg-cyan-300/10 blur-3xl" />
+      <ComposableMap
+        projection="geoEqualEarth"
+        projectionConfig={{ scale: 155 }}
+        width={760}
+        height={390}
+        className="relative h-[330px] w-full drop-shadow-[0_24px_45px_rgba(14,165,233,.18)]"
+        aria-label="世界访问分布地图"
+      >
+        <defs>
+          <filter id="worldMapGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="8" stdDeviation="7" floodColor="#38bdf8" floodOpacity="0.2" />
+          </filter>
+        </defs>
+        <Geographies geography={WORLD_GEO_URL}>
+          {({ geographies }) =>
+            geographies.map((geo) => {
+              const name = geo.properties?.name || "";
+              const code = codeByMapName.get(normalizeMapName(name)) || "";
+              const views = code ? viewsByCountry.get(code) || 0 : 0;
+              return (
+                <Geography
+                  key={geo.rsmKey}
+                  geography={geo}
+                  filter={views ? "url(#worldMapGlow)" : undefined}
+                  style={{
+                    default: {
+                      fill: getMapFill(views, max),
+                      stroke: "rgba(226,232,240,.38)",
+                      strokeWidth: 0.72,
+                      outline: "none",
+                      transition: "fill .2s ease, stroke .2s ease"
+                    },
+                    hover: {
+                      fill: views ? "#67e8f9" : "rgba(148,163,184,.20)",
+                      stroke: "rgba(255,255,255,.82)",
+                      strokeWidth: 1.05,
+                      outline: "none",
+                      cursor: "default"
+                    },
+                    pressed: { outline: "none" }
+                  }}
+                >
+                  <title>{`${code ? getCountryLabel(code) : name}: ${fmt.format(views)} 次访问`}</title>
+                </Geography>
+              );
+            })
+          }
+        </Geographies>
+      </ComposableMap>
+      <div className="absolute bottom-4 left-4 rounded-full border border-white/10 bg-slate-950/60 px-3 py-1 text-xs text-slate-300 backdrop-blur">
+        颜色越亮，访问越多
+      </div>
+    </div>
+  );
+}
+
 
 const fmt = new Intl.NumberFormat("zh-CN");
 
@@ -164,18 +318,11 @@ export default function SiteAnalyticsPage() {
 
   const daily = fillDaily(stats?.daily, days);
   const totalViews = stats?.totals?.views || 0;
-  const provinceData = React.useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of stats?.provinces || []) {
-      const name = normalizeProvinceName(item.province);
-      map.set(name, (map.get(name) || 0) + item.views);
-    }
-    return Array.from(map.entries())
-      .map(([province, views]) => ({ province, views }))
-      .sort((a, b) => b.views - a.views);
-  }, [stats?.provinces]);
-  const topCountry = stats?.countries?.[0];
-  const topProvince = provinceData.find((item) => item.province !== "未知") || provinceData[0];
+  const countryData = React.useMemo(
+    () => [...(stats?.countries || [])].sort((a, b) => b.views - a.views),
+    [stats?.countries]
+  );
+  const topCountry = countryData[0];
   const topReferrer = stats?.referrers?.find((r) => r.host !== "direct") || stats?.referrers?.[0];
   const avgViews = days > 0 ? totalViews / days : 0;
   const domains = website ? getSiteDomains(website) : [];
@@ -230,10 +377,21 @@ export default function SiteAnalyticsPage() {
         )}
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard icon={<TrendingUp className="h-5 w-5" />} label="访问量" value={fmt.format(totalViews)} hint={`最近 ${days} 天总访问`} />
-          <StatCard icon={<MousePointer2 className="h-5 w-5" />} label="日均访问" value={avgViews.toFixed(1)} hint="用于判断链接是否持续被打开" />
-          <StatCard icon={<MapPin className="h-5 w-5" />} label="主要地区" value={topProvince?.province || (topCountry ? (countryNames[topCountry.country] || topCountry.country) : "--")} hint={topProvince ? `${fmt.format(topProvince.views)} 次访问` : (topCountry ? `${fmt.format(topCountry.views)} 次访问` : "暂无地区数据")} />
-          <StatCard icon={<Radio className="h-5 w-5" />} label="主要来源" value={topReferrer?.host || "--"} hint={topReferrer ? `${fmt.format(topReferrer.views)} 次访问` : "暂无来源数据"} />
+          {loading ? (
+            <>
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+            </>
+          ) : (
+            <>
+              <StatCard icon={<TrendingUp className="h-5 w-5" />} label="访问量" value={fmt.format(totalViews)} hint={`最近 ${days} 天总访问`} />
+              <StatCard icon={<MousePointer2 className="h-5 w-5" />} label="日均访问" value={avgViews.toFixed(1)} hint="用于判断链接是否持续被打开" />
+              <StatCard icon={<MapPin className="h-5 w-5" />} label="主要地区" value={topCountry ? getCountryLabel(topCountry.country) : "--"} hint={topCountry ? `${fmt.format(topCountry.views)} 次访问` : "暂无地区数据"} />
+              <StatCard icon={<Radio className="h-5 w-5" />} label="主要来源" value={topReferrer?.host || "--"} hint={topReferrer ? `${fmt.format(topReferrer.views)} 次访问` : "暂无来源数据"} />
+            </>
+          )}
         </div>
 
         <div className="grid gap-6 xl:grid-cols-[1.45fr_.9fr]">
@@ -245,7 +403,7 @@ export default function SiteAnalyticsPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {loading ? <EmptyChart text="加载统计数据中..." /> : daily.every((d) => d.views === 0) ? <EmptyChart text="暂无访问数据" /> : (
+              {loading ? <LoadingPanel /> : daily.every((d) => d.views === 0) ? <EmptyChart text="暂无访问数据" /> : (
                 <div className="h-[320px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={daily} margin={{ left: 0, right: 18, top: 12, bottom: 0 }}>
@@ -271,49 +429,21 @@ export default function SiteAnalyticsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <MapPin className="h-5 w-5 text-[var(--stitch-blue)]" />
-                省级访问热力格
+                世界访问地图
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {provinceData.length === 0 ? <EmptyChart text="暂无省级地区数据" /> : (
+              {loading ? <LoadingPanel text="加载世界地图中..." /> : countryData.length === 0 ? <EmptyChart text="暂无国家/地区数据" /> : (
                 <div className="space-y-5">
-                  <div className="rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-4">
-                    <div className="grid auto-rows-[34px] grid-cols-9 gap-1.5">
-                      {provinceTiles.map((tile) => {
-                        const views = provinceData.find((item) => item.province === tile.name)?.views || 0;
-                        const max = Math.max(1, ...provinceData.map((item) => item.views));
-                        const intensity = views ? 0.18 + (views / max) * 0.82 : 0;
-                        return (
-                          <div
-                            key={tile.name}
-                            title={`${tile.name}: ${fmt.format(views)} 次访问`}
-                            className="flex items-center justify-center rounded-lg border text-[10px] font-bold transition-transform hover:scale-110"
-                            style={{
-                              gridColumnStart: tile.x + 1,
-                              gridRowStart: tile.y + 1,
-                              borderColor: views ? "rgba(56,189,248,.58)" : "rgba(148,163,184,.18)",
-                              background: views ? `rgba(56,189,248,${intensity})` : "rgba(148,163,184,.06)",
-                              color: views && intensity > 0.55 ? "#020617" : "var(--stitch-muted)"
-                            }}
-                          >
-                            {tile.name}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-4 flex items-center justify-between text-xs text-[var(--stitch-muted)]">
-                      <span>颜色越亮，访问越多</span>
-                      <span>这是示意热力格，未知地区进入排行</span>
-                    </div>
-                  </div>
+                  <WorldTrafficMap data={countryData} />
 
                   <div className="space-y-3">
-                    {provinceData.slice(0, 8).map((item, index) => {
+                    {countryData.slice(0, 8).map((item, index) => {
                       const pct = totalViews ? Math.round((item.views / totalViews) * 100) : 0;
                       return (
-                        <div key={item.province}>
+                        <div key={item.country}>
                           <div className="mb-1 flex justify-between text-sm">
-                            <span>{item.province}</span>
+                            <span>{getCountryLabel(item.country)}</span>
                             <span className="font-mono text-[var(--stitch-muted)]">{pct}% · {fmt.format(item.views)}</span>
                           </div>
                           <div className="h-2 rounded-full bg-[var(--stitch-surface-strong)]">
@@ -333,7 +463,7 @@ export default function SiteAnalyticsPage() {
           <Card className="border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] shadow-[0_18px_50px_rgba(0,0,0,.08)]">
             <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Radio className="h-5 w-5 text-[var(--stitch-blue)]" />来源排行</CardTitle></CardHeader>
             <CardContent>
-              {!stats?.referrers?.length ? <EmptyChart text="暂无来源数据" /> : (
+              {loading ? <LoadingPanel text="加载来源数据中..." /> : !stats?.referrers?.length ? <EmptyChart text="暂无来源数据" /> : (
                 <div className="h-[300px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={stats.referrers} layout="vertical" margin={{ left: 8, right: 20, top: 8, bottom: 8 }}>
@@ -352,7 +482,7 @@ export default function SiteAnalyticsPage() {
           <Card className="border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] shadow-[0_18px_50px_rgba(0,0,0,.08)]">
             <CardHeader><CardTitle className="flex items-center gap-2 text-lg"><Route className="h-5 w-5 text-[var(--stitch-blue)]" />访问路径</CardTitle></CardHeader>
             <CardContent>
-              {!stats?.paths?.length ? <EmptyChart text="暂无路径数据" /> : (
+              {loading ? <LoadingPanel text="加载路径数据中..." /> : !stats?.paths?.length ? <EmptyChart text="暂无路径数据" /> : (
                 <div className="space-y-3">
                   {stats.paths.map((item) => {
                     const pct = totalViews ? Math.round((item.views / totalViews) * 100) : 0;
@@ -387,7 +517,7 @@ export default function SiteAnalyticsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? <EmptyChart text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
+            {loading ? <LoadingPanel text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
               <div className="overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)]">
                 <div className="max-h-[520px] overflow-auto">
                   <table className="min-w-full border-collapse text-left text-sm">
