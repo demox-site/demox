@@ -132,6 +132,7 @@ interface ConsoleUser {
 
 interface ConsoleProject {
   id: string;
+  numericId?: string | null;
   name: string;
   slug?: string;
   role?: string | null;
@@ -142,6 +143,7 @@ interface ConsoleProject {
 
 const normalizeProject = (project: any): ConsoleProject => ({
   id: String(project?.id || project?._id || ""),
+  numericId: project?.numericId ? String(project.numericId) : null,
   name: project?.name || "default",
   slug: project?.slug || "default",
   role: project?.role || project?.projectRole || null,
@@ -228,6 +230,8 @@ export const ConsoleLayout: React.FC = () => {
   const currentProjectId = projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
   const inProjectWorkspace = !!currentProjectId;
+  const currentProject = projects.find((p) => p.id === currentProjectId || p.numericId === currentProjectId) || null;
+  const currentSelectProjectId = currentProject?.id || currentProjectId;
 
   const consoleNav: NavItem[] = [
     { key: "projects", path: "/console/projects", label: t.projects, icon: FolderKanban },
@@ -428,7 +432,7 @@ export const ConsoleLayout: React.FC = () => {
                 Project
               </span>
               <select
-                value={currentProjectId}
+                value={currentSelectProjectId}
                 onChange={(event) => handleSwitchProject(event.target.value)}
                 disabled={projects.length === 0}
                 title={t.projectSelect}

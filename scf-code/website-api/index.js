@@ -78,10 +78,16 @@ function formatWebsiteForClient(row) {
   const preferredUrl = customUrl || defaultUrl || row.url || '';
   const visibility = normalizeVisibility(row.visibility);
   const userNickname = String(row.user_nickname || row.userNickname || '').trim();
+  const projectPublicId = row.project_key || row.projectKey || row.project_public_id || row.projectPublicId || row.project_id || row.projectId || null;
 
   return {
     ...row,
     visibility,
+    project_id: projectPublicId == null ? null : String(projectPublicId),
+    projectId: projectPublicId == null ? null : String(projectPublicId),
+    projectInternalId: row.project_id == null ? null : String(row.project_id),
+    project_key: row.project_key || row.projectKey || null,
+    projectKey: row.project_key || row.projectKey || null,
     projectRole: row.project_role || row.projectRole || null,
     user_nickname: userNickname,
     userNickname,
@@ -569,7 +575,7 @@ async function checkAdmin(userId) {
  * 查询站点列表并附带项目展示字段。项目表未迁移时自动降级为只查 websites。
  */
 async function queryWebsitesWithProjects({ userId = null, includeAll = false, projectId = null } = {}) {
-  const normalizedProjectId = normalizePositiveId(projectId);
+  const normalizedProjectId = await resolveProjectId(projectId);
 
   try {
     const params = [];
@@ -599,6 +605,7 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
     return await query(
       `SELECT w.*,
               p.name AS project_name,
+              p.project_key AS project_key,
               p.slug AS project_slug,
               p.archived AS project_archived,
               ${roleSelect},
@@ -644,7 +651,7 @@ async function handleListWebsites(event) {
     };
   }
 
-  const projectId = normalizePositiveId((event.body || event).projectId);
+  const projectId = (event.body || event).projectId;
   const websites = await queryWebsitesWithProjects({ userId, projectId });
 
   return {
@@ -680,7 +687,7 @@ async function handleListAllWebsites(event) {
     };
   }
 
-  const projectId = normalizePositiveId((event.body || event).projectId);
+  const projectId = (event.body || event).projectId;
   const websites = await queryWebsitesWithProjects({ includeAll: true, projectId });
 
   return {
@@ -1261,10 +1268,71 @@ function ok(obj) {
   return { statusCode: 200, headers: getCORSHeaders(), body: JSON.stringify(obj) };
 }
 
+function normalizeProjectKey(input) {
+  const value = String(input || '').trim().toUpperCase();
+  if (!value || /^\d+$/.test(value)) return '';
+  return /^[A-Z0-9]{6,20}$/.test(value) ? value : '';
+}
+
+function generateProjectKey() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = 'P';
+  while (out.length < 10) {
+    out += chars[nodeCrypto.randomInt(0, chars.length)];
+  }
+  return out;
+}
+
+async function createUniqueProjectKey() {
+  for (let i = 0; i < 20; i += 1) {
+    const key = generateProjectKey();
+    try {
+      const rows = await query('SELECT id FROM projects WHERE project_key = ? LIMIT 1', [key]);
+      if (rows.length === 0) return key;
+    } catch (e) {
+      return key;
+    }
+  }
+  throw new Error('生成项目 ID 失败，请重试');
+}
+
+async function resolveProjectId(input) {
+  const numeric = normalizePositiveId(input);
+  if (numeric) return numeric;
+  const key = normalizeProjectKey(input);
+  if (!key) return null;
+  try {
+    const rows = await query('SELECT id FROM projects WHERE project_key = ? LIMIT 1', [key]);
+    return rows[0]?.id || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function ensureProjectKeyForId(projectId) {
+  const id = normalizePositiveId(projectId);
+  if (!id) return null;
+  try {
+    const rows = await query('SELECT project_key FROM projects WHERE id = ? LIMIT 1', [id]);
+    if (rows[0]?.project_key) return rows[0].project_key;
+    for (let i = 0; i < 20; i += 1) {
+      const key = await createUniqueProjectKey();
+      const res = await query('UPDATE projects SET project_key = ? WHERE id = ? AND (project_key IS NULL OR project_key = \'\')', [key, id]);
+      if (res.affectedRows) return key;
+    }
+  } catch (e) {
+    console.warn('补齐项目随机 ID 失败:', e.message);
+  }
+  return null;
+}
+
 function formatProjectForClient(row) {
+  const publicId = row.project_key || row.projectKey || row.id;
   return {
-    id: row.id == null ? null : String(row.id),
-    _id: row.id == null ? null : String(row.id),
+    id: publicId == null ? null : String(publicId),
+    _id: publicId == null ? null : String(publicId),
+    numericId: row.id == null ? null : String(row.id),
+    projectKey: row.project_key || row.projectKey || null,
     userId: row.user_id,
     name: row.name || 'default',
     slug: row.slug || 'default',
@@ -1381,7 +1449,7 @@ async function ensureProjectOwnerMembershipBestEffort(projectId, ownerId) {
 }
 
 async function getProjectWithUserRole(userId, projectId, { includeArchived = true } = {}) {
-  const pid = normalizePositiveId(projectId);
+  const pid = await resolveProjectId(projectId);
   const uid = String(userId || '').trim();
   if (!pid || !uid) return null;
 
@@ -1429,11 +1497,13 @@ async function canUserReadProject(userId, projectId) {
 
 async function canUserWriteProject(userId, projectId) {
   if (!userId || !projectId) return false;
+  const pid = await resolveProjectId(projectId);
+  if (!pid) return false;
   if (await checkAdmin(userId)) {
-    const rows = await query('SELECT id FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [projectId]);
+    const rows = await query('SELECT id FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [pid]);
     return rows.length > 0;
   }
-  const project = await getProjectWithUserRole(userId, projectId, { includeArchived: false });
+  const project = await getProjectWithUserRole(userId, pid, { includeArchived: false });
   return !!(project && PROJECT_WRITE_ROLES.includes(project.project_role));
 }
 
@@ -1516,7 +1586,7 @@ async function acceptPendingProjectInvitationsForUser(userId) {
 }
 
 async function getProjectForUser(userId, projectId) {
-  const id = normalizePositiveId(projectId);
+  const id = await resolveProjectId(projectId);
   if (!id) return null;
   const rows = await query(
     'SELECT * FROM projects WHERE id = ? AND user_id = ? LIMIT 1',
@@ -1640,10 +1710,11 @@ async function handleCreateProject(event) {
     let suffix = 1;
     while (true) {
       try {
+        const projectKey = await createUniqueProjectKey();
         const res = await query(
-          `INSERT INTO projects (user_id, name, slug, description, color, icon)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, name, slug, description, color, icon]
+          `INSERT INTO projects (project_key, user_id, name, slug, description, color, icon)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [projectKey, userId, name, slug, description, color, icon]
         );
         const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [res.insertId]);
         await ensureProjectOwnerMembershipBestEffort(res.insertId, userId);
@@ -1663,7 +1734,7 @@ async function handleUpdateProject(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
   const body = event.body || event;
-  const id = normalizePositiveId(body.id || body.projectId);
+  const id = await resolveProjectId(body.id || body.projectId);
   if (!id) return ok({ success: false, message: '缺少 projectId' });
 
   const sets = [];
@@ -1701,7 +1772,7 @@ async function handleArchiveProject(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
   const body = event.body || event;
-  const id = normalizePositiveId(body.id || body.projectId);
+  const id = await resolveProjectId(body.id || body.projectId);
   if (!id) return ok({ success: false, message: '缺少 projectId' });
   const archived = body.archived === undefined ? 1 : (body.archived ? 1 : 0);
 
@@ -1729,7 +1800,7 @@ async function handleSetWebsiteProject(event) {
   const body = event.body || event;
   const docId = normalizePositiveId(body.docId || body.id);
   const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
-  let projectId = normalizePositiveId(body.projectId);
+  let projectId = await resolveProjectId(body.projectId);
 
   if (!docId && !websiteId) return ok({ success: false, message: '缺少 docId 或 websiteId' });
 
@@ -1787,7 +1858,7 @@ async function handleListProjectMembers(event) {
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
 
   const body = event.body || event;
-  const projectId = normalizePositiveId(body.projectId || body.id);
+  const projectId = await resolveProjectId(body.projectId || body.id);
   if (!projectId) return ok({ success: false, message: '缺少 projectId' });
 
   try {
@@ -1836,7 +1907,7 @@ async function handleInviteProjectMember(event) {
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
 
   const body = event.body || event;
-  const projectId = normalizePositiveId(body.projectId || body.id);
+  const projectId = await resolveProjectId(body.projectId || body.id);
   const email = normalizeEmail(body.email);
   const role = normalizeProjectRole(body.role);
   if (!projectId) return ok({ success: false, message: '缺少 projectId' });
@@ -1924,7 +1995,7 @@ async function handleUpdateProjectMemberRole(event) {
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
 
   const body = event.body || event;
-  const projectId = normalizePositiveId(body.projectId || body.id);
+  const projectId = await resolveProjectId(body.projectId || body.id);
   const targetUserId = String(body.userId || body.uid || '').trim();
   const role = normalizeProjectRole(body.role);
   if (!projectId || !targetUserId) return ok({ success: false, message: '缺少 projectId 或 userId' });
@@ -1972,7 +2043,7 @@ async function handleRemoveProjectMember(event) {
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
 
   const body = event.body || event;
-  const projectId = normalizePositiveId(body.projectId || body.id);
+  const projectId = await resolveProjectId(body.projectId || body.id);
   const targetUserId = String(body.userId || body.uid || '').trim();
   if (!projectId || !targetUserId) return ok({ success: false, message: '缺少 projectId 或 userId' });
 
@@ -3226,6 +3297,7 @@ async function handleMigrateDefaultProjects(event) {
     await query(
       `CREATE TABLE IF NOT EXISTS projects (
         id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_key VARCHAR(20) DEFAULT NULL COMMENT '对外展示的随机项目ID',
         user_id     VARCHAR(64) NOT NULL COMMENT '项目归属用户ID',
         name        VARCHAR(255) NOT NULL DEFAULT 'default' COMMENT '项目显示名称',
         slug        VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '用户内唯一项目标识',
@@ -3235,12 +3307,41 @@ async function handleMigrateDefaultProjects(event) {
         archived    TINYINT(1) NOT NULL DEFAULT 0,
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_project_key (project_key),
         UNIQUE KEY uniq_user_project_slug (user_id, slug),
         INDEX idx_projects_user_id (user_id),
         INDEX idx_projects_archived (archived)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户项目表'`
     );
     steps.push('ensured projects table');
+
+    const projectKeyCol = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'project_key'`
+    );
+    if (projectKeyCol[0].c === 0) {
+      await query(`ALTER TABLE projects ADD COLUMN project_key VARCHAR(20) DEFAULT NULL COMMENT '对外展示的随机项目ID' AFTER id`);
+      steps.push('added projects.project_key column');
+    } else {
+      steps.push('projects.project_key already exists');
+    }
+
+    const projectsMissingKey = await query(`SELECT id FROM projects WHERE project_key IS NULL OR project_key = '' ORDER BY id ASC`);
+    for (const row of projectsMissingKey) {
+      await ensureProjectKeyForId(row.id);
+    }
+    steps.push(`backfilled ${projectsMissingKey.length} project random ids`);
+
+    const projectKeyIdx = await query(
+      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND INDEX_NAME = 'uniq_project_key'`
+    );
+    if (projectKeyIdx[0].c === 0) {
+      await query('ALTER TABLE projects ADD UNIQUE KEY uniq_project_key (project_key)');
+      steps.push('added projects unique index uniq_project_key');
+    } else {
+      steps.push('projects unique index uniq_project_key already exists');
+    }
 
     const projectUniqueIdx = await query(
       `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
@@ -3289,25 +3390,19 @@ async function handleMigrateDefaultProjects(event) {
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
     );
     if (usersTable[0].c > 0) {
-      await query(
-        `INSERT INTO projects (user_id, name, slug)
-         SELECT DISTINCT id, 'default', 'default'
-         FROM users
-         WHERE id IS NOT NULL AND id <> ''
-         ON DUPLICATE KEY UPDATE slug = slug`
-      );
+      const userRows = await query(`SELECT DISTINCT id FROM users WHERE id IS NOT NULL AND id <> ''`);
+      for (const user of userRows) {
+        await ensureDefaultProjectForUser(user.id);
+      }
       steps.push('ensured default projects for users table');
     } else {
       steps.push('users table not found, skipped users table defaults');
     }
 
-    await query(
-      `INSERT INTO projects (user_id, name, slug)
-       SELECT DISTINCT user_id, 'default', 'default'
-       FROM websites
-       WHERE user_id IS NOT NULL AND user_id <> ''
-       ON DUPLICATE KEY UPDATE slug = slug`
-    );
+    const websiteOwnerRows = await query(`SELECT DISTINCT user_id FROM websites WHERE user_id IS NOT NULL AND user_id <> ''`);
+    for (const owner of websiteOwnerRows) {
+      await ensureDefaultProjectForUser(owner.user_id);
+    }
     steps.push('ensured default projects for website owners');
 
     const afterDefaultRows = await query(`SELECT COUNT(*) AS c FROM projects WHERE slug = 'default'`);
@@ -3511,17 +3606,19 @@ async function ensureDefaultProjectForUser(userId) {
   const uid = String(userId || '').trim();
   if (!uid) return null;
   try {
+    const projectKey = await createUniqueProjectKey();
     await query(
-      `INSERT INTO projects (user_id, name, slug)
-       VALUES (?, 'default', 'default')
+      `INSERT INTO projects (project_key, user_id, name, slug)
+       VALUES (?, ?, 'default', 'default')
        ON DUPLICATE KEY UPDATE slug = slug`,
-      [uid]
+      [projectKey, uid]
     );
     const rows = await query(
-      `SELECT id FROM projects WHERE user_id = ? AND slug = 'default' LIMIT 1`,
+      `SELECT id, project_key FROM projects WHERE user_id = ? AND slug = 'default' LIMIT 1`,
       [uid]
     );
     if (rows.length > 0) {
+      if (!rows[0].project_key) await ensureProjectKeyForId(rows[0].id);
       await ensureProjectOwnerMembershipBestEffort(rows[0].id, uid);
       return rows[0].id;
     }
@@ -3554,7 +3651,7 @@ async function ensureWebsiteDefaultProject(userId, websiteId) {
 }
 
 async function assignWebsiteProject(userId, websiteId, projectId) {
-  const pid = normalizePositiveId(projectId);
+  const pid = await resolveProjectId(projectId);
   if (!pid) return await ensureWebsiteDefaultProject(userId, websiteId);
   try {
     let project = await getProjectWithUserRole(userId, pid, { includeArchived: false });
@@ -4196,7 +4293,7 @@ async function handleUploadAndDeploy(event) {
       };
     }
 
-    const requestedProjectId = normalizePositiveId(inputProjectId);
+    const requestedProjectId = await resolveProjectId(inputProjectId);
     if (inputProjectId && !requestedProjectId) {
       return {
         statusCode: 200,
@@ -4277,6 +4374,7 @@ async function handleUploadAndDeploy(event) {
       : (existing.length > 0
           ? (existing[0].project_id || await ensureWebsiteDefaultProject(existing[0].user_id, websiteId))
           : await ensureWebsiteDefaultProject(userId, websiteId));
+    const projectKey = projectId ? await ensureProjectKeyForId(projectId) : null;
     const cachePurge = await purgeSiteCache({
       websiteId,
       subdomain: existing.length > 0 ? existing[0].subdomain : null,
@@ -4300,7 +4398,8 @@ async function handleUploadAndDeploy(event) {
         preferredUrl,
         message: '部署成功',
         websiteId: websiteId,
-        projectId,
+        projectId: projectKey || projectId,
+        projectInternalId: projectId,
         path: targetPrefix,
         uploadedCount,
         cachePurge

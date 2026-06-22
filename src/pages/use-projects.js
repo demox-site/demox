@@ -6,6 +6,8 @@ const normalizeProject = (project) => ({
   ...project,
   id: String(project?.id || project?._id || ""),
   _id: String(project?._id || project?.id || ""),
+  numericId: project?.numericId ? String(project.numericId) : null,
+  projectKey: project?.projectKey || project?.project_key || project?.id || null,
   name: project?.name || "default",
   slug: project?.slug || "default",
   role: project?.role || project?.projectRole || null,
@@ -179,7 +181,7 @@ export function useProjects({ t, handleAuthError }) {
 
   const getProjectById = (id) => {
     const key = String(id || "");
-    return activeProjects.find((p) => p.id === key) || null;
+    return activeProjects.find((p) => p.id === key || p.numericId === key) || null;
   };
 
   const getUploadProject = (selectedProjectId) => {

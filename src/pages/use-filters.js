@@ -56,7 +56,8 @@ export function useFilters({ websites, allUsers, enableProjectFilter = true }) {
         const projectOk =
           !enableProjectFilter ||
           !selectedProjectId ||
-          (w.projectId && String(w.projectId) === String(selectedProjectId));
+          (w.projectId && String(w.projectId) === String(selectedProjectId)) ||
+          (w.projectInternalId && String(w.projectInternalId) === String(selectedProjectId));
         return tagOk && userOk && projectOk;
       }),
     [websites, selectedTags, selectedUserIds, selectedProjectId, enableProjectFilter]
