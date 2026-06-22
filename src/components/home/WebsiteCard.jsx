@@ -6,10 +6,9 @@ import {
   Badge,
   Input,
   Switch,
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger
+  Popover,
+  PopoverContent,
+  PopoverTrigger
 } from "@/components/ui";
 // @ts-ignore;
 import {
@@ -27,7 +26,8 @@ import {
   FolderKanban,
   Globe2,
   LockKeyhole,
-  BarChart3
+  BarChart3,
+  Settings2
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import {
@@ -82,7 +82,6 @@ export default function WebsiteCard({
   const canViewAnalytics = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
   const canMoveProject =
     canManageSite &&
-    showProjectInfo &&
     Array.isArray(projects) &&
     projects.length > 0;
   const currentProjectName = website.projectName || (website.projectId ? t.defaultProjectName : "");
@@ -129,13 +128,9 @@ export default function WebsiteCard({
                     {getDisplayName(website)}
                   </h3>
                   {canManageSite && (
-                    <button
-                      onClick={() => startEditName(website)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--stitch-muted)] hover:text-[var(--stitch-blue)]"
-                      title={t.editName}
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
+                    <span className="text-[11px] font-medium text-[var(--stitch-muted)] opacity-0 transition-opacity group-hover:opacity-100">
+                      {t.siteSettingsHint || "在设置中编辑"}
+                    </span>
                   )}
                 </div>
                 {(website.websiteId || website._id) && (
@@ -243,24 +238,6 @@ export default function WebsiteCard({
                   ))}
                 </div>
               )}
-              {canManageSite && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className={`h-5 w-5 p-0 hover:bg-[var(--stitch-blue-soft)] ${
-                    Array.isArray(website.tags) && website.tags.length > 0
-                      ? "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] opacity-0 group-hover:opacity-100 transition-opacity"
-                      : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    startEditTags(website);
-                  }}
-                  title="编辑标签"
-                >
-                  <Tag className="w-3 h-3" />
-                </Button>
-              )}
             </div>
           )}
         </div>
@@ -329,116 +306,151 @@ export default function WebsiteCard({
         )}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
-        {canMoveProject && (
-          <select
-            value={website.projectId || ""}
-            disabled={isProcessing}
-            onChange={(e) => {
-              const project = projects.find((p) => String(p.id) === String(e.target.value));
-              if (project && moveWebsiteToProject) moveWebsiteToProject(website, project);
-            }}
-            className="h-9 max-w-[150px] rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2 text-xs text-[var(--stitch-muted)] outline-none transition-colors hover:border-[var(--stitch-blue)] hover:text-[var(--stitch-ink)] focus:border-[var(--stitch-blue)] disabled:cursor-not-allowed disabled:opacity-50"
-            title={t.moveToProject}
-          >
-            {!website.projectId && <option value="">{t.noProject}</option>}
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {canChangeVisibility && (
-          <div
-            className="flex h-9 items-center gap-2 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 text-xs text-[var(--stitch-muted)]"
-            title={t.visibilityToggleTitle}
-          >
-            <span className={isPublic ? "text-[var(--stitch-ink)]" : "text-[var(--stitch-muted)]"}>
-              {isPublic ? t.visibilityPublic : t.visibilityPrivate}
-            </span>
-            <Switch
-              checked={isPublic}
-              disabled={isProcessing}
-              onCheckedChange={(checked) => {
-                if (setWebsiteVisibility) {
-                  setWebsiteVisibility(website, checked ? "public" : "private");
-                }
-              }}
-              className="scale-75"
-            />
-          </div>
-        )}
-
         {(canViewAnalytics || canManageSite) && (
-          <>
-            {canViewAnalytics && analyticsPath && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate(analyticsPath)}
-                className="stitch-action rounded-full"
-                title="查看访问分析"
-              >
-                <BarChart3 className="w-4 h-4 mr-2" />
-                分析
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="stitch-action rounded-full">
+                <Settings2 className="w-4 h-4 mr-2" />
+                {t.siteSettings || "设置"}
               </Button>
-            )}
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-[330px] rounded-2xl border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-3 text-[var(--stitch-ink)] shadow-[0_24px_70px_rgba(0,0,0,.18)]"
+            >
+              <div className="mb-3 px-1">
+                <div className="text-sm font-black">{t.siteSettingsTitle || "站点设置"}</div>
+                <div className="mt-0.5 truncate text-xs text-[var(--stitch-muted)]">
+                  {getDisplayName(website)}
+                </div>
+              </div>
 
-            <TooltipProvider delayDuration={0}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={-1}>
+              <div className="space-y-2">
+                {canViewAnalytics && analyticsPath && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate(analyticsPath)}
+                    className="stitch-action w-full justify-start rounded-xl"
+                  >
+                    <BarChart3 className="w-4 h-4 mr-2" />
+                    {t.analyticsButton || "分析"}
+                  </Button>
+                )}
+
+                {canManageSite && (
+                  <div className="grid grid-cols-2 gap-2">
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => {
-                        if (isProcessing) return;
-                        openRedeployDialog(website);
+                      onClick={() => startEditName(website)}
+                      className="stitch-action justify-start rounded-xl"
+                    >
+                      <Pencil className="w-4 h-4 mr-2" />
+                      {t.editName || "改名"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => startEditTags(website)}
+                      className="stitch-action justify-start rounded-xl"
+                    >
+                      <Tag className="w-4 h-4 mr-2" />
+                      {t.editTags || "标签"}
+                    </Button>
+                  </div>
+                )}
+
+                {canMoveProject && (
+                  <div className="rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-3">
+                    <label className="mb-2 flex items-center gap-2 text-xs font-bold text-[var(--stitch-muted)]">
+                      <FolderKanban className="h-3.5 w-3.5" />
+                      {t.moveToProject}
+                    </label>
+                    <select
+                      value={website.projectId || ""}
+                      disabled={isProcessing}
+                      onChange={(e) => {
+                        const nextProjectId = String(e.target.value || "");
+                        if (!nextProjectId || nextProjectId === String(website.projectId || "")) return;
+                        const project = projects.find((p) => String(p.id) === nextProjectId);
+                        if (project && moveWebsiteToProject) moveWebsiteToProject(website, project);
                       }}
-                      className={`stitch-action rounded-full ${
-                        isProcessing
-                          ? "opacity-50 cursor-not-allowed"
-                          : ""
-                      }`}
+                      className="h-9 w-full rounded-lg border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-2 text-sm text-[var(--stitch-ink)] outline-none transition-colors focus:border-[var(--stitch-blue)] disabled:cursor-not-allowed disabled:opacity-50"
+                      title={t.moveToProject}
+                    >
+                      {!website.projectId && <option value="">{t.noProject}</option>}
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {canChangeVisibility && (
+                  <div
+                    className="flex items-center justify-between rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 py-2.5 text-sm"
+                    title={t.visibilityToggleTitle}
+                  >
+                    <span className="flex items-center gap-2">
+                      {isPublic ? <Globe2 className="h-4 w-4" /> : <LockKeyhole className="h-4 w-4" />}
+                      {isPublic ? t.visibilityPublic : t.visibilityPrivate}
+                    </span>
+                    <Switch
+                      checked={isPublic}
+                      disabled={isProcessing}
+                      onCheckedChange={(checked) => {
+                        if (setWebsiteVisibility) {
+                          setWebsiteVisibility(website, checked ? "public" : "private");
+                        }
+                      }}
+                      className="scale-75"
+                    />
+                  </div>
+                )}
+
+                {canManageSite && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isProcessing}
+                      onClick={() => openRedeployDialog(website)}
+                      className="stitch-action justify-start rounded-xl"
+                      title={isProcessing ? t.redeployDisabledTooltip : t.redeployButton}
                     >
                       <Upload className="w-4 h-4 mr-2" />
                       {t.redeployButton}
                     </Button>
-                  </span>
-                </TooltipTrigger>
-                {isProcessing && (
-                  <TooltipContent className="bg-zinc-100 text-zinc-900 border-zinc-200 font-bold">
-                    <p>{t.redeployDisabledTooltip}</p>
-                  </TooltipContent>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openDomainDialog(website)}
+                      className="stitch-action justify-start rounded-xl"
+                      title={t.customDomain}
+                    >
+                      <Link2 className="w-4 h-4 mr-2" />
+                      {website.subdomain ? t.domainBound : t.customDomain}
+                    </Button>
+                  </div>
                 )}
-              </Tooltip>
-            </TooltipProvider>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openDomainDialog(website)}
-              className={`stitch-action rounded-full ${
-                website.subdomain
-                  ? "!text-[var(--stitch-ink)]"
-                  : ""
-              }`}
-              title={t.customDomain}
-            >
-              <Link2 className="w-4 h-4 mr-2" />
-              {website.subdomain ? t.domainBound : t.customDomain}
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => confirmDeleteWebsite(website._id)}
-              className="text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
-          </>
+                {canManageSite && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => confirmDeleteWebsite(website._id)}
+                    className="w-full justify-start rounded-xl text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {t.deleteSite || "删除站点"}
+                  </Button>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
         )}
       </div>
     </div>
