@@ -54,6 +54,32 @@ const LogPage: React.FC = () => {
             >
               <TimelineItem
                 version={`v${siteConfig.version}`}
+                name="偷窥自己 (Know Thy Traffic)"
+                date="2026-06-22"
+                dateNote="(终于知道链接有没有人点了)"
+              >
+                <Feature
+                  tag="Analytics"
+                  title="站点访问统计"
+                  desc="每个站点现在会统计访问次数、来源页面和访问路径，并在控制台卡片里展示基础数据。统计走边缘异步上报，不拖慢临时链接打开。"
+                  note="不是监控你，是监控你的作品有没有被看。"
+                />
+                <Feature
+                  tag="Growth"
+                  title="Powered by 点击追踪"
+                  desc="免费站点的 Powered by Demox 徽章会记录点击次数，用来判断产品内传播到底是不是玄学。"
+                  note="流量密码先从数数开始。"
+                />
+                <Feature
+                  tag="Infra"
+                  title="原始事件冷存储"
+                  desc="完整访问事件会写入私有对象存储 NDJSON，同时 MySQL 只保存按天聚合数据。既保留可回放数据，又不把数据库当日志桶烧。"
+                  note="数据库：谢谢你终于放过我。"
+                />
+              </TimelineItem>
+
+              <TimelineItem
+                version={`v${siteConfig.version}`}
                 name="边缘门禁 (Edge Gate)"
                 date="2026-06-15"
                 dateNote="(门口有保安了)"
