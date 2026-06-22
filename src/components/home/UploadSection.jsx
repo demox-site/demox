@@ -14,7 +14,7 @@ import {
   Progress
 } from "@/components/ui";
 // @ts-ignore;
-import { Upload, FolderOpen, FileText, FileType, Archive, Check, Table } from "lucide-react";
+import { Upload, FolderOpen, FileText, FileType, Archive, Check, Table, Code } from "lucide-react";
 import { docTemplates, defaultTemplateId } from "@/lib/doc-templates";
 import { isSupportedDoc, SUPPORTED_DOC_EXTENSIONS } from "@/lib/doc-to-site";
 import { isSupportedPdf, SUPPORTED_PDF_EXTENSIONS } from "@/lib/pdf-to-site";
