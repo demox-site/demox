@@ -50,6 +50,11 @@ function backendUrl(path) {
   return requiredRuntimeEnv('DEMOX_API_URL') + path;
 }
 
+function optionalBackendUrl(path) {
+  const base = runtimeEnv('DEMOX_API_URL');
+  return base ? base + path : '';
+}
+
 function demoxHomeUrl() {
   return (runtimeEnv('DEMOX_HOME_URL') || ('https://' + WWW_HOST)).replace(/\/+$/, '') + '/';
 }
@@ -71,7 +76,7 @@ function parseOfficialHost(host) {
 addEventListener('fetch', (event) => {
   // 异常时回源，避免整站 500
   event.passThroughOnException();
-  event.respondWith(handle(event.request));
+  event.respondWith(handle(event.request, event));
 });
 
 function buildOriginUrl(req, originPath, search, originHost) {
@@ -101,19 +106,44 @@ function shouldFallbackToIndex(req, originPath) {
   return accept.includes('text/html');
 }
 
-async function rewriteOrigin(req, u, originPath, sitePath, originHost) {
+async function trackSiteEvent(req, event, meta, type) {
+  if (!event || !meta || !meta.websiteId) return;
+  const url = optionalBackendUrl('/website/analytics-track');
+  if (!url) return;
+  const u = new URL(req.url);
+  const body = {
+    action: 'track_site_event',
+    websiteId: meta.websiteId,
+    type: type || 'view',
+    host: u.hostname,
+    path: u.pathname,
+    referrer: req.headers.get('referer') || req.headers.get('referrer') || '',
+    userAgent: req.headers.get('user-agent') || ''
+  };
+  const token = runtimeEnv('DEMOX_ANALYTICS_TOKEN');
+  if (token) body.analyticsToken = token;
+  try {
+    event.waitUntil(fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).catch(function () {}));
+  } catch (e) {}
+}
+
+async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
   const resp = await fetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     const idxResp = await fetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
     if (idxResp.ok) {
       // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
-      return withDemoxBadge(req, new Response(idxResp.body, {
+      return withDemoxBadge(req, event, new Response(idxResp.body, {
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
-      }));
+      }), meta);
     }
   }
-  return withDemoxBadge(req, resp);
+  return withDemoxBadge(req, event, resp, meta);
 }
 
 function shouldInjectDemoxBadge(req, resp) {
@@ -126,7 +156,7 @@ function shouldInjectDemoxBadge(req, resp) {
   return !disposition.includes('attachment');
 }
 
-function getDemoxBadgeHtml() {
+function getDemoxBadgeHtml(meta) {
   return `
 <style data-demox-site-badge-style>
 @media screen {
@@ -214,6 +244,9 @@ function getDemoxBadgeHtml() {
   if (!link) return;
   var STORAGE_KEY = 'demox-badge-pos';
   var DRAG_THRESHOLD = 5;
+  var ANALYTICS_URL = '${optionalBackendUrl('/website/analytics-track')}';
+  var WEBSITE_ID = '${(meta && meta.websiteId) || ''}';
+  var ANALYTICS_TOKEN = '';
   // 读取持久化位置：有则用 left/top 接管定位，无则保留 CSS 默认左下角
   try {
     var saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
@@ -275,6 +308,27 @@ function getDemoxBadgeHtml() {
       link.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); }, { capture: true, once: true });
     }
   }
+  link.addEventListener('click', function () {
+    if (!ANALYTICS_URL || !WEBSITE_ID) return;
+    try {
+      fetch(ANALYTICS_URL, {
+        method: 'POST',
+        mode: 'cors',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'track_site_event',
+          websiteId: WEBSITE_ID,
+          type: 'badge_click',
+          host: location.hostname,
+          path: location.pathname,
+          referrer: document.referrer || '',
+          userAgent: navigator.userAgent || '',
+          analyticsToken: ANALYTICS_TOKEN
+        })
+      }).catch(function () {});
+    } catch (e) {}
+  });
   link.addEventListener('mousedown', onDown);
   link.addEventListener('touchstart', onDown, { passive: false });
   document.addEventListener('mousemove', onMove);
@@ -291,9 +345,9 @@ function getDemoxBadgeHtml() {
 </script>`;
 }
 
-function injectDemoxBadge(html) {
+function injectDemoxBadge(html, meta) {
   if (!html || html.indexOf(DEMOX_BADGE_MARKER) !== -1) return html;
-  const badge = getDemoxBadgeHtml();
+  const badge = getDemoxBadgeHtml(meta);
   if (/<\/body\s*>/i.test(html)) {
     return html.replace(/<\/body\s*>/i, function (match) {
       return badge + match;
@@ -302,9 +356,10 @@ function injectDemoxBadge(html) {
   return html + badge;
 }
 
-async function withDemoxBadge(req, resp) {
+async function withDemoxBadge(req, event, resp, meta) {
   if (!shouldInjectDemoxBadge(req, resp)) return resp;
 
+  trackSiteEvent(req, event, meta, 'view');
   const html = await resp.text();
   const headers = new Headers(resp.headers);
   headers.delete('content-length');
@@ -314,7 +369,7 @@ async function withDemoxBadge(req, resp) {
     headers.set('content-type', 'text/html; charset=utf-8');
   }
 
-  return new Response(injectDemoxBadge(html), {
+  return new Response(injectDemoxBadge(html, meta), {
     status: resp.status,
     statusText: resp.statusText,
     headers
@@ -475,6 +530,7 @@ async function resolveSite(label, domain) {
         const j = await hit.json();
         return {
           path: j && j.path ? j.path : null,
+          websiteId: (j && j.websiteId) || null,
           origin: (j && j.origin) || null,
           visibility: (j && j.visibility) || 'public'
         };
@@ -485,6 +541,7 @@ async function resolveSite(label, domain) {
   // 未命中：调 website-api 解析
   let path = null;
   let origin = null;
+  let websiteId = null;
   let visibility = 'public';
   try {
     const resp = await fetch(backendUrl('/resolve-subdomain'), {
@@ -496,6 +553,7 @@ async function resolveSite(label, domain) {
       const data = await resp.json();
       if (data && data.success && data.path) {
         path = data.path;
+        websiteId = data.websiteId || null;
         origin = data.origin || null;
         visibility = data.visibility || 'public';
       }
@@ -507,7 +565,7 @@ async function resolveSite(label, domain) {
   // 写缓存（命中和未命中都缓存，未命中缓存空对象以挡住穿透）
   if (cache) {
     try {
-      const body = JSON.stringify({ path: path, origin: origin, visibility: visibility });
+      const body = JSON.stringify({ path: path, websiteId: websiteId, origin: origin, visibility: visibility });
       const cacheResp = new Response(body, {
         headers: {
           'Content-Type': 'application/json',
@@ -518,10 +576,10 @@ async function resolveSite(label, domain) {
     } catch (e) {}
   }
 
-  return { path: path, origin: origin, visibility: visibility };
+  return { path: path, websiteId: websiteId, origin: origin, visibility: visibility };
 }
 
-async function handle(req) {
+async function handle(req, event) {
   const u = new URL(req.url);
   const host = u.hostname.toLowerCase();
 
@@ -552,13 +610,14 @@ async function handle(req) {
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
   // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, origin, visibility } = await resolveSite(label, domain);
+  let { path, websiteId, origin, visibility } = await resolveSite(label, domain);
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
   // 用硬编码兜底。改绑主站时同时改 DB 与此常量。
   if (!path && domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') {
     path = WWW_FALLBACK_PATH;
+    websiteId = 'EPX2UU43';
   }
 
   if (path) {
@@ -569,7 +628,7 @@ async function handle(req) {
       }
     }
     // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
-    return rewriteOrigin(req, u, `/${path}/${rest}`, path, origin);
+    return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, { websiteId: websiteId, label: label, domain: domain });
   }
 
   // 未知子域名：放行回源（由 COS 返回 404）

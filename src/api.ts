@@ -407,6 +407,25 @@ export const websiteApi = {
     );
   },
 
+
+  // 获取单个站点统计
+  getSiteStats: async (data: { websiteId: string; days?: number }) => {
+    return request<{
+      success: boolean;
+      websiteId?: string;
+      rangeDays?: number;
+      totals?: { views: number; badgeClicks: number };
+      daily?: { date: string; views: number; badgeClicks: number }[];
+      referrers?: { host: string; views: number }[];
+      paths?: { path: string; views: number }[];
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/site-stats",
+      { method: "POST", body: { action: "get_site_stats", ...data } }
+    );
+  },
+
   // 大盘统计
   bucketStats: async (data: { granularity?: string; startTime?: string; endTime?: string }) => {
     return request<any>(

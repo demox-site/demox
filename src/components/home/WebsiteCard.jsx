@@ -25,8 +25,12 @@ import {
   Link2,
   FolderKanban,
   Globe2,
-  LockKeyhole
+  LockKeyhole,
+  BarChart3,
+  MousePointerClick,
+  Radio
 } from "lucide-react";
+import { websiteApi } from "@/api";
 import StatusBadge from "./StatusBadge";
 import {
   getDisplayName,
@@ -85,6 +89,28 @@ export default function WebsiteCard({
   const isPublic = !isPrivate;
   const creatorName = String(website.userNickname || "").trim();
   const canChangeVisibility = canManageSite;
+  const [stats, setStats] = React.useState(null);
+
+  React.useEffect(() => {
+    const wid = website.websiteId || website._id;
+    if (!wid) return;
+    let cancelled = false;
+    websiteApi
+      .getSiteStats({ websiteId: wid, days: 7 })
+      .then((res) => {
+        if (!cancelled && res?.success) setStats(res);
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [website.websiteId, website._id]);
+
+  const totalViews = stats?.totals?.views || 0;
+  const badgeClicks = stats?.totals?.badgeClicks || 0;
+  const topReferrer = stats?.referrers?.find((item) => item.host && item.host !== "direct") || stats?.referrers?.[0];
 
   return (
     <div className="stitch-site-row p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 group">
@@ -282,6 +308,25 @@ export default function WebsiteCard({
             </span>
           )}
         </div>
+
+        {stats && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-mono text-[var(--stitch-muted)]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
+              <BarChart3 className="h-3.5 w-3.5" />
+              访问 {totalViews}
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
+              <MousePointerClick className="h-3.5 w-3.5" />
+              Powered by {badgeClicks}
+            </span>
+            {topReferrer && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
+                <Radio className="h-3.5 w-3.5" />
+                来源 {topReferrer.host}
+              </span>
+            )}
+          </div>
+        )}
 
         {getSiteDomains(website).length > 0 && (
           <div className="flex flex-col gap-2 mt-3">

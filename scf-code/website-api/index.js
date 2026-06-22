@@ -351,6 +351,8 @@ exports.main = async (event, context) => {
       update_visibility: handleUpdateWebsiteVisibility,
       resolve_subdomain: handleResolveSubdomain,
       check_site_access: handleCheckSiteAccess,
+      track_site_event: handleTrackSiteEvent,
+      get_site_stats: handleGetSiteStats,
       list_projects: handleListProjects,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
@@ -364,6 +366,7 @@ exports.main = async (event, context) => {
       migrate_default_projects: handleMigrateDefaultProjects,
       migrate_site_visibility: handleMigrateSiteVisibility,
       migrate_project_collaboration: handleMigrateProjectCollaboration,
+      migrate_site_analytics: handleMigrateSiteAnalytics,
       bucket_stats: handleBucketStats,
       list_user_roles: handleListUserRoles,
       set_user_role: handleSetUserRole,
@@ -433,6 +436,10 @@ exports.main = async (event, context) => {
       return await handleResolveSubdomain(event);
     } else if (pathUrl.includes('/check-site-access')) {
       return await handleCheckSiteAccess(event);
+    } else if (pathUrl.includes('/track-site-event') || pathUrl.includes('/analytics/track')) {
+      return await handleTrackSiteEvent(event);
+    } else if (pathUrl.includes('/site-stats') || pathUrl.includes('/analytics/stats')) {
+      return await handleGetSiteStats(event);
     } else if (pathUrl.includes('/migrate-subdomain')) {
       return await handleMigrateSubdomain(event);
     } else if (pathUrl.includes('/migrate-default-projects')) {
@@ -441,6 +448,8 @@ exports.main = async (event, context) => {
       return await handleMigrateSiteVisibility(event);
     } else if (pathUrl.includes('/migrate-project-collaboration')) {
       return await handleMigrateProjectCollaboration(event);
+    } else if (pathUrl.includes('/migrate-site-analytics')) {
+      return await handleMigrateSiteAnalytics(event);
     } else {
       return {
         statusCode: 404,
@@ -1443,6 +1452,14 @@ async function canUserManageSite(userId, site) {
   return await canUserWriteProject(userId, site.project_id);
 }
 
+async function canUserReadSite(userId, site) {
+  if (!userId || !site) return false;
+  if (String(site.user_id || '') === String(userId)) return true;
+  if (await checkAdmin(userId)) return true;
+  if (!site.project_id) return false;
+  return await canUserReadProject(userId, site.project_id);
+}
+
 async function acceptPendingProjectInvitationsForUser(userId) {
   const user = await getUserById(userId);
   const email = normalizeEmail(user?.email);
@@ -2330,6 +2347,7 @@ async function handleResolveSubdomain(event) {
       body: JSON.stringify({
         success: true,
         path: site.path,
+        websiteId: site.website_id || null,
         origin: site.origin_host || null,
         domain: suffix,
         host: `${label}.${suffix}`,
@@ -2413,6 +2431,285 @@ async function handleCheckSiteAccess(event) {
   } catch (error) {
     console.error('检查站点访问权限失败:', error);
     return ok({ success: false, allowed: false, message: error.message });
+  }
+}
+
+
+function normalizeAnalyticsEventType(input) {
+  const value = String(input || '').trim().toLowerCase();
+  return value === 'badge_click' ? 'badge_click' : 'view';
+}
+
+function normalizeAnalyticsWebsiteId(input) {
+  return String(input || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16);
+}
+
+function normalizeAnalyticsPath(input) {
+  const value = String(input || '/').trim() || '/';
+  const pathOnly = value.split('#')[0].split('?')[0] || '/';
+  return pathOnly.startsWith('/') ? pathOnly.slice(0, 512) : `/${pathOnly.slice(0, 511)}`;
+}
+
+function normalizeReferrerHost(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return 'direct';
+  try {
+    const u = new URL(raw);
+    return (u.hostname || 'direct').toLowerCase().replace(/^www\./, '').slice(0, 255) || 'direct';
+  } catch (e) {
+    return raw.toLowerCase().replace(/^www\./, '').slice(0, 255) || 'direct';
+  }
+}
+
+function hashAnalyticsValue(input) {
+  const raw = String(input || '');
+  if (!raw) return '';
+  const salt = process.env.ANALYTICS_HASH_SALT || process.env.JWT_SECRET || 'demox-analytics';
+  return nodeCrypto.createHash('sha256').update(`${salt}:${raw}`).digest('hex');
+}
+
+function getClientIp(event) {
+  const headers = event.headers || {};
+  const value = headers['x-forwarded-for'] || headers['X-Forwarded-For'] || headers['x-real-ip'] || headers['X-Real-IP'] || event.requestContext?.sourceIp || '';
+  return String(value).split(',')[0].trim();
+}
+
+function analyticsTokenAllowed(event) {
+  const expected = process.env.ANALYTICS_TRACK_TOKEN || '';
+  if (!expected) return true;
+  const body = event.body || event;
+  // Badge clicks are emitted from the public hosted page, so they cannot carry a secret.
+  if (normalizeAnalyticsEventType(body.type || body.eventType) === 'badge_click') return true;
+  const headers = event.headers || {};
+  const provided = body.analyticsToken || headers['x-demox-analytics-token'] || headers['X-Demox-Analytics-Token'] || '';
+  return String(provided) === expected;
+}
+
+async function writeRawAnalyticsEvent(event) {
+  if (process.env.ANALYTICS_RAW_ENABLED !== '1') return { skipped: true, reason: 'disabled' };
+  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
+  if (!bucketId) {
+    // Raw analytics can contain sensitive referrer/UA metadata, so require an explicit private bucket.
+    return { skipped: true, reason: 'missing ANALYTICS_RAW_BUCKET_ID' };
+  }
+  try {
+    const bucketCfg = await resolveBucketConfig(bucketId);
+    const provider = createProvider(buckets.resolveCreds(bucketCfg));
+    const d = new Date(event.ts || Date.now());
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const rand = nodeCrypto.randomBytes(6).toString('hex');
+    const key = `analytics/raw/date=${yyyy}-${mm}-${dd}/hour=${hh}/${event.websiteId}-${event.ts}-${rand}.ndjson`;
+    await provider.put(key, `${JSON.stringify(event)}\n`, {
+      contentType: 'application/x-ndjson; charset=utf-8',
+      cacheControl: 'private, max-age=0, no-store'
+    });
+    return { skipped: false, key };
+  } catch (e) {
+    console.warn('写入原始统计事件失败:', e.message);
+    return { skipped: true, reason: e.message };
+  }
+}
+
+async function handleTrackSiteEvent(event) {
+  const body = event.body || event;
+  if (!analyticsTokenAllowed(event)) return ok({ success: false, message: 'invalid analytics token' });
+
+  const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
+  if (!websiteId) return ok({ success: false, message: 'missing websiteId' });
+
+  const type = normalizeAnalyticsEventType(body.type || body.eventType);
+  const pathValue = normalizeAnalyticsPath(body.path || body.pathname || '/');
+  const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
+  const ua = String(body.userAgent || body.ua || '').slice(0, 512);
+  const ipHash = hashAnalyticsValue(body.ip || getClientIp(event));
+  const visitorHash = hashAnalyticsValue(body.visitorId || `${ipHash}:${ua}`);
+  const now = new Date();
+  const statDate = now.toISOString().slice(0, 10);
+
+  try {
+    const siteRows = await query('SELECT website_id FROM websites WHERE website_id = ? LIMIT 1', [websiteId]);
+    if (siteRows.length === 0) return ok({ success: false, message: 'site not found' });
+
+    await query(
+      `INSERT INTO site_daily_stats (website_id, stat_date, views, badge_clicks, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE
+         views = views + VALUES(views),
+         badge_clicks = badge_clicks + VALUES(badge_clicks),
+         updated_at = NOW()`,
+      [websiteId, statDate, type === 'view' ? 1 : 0, type === 'badge_click' ? 1 : 0]
+    );
+
+    if (type === 'view') {
+      await query(
+        `INSERT INTO site_referrer_daily_stats (website_id, stat_date, referrer_host, views, updated_at)
+         VALUES (?, ?, ?, 1, NOW())
+         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
+        [websiteId, statDate, referrerHost]
+      );
+      await query(
+        `INSERT INTO site_path_daily_stats (website_id, stat_date, path, views, updated_at)
+         VALUES (?, ?, ?, 1, NOW())
+         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
+        [websiteId, statDate, pathValue]
+      );
+    }
+
+    const raw = await writeRawAnalyticsEvent({
+      ts: Date.now(),
+      websiteId,
+      type,
+      path: pathValue,
+      referrer: String(body.referrer || body.referer || '').slice(0, 1024),
+      referrerHost,
+      userAgent: ua,
+      ipHash,
+      visitorHash,
+      host: String(body.host || '').slice(0, 255)
+    });
+
+    return ok({ success: true, raw });
+  } catch (error) {
+    console.error('记录站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+function normalizeStatsRange(input) {
+  const n = Number.parseInt(String(input || '7'), 10);
+  if (!Number.isFinite(n)) return 7;
+  return Math.max(1, Math.min(n, 90));
+}
+
+async function handleGetSiteStats(event) {
+  const userId = getUserId(event);
+  if (!userId) return { statusCode: 401, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '未登录或token已过期' }) };
+
+  const body = event.body || event;
+  const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
+  const days = normalizeStatsRange(body.days || body.range);
+  if (!websiteId) return ok({ success: false, message: 'missing websiteId' });
+
+  const site = await getWebsiteByIdentity({ websiteId });
+  if (!site || !(await canUserReadSite(userId, site))) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限查看该站点统计' }) };
+  }
+
+  try {
+    const daily = await query(
+      `SELECT stat_date, views, badge_clicks
+       FROM site_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       ORDER BY stat_date ASC`,
+      [websiteId, days - 1]
+    );
+    const totals = await query(
+      `SELECT COALESCE(SUM(views), 0) AS views,
+              COALESCE(SUM(badge_clicks), 0) AS badge_clicks
+       FROM site_daily_stats
+       WHERE website_id = ?`,
+      [websiteId]
+    );
+    const referrers = await query(
+      `SELECT referrer_host, SUM(views) AS views
+       FROM site_referrer_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY referrer_host
+       ORDER BY views DESC
+       LIMIT 10`,
+      [websiteId, days - 1]
+    );
+    const paths = await query(
+      `SELECT path, SUM(views) AS views
+       FROM site_path_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY path
+       ORDER BY views DESC
+       LIMIT 10`,
+      [websiteId, days - 1]
+    );
+
+    return ok({
+      success: true,
+      websiteId,
+      rangeDays: days,
+      totals: {
+        views: Number(totals[0]?.views || 0),
+        badgeClicks: Number(totals[0]?.badge_clicks || 0)
+      },
+      daily: daily.map((r) => ({
+        date: r.stat_date instanceof Date ? r.stat_date.toISOString().slice(0, 10) : String(r.stat_date).slice(0, 10),
+        views: Number(r.views || 0),
+        badgeClicks: Number(r.badge_clicks || 0)
+      })),
+      referrers: referrers.map((r) => ({ host: r.referrer_host || 'direct', views: Number(r.views || 0) })),
+      paths: paths.map((r) => ({ path: r.path || '/', views: Number(r.views || 0) }))
+    });
+  } catch (error) {
+    console.error('查询站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function handleMigrateSiteAnalytics(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
+  }
+
+  const steps = [];
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_daily_stats (
+        website_id VARCHAR(32) NOT NULL,
+        stat_date DATE NOT NULL,
+        views BIGINT NOT NULL DEFAULT 0,
+        visitors BIGINT NOT NULL DEFAULT 0,
+        badge_clicks BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id, stat_date),
+        INDEX idx_site_daily_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日访问聚合'`
+    );
+    steps.push('ensured site_daily_stats');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_referrer_daily_stats (
+        website_id VARCHAR(32) NOT NULL,
+        stat_date DATE NOT NULL,
+        referrer_host VARCHAR(255) NOT NULL DEFAULT 'direct',
+        views BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id, stat_date, referrer_host),
+        INDEX idx_referrer_daily_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日来源聚合'`
+    );
+    steps.push('ensured site_referrer_daily_stats');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_path_daily_stats (
+        website_id VARCHAR(32) NOT NULL,
+        stat_date DATE NOT NULL,
+        path VARCHAR(512) NOT NULL,
+        views BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id, stat_date, path),
+        INDEX idx_path_daily_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日路径聚合'`
+    );
+    steps.push('ensured site_path_daily_stats');
+
+    return ok({ success: true, steps });
+  } catch (error) {
+    console.error('统计表迁移失败:', error);
+    return ok({ success: false, steps, message: error.message });
   }
 }
 
