@@ -7,6 +7,12 @@ const AdmZip = require('adm-zip');
 const nodeCrypto = require('crypto');
 const https = require('https');
 const path = require('path');
+let geoip = null;
+try {
+  geoip = require('geoip-lite');
+} catch (e) {
+  geoip = null;
+}
 const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate } = require('./shared/jwt.js');
 const { createProvider } = require('./shared/storage.js');
@@ -2600,6 +2606,74 @@ function normalizeProvince(input) {
   return value.replace(/[\u0000-\u001f<>]/g, '').slice(0, 64) || 'UNKNOWN';
 }
 
+const CN_REGION_NAMES = {
+  AH: 'Anhui',
+  BJ: 'Beijing',
+  CQ: 'Chongqing',
+  FJ: 'Fujian',
+  GD: 'Guangdong',
+  GS: 'Gansu',
+  GX: 'Guangxi',
+  GZ: 'Guizhou',
+  HA: 'Henan',
+  HB: 'Hubei',
+  HE: 'Hebei',
+  HI: 'Hainan',
+  HK: 'Hong Kong',
+  HL: 'Heilongjiang',
+  HN: 'Hunan',
+  JL: 'Jilin',
+  JS: 'Jiangsu',
+  JX: 'Jiangxi',
+  LN: 'Liaoning',
+  MO: 'Macao',
+  NM: 'Inner Mongolia',
+  NX: 'Ningxia',
+  QH: 'Qinghai',
+  SC: 'Sichuan',
+  SD: 'Shandong',
+  SH: 'Shanghai',
+  SN: 'Shaanxi',
+  SX: 'Shanxi',
+  TJ: 'Tianjin',
+  TW: 'Taiwan',
+  XJ: 'Xinjiang',
+  XZ: 'Tibet',
+  YN: 'Yunnan',
+  ZJ: 'Zhejiang'
+};
+
+function isPrivateIp(input) {
+  const ip = String(input || '').trim();
+  const parts = ip.split('.').map((p) => Number.parseInt(p, 10));
+  if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p))) return false;
+  return (
+    parts[0] === 10 ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168) ||
+    parts[0] === 127 ||
+    parts[0] === 0
+  );
+}
+
+function lookupGeoByIp(input) {
+  if (!geoip) return { country: 'UNKNOWN', province: 'UNKNOWN' };
+  const ip = String(input || '').split(',')[0].trim();
+  if (!ip || isPrivateIp(ip)) return { country: 'UNKNOWN', province: 'UNKNOWN' };
+  try {
+    const hit = geoip.lookup(ip);
+    if (!hit) return { country: 'UNKNOWN', province: 'UNKNOWN' };
+    const country = normalizeCountry(hit.country);
+    const region = String(hit.region || '').trim();
+    const province = country === 'CN' && CN_REGION_NAMES[region]
+      ? CN_REGION_NAMES[region]
+      : (region || hit.city || 'UNKNOWN');
+    return { country, province: normalizeProvince(province) };
+  } catch (e) {
+    return { country: 'UNKNOWN', province: 'UNKNOWN' };
+  }
+}
+
 function hashAnalyticsValue(input) {
   const raw = String(input || '');
   if (!raw) return '';
@@ -2679,11 +2753,14 @@ async function handleTrackSiteEvent(event) {
   const requestedType = normalizeAnalyticsEventType(body.type || body.eventType);
   const pathValue = normalizeAnalyticsPath(body.path || body.pathname || '/');
   const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
-  const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
-  const country = normalizeCountry(body.country || body.countryCode);
-  const province = normalizeProvince(body.province || body.region || body.subdivision);
   const ua = String(body.userAgent || body.ua || '').slice(0, 512);
   const clientIp = String(body.ip || getClientIp(event) || '').trim().slice(0, 128);
+  const geoFromIp = lookupGeoByIp(clientIp);
+  const country = normalizeCountry(body.country || body.countryCode);
+  const province = normalizeProvince(body.province || body.region || body.subdivision);
+  const finalCountry = country === 'UNKNOWN' ? geoFromIp.country : country;
+  const finalProvince = province === 'UNKNOWN' ? geoFromIp.province : province;
+  const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
   const ipHash = hashAnalyticsValue(clientIp);
   const visitorHash = hashAnalyticsValue(body.visitorId || `${ipHash}:${ua}`);
   const now = new Date();
@@ -2697,8 +2774,8 @@ async function handleTrackSiteEvent(event) {
       path: pathValue,
       referrer: String(body.referrer || body.referer || '').slice(0, 1024),
       referrerHost,
-      country,
-      province,
+      country: finalCountry,
+      province: finalProvince,
       userAgent: ua,
       ipEnc: safeEncrypt(clientIp),
       visitorHash,
@@ -2783,6 +2860,7 @@ async function handleGetSiteStats(event) {
       `SELECT country, SUM(views) AS views
        FROM site_country_daily_stats
        WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND country <> 'UNKNOWN'
        GROUP BY country
        ORDER BY views DESC
        LIMIT 10`,
@@ -2792,6 +2870,7 @@ async function handleGetSiteStats(event) {
       `SELECT country, province, SUM(views) AS views
        FROM site_province_daily_stats
        WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND country <> 'UNKNOWN' AND province <> 'UNKNOWN'
        GROUP BY country, province
        ORDER BY views DESC
        LIMIT 20`,
@@ -2921,14 +3000,17 @@ function normalizeRawAnalyticsEvent(item) {
   const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
   const ts = Number(item.ts || 0) || Date.now();
   const statDate = new Date(ts).toISOString().slice(0, 10);
+  const geoFromIp = lookupGeoByIp(item.ipEnc ? safeDecrypt(item.ipEnc) : item.ip);
+  const country = normalizeCountry(item.country || item.countryCode);
+  const province = normalizeProvince(item.province || item.region || item.subdivision);
   return {
     websiteId,
     type,
     statDate,
     path: pathValue,
     referrerHost: normalizeReferrerHost(item.referrerHost || item.referrer || ''),
-    country: normalizeCountry(item.country || item.countryCode),
-    province: normalizeProvince(item.province || item.region || item.subdivision),
+    country: country === 'UNKNOWN' ? geoFromIp.country : country,
+    province: province === 'UNKNOWN' ? geoFromIp.province : province,
     ts
   };
 }
