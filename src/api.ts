@@ -418,6 +418,7 @@ export const websiteApi = {
       daily?: { date: string; views: number; badgeClicks: number }[];
       referrers?: { host: string; views: number }[];
       paths?: { path: string; views: number }[];
+      countries?: { country: string; views: number }[];
       message?: string;
     }>(
       WEBSITE_API_URL,

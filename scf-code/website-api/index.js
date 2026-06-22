@@ -2461,6 +2461,12 @@ function normalizeReferrerHost(input) {
   }
 }
 
+function normalizeCountry(input) {
+  const value = String(input || '').trim().toUpperCase();
+  if (!value || value === 'XX' || value === 'UNKNOWN') return 'UNKNOWN';
+  return /^[A-Z]{2}$/.test(value) ? value : 'UNKNOWN';
+}
+
 function hashAnalyticsValue(input) {
   const raw = String(input || '');
   if (!raw) return '';
@@ -2523,6 +2529,7 @@ async function handleTrackSiteEvent(event) {
   const type = normalizeAnalyticsEventType(body.type || body.eventType);
   const pathValue = normalizeAnalyticsPath(body.path || body.pathname || '/');
   const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
+  const country = normalizeCountry(body.country || body.countryCode || body.region);
   const ua = String(body.userAgent || body.ua || '').slice(0, 512);
   const ipHash = hashAnalyticsValue(body.ip || getClientIp(event));
   const visitorHash = hashAnalyticsValue(body.visitorId || `${ipHash}:${ua}`);
@@ -2556,6 +2563,12 @@ async function handleTrackSiteEvent(event) {
          ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
         [websiteId, statDate, pathValue]
       );
+      await query(
+        `INSERT INTO site_country_daily_stats (website_id, stat_date, country, views, updated_at)
+         VALUES (?, ?, ?, 1, NOW())
+         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
+        [websiteId, statDate, country]
+      );
     }
 
     const raw = await writeRawAnalyticsEvent({
@@ -2565,6 +2578,7 @@ async function handleTrackSiteEvent(event) {
       path: pathValue,
       referrer: String(body.referrer || body.referer || '').slice(0, 1024),
       referrerHost,
+      country,
       userAgent: ua,
       ipHash,
       visitorHash,
@@ -2631,6 +2645,15 @@ async function handleGetSiteStats(event) {
        LIMIT 10`,
       [websiteId, days - 1]
     );
+    const countries = await query(
+      `SELECT country, SUM(views) AS views
+       FROM site_country_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY country
+       ORDER BY views DESC
+       LIMIT 10`,
+      [websiteId, days - 1]
+    );
 
     return ok({
       success: true,
@@ -2646,7 +2669,8 @@ async function handleGetSiteStats(event) {
         badgeClicks: Number(r.badge_clicks || 0)
       })),
       referrers: referrers.map((r) => ({ host: r.referrer_host || 'direct', views: Number(r.views || 0) })),
-      paths: paths.map((r) => ({ path: r.path || '/', views: Number(r.views || 0) }))
+      paths: paths.map((r) => ({ path: r.path || '/', views: Number(r.views || 0) })),
+      countries: countries.map((r) => ({ country: r.country || 'UNKNOWN', views: Number(r.views || 0) }))
     });
   } catch (error) {
     console.error('查询站点统计失败:', error);
@@ -2705,6 +2729,20 @@ async function handleMigrateSiteAnalytics(event) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日路径聚合'`
     );
     steps.push('ensured site_path_daily_stats');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_country_daily_stats (
+        website_id VARCHAR(32) NOT NULL,
+        stat_date DATE NOT NULL,
+        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+        views BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id, stat_date, country),
+        INDEX idx_country_daily_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日地区聚合'`
+    );
+    steps.push('ensured site_country_daily_stats');
 
     return ok({ success: true, steps });
   } catch (error) {

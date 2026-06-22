@@ -27,7 +27,7 @@ import {
   Globe2,
   LockKeyhole,
   BarChart3,
-  MousePointerClick,
+  MapPin,
   Radio
 } from "lucide-react";
 import { websiteApi } from "@/api";
@@ -109,7 +109,7 @@ export default function WebsiteCard({
   }, [website.websiteId, website._id]);
 
   const totalViews = stats?.totals?.views || 0;
-  const badgeClicks = stats?.totals?.badgeClicks || 0;
+  const topCountry = stats?.countries?.find((item) => item.country && item.country !== "UNKNOWN") || stats?.countries?.[0];
   const topReferrer = stats?.referrers?.find((item) => item.host && item.host !== "direct") || stats?.referrers?.[0];
 
   return (
@@ -315,10 +315,12 @@ export default function WebsiteCard({
               <BarChart3 className="h-3.5 w-3.5" />
               访问 {totalViews}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
-              <MousePointerClick className="h-3.5 w-3.5" />
-              Powered by {badgeClicks}
-            </span>
+            {topCountry && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
+                <MapPin className="h-3.5 w-3.5" />
+                地区 {topCountry.country}
+              </span>
+            )}
             {topReferrer && (
               <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
                 <Radio className="h-3.5 w-3.5" />

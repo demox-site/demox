@@ -106,6 +106,26 @@ function shouldFallbackToIndex(req, originPath) {
   return accept.includes('text/html');
 }
 
+function getRequestCountry(req) {
+  const candidates = [
+    'eo-country-code',
+    'cf-ipcountry',
+    'x-vercel-ip-country',
+    'x-country-code',
+    'x-geo-country',
+    'cloudfront-viewer-country'
+  ];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const value = (req.headers.get(candidates[i]) || '').trim().toUpperCase();
+    if (/^[A-Z]{2}$/.test(value)) return value;
+  }
+  try {
+    const cfCountry = req.cf && req.cf.country;
+    if (/^[A-Z]{2}$/.test(String(cfCountry || '').toUpperCase())) return String(cfCountry).toUpperCase();
+  } catch (e) {}
+  return 'UNKNOWN';
+}
+
 async function trackSiteEvent(req, event, meta, type) {
   if (!event || !meta || !meta.websiteId) return;
   const url = optionalBackendUrl('/website/analytics-track');
@@ -118,6 +138,7 @@ async function trackSiteEvent(req, event, meta, type) {
     host: u.hostname,
     path: u.pathname,
     referrer: req.headers.get('referer') || req.headers.get('referrer') || '',
+    country: getRequestCountry(req),
     userAgent: req.headers.get('user-agent') || ''
   };
   const token = runtimeEnv('DEMOX_ANALYTICS_TOKEN');
@@ -323,6 +344,7 @@ function getDemoxBadgeHtml(meta) {
           host: location.hostname,
           path: location.pathname,
           referrer: document.referrer || '',
+          country: 'UNKNOWN',
           userAgent: navigator.userAgent || '',
           analyticsToken: ANALYTICS_TOKEN
         })

@@ -32,3 +32,15 @@ CREATE TABLE IF NOT EXISTS site_path_daily_stats (
   PRIMARY KEY (website_id, stat_date, path),
   INDEX idx_path_daily_date (stat_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日路径聚合';
+
+
+CREATE TABLE IF NOT EXISTS site_country_daily_stats (
+  website_id VARCHAR(32) NOT NULL,
+  stat_date DATE NOT NULL,
+  country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+  views BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (website_id, stat_date, country),
+  INDEX idx_country_daily_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日地区聚合';
