@@ -367,6 +367,7 @@ exports.main = async (event, context) => {
       get_site_stats: handleGetSiteStats,
       get_site_access_logs: handleGetSiteAccessLogs,
       rollup_site_analytics: handleRollupSiteAnalytics,
+      backfill_site_analytics_geo: handleBackfillSiteAnalyticsGeo,
       list_projects: handleListProjects,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
@@ -462,6 +463,8 @@ exports.main = async (event, context) => {
       return await handleGetSiteAccessLogs(event);
     } else if (pathUrl.includes('/analytics/rollup')) {
       return await handleRollupSiteAnalytics(event);
+    } else if (pathUrl.includes('/analytics/backfill-geo')) {
+      return await handleBackfillSiteAnalyticsGeo(event);
     } else if (pathUrl.includes('/migrate-subdomain')) {
       return await handleMigrateSubdomain(event);
     } else if (pathUrl.includes('/migrate-default-projects')) {
@@ -3164,6 +3167,95 @@ async function handleRollupSiteAnalytics(event) {
     return ok({ success: true, delayed: true, delayMinutes: 5, scanned: objects.length, candidates: candidates.length, ...summary });
   } catch (error) {
     console.error('延迟聚合站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function handleBackfillSiteAnalyticsGeo(event) {
+  if (!analyticsRollupAllowed(event)) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行地区回填' }) };
+  }
+
+  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
+  if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
+    return ok({ success: false, message: '原始访问日志未启用，无法回填地区' });
+  }
+
+  const body = getRollupRequestBody(event);
+  const requestedWebsiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
+  try {
+    const bucketCfg = await resolveBucketConfig(bucketId);
+    const provider = createProvider(buckets.resolveCreds(bucketCfg));
+    const objects = await listRawAnalyticsObjects(provider, body);
+    let candidates = [];
+    for (const obj of objects) {
+      if (Number(obj.size || 0) > 256 * 1024) continue;
+      const text = await provider.get(obj.key);
+      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
+        if (!item || item.type !== 'view') continue;
+        if (requestedWebsiteId && item.websiteId !== requestedWebsiteId) continue;
+        candidates.push(item);
+      }
+    }
+
+    const websiteIds = Array.from(new Set(candidates.map((item) => item.websiteId)));
+    if (websiteIds.length) {
+      const validRows = await query(
+        `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
+        websiteIds
+      );
+      const validIds = new Set(validRows.map((r) => String(r.website_id || '')));
+      candidates = candidates.filter((item) => validIds.has(item.websiteId));
+    }
+
+    const affectedKeys = new Map();
+    const rollups = {
+      daily: new Map(),
+      referrers: new Map(),
+      paths: new Map(),
+      countries: new Map(),
+      provinces: new Map()
+    };
+    for (const item of candidates) {
+      affectedKeys.set(`${item.websiteId}\u0001${item.statDate}`, [item.websiteId, item.statDate]);
+      if (item.country !== 'UNKNOWN') {
+        addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
+      }
+      if (item.country !== 'UNKNOWN' && item.province !== 'UNKNOWN') {
+        addRollupCount(rollups.provinces, [item.websiteId, item.statDate, item.country, item.province], 'views', 1);
+      }
+    }
+
+    const summary = await transaction(async (conn) => {
+      for (const [websiteId, statDate] of affectedKeys.values()) {
+        await conn.query(
+          `DELETE FROM site_country_daily_stats WHERE website_id = ? AND stat_date = ?`,
+          [websiteId, statDate]
+        );
+        await conn.query(
+          `DELETE FROM site_province_daily_stats WHERE website_id = ? AND stat_date = ?`,
+          [websiteId, statDate]
+        );
+      }
+      await upsertAnalyticsRollups(conn, rollups);
+      return {
+        dates: affectedKeys.size,
+        countryRows: rollups.countries.size,
+        provinceRows: rollups.provinces.size
+      };
+    });
+
+    return ok({
+      success: true,
+      scanned: objects.length,
+      candidates: candidates.length,
+      websiteId: requestedWebsiteId || null,
+      ...summary
+    });
+  } catch (error) {
+    console.error('回填站点地区统计失败:', error);
     return ok({ success: false, message: error.message });
   }
 }
