@@ -34,6 +34,7 @@ import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import UsagePage from "./pages/console/UsagePage";
+import SiteAnalyticsPage from "./pages/console/SiteAnalyticsPage";
 
 const history = createBrowserHistory();
 window._WEAPPS_HISTORY = history;
@@ -133,6 +134,10 @@ const App: React.FC = () => {
                     <Route
                       path="projects/:projectId/sites"
                       element={<Home mode="sites" />}
+                    />
+                    <Route
+                      path="projects/:projectId/sites/:websiteId/analytics"
+                      element={<SiteAnalyticsPage />}
                     />
                     <Route
                       path="projects/:projectId/members"

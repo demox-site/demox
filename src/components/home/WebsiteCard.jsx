@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 // @ts-ignore;
 import {
   Button,
@@ -26,11 +27,8 @@ import {
   FolderKanban,
   Globe2,
   LockKeyhole,
-  BarChart3,
-  MapPin,
-  Radio
+  BarChart3
 } from "lucide-react";
-import { websiteApi } from "@/api";
 import StatusBadge from "./StatusBadge";
 import {
   getDisplayName,
@@ -74,11 +72,14 @@ export default function WebsiteCard({
   openDomainDialog,
   confirmDeleteWebsite
 }) {
+  const navigate = useNavigate();
   const isProcessing = website.status === "processing" || deploying[website._id];
   const isPlatformAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
   const isSiteOwner = !website.userId || website.userId === user?.userId;
   const canManageByProject = ["owner", "admin"].includes(website.projectRole || "");
+  const canViewAnalyticsByProject = !!website.projectRole;
   const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
+  const canViewAnalytics = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
   const canMoveProject =
     canManageSite &&
     showProjectInfo &&
@@ -89,28 +90,9 @@ export default function WebsiteCard({
   const isPublic = !isPrivate;
   const creatorName = String(website.userNickname || "").trim();
   const canChangeVisibility = canManageSite;
-  const [stats, setStats] = React.useState(null);
-
-  React.useEffect(() => {
-    const wid = website.websiteId || website._id;
-    if (!wid) return;
-    let cancelled = false;
-    websiteApi
-      .getSiteStats({ websiteId: wid, days: 7 })
-      .then((res) => {
-        if (!cancelled && res?.success) setStats(res);
-      })
-      .catch(() => {
-        if (!cancelled) setStats(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [website.websiteId, website._id]);
-
-  const totalViews = stats?.totals?.views || 0;
-  const topCountry = stats?.countries?.find((item) => item.country && item.country !== "UNKNOWN") || stats?.countries?.[0];
-  const topReferrer = stats?.referrers?.find((item) => item.host && item.host !== "direct") || stats?.referrers?.[0];
+  const analyticsPath = website.projectId && (website.websiteId || website._id)
+    ? `/console/projects/${website.projectId}/sites/${website.websiteId || website._id}/analytics`
+    : "";
 
   return (
     <div className="stitch-site-row p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 group">
@@ -309,27 +291,6 @@ export default function WebsiteCard({
           )}
         </div>
 
-        {stats && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-mono text-[var(--stitch-muted)]">
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
-              <BarChart3 className="h-3.5 w-3.5" />
-              访问 {totalViews}
-            </span>
-            {topCountry && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
-                <MapPin className="h-3.5 w-3.5" />
-                地区 {topCountry.country}
-              </span>
-            )}
-            {topReferrer && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2.5 py-1">
-                <Radio className="h-3.5 w-3.5" />
-                来源 {topReferrer.host}
-              </span>
-            )}
-          </div>
-        )}
-
         {getSiteDomains(website).length > 0 && (
           <div className="flex flex-col gap-2 mt-3">
             {getSiteDomains(website).map((d) => (
@@ -409,8 +370,21 @@ export default function WebsiteCard({
           </div>
         )}
 
-        {canManageSite && (
+        {(canViewAnalytics || canManageSite) && (
           <>
+            {canViewAnalytics && analyticsPath && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate(analyticsPath)}
+                className="stitch-action rounded-full"
+                title="查看访问分析"
+              >
+                <BarChart3 className="w-4 h-4 mr-2" />
+                分析
+              </Button>
+            )}
+
             <TooltipProvider delayDuration={0}>
               <Tooltip>
                 <TooltipTrigger asChild>
