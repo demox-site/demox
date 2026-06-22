@@ -6,17 +6,14 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis
 } from "recharts";
-import { ArrowLeft, BarChart3, Globe2, MapPin, MousePointer2, Radio, Route, TrendingUp } from "lucide-react";
+import { ArrowLeft, BarChart3, Clock3, Globe2, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
 import { websiteApi, mapWebsiteRow } from "@/api";
-import { Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { formatTimestamp, getDisplayName, getSiteDomains } from "@/lib/website-utils";
 
 type StatsResponse = {
@@ -28,7 +25,21 @@ type StatsResponse = {
   referrers?: { host: string; views: number }[];
   paths?: { path: string; views: number }[];
   countries?: { country: string; views: number }[];
+  provinces?: { country: string; province: string; views: number }[];
   message?: string;
+};
+
+type AccessLog = {
+  ts: number | null;
+  type: string;
+  host: string;
+  path: string;
+  referrer: string;
+  referrerHost: string;
+  country: string;
+  province: string;
+  ip: string;
+  userAgent: string;
 };
 
 const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#f43f5e", "#a78bfa", "#14b8a6", "#eab308", "#fb7185"];
@@ -46,6 +57,32 @@ const countryNames: Record<string, string> = {
   FR: "法国",
   UNKNOWN: "未知地区"
 };
+
+const provinceAliases: Record<string, string> = {
+  Beijing: "北京", Tianjin: "天津", Shanghai: "上海", Chongqing: "重庆",
+  Hebei: "河北", Shanxi: "山西", Liaoning: "辽宁", Jilin: "吉林", Heilongjiang: "黑龙江",
+  Jiangsu: "江苏", Zhejiang: "浙江", Anhui: "安徽", Fujian: "福建", Jiangxi: "江西", Shandong: "山东",
+  Henan: "河南", Hubei: "湖北", Hunan: "湖南", Guangdong: "广东", Hainan: "海南", Sichuan: "四川",
+  Guizhou: "贵州", Yunnan: "云南", Shaanxi: "陕西", Gansu: "甘肃", Qinghai: "青海", Taiwan: "台湾",
+  Neimenggu: "内蒙古", InnerMongolia: "内蒙古", Guangxi: "广西", Xizang: "西藏", Tibet: "西藏",
+  Ningxia: "宁夏", Xinjiang: "新疆", HongKong: "香港", Macau: "澳门", Macao: "澳门"
+};
+
+const provinceTiles = [
+  { name: "新疆", x: 0, y: 1 }, { name: "甘肃", x: 2, y: 2 }, { name: "内蒙古", x: 3, y: 1 }, { name: "黑龙江", x: 6, y: 0 },
+  { name: "青海", x: 1, y: 3 }, { name: "宁夏", x: 3, y: 3 }, { name: "陕西", x: 4, y: 3 }, { name: "山西", x: 5, y: 2 }, { name: "河北", x: 6, y: 2 }, { name: "北京", x: 7, y: 1 }, { name: "天津", x: 7, y: 2 }, { name: "吉林", x: 7, y: 0 }, { name: "辽宁", x: 8, y: 1 },
+  { name: "西藏", x: 0, y: 4 }, { name: "四川", x: 3, y: 4 }, { name: "重庆", x: 4, y: 4 }, { name: "河南", x: 5, y: 3 }, { name: "山东", x: 7, y: 3 },
+  { name: "云南", x: 2, y: 5 }, { name: "贵州", x: 4, y: 5 }, { name: "湖北", x: 5, y: 4 }, { name: "安徽", x: 6, y: 4 }, { name: "江苏", x: 7, y: 4 }, { name: "上海", x: 8, y: 4 },
+  { name: "广西", x: 4, y: 6 }, { name: "湖南", x: 5, y: 5 }, { name: "江西", x: 6, y: 5 }, { name: "浙江", x: 7, y: 5 },
+  { name: "广东", x: 5, y: 6 }, { name: "福建", x: 6, y: 6 }, { name: "台湾", x: 8, y: 6 }, { name: "香港", x: 6, y: 7 }, { name: "澳门", x: 5, y: 7 }, { name: "海南", x: 4, y: 7 }
+];
+
+function normalizeProvinceName(input: string) {
+  const raw = String(input || "UNKNOWN").trim();
+  if (!raw || raw === "UNKNOWN") return "未知";
+  const compact = raw.replace(/省|市|自治区|特别行政区|壮族|回族|维吾尔/g, "");
+  return provinceAliases[raw] || provinceAliases[compact] || compact;
+}
 
 const fmt = new Intl.NumberFormat("zh-CN");
 
@@ -89,6 +126,7 @@ export default function SiteAnalyticsPage() {
   const [days, setDays] = React.useState(30);
   const [website, setWebsite] = React.useState<any>(null);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
+  const [logs, setLogs] = React.useState<AccessLog[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
 
@@ -98,17 +136,20 @@ export default function SiteAnalyticsPage() {
     setError("");
     Promise.all([
       websiteApi.list(),
-      websiteApi.getSiteStats({ websiteId, days })
+      websiteApi.getSiteStats({ websiteId, days }),
+      websiteApi.getSiteAccessLogs({ websiteId, days: Math.min(days, 30), limit: 100 })
     ])
-      .then(([listRes, statsRes]) => {
+      .then(([listRes, statsRes, logsRes]) => {
         if (!alive) return;
         const site = (listRes.websites || [])
           .map((row: any) => ({ ...mapWebsiteRow(row), status: "deployed" }))
           .find((item: any) => item.websiteId === websiteId || item._id === websiteId);
         setWebsite(site || null);
         setStats(statsRes);
+        setLogs(logsRes?.success ? (logsRes.logs || []) : []);
         if (!site) setError("未找到这个站点，或你没有权限查看它。");
         if (!statsRes?.success) setError(statsRes?.message || "统计数据加载失败");
+        if (statsRes?.success && logsRes && !logsRes.success) setError(logsRes.message || "访问日志加载失败");
       })
       .catch((err) => {
         if (!alive) return;
@@ -122,7 +163,18 @@ export default function SiteAnalyticsPage() {
 
   const daily = fillDaily(stats?.daily, days);
   const totalViews = stats?.totals?.views || 0;
+  const provinceData = React.useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of stats?.provinces || []) {
+      const name = normalizeProvinceName(item.province);
+      map.set(name, (map.get(name) || 0) + item.views);
+    }
+    return Array.from(map.entries())
+      .map(([province, views]) => ({ province, views }))
+      .sort((a, b) => b.views - a.views);
+  }, [stats?.provinces]);
   const topCountry = stats?.countries?.[0];
+  const topProvince = provinceData.find((item) => item.province !== "未知") || provinceData[0];
   const topReferrer = stats?.referrers?.find((r) => r.host !== "direct") || stats?.referrers?.[0];
   const avgViews = days > 0 ? totalViews / days : 0;
   const domains = website ? getSiteDomains(website) : [];
@@ -149,6 +201,7 @@ export default function SiteAnalyticsPage() {
             </h1>
             <div className="mt-3 flex flex-wrap gap-3 text-sm text-[var(--stitch-muted)]">
               <span className="font-mono">ID: {websiteId}</span>
+              <span>统计约 5 分钟内更新</span>
               {website?.updatedAt && <span>最近部署：{formatTimestamp(website.updatedAt)}</span>}
               {domains[0] && (
                 <a className="inline-flex items-center gap-1 hover:text-[var(--stitch-blue)]" href={domains[0].url} target="_blank" rel="noreferrer">
@@ -178,7 +231,7 @@ export default function SiteAnalyticsPage() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard icon={<TrendingUp className="h-5 w-5" />} label="访问量" value={fmt.format(totalViews)} hint={`最近 ${days} 天总访问`} />
           <StatCard icon={<MousePointer2 className="h-5 w-5" />} label="日均访问" value={avgViews.toFixed(1)} hint="用于判断链接是否持续被打开" />
-          <StatCard icon={<MapPin className="h-5 w-5" />} label="主要地区" value={topCountry ? (countryNames[topCountry.country] || topCountry.country) : "--"} hint={topCountry ? `${fmt.format(topCountry.views)} 次访问` : "暂无地区数据"} />
+          <StatCard icon={<MapPin className="h-5 w-5" />} label="主要地区" value={topProvince?.province || (topCountry ? (countryNames[topCountry.country] || topCountry.country) : "--")} hint={topProvince ? `${fmt.format(topProvince.views)} 次访问` : (topCountry ? `${fmt.format(topCountry.views)} 次访问` : "暂无地区数据")} />
           <StatCard icon={<Radio className="h-5 w-5" />} label="主要来源" value={topReferrer?.host || "--"} hint={topReferrer ? `${fmt.format(topReferrer.views)} 次访问` : "暂无来源数据"} />
         </div>
 
@@ -217,29 +270,49 @@ export default function SiteAnalyticsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <MapPin className="h-5 w-5 text-[var(--stitch-blue)]" />
-                地区分布图
+                省级分布地图
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {!stats?.countries?.length ? <EmptyChart text="暂无地区数据" /> : (
-                <div className="grid gap-4 md:grid-cols-[.95fr_1fr] xl:grid-cols-1 2xl:grid-cols-[.95fr_1fr]">
-                  <div className="h-[240px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={stats.countries} dataKey="views" nameKey="country" innerRadius={54} outerRadius={88} paddingAngle={3}>
-                          {stats.countries.map((_, index) => <Cell key={index} fill={COLORS[index % COLORS.length]} />)}
-                        </Pie>
-                        <Tooltip contentStyle={{ border: "1px solid rgba(148,163,184,.28)", borderRadius: 16, background: "rgba(15,23,42,.94)", color: "#e5e7eb" }} formatter={(value, _name, item: any) => [value, countryNames[item.payload.country] || item.payload.country]} />
-                      </PieChart>
-                    </ResponsiveContainer>
+              {provinceData.length === 0 ? <EmptyChart text="暂无省级地区数据" /> : (
+                <div className="space-y-5">
+                  <div className="rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-4">
+                    <div className="grid auto-rows-[34px] grid-cols-9 gap-1.5">
+                      {provinceTiles.map((tile) => {
+                        const views = provinceData.find((item) => item.province === tile.name)?.views || 0;
+                        const max = Math.max(1, ...provinceData.map((item) => item.views));
+                        const intensity = views ? 0.18 + (views / max) * 0.82 : 0;
+                        return (
+                          <div
+                            key={tile.name}
+                            title={`${tile.name}: ${fmt.format(views)} 次访问`}
+                            className="flex items-center justify-center rounded-lg border text-[10px] font-bold transition-transform hover:scale-110"
+                            style={{
+                              gridColumnStart: tile.x + 1,
+                              gridRowStart: tile.y + 1,
+                              borderColor: views ? "rgba(56,189,248,.58)" : "rgba(148,163,184,.18)",
+                              background: views ? `rgba(56,189,248,${intensity})` : "rgba(148,163,184,.06)",
+                              color: views && intensity > 0.55 ? "#020617" : "var(--stitch-muted)"
+                            }}
+                          >
+                            {tile.name}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-4 flex items-center justify-between text-xs text-[var(--stitch-muted)]">
+                      <span>颜色越亮，访问越多</span>
+                      <span>未知地区会进入右侧排行</span>
+                    </div>
                   </div>
+
                   <div className="space-y-3">
-                    {stats.countries.map((item, index) => {
+                    {provinceData.slice(0, 8).map((item, index) => {
                       const pct = totalViews ? Math.round((item.views / totalViews) * 100) : 0;
                       return (
-                        <div key={item.country}>
+                        <div key={item.province}>
                           <div className="mb-1 flex justify-between text-sm">
-                            <span>{countryNames[item.country] || item.country}</span>
+                            <span>{item.province}</span>
                             <span className="font-mono text-[var(--stitch-muted)]">{pct}% · {fmt.format(item.views)}</span>
                           </div>
                           <div className="h-2 rounded-full bg-[var(--stitch-surface-strong)]">
@@ -299,6 +372,63 @@ export default function SiteAnalyticsPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card className="border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] shadow-[0_18px_50px_rgba(0,0,0,.08)]">
+          <CardHeader>
+            <CardTitle className="flex flex-col gap-2 text-lg sm:flex-row sm:items-center sm:justify-between">
+              <span className="inline-flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-[var(--stitch-blue)]" />
+                真实访问日志
+              </span>
+              <span className="text-xs font-medium text-[var(--stitch-muted)]">
+                原始日志加密存放在私有存储桶，仅授权成员可查看
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? <EmptyChart text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无真实访问日志" /> : (
+              <div className="overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)]">
+                <div className="max-h-[520px] overflow-auto">
+                  <table className="min-w-full border-collapse text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-[var(--stitch-surface-strong)] text-xs uppercase tracking-[0.14em] text-[var(--stitch-muted)]">
+                      <tr>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">时间</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">IP</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">地区</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">路径</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">来源</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">设备</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logs.map((log, index) => {
+                        const province = normalizeProvinceName(log.province);
+                        const country = countryNames[log.country] || log.country || "未知地区";
+                        return (
+                          <tr key={`${log.ts || "na"}-${index}`} className="border-t border-[var(--stitch-line)] align-top">
+                            <td className="whitespace-nowrap px-4 py-3 text-[var(--stitch-muted)]">
+                              <span className="inline-flex items-center gap-2">
+                                <Clock3 className="h-4 w-4" />
+                                {log.ts ? formatTimestamp(log.ts) : "--"}
+                              </span>
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 font-mono">{log.ip || "--"}</td>
+                            <td className="whitespace-nowrap px-4 py-3">{province !== "未知" ? `${country} / ${province}` : country}</td>
+                            <td className="max-w-[220px] truncate px-4 py-3 font-mono" title={log.path}>{log.path || "/"}</td>
+                            <td className="max-w-[220px] truncate px-4 py-3" title={log.referrer || log.referrerHost}>
+                              {log.referrerHost === "direct" ? "直接访问" : (log.referrerHost || "--")}
+                            </td>
+                            <td className="max-w-[340px] truncate px-4 py-3 text-[var(--stitch-muted)]" title={log.userAgent}>{log.userAgent || "--"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

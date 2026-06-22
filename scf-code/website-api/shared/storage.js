@@ -3,7 +3,7 @@
  * 从具体厂商（腾讯云 COS / S3 兼容）里抽出来。
  *
  * 设计：
- *   - StorageProvider 是统一接口：put(key, body, opts) + list(prefix)。
+ *   - StorageProvider 是统一接口：put(key, body, opts) + get(key) + list(prefix)。
  *   - createProvider(bucket) 按 bucket.provider 造对应适配器。bucket 形如：
  *       { provider, bucket, region, endpoint, secretId, secretKey }
  *     （secretId/secretKey 已由 buckets.js 解密/回退 env 处理好，这里只管用。）
@@ -43,6 +43,20 @@ class CosProvider {
     if (opts.cacheControl) params.Headers = { 'Cache-Control': opts.cacheControl };
     return new Promise((resolve, reject) => {
       this.cos.putObject(params, (err, data) => (err ? reject(err) : resolve(data)));
+    });
+  }
+
+  get(key) {
+    return new Promise((resolve, reject) => {
+      this.cos.getObject(
+        { Bucket: this.bucket, Region: this.region, Key: key },
+        (err, data) => {
+          if (err) return reject(err);
+          const body = data.Body;
+          if (Buffer.isBuffer(body)) return resolve(body.toString('utf8'));
+          return resolve(String(body || ''));
+        }
+      );
     });
   }
 
@@ -94,6 +108,13 @@ class S3Provider {
     if (opts.contentType) params.ContentType = opts.contentType;
     if (opts.cacheControl) params.CacheControl = opts.cacheControl;
     return this.client.send(new this._S3.PutObjectCommand(params));
+  }
+
+  async get(key) {
+    const resp = await this.client.send(new this._S3.GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    const chunks = [];
+    for await (const chunk of resp.Body) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks).toString('utf8');
   }
 
   async list(prefix) {

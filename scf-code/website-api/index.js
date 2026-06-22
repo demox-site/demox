@@ -11,7 +11,7 @@ const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate } = require('./shared/jwt.js');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
-const { encrypt } = require('./shared/crypto.js');
+const { encrypt, decrypt } = require('./shared/crypto.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -353,6 +353,8 @@ exports.main = async (event, context) => {
       check_site_access: handleCheckSiteAccess,
       track_site_event: handleTrackSiteEvent,
       get_site_stats: handleGetSiteStats,
+      get_site_access_logs: handleGetSiteAccessLogs,
+      rollup_site_analytics: handleRollupSiteAnalytics,
       list_projects: handleListProjects,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
@@ -387,6 +389,10 @@ exports.main = async (event, context) => {
 
     if (action && actionMap[action]) {
       return await actionMap[action](event);
+    }
+
+    if (isAnalyticsRollupTimerEvent(event)) {
+      return await handleRollupSiteAnalytics(event);
     }
 
     // 无 action 时按 path 回退(兼容旧调用)。注意顺序:更长/更具体的放前面。
@@ -440,6 +446,10 @@ exports.main = async (event, context) => {
       return await handleTrackSiteEvent(event);
     } else if (pathUrl.includes('/site-stats') || pathUrl.includes('/analytics/stats')) {
       return await handleGetSiteStats(event);
+    } else if (pathUrl.includes('/site-access-logs') || pathUrl.includes('/analytics/access-logs')) {
+      return await handleGetSiteAccessLogs(event);
+    } else if (pathUrl.includes('/analytics/rollup')) {
+      return await handleRollupSiteAnalytics(event);
     } else if (pathUrl.includes('/migrate-subdomain')) {
       return await handleMigrateSubdomain(event);
     } else if (pathUrl.includes('/migrate-default-projects')) {
@@ -2467,6 +2477,12 @@ function normalizeCountry(input) {
   return /^[A-Z]{2}$/.test(value) ? value : 'UNKNOWN';
 }
 
+function normalizeProvince(input) {
+  const value = String(input || '').trim();
+  if (!value || value.toUpperCase() === 'UNKNOWN') return 'UNKNOWN';
+  return value.replace(/[\u0000-\u001f<>]/g, '').slice(0, 64) || 'UNKNOWN';
+}
+
 function hashAnalyticsValue(input) {
   const raw = String(input || '');
   if (!raw) return '';
@@ -2478,6 +2494,23 @@ function getClientIp(event) {
   const headers = event.headers || {};
   const value = headers['x-forwarded-for'] || headers['X-Forwarded-For'] || headers['x-real-ip'] || headers['X-Real-IP'] || event.requestContext?.sourceIp || '';
   return String(value).split(',')[0].trim();
+}
+
+function safeDecrypt(value) {
+  try {
+    return decrypt(value) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function safeEncrypt(value) {
+  try {
+    return encrypt(value);
+  } catch (e) {
+    console.warn('加密统计敏感字段失败:', e.message);
+    return null;
+  }
 }
 
 function analyticsTokenAllowed(event) {
@@ -2529,48 +2562,16 @@ async function handleTrackSiteEvent(event) {
   const type = normalizeAnalyticsEventType(body.type || body.eventType);
   const pathValue = normalizeAnalyticsPath(body.path || body.pathname || '/');
   const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
-  const country = normalizeCountry(body.country || body.countryCode || body.region);
+  const country = normalizeCountry(body.country || body.countryCode);
+  const province = normalizeProvince(body.province || body.region || body.subdivision);
   const ua = String(body.userAgent || body.ua || '').slice(0, 512);
-  const ipHash = hashAnalyticsValue(body.ip || getClientIp(event));
+  const clientIp = String(body.ip || getClientIp(event) || '').trim().slice(0, 128);
+  const ipHash = hashAnalyticsValue(clientIp);
   const visitorHash = hashAnalyticsValue(body.visitorId || `${ipHash}:${ua}`);
   const now = new Date();
   const statDate = now.toISOString().slice(0, 10);
 
   try {
-    const siteRows = await query('SELECT website_id FROM websites WHERE website_id = ? LIMIT 1', [websiteId]);
-    if (siteRows.length === 0) return ok({ success: false, message: 'site not found' });
-
-    await query(
-      `INSERT INTO site_daily_stats (website_id, stat_date, views, badge_clicks, updated_at)
-       VALUES (?, ?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE
-         views = views + VALUES(views),
-         badge_clicks = badge_clicks + VALUES(badge_clicks),
-         updated_at = NOW()`,
-      [websiteId, statDate, type === 'view' ? 1 : 0, type === 'badge_click' ? 1 : 0]
-    );
-
-    if (type === 'view') {
-      await query(
-        `INSERT INTO site_referrer_daily_stats (website_id, stat_date, referrer_host, views, updated_at)
-         VALUES (?, ?, ?, 1, NOW())
-         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
-        [websiteId, statDate, referrerHost]
-      );
-      await query(
-        `INSERT INTO site_path_daily_stats (website_id, stat_date, path, views, updated_at)
-         VALUES (?, ?, ?, 1, NOW())
-         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
-        [websiteId, statDate, pathValue]
-      );
-      await query(
-        `INSERT INTO site_country_daily_stats (website_id, stat_date, country, views, updated_at)
-         VALUES (?, ?, ?, 1, NOW())
-         ON DUPLICATE KEY UPDATE views = views + 1, updated_at = NOW()`,
-        [websiteId, statDate, country]
-      );
-    }
-
     const raw = await writeRawAnalyticsEvent({
       ts: Date.now(),
       websiteId,
@@ -2579,13 +2580,14 @@ async function handleTrackSiteEvent(event) {
       referrer: String(body.referrer || body.referer || '').slice(0, 1024),
       referrerHost,
       country,
+      province,
       userAgent: ua,
-      ipHash,
+      ipEnc: safeEncrypt(clientIp),
       visitorHash,
       host: String(body.host || '').slice(0, 255)
     });
 
-    return ok({ success: true, raw });
+    return ok({ success: true, raw, delayed: true, delayMinutes: 5, statDate });
   } catch (error) {
     console.error('记录站点统计失败:', error);
     return ok({ success: false, message: error.message });
@@ -2654,6 +2656,15 @@ async function handleGetSiteStats(event) {
        LIMIT 10`,
       [websiteId, days - 1]
     );
+    const provinces = await query(
+      `SELECT country, province, SUM(views) AS views
+       FROM site_province_daily_stats
+       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY country, province
+       ORDER BY views DESC
+       LIMIT 20`,
+      [websiteId, days - 1]
+    );
 
     return ok({
       success: true,
@@ -2670,10 +2681,324 @@ async function handleGetSiteStats(event) {
       })),
       referrers: referrers.map((r) => ({ host: r.referrer_host || 'direct', views: Number(r.views || 0) })),
       paths: paths.map((r) => ({ path: r.path || '/', views: Number(r.views || 0) })),
-      countries: countries.map((r) => ({ country: r.country || 'UNKNOWN', views: Number(r.views || 0) }))
+      countries: countries.map((r) => ({ country: r.country || 'UNKNOWN', views: Number(r.views || 0) })),
+      provinces: provinces.map((r) => ({ country: r.country || 'UNKNOWN', province: r.province || 'UNKNOWN', views: Number(r.views || 0) }))
     });
   } catch (error) {
     console.error('查询站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+function normalizeAccessLogLimit(input) {
+  const n = Number.parseInt(String(input || '100'), 10);
+  if (!Number.isFinite(n)) return 100;
+  return Math.max(1, Math.min(n, 500));
+}
+
+function listUtcDateKeys(days) {
+  const out = [];
+  const today = new Date();
+  for (let i = 0; i < days; i += 1) {
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    d.setUTCDate(d.getUTCDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function listUtcHourPrefixes(hours) {
+  const out = new Set();
+  const now = new Date();
+  for (let i = 0; i < hours; i += 1) {
+    const d = new Date(now);
+    d.setUTCMinutes(0, 0, 0);
+    d.setUTCHours(d.getUTCHours() - i);
+    const date = d.toISOString().slice(0, 10);
+    const hour = String(d.getUTCHours()).padStart(2, '0');
+    out.add(`analytics/raw/date=${date}/hour=${hour}/`);
+  }
+  return Array.from(out);
+}
+
+function parseRawAnalyticsLine(line) {
+  try {
+    const item = JSON.parse(line);
+    if (!item || typeof item !== 'object') return null;
+    return item;
+  } catch (e) {
+    return null;
+  }
+}
+
+function normalizeRollupHours(input) {
+  const n = Number.parseInt(String(input || '2'), 10);
+  if (!Number.isFinite(n)) return 2;
+  return Math.max(1, Math.min(n, 48));
+}
+
+function normalizeRollupLimit(input) {
+  const n = Number.parseInt(String(input || '2000'), 10);
+  if (!Number.isFinite(n)) return 2000;
+  return Math.max(1, Math.min(n, 10000));
+}
+
+function isAnalyticsRollupTimerEvent(event) {
+  const triggerName = String(event.TriggerName || event.triggerName || '');
+  const type = String(event.Type || event.type || '');
+  return type.toLowerCase() === 'timer' && /analytics.*rollup|rollup.*analytics/i.test(triggerName);
+}
+
+function analyticsRollupAllowed(event) {
+  if (isAnalyticsRollupTimerEvent(event)) return true;
+  const body = getRollupRequestBody(event);
+  const headers = event.headers || {};
+  const expected = process.env.ANALYTICS_ROLLUP_KEY || process.env.MIGRATION_KEY || '';
+  const provided = body.rollupKey || body.migrationKey || headers['x-demox-rollup-key'] || headers['X-Demox-Rollup-Key'] || '';
+  return !!expected && String(provided) === expected;
+}
+
+function getRollupRequestBody(event) {
+  const base = event.body && typeof event.body === 'object' ? event.body : event;
+  const rawCustom = event.CustomArgument || event.customArgument || event.Message || event.message || '';
+  if (typeof rawCustom === 'string' && rawCustom.trim().startsWith('{')) {
+    try {
+      return { ...base, ...JSON.parse(rawCustom) };
+    } catch (e) {
+      return base;
+    }
+  }
+  return base;
+}
+
+function addRollupCount(map, keyParts, field, amount) {
+  const key = keyParts.join('\u0001');
+  const current = map.get(key) || { keyParts, views: 0, badgeClicks: 0 };
+  current[field] += amount;
+  map.set(key, current);
+}
+
+function normalizeRawAnalyticsEvent(item) {
+  const websiteId = normalizeAnalyticsWebsiteId(item.websiteId || item.website_id);
+  if (!websiteId) return null;
+  const type = normalizeAnalyticsEventType(item.type || item.eventType);
+  const ts = Number(item.ts || 0) || Date.now();
+  const statDate = new Date(ts).toISOString().slice(0, 10);
+  return {
+    websiteId,
+    type,
+    statDate,
+    path: normalizeAnalyticsPath(item.path || '/'),
+    referrerHost: normalizeReferrerHost(item.referrerHost || item.referrer || ''),
+    country: normalizeCountry(item.country || item.countryCode),
+    province: normalizeProvince(item.province || item.region || item.subdivision),
+    ts
+  };
+}
+
+async function listRawAnalyticsObjects(provider, body) {
+  const limit = normalizeRollupLimit(body.limit || body.maxObjects);
+  const prefixes = body.days
+    ? listUtcDateKeys(normalizeStatsRange(body.days)).map((date) => `analytics/raw/date=${date}/`)
+    : listUtcHourPrefixes(normalizeRollupHours(body.hours));
+  const objects = [];
+  for (const prefix of prefixes) {
+    const items = await provider.list(prefix);
+    for (const item of items) {
+      if (String(item.key || '').endsWith('.ndjson')) objects.push(item);
+    }
+  }
+  objects.sort((a, b) => String(a.key || '').localeCompare(String(b.key || '')));
+  return objects.slice(0, limit);
+}
+
+async function upsertAnalyticsRollups(conn, rollups) {
+  for (const item of rollups.daily.values()) {
+    await conn.query(
+      `INSERT INTO site_daily_stats (website_id, stat_date, views, badge_clicks, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE
+         views = views + VALUES(views),
+         badge_clicks = badge_clicks + VALUES(badge_clicks),
+         updated_at = NOW()`,
+      [item.keyParts[0], item.keyParts[1], item.views, item.badgeClicks]
+    );
+  }
+  for (const item of rollups.referrers.values()) {
+    await conn.query(
+      `INSERT INTO site_referrer_daily_stats (website_id, stat_date, referrer_host, views, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE views = views + VALUES(views), updated_at = NOW()`,
+      [item.keyParts[0], item.keyParts[1], item.keyParts[2], item.views]
+    );
+  }
+  for (const item of rollups.paths.values()) {
+    await conn.query(
+      `INSERT INTO site_path_daily_stats (website_id, stat_date, path, views, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE views = views + VALUES(views), updated_at = NOW()`,
+      [item.keyParts[0], item.keyParts[1], item.keyParts[2], item.views]
+    );
+  }
+  for (const item of rollups.countries.values()) {
+    await conn.query(
+      `INSERT INTO site_country_daily_stats (website_id, stat_date, country, views, updated_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE views = views + VALUES(views), updated_at = NOW()`,
+      [item.keyParts[0], item.keyParts[1], item.keyParts[2], item.views]
+    );
+  }
+  for (const item of rollups.provinces.values()) {
+    await conn.query(
+      `INSERT INTO site_province_daily_stats (website_id, stat_date, country, province, views, updated_at)
+       VALUES (?, ?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE views = views + VALUES(views), updated_at = NOW()`,
+      [item.keyParts[0], item.keyParts[1], item.keyParts[2], item.keyParts[3], item.views]
+    );
+  }
+}
+
+async function handleRollupSiteAnalytics(event) {
+  if (!analyticsRollupAllowed(event)) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行统计聚合' }) };
+  }
+
+  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
+  if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
+    return ok({ success: false, message: '原始访问日志未启用，无法延迟聚合' });
+  }
+
+  const body = getRollupRequestBody(event);
+  try {
+    const bucketCfg = await resolveBucketConfig(bucketId);
+    const provider = createProvider(buckets.resolveCreds(bucketCfg));
+    const objects = await listRawAnalyticsObjects(provider, body);
+    const candidates = [];
+    for (const obj of objects) {
+      if (Number(obj.size || 0) > 256 * 1024) continue;
+      const text = await provider.get(obj.key);
+      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
+        if (!item) continue;
+        candidates.push({ key: obj.key, item });
+      }
+    }
+
+    const summary = await transaction(async (conn) => {
+      const rollups = {
+        daily: new Map(),
+        referrers: new Map(),
+        paths: new Map(),
+        countries: new Map(),
+        provinces: new Map()
+      };
+      let processed = 0;
+      let skipped = 0;
+
+      for (const candidate of candidates) {
+        const { key, item } = candidate;
+        const [insertResult] = await conn.query(
+          `INSERT IGNORE INTO site_analytics_ingested_events (object_key, website_id, event_ts, created_at)
+           VALUES (?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
+          [key, item.websiteId, item.ts]
+        );
+        if (!insertResult.affectedRows) {
+          skipped += 1;
+          continue;
+        }
+        processed += 1;
+        addRollupCount(rollups.daily, [item.websiteId, item.statDate], item.type === 'badge_click' ? 'badgeClicks' : 'views', 1);
+        if (item.type === 'view') {
+          addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
+          addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
+          addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
+          addRollupCount(rollups.provinces, [item.websiteId, item.statDate, item.country, item.province], 'views', 1);
+        }
+      }
+
+      await upsertAnalyticsRollups(conn, rollups);
+      return {
+        processed,
+        skipped,
+        rollups: {
+          daily: rollups.daily.size,
+          referrers: rollups.referrers.size,
+          paths: rollups.paths.size,
+          countries: rollups.countries.size,
+          provinces: rollups.provinces.size
+        }
+      };
+    });
+
+    return ok({ success: true, delayed: true, delayMinutes: 5, scanned: objects.length, candidates: candidates.length, ...summary });
+  } catch (error) {
+    console.error('延迟聚合站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function handleGetSiteAccessLogs(event) {
+  const userId = getUserId(event);
+  if (!userId) return { statusCode: 401, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '未登录或token已过期' }) };
+
+  const body = event.body || event;
+  const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
+  const days = normalizeStatsRange(body.days || body.range || 7);
+  const limit = normalizeAccessLogLimit(body.limit);
+  if (!websiteId) return ok({ success: false, message: 'missing websiteId' });
+
+  const site = await getWebsiteByIdentity({ websiteId });
+  if (!site || !(await canUserReadSite(userId, site))) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限查看该站点访问日志' }) };
+  }
+
+  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
+  if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
+    return ok({ success: true, websiteId, logs: [], message: '原始访问日志未启用' });
+  }
+
+  try {
+    const bucketCfg = await resolveBucketConfig(bucketId);
+    const provider = createProvider(buckets.resolveCreds(bucketCfg));
+    const objects = [];
+    for (const date of listUtcDateKeys(days)) {
+      const prefix = `analytics/raw/date=${date}/`;
+      const items = await provider.list(prefix);
+      for (const item of items) {
+        if (String(item.key || '').includes(`/${websiteId}-`)) objects.push(item);
+      }
+    }
+    objects.sort((a, b) => String(b.key || '').localeCompare(String(a.key || '')));
+
+    const logs = [];
+    for (const obj of objects) {
+      if (logs.length >= limit) break;
+      if (Number(obj.size || 0) > 256 * 1024) continue;
+      const text = await provider.get(obj.key);
+      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = parseRawAnalyticsLine(line);
+        if (!item || String(item.websiteId || '') !== websiteId) continue;
+        logs.push({
+          ts: Number(item.ts || 0) || null,
+          type: item.type || 'view',
+          host: item.host || '',
+          path: item.path || '/',
+          referrer: item.referrer || '',
+          referrerHost: item.referrerHost || 'direct',
+          country: item.country || 'UNKNOWN',
+          province: item.province || 'UNKNOWN',
+          ip: item.ipEnc ? safeDecrypt(item.ipEnc) : '',
+          userAgent: item.userAgent || ''
+        });
+        if (logs.length >= limit) break;
+      }
+    }
+
+    return ok({ success: true, websiteId, rangeDays: days, logs });
+  } catch (error) {
+    console.error('查询站点访问日志失败:', error);
     return ok({ success: false, message: error.message });
   }
 }
@@ -2743,6 +3068,33 @@ async function handleMigrateSiteAnalytics(event) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日地区聚合'`
     );
     steps.push('ensured site_country_daily_stats');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_province_daily_stats (
+        website_id VARCHAR(32) NOT NULL,
+        stat_date DATE NOT NULL,
+        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+        province VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
+        views BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (website_id, stat_date, country, province),
+        INDEX idx_province_daily_date (stat_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日省级地区聚合'`
+    );
+    steps.push('ensured site_province_daily_stats');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_analytics_ingested_events (
+        object_key VARCHAR(512) NOT NULL,
+        website_id VARCHAR(32) NOT NULL,
+        event_ts DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (object_key),
+        INDEX idx_ingested_site_ts (website_id, event_ts)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已聚合的原始访问日志对象，用于延迟统计去重'`
+    );
+    steps.push('ensured site_analytics_ingested_events');
 
     return ok({ success: true, steps });
   } catch (error) {

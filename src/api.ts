@@ -419,11 +419,38 @@ export const websiteApi = {
       referrers?: { host: string; views: number }[];
       paths?: { path: string; views: number }[];
       countries?: { country: string; views: number }[];
+      provinces?: { country: string; province: string; views: number }[];
       message?: string;
     }>(
       WEBSITE_API_URL,
       "/website/site-stats",
       { method: "POST", body: { action: "get_site_stats", ...data } }
+    );
+  },
+
+  // 获取站点真实访问日志（授权用户可见，IP 后端从私有桶解密返回）
+  getSiteAccessLogs: async (data: { websiteId: string; days?: number; limit?: number }) => {
+    return request<{
+      success: boolean;
+      websiteId?: string;
+      rangeDays?: number;
+      logs?: {
+        ts: number | null;
+        type: string;
+        host: string;
+        path: string;
+        referrer: string;
+        referrerHost: string;
+        country: string;
+        province: string;
+        ip: string;
+        userAgent: string;
+      }[];
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/site-access-logs",
+      { method: "POST", body: { action: "get_site_access_logs", ...data } }
     );
   },
 

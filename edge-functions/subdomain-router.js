@@ -126,6 +126,43 @@ function getRequestCountry(req) {
   return 'UNKNOWN';
 }
 
+function getRequestProvince(req) {
+  const candidates = [
+    'eo-region',
+    'eo-province',
+    'x-vercel-ip-country-region',
+    'x-region',
+    'x-geo-region',
+    'cloudfront-viewer-country-region',
+    'x-appengine-region'
+  ];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const value = (req.headers.get(candidates[i]) || '').trim();
+    if (value) return value.slice(0, 64);
+  }
+  try {
+    const region = req.cf && (req.cf.region || req.cf.regionCode);
+    if (region) return String(region).slice(0, 64);
+  } catch (e) {}
+  return 'UNKNOWN';
+}
+
+function getRequestIp(req) {
+  const candidates = [
+    'eo-connecting-ip',
+    'cf-connecting-ip',
+    'x-real-ip',
+    'x-forwarded-for',
+    'true-client-ip',
+    'fastly-client-ip'
+  ];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const value = (req.headers.get(candidates[i]) || '').trim();
+    if (value) return value.split(',')[0].trim().slice(0, 128);
+  }
+  return '';
+}
+
 async function trackSiteEvent(req, event, meta, type) {
   if (!event || !meta || !meta.websiteId) return;
   const url = optionalBackendUrl('/website/analytics-track');
@@ -139,6 +176,8 @@ async function trackSiteEvent(req, event, meta, type) {
     path: u.pathname,
     referrer: req.headers.get('referer') || req.headers.get('referrer') || '',
     country: getRequestCountry(req),
+    province: getRequestProvince(req),
+    ip: getRequestIp(req),
     userAgent: req.headers.get('user-agent') || ''
   };
   const token = runtimeEnv('DEMOX_ANALYTICS_TOKEN');
@@ -345,6 +384,7 @@ function getDemoxBadgeHtml(meta) {
           path: location.pathname,
           referrer: document.referrer || '',
           country: 'UNKNOWN',
+          province: 'UNKNOWN',
           userAgent: navigator.userAgent || '',
           analyticsToken: ANALYTICS_TOKEN
         })
