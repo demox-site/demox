@@ -39,6 +39,7 @@ type AccessLog = {
   country: string;
   province: string;
   ip: string;
+  ipArchived?: boolean;
   userAgent: string;
 };
 
@@ -270,7 +271,7 @@ export default function SiteAnalyticsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <MapPin className="h-5 w-5 text-[var(--stitch-blue)]" />
-                省级分布地图
+                省级访问热力格
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -302,7 +303,7 @@ export default function SiteAnalyticsPage() {
                     </div>
                     <div className="mt-4 flex items-center justify-between text-xs text-[var(--stitch-muted)]">
                       <span>颜色越亮，访问越多</span>
-                      <span>未知地区会进入右侧排行</span>
+                      <span>这是示意热力格，未知地区进入排行</span>
                     </div>
                   </div>
 
@@ -378,22 +379,22 @@ export default function SiteAnalyticsPage() {
             <CardTitle className="flex flex-col gap-2 text-lg sm:flex-row sm:items-center sm:justify-between">
               <span className="inline-flex items-center gap-2">
                 <ShieldCheck className="h-5 w-5 text-[var(--stitch-blue)]" />
-                真实访问日志
+                访问日志
               </span>
               <span className="text-xs font-medium text-[var(--stitch-muted)]">
-                原始日志加密存放在私有存储桶，仅授权成员可查看
+                真实 IP 只加密留档，不在管理端明文展示
               </span>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? <EmptyChart text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无真实访问日志" /> : (
+            {loading ? <EmptyChart text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
               <div className="overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)]">
                 <div className="max-h-[520px] overflow-auto">
                   <table className="min-w-full border-collapse text-left text-sm">
                     <thead className="sticky top-0 z-10 bg-[var(--stitch-surface-strong)] text-xs uppercase tracking-[0.14em] text-[var(--stitch-muted)]">
                       <tr>
                         <th className="whitespace-nowrap px-4 py-3 font-bold">时间</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">IP</th>
+                        <th className="whitespace-nowrap px-4 py-3 font-bold">IP 留档</th>
                         <th className="whitespace-nowrap px-4 py-3 font-bold">地区</th>
                         <th className="whitespace-nowrap px-4 py-3 font-bold">路径</th>
                         <th className="whitespace-nowrap px-4 py-3 font-bold">来源</th>
@@ -412,7 +413,7 @@ export default function SiteAnalyticsPage() {
                                 {log.ts ? formatTimestamp(log.ts) : "--"}
                               </span>
                             </td>
-                            <td className="whitespace-nowrap px-4 py-3 font-mono">{log.ip || "--"}</td>
+                            <td className="whitespace-nowrap px-4 py-3 font-mono text-[var(--stitch-muted)]">{log.ipArchived ? "已加密留档" : "--"}</td>
                             <td className="whitespace-nowrap px-4 py-3">{province !== "未知" ? `${country} / ${province}` : country}</td>
                             <td className="max-w-[220px] truncate px-4 py-3 font-mono" title={log.path}>{log.path || "/"}</td>
                             <td className="max-w-[220px] truncate px-4 py-3" title={log.referrer || log.referrerHost}>

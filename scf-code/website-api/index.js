@@ -2518,7 +2518,9 @@ async function handleCheckSiteAccess(event) {
 
 function normalizeAnalyticsEventType(input) {
   const value = String(input || '').trim().toLowerCase();
-  return value === 'badge_click' ? 'badge_click' : 'view';
+  if (value === 'badge_click') return 'badge_click';
+  if (value === 'scanner_probe') return 'scanner_probe';
+  return 'view';
 }
 
 function normalizeAnalyticsWebsiteId(input) {
@@ -2529,6 +2531,35 @@ function normalizeAnalyticsPath(input) {
   const value = String(input || '/').trim() || '/';
   const pathOnly = value.split('#')[0].split('?')[0] || '/';
   return pathOnly.startsWith('/') ? pathOnly.slice(0, 512) : `/${pathOnly.slice(0, 511)}`;
+}
+
+
+function isScannerProbePath(input) {
+  const value = normalizeAnalyticsPath(input).toLowerCase();
+  return (
+    value === '/xmlrpc.php' ||
+    value === '/wp-login.php' ||
+    value.startsWith('/wp-admin') ||
+    value.startsWith('/wp-content') ||
+    value.startsWith('/wp-includes') ||
+    value === '/.env' ||
+    value.startsWith('/.git') ||
+    value.includes('/phpmyadmin') ||
+    value.includes('/phpinfo') ||
+    value.includes('/vendor/phpunit')
+  );
+}
+
+function maskIpForDisplay(input) {
+  const value = String(input || '').trim();
+  if (!value) return '';
+  if (value.includes(':')) {
+    const parts = value.split(':');
+    return parts.slice(0, 3).join(':') + ':****';
+  }
+  const parts = value.split('.');
+  if (parts.length === 4) return `${parts[0]}.${parts[1]}.***.***`;
+  return '已留档';
 }
 
 function normalizeReferrerHost(input) {
@@ -2630,8 +2661,9 @@ async function handleTrackSiteEvent(event) {
   const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
   if (!websiteId) return ok({ success: false, message: 'missing websiteId' });
 
-  const type = normalizeAnalyticsEventType(body.type || body.eventType);
+  const requestedType = normalizeAnalyticsEventType(body.type || body.eventType);
   const pathValue = normalizeAnalyticsPath(body.path || body.pathname || '/');
+  const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
   const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
   const country = normalizeCountry(body.country || body.countryCode);
   const province = normalizeProvince(body.province || body.region || body.subdivision);
@@ -2715,7 +2747,7 @@ async function handleGetSiteStats(event) {
        WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
        GROUP BY path
        ORDER BY views DESC
-       LIMIT 10`,
+       LIMIT 50`,
       [websiteId, days - 1]
     );
     const countries = await query(
@@ -2751,7 +2783,10 @@ async function handleGetSiteStats(event) {
         badgeClicks: Number(r.badge_clicks || 0)
       })),
       referrers: referrers.map((r) => ({ host: r.referrer_host || 'direct', views: Number(r.views || 0) })),
-      paths: paths.map((r) => ({ path: r.path || '/', views: Number(r.views || 0) })),
+      paths: paths
+        .map((r) => ({ path: r.path || '/', views: Number(r.views || 0) }))
+        .filter((r) => !isScannerProbePath(r.path))
+        .slice(0, 10),
       countries: countries.map((r) => ({ country: r.country || 'UNKNOWN', views: Number(r.views || 0) })),
       provinces: provinces.map((r) => ({ country: r.country || 'UNKNOWN', province: r.province || 'UNKNOWN', views: Number(r.views || 0) }))
     });
@@ -2988,8 +3023,10 @@ async function handleRollupSiteAnalytics(event) {
           continue;
         }
         processed += 1;
-        addRollupCount(rollups.daily, [item.websiteId, item.statDate], item.type === 'badge_click' ? 'badgeClicks' : 'views', 1);
-        if (item.type === 'view') {
+        if (item.type === 'badge_click') {
+          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'badgeClicks', 1);
+        } else if (item.type === 'view') {
+          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'views', 1);
           addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
           addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
           addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
@@ -3069,7 +3106,8 @@ async function handleGetSiteAccessLogs(event) {
           referrerHost: item.referrerHost || 'direct',
           country: item.country || 'UNKNOWN',
           province: item.province || 'UNKNOWN',
-          ip: item.ipEnc ? safeDecrypt(item.ipEnc) : '',
+          ip: maskIpForDisplay(item.ipEnc ? safeDecrypt(item.ipEnc) : ''),
+          ipArchived: !!item.ipEnc,
           userAgent: item.userAgent || ''
         });
         if (logs.length >= limit) break;
