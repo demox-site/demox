@@ -3248,22 +3248,23 @@ async function handleBackfillSiteAnalyticsGeo(event) {
       if (Number(obj.size || 0) > 256 * 1024) continue;
       const text = await provider.get(obj.key);
       const lines = String(text || '').split(/\r?\n/).filter(Boolean);
-      for (const line of lines) {
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex];
         const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
         if (!item || item.type !== 'view') continue;
         if (requestedWebsiteId && item.websiteId !== requestedWebsiteId) continue;
-        candidates.push(item);
+        candidates.push({ key: `${obj.key}#${lineIndex}`, item });
       }
     }
 
-    const websiteIds = Array.from(new Set(candidates.map((item) => item.websiteId)));
+    const websiteIds = Array.from(new Set(candidates.map((candidate) => candidate.item.websiteId)));
     if (websiteIds.length) {
       const validRows = await query(
         `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
         websiteIds
       );
       const validIds = new Set(validRows.map((r) => String(r.website_id || '')));
-      candidates = candidates.filter((item) => validIds.has(item.websiteId));
+      candidates = candidates.filter((candidate) => validIds.has(candidate.item.websiteId));
     }
 
     const affectedKeys = new Map();
@@ -3275,10 +3276,11 @@ async function handleBackfillSiteAnalyticsGeo(event) {
       provinces: new Map(),
       accessLogs: []
     };
-    for (const item of candidates) {
+    for (const candidate of candidates) {
+      const { key, item } = candidate;
       affectedKeys.set(`${item.websiteId}\u0001${item.statDate}`, [item.websiteId, item.statDate]);
       rollups.accessLogs.push({
-        objectKey: `backfill:${item.websiteId}:${item.ts}:${item.path}:${item.type}`,
+        objectKey: key,
         ...item
       });
       if (item.country !== 'UNKNOWN') {
@@ -3299,13 +3301,6 @@ async function handleBackfillSiteAnalyticsGeo(event) {
           `DELETE FROM site_province_daily_stats WHERE website_id = ? AND stat_date = ?`,
           [websiteId, statDate]
         );
-      }
-      if (requestedWebsiteId) {
-        await conn.query(`DELETE FROM site_access_logs WHERE website_id = ?`, [requestedWebsiteId]);
-      } else {
-        for (const websiteId of Array.from(new Set(candidates.map((item) => item.websiteId)))) {
-          await conn.query(`DELETE FROM site_access_logs WHERE website_id = ?`, [websiteId]);
-        }
       }
       await upsertAnalyticsRollups(conn, rollups);
       return {
