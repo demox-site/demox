@@ -44,6 +44,13 @@ type AccessLog = {
   userAgent: string;
 };
 
+type AccessLogMeta = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+
 const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#f43f5e", "#a78bfa", "#14b8a6", "#eab308", "#fb7185"];
 const WORLD_GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -282,8 +289,12 @@ export default function SiteAnalyticsPage() {
   const [website, setWebsite] = React.useState<any>(null);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
   const [logs, setLogs] = React.useState<AccessLog[]>([]);
+  const [logsMeta, setLogsMeta] = React.useState<AccessLogMeta>({ page: 1, pageSize: 10, total: 0, totalPages: 1 });
+  const [logsLoading, setLogsLoading] = React.useState(true);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const logPage = logsMeta.page;
+  const logPageSize = logsMeta.pageSize;
 
   React.useEffect(() => {
     let alive = true;
@@ -291,20 +302,17 @@ export default function SiteAnalyticsPage() {
     setError("");
     Promise.all([
       websiteApi.list(),
-      websiteApi.getSiteStats({ websiteId, days }),
-      websiteApi.getSiteAccessLogs({ websiteId, days: Math.min(days, 30), limit: 100 })
+      websiteApi.getSiteStats({ websiteId, days })
     ])
-      .then(([listRes, statsRes, logsRes]) => {
+      .then(([listRes, statsRes]) => {
         if (!alive) return;
         const site = (listRes.websites || [])
           .map((row: any) => ({ ...mapWebsiteRow(row), status: "deployed" }))
           .find((item: any) => item.websiteId === websiteId || item._id === websiteId);
         setWebsite(site || null);
         setStats(statsRes);
-        setLogs(logsRes?.success ? (logsRes.logs || []) : []);
         if (!site) setError("未找到这个站点，或你没有权限查看它。");
         if (!statsRes?.success) setError(statsRes?.message || "统计数据加载失败");
-        if (statsRes?.success && logsRes && !logsRes.success) setError(logsRes.message || "访问日志加载失败");
       })
       .catch((err) => {
         if (!alive) return;
@@ -315,6 +323,36 @@ export default function SiteAnalyticsPage() {
       alive = false;
     };
   }, [websiteId, days]);
+
+  React.useEffect(() => {
+    let alive = true;
+    setLogsLoading(true);
+    websiteApi.getSiteAccessLogs({ websiteId, days: Math.min(days, 30), page: logPage, pageSize: logPageSize })
+      .then((logsRes) => {
+        if (!alive) return;
+        if (logsRes?.success) {
+          setLogs(logsRes.logs || []);
+          setLogsMeta({
+            page: logsRes.page || logPage,
+            pageSize: logsRes.pageSize || logPageSize,
+            total: logsRes.total || 0,
+            totalPages: logsRes.totalPages || 1
+          });
+        } else {
+          setLogs([]);
+          setError(logsRes?.message || "访问日志加载失败");
+        }
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setLogs([]);
+        setError(err?.message || "访问日志加载失败");
+      })
+      .finally(() => alive && setLogsLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [websiteId, days, logPage, logPageSize]);
 
   const daily = fillDaily(stats?.daily, days);
   const totalViews = stats?.totals?.views || 0;
@@ -363,7 +401,10 @@ export default function SiteAnalyticsPage() {
               <button
                 key={value}
                 type="button"
-                onClick={() => setDays(value)}
+                onClick={() => {
+                  setDays(value);
+                  setLogsMeta((meta) => ({ ...meta, page: 1 }));
+                }}
                 className={`rounded-full px-4 py-2 text-sm font-bold transition-colors ${days === value ? "bg-[var(--stitch-ink)] text-[var(--stitch-bg)]" : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"}`}
               >
                 {value} 天
@@ -512,23 +553,40 @@ export default function SiteAnalyticsPage() {
                 访问日志
               </span>
               <span className="text-xs font-medium text-[var(--stitch-muted)]">
-                真实 IP 只加密留档，不在管理端明文展示
+                IP 仅显示前两组，完整值只加密归档
               </span>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? <LoadingPanel text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
-              <div className="overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)]">
-                <div className="max-h-[520px] overflow-auto">
-                  <table className="min-w-full border-collapse text-left text-sm">
-                    <thead className="sticky top-0 z-10 bg-[var(--stitch-surface-strong)] text-xs uppercase tracking-[0.14em] text-[var(--stitch-muted)]">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-[var(--stitch-muted)]">
+                共 {fmt.format(logsMeta.total)} 条 · 第 {logsMeta.page} / {logsMeta.totalPages} 页
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--stitch-muted)]">Page size</span>
+                {[10, 20, 50].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setLogsMeta((meta) => ({ ...meta, page: 1, pageSize: value }))}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${logPageSize === value ? "border-[var(--stitch-ink)] bg-[var(--stitch-ink)] text-[var(--stitch-bg)]" : "border-[var(--stitch-line)] text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"}`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {logsLoading ? <LoadingPanel text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
+              <div className="rounded-[1.4rem] border border-[var(--stitch-line)]">
+                  <table className="w-full table-fixed border-collapse text-left text-sm">
+                    <thead className="bg-[var(--stitch-surface-strong)] text-xs uppercase tracking-[0.14em] text-[var(--stitch-muted)]">
                       <tr>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">时间</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">IP 留档</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">地区</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">路径</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">来源</th>
-                        <th className="whitespace-nowrap px-4 py-3 font-bold">设备</th>
+                        <th className="w-[180px] px-4 py-3 font-bold">时间</th>
+                        <th className="w-[130px] px-4 py-3 font-bold">IP</th>
+                        <th className="w-[150px] px-4 py-3 font-bold">地区</th>
+                        <th className="px-4 py-3 font-bold">路径</th>
+                        <th className="w-[180px] px-4 py-3 font-bold">来源</th>
+                        <th className="w-[260px] px-4 py-3 font-bold">设备</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -543,21 +601,39 @@ export default function SiteAnalyticsPage() {
                                 {log.ts ? formatTimestamp(log.ts) : "--"}
                               </span>
                             </td>
-                            <td className="whitespace-nowrap px-4 py-3 font-mono text-[var(--stitch-muted)]">{log.ipArchived ? "已加密留档" : "--"}</td>
+                            <td className="whitespace-nowrap px-4 py-3 font-mono text-[var(--stitch-muted)]">{log.ip || "--"}</td>
                             <td className="whitespace-nowrap px-4 py-3">{province !== "未知" ? `${country} / ${province}` : country}</td>
-                            <td className="max-w-[220px] truncate px-4 py-3 font-mono" title={log.path}>{log.path || "/"}</td>
-                            <td className="max-w-[220px] truncate px-4 py-3" title={log.referrer || log.referrerHost}>
+                            <td className="truncate px-4 py-3 font-mono" title={log.path}>{log.path || "/"}</td>
+                            <td className="truncate px-4 py-3" title={log.referrer || log.referrerHost}>
                               {log.referrerHost === "direct" ? "直接访问" : (log.referrerHost || "--")}
                             </td>
-                            <td className="max-w-[340px] truncate px-4 py-3 text-[var(--stitch-muted)]" title={log.userAgent}>{log.userAgent || "--"}</td>
+                            <td className="truncate px-4 py-3 text-[var(--stitch-muted)]" title={log.userAgent}>{log.userAgent || "--"}</td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
-                </div>
               </div>
             )}
+            <div className="mt-4 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={logsLoading || logPage <= 1}
+                onClick={() => setLogsMeta((meta) => ({ ...meta, page: Math.max(1, meta.page - 1) }))}
+                className="rounded-full border border-[var(--stitch-line)] px-4 py-2 text-sm font-bold text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span className="text-sm text-[var(--stitch-muted)]">{logsMeta.page} / {logsMeta.totalPages}</span>
+              <button
+                type="button"
+                disabled={logsLoading || logPage >= logsMeta.totalPages}
+                onClick={() => setLogsMeta((meta) => ({ ...meta, page: Math.min(meta.totalPages, meta.page + 1) }))}
+                className="rounded-full border border-[var(--stitch-line)] px-4 py-2 text-sm font-bold text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </div>
           </CardContent>
         </Card>
       </div>

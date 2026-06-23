@@ -428,12 +428,16 @@ export const websiteApi = {
     );
   },
 
-  // 获取站点真实访问日志（授权用户可见，IP 后端从私有桶解密返回）
-  getSiteAccessLogs: async (data: { websiteId: string; days?: number; limit?: number }) => {
+  // 获取站点访问日志展示索引（授权用户可见，IP 仅返回脱敏值）
+  getSiteAccessLogs: async (data: { websiteId: string; days?: number; page?: number; pageSize?: number; page_size?: number; limit?: number }) => {
     return request<{
       success: boolean;
       websiteId?: string;
       rangeDays?: number;
+      page?: number;
+      pageSize?: number;
+      total?: number;
+      totalPages?: number;
       logs?: {
         ts: number | null;
         type: string;

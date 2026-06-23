@@ -2913,6 +2913,30 @@ function normalizeAccessLogLimit(input) {
   return Math.max(1, Math.min(n, 500));
 }
 
+function normalizeAccessLogPage(input) {
+  const n = Number.parseInt(String(input || '1'), 10);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, n);
+}
+
+function normalizeAccessLogPageSize(input) {
+  const n = Number.parseInt(String(input || '10'), 10);
+  if (!Number.isFinite(n)) return 10;
+  return Math.max(1, Math.min(n, 100));
+}
+
+async function ensureColumn(tableName, columnName, alterSql, steps = []) {
+  const rows = await query(
+    `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [tableName, columnName]
+  );
+  if (!Number(rows[0]?.c || 0)) {
+    await query(alterSql);
+    steps.push(`added ${tableName}.${columnName}`);
+  }
+}
+
 function listUtcDateKeys(days) {
   const out = [];
   const today = new Date();
@@ -2998,12 +3022,13 @@ function addRollupCount(map, keyParts, field, amount) {
 function normalizeRawAnalyticsEvent(item) {
   const websiteId = normalizeAnalyticsWebsiteId(item.websiteId || item.website_id);
   if (!websiteId) return null;
+  const rawIp = item.ipEnc ? safeDecrypt(item.ipEnc) : item.ip;
   const pathValue = normalizeAnalyticsPath(item.path || '/');
   const requestedType = normalizeAnalyticsEventType(item.type || item.eventType);
   const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
   const ts = Number(item.ts || 0) || Date.now();
   const statDate = new Date(ts).toISOString().slice(0, 10);
-  const geoFromIp = lookupGeoByIp(item.ipEnc ? safeDecrypt(item.ipEnc) : item.ip);
+  const geoFromIp = lookupGeoByIp(rawIp);
   const country = normalizeCountry(item.country || item.countryCode);
   const province = normalizeProvince(item.province || item.region || item.subdivision);
   return {
@@ -3011,9 +3036,14 @@ function normalizeRawAnalyticsEvent(item) {
     type,
     statDate,
     path: pathValue,
+    referrer: String(item.referrer || item.referer || '').slice(0, 1024),
     referrerHost: normalizeReferrerHost(item.referrerHost || item.referrer || ''),
     country: country === 'UNKNOWN' ? geoFromIp.country : country,
     province: province === 'UNKNOWN' ? geoFromIp.province : province,
+    host: String(item.host || '').slice(0, 255),
+    userAgent: String(item.userAgent || item.ua || '').slice(0, 512),
+    ipArchived: !!item.ipEnc,
+    ipMasked: maskIpForDisplay(rawIp),
     ts
   };
 }
@@ -3078,6 +3108,29 @@ async function upsertAnalyticsRollups(conn, rollups) {
       [item.keyParts[0], item.keyParts[1], item.keyParts[2], item.keyParts[3], item.views]
     );
   }
+  for (const item of rollups.accessLogs || []) {
+    await conn.query(
+      `INSERT IGNORE INTO site_access_logs
+        (object_key, website_id, event_ts, event_type, host, path, referrer, referrer_host,
+         country, province, ip_masked, ip_archived, user_agent, created_at)
+       VALUES (?, ?, FROM_UNIXTIME(? / 1000), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        item.objectKey,
+        item.websiteId,
+        item.ts,
+        item.type,
+        item.host,
+        item.path,
+        item.referrer,
+        item.referrerHost,
+        item.country,
+        item.province,
+        item.ipMasked,
+        item.ipArchived ? 1 : 0,
+        item.userAgent
+      ]
+    );
+  }
 }
 
 async function handleRollupSiteAnalytics(event) {
@@ -3122,7 +3175,8 @@ async function handleRollupSiteAnalytics(event) {
         referrers: new Map(),
         paths: new Map(),
         countries: new Map(),
-        provinces: new Map()
+        provinces: new Map(),
+        accessLogs: []
       };
       let processed = 0;
       let skipped = 0;
@@ -3142,6 +3196,7 @@ async function handleRollupSiteAnalytics(event) {
         if (item.type === 'badge_click') {
           addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'badgeClicks', 1);
         } else if (item.type === 'view') {
+          rollups.accessLogs.push({ objectKey: key, ...item });
           addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'views', 1);
           addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
           addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
@@ -3159,7 +3214,8 @@ async function handleRollupSiteAnalytics(event) {
           referrers: rollups.referrers.size,
           paths: rollups.paths.size,
           countries: rollups.countries.size,
-          provinces: rollups.provinces.size
+          provinces: rollups.provinces.size,
+          accessLogs: rollups.accessLogs.length
         }
       };
     });
@@ -3216,10 +3272,15 @@ async function handleBackfillSiteAnalyticsGeo(event) {
       referrers: new Map(),
       paths: new Map(),
       countries: new Map(),
-      provinces: new Map()
+      provinces: new Map(),
+      accessLogs: []
     };
     for (const item of candidates) {
       affectedKeys.set(`${item.websiteId}\u0001${item.statDate}`, [item.websiteId, item.statDate]);
+      rollups.accessLogs.push({
+        objectKey: `backfill:${item.websiteId}:${item.ts}:${item.path}:${item.type}`,
+        ...item
+      });
       if (item.country !== 'UNKNOWN') {
         addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
       }
@@ -3239,11 +3300,19 @@ async function handleBackfillSiteAnalyticsGeo(event) {
           [websiteId, statDate]
         );
       }
+      if (requestedWebsiteId) {
+        await conn.query(`DELETE FROM site_access_logs WHERE website_id = ?`, [requestedWebsiteId]);
+      } else {
+        for (const websiteId of Array.from(new Set(candidates.map((item) => item.websiteId)))) {
+          await conn.query(`DELETE FROM site_access_logs WHERE website_id = ?`, [websiteId]);
+        }
+      }
       await upsertAnalyticsRollups(conn, rollups);
       return {
         dates: affectedKeys.size,
         countryRows: rollups.countries.size,
-        provinceRows: rollups.provinces.size
+        provinceRows: rollups.provinces.size,
+        accessLogRows: rollups.accessLogs.length
       };
     });
 
@@ -3267,7 +3336,9 @@ async function handleGetSiteAccessLogs(event) {
   const body = event.body || event;
   const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
   const days = normalizeStatsRange(body.days || body.range || 7);
-  const limit = normalizeAccessLogLimit(body.limit);
+  const page = normalizeAccessLogPage(body.page);
+  const pageSize = normalizeAccessLogPageSize(body.pageSize || body.page_size || body.limit);
+  const offset = (page - 1) * pageSize;
   if (!websiteId) return ok({ success: false, message: 'missing websiteId' });
 
   const site = await getWebsiteByIdentity({ websiteId });
@@ -3275,51 +3346,46 @@ async function handleGetSiteAccessLogs(event) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限查看该站点访问日志' }) };
   }
 
-  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
-  if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
-    return ok({ success: true, websiteId, logs: [], message: '原始访问日志未启用' });
-  }
-
   try {
-    const bucketCfg = await resolveBucketConfig(bucketId);
-    const provider = createProvider(buckets.resolveCreds(bucketCfg));
-    const objects = [];
-    for (const date of listUtcDateKeys(days)) {
-      const prefix = `analytics/raw/date=${date}/`;
-      const items = await provider.list(prefix);
-      for (const item of items) {
-        if (String(item.key || '').includes(`/${websiteId}-`)) objects.push(item);
-      }
-    }
-    objects.sort((a, b) => String(b.key || '').localeCompare(String(a.key || '')));
-
-    const logs = [];
-    for (const obj of objects) {
-      if (logs.length >= limit) break;
-      if (Number(obj.size || 0) > 256 * 1024) continue;
-      const text = await provider.get(obj.key);
-      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
-      for (const line of lines) {
-        const item = parseRawAnalyticsLine(line);
-        if (!item || String(item.websiteId || '') !== websiteId) continue;
-        logs.push({
-          ts: Number(item.ts || 0) || null,
-          type: item.type || 'view',
-          host: item.host || '',
-          path: item.path || '/',
-          referrer: item.referrer || '',
-          referrerHost: item.referrerHost || 'direct',
-          country: item.country || 'UNKNOWN',
-          province: item.province || 'UNKNOWN',
-          ip: maskIpForDisplay(item.ipEnc ? safeDecrypt(item.ipEnc) : ''),
-          ipArchived: !!item.ipEnc,
-          userAgent: item.userAgent || ''
-        });
-        if (logs.length >= limit) break;
-      }
-    }
-
-    return ok({ success: true, websiteId, rangeDays: days, logs });
+    const totalRows = await query(
+      `SELECT COUNT(*) AS total
+       FROM site_access_logs
+       WHERE website_id = ? AND event_ts >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
+      [websiteId, days]
+    );
+    const rows = await query(
+      `SELECT event_ts, event_type, host, path, referrer, referrer_host,
+              country, province, ip_masked, ip_archived, user_agent
+       FROM site_access_logs
+       WHERE website_id = ? AND event_ts >= DATE_SUB(NOW(), INTERVAL ? DAY)
+       ORDER BY event_ts DESC
+       LIMIT ? OFFSET ?`,
+      [websiteId, days, pageSize, offset]
+    );
+    const logs = rows.map((row) => ({
+      ts: row.event_ts instanceof Date ? row.event_ts.getTime() : (row.event_ts ? new Date(row.event_ts).getTime() : null),
+      type: row.event_type || 'view',
+      host: row.host || '',
+      path: row.path || '/',
+      referrer: row.referrer || '',
+      referrerHost: row.referrer_host || 'direct',
+      country: row.country || 'UNKNOWN',
+      province: row.province || 'UNKNOWN',
+      ip: row.ip_masked || '',
+      ipArchived: !!row.ip_archived,
+      userAgent: row.user_agent || ''
+    }));
+    const total = Number(totalRows[0]?.total || 0);
+    return ok({
+      success: true,
+      websiteId,
+      rangeDays: days,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      logs
+    });
   } catch (error) {
     console.error('查询站点访问日志失败:', error);
     return ok({ success: false, message: error.message });
@@ -3418,6 +3484,33 @@ async function handleMigrateSiteAnalytics(event) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已聚合的原始访问日志对象，用于延迟统计去重'`
     );
     steps.push('ensured site_analytics_ingested_events');
+
+    await query(
+      `CREATE TABLE IF NOT EXISTS site_access_logs (
+        object_key VARCHAR(512) NOT NULL,
+        website_id VARCHAR(32) NOT NULL,
+        event_ts DATETIME NULL,
+        event_type VARCHAR(32) NOT NULL DEFAULT 'view',
+        host VARCHAR(255) DEFAULT '',
+        path VARCHAR(512) NOT NULL DEFAULT '/',
+        referrer VARCHAR(1024) DEFAULT '',
+        referrer_host VARCHAR(255) NOT NULL DEFAULT 'direct',
+        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+        province VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
+        ip_masked VARCHAR(64) DEFAULT '',
+        ip_archived TINYINT(1) NOT NULL DEFAULT 0,
+        user_agent VARCHAR(512) DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (object_key),
+        INDEX idx_access_site_ts (website_id, event_ts),
+        INDEX idx_access_site_path (website_id, path)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点访问日志展示索引，不存明文 IP'`
+    );
+    steps.push('ensured site_access_logs');
+
+    await ensureColumn('site_access_logs', 'ip_masked', "ALTER TABLE site_access_logs ADD COLUMN ip_masked VARCHAR(64) DEFAULT '' AFTER province", steps);
+    await ensureColumn('site_access_logs', 'ip_archived', 'ALTER TABLE site_access_logs ADD COLUMN ip_archived TINYINT(1) NOT NULL DEFAULT 0 AFTER ip_masked', steps);
+    await ensureColumn('site_access_logs', 'user_agent', "ALTER TABLE site_access_logs ADD COLUMN user_agent VARCHAR(512) DEFAULT '' AFTER ip_archived", steps);
 
     return ok({ success: true, steps });
   } catch (error) {
