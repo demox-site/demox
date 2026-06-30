@@ -100,13 +100,13 @@ const CodeBlock: React.FC<{ code: string; lang?: string; copyLabel: string; copi
           {lang}
         </span>
       )}
-      <pre className="bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-lg overflow-x-auto text-sm font-mono p-4 pt-8">
+      <pre className="bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] border border-[var(--stitch-line)] rounded-xl overflow-x-auto text-sm font-mono p-4 pt-8">
         <code>{code}</code>
       </pre>
       <button
         type="button"
         onClick={copy}
-        className="absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-1 rounded text-xs bg-zinc-100 text-zinc-900 hover:bg-white transition-colors"
+        className="absolute top-2.5 right-2.5 flex items-center gap-1 px-2 py-1 rounded text-xs bg-[var(--stitch-ink)] text-[var(--stitch-surface)] hover:bg-[var(--stitch-ink)]/80 transition-colors"
       >
         {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
         {copied ? copiedLabel : copyLabel}
@@ -128,12 +128,12 @@ const InlineCopy: React.FC<{ value: string; copyLabel: string; copiedLabel: stri
     setTimeout(() => setCopied(false), 1800);
   };
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 pl-4 pr-2 py-2">
-      <code className="flex-1 min-w-0 truncate text-sm font-mono text-zinc-200">{value}</code>
+    <div className="flex items-center gap-2 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] pl-4 pr-2 py-2">
+      <code className="flex-1 min-w-0 truncate text-sm font-mono text-[var(--stitch-ink)]">{value}</code>
       <button
         type="button"
         onClick={copy}
-        className="flex items-center gap-1 shrink-0 px-2.5 py-1.5 rounded-md text-xs bg-zinc-800 text-zinc-200 hover:bg-zinc-700 transition-colors"
+        className="flex items-center gap-1 shrink-0 px-2.5 py-1.5 rounded-md text-xs bg-[var(--stitch-surface)] text-[var(--stitch-ink)] hover:bg-[var(--stitch-blue-soft)] transition-colors"
       >
         {copied ? <CheckCircle size={13} /> : <Copy size={13} />}
         {copied ? copiedLabel : copyLabel}
@@ -153,10 +153,10 @@ const Section: React.FC<{
   <section
     id={`doc-${id}`}
     ref={refCb}
-    className="scroll-mt-24 border-b border-zinc-900 pb-12 mb-12 last:border-0"
+    className="scroll-mt-24 border-b border-[var(--stitch-line)] pb-12 mb-12 last:border-0"
   >
-    <h2 className="flex items-center gap-2.5 text-2xl font-bold text-zinc-100 mb-6">
-      <Icon className="text-zinc-400" size={22} />
+    <h2 className="flex items-center gap-2.5 text-2xl font-bold text-[var(--stitch-ink)] mb-6">
+      <Icon className="text-[var(--stitch-muted)]" size={22} />
       {title}
     </h2>
     {children}
@@ -200,19 +200,19 @@ export const Docs: React.FC = () => {
       <div className="relative z-10">
         {/* 标题 */}
         <div className="mb-10">
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-zinc-100 mb-3">
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-[var(--stitch-ink)] mb-3">
             {tr.pageTitle}
           </h1>
-          <p className="text-zinc-400 max-w-2xl leading-relaxed">{tr.pageSubtitle}</p>
+          <p className="text-[var(--stitch-muted)] max-w-2xl leading-relaxed">{tr.pageSubtitle}</p>
         </div>
 
         {/* Agent Skill 高亮块 */}
-        <div className="mb-12 rounded-xl border border-zinc-700/80 bg-gradient-to-br from-zinc-900 to-zinc-900/30 p-6 sm:p-7">
+        <div className="mb-12 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] backdrop-blur-md p-6 sm:p-7">
           <div className="flex items-center gap-2.5 mb-2">
             <Sparkles className="text-zinc-200 shrink-0" size={20} />
             <h2 className="text-lg font-bold text-zinc-100">{tr.skill.title}</h2>
           </div>
-          <p className="text-sm text-zinc-400 leading-relaxed mb-5 max-w-2xl">{tr.skill.desc}</p>
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed mb-5 max-w-2xl">{tr.skill.desc}</p>
           <div className="flex flex-col sm:flex-row sm:items-stretch gap-3">
             <div className="flex-1 min-w-0">
               <InlineCopy
@@ -236,7 +236,7 @@ export const Docs: React.FC = () => {
           {/* 侧边栏（桌面端固定） */}
           <aside className="hidden lg:block w-56 shrink-0">
             <nav className="sticky top-24 space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3 px-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--stitch-muted)] mb-3 px-3">
                 {tr.onThisPage}
               </p>
               {SECTIONS.map(({ id, icon: Icon }) => (
@@ -246,8 +246,8 @@ export const Docs: React.FC = () => {
                   onClick={() => goTo(id)}
                   className={`flex items-center gap-2.5 w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                     active === id
-                      ? "bg-zinc-100 text-zinc-900 font-medium"
-                      : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900"
+                      ? "bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-medium"
+                      : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] hover:bg-[var(--stitch-surface)]"
                   }`}
                 >
                   <Icon size={16} />
@@ -258,7 +258,7 @@ export const Docs: React.FC = () => {
           </aside>
 
           {/* 移动端横向章节条 */}
-          <div className="lg:hidden -mx-4 px-4 mb-6 overflow-x-auto sticky top-16 z-20 bg-black/80 backdrop-blur-md py-3 border-b border-zinc-900">
+          <div className="lg:hidden -mx-4 px-4 mb-6 overflow-x-auto sticky top-16 z-20 bg-[var(--stitch-surface)]/80 backdrop-blur-xl py-3 border-b border-[var(--stitch-line)]">
             <div className="flex gap-2 w-max">
               {SECTIONS.map(({ id, icon: Icon }) => (
                 <button
@@ -267,8 +267,8 @@ export const Docs: React.FC = () => {
                   onClick={() => goTo(id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-colors ${
                     active === id
-                      ? "bg-zinc-100 text-zinc-900 font-medium"
-                      : "text-zinc-400 bg-zinc-900 hover:text-zinc-100"
+                      ? "bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-medium"
+                      : "text-[var(--stitch-muted)] bg-[var(--stitch-surface)] hover:text-[var(--stitch-ink)]"
                   }`}
                 >
                   <Icon size={13} />
@@ -289,7 +289,7 @@ export const Docs: React.FC = () => {
                 <>
                   {/* 快速开始 */}
                   <Section id="start" title={tr.nav.start} icon={Rocket} refCb={reg("start")}>
-                    <p className="text-zinc-400 leading-relaxed mb-6">
+                    <p className="text-[var(--stitch-muted)] leading-relaxed mb-6">
                       {isZh
                         ? "Demox 提供两种接入方式，共用同一套账号与部署能力，选择最适合你的："
                         : "Demox offers two ways to connect, sharing the same account and deployment capabilities. Pick what fits you:"}
@@ -298,14 +298,14 @@ export const Docs: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => goTo("mcp")}
-                        className="text-left p-5 rounded-lg border border-zinc-800 bg-zinc-900/50 hover:border-zinc-600 transition-colors group"
+                        className="text-left p-5 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] hover:border-[var(--stitch-muted)] transition-colors group"
                       >
                         <Bot className="text-zinc-300 mb-3" size={24} />
                         <h3 className="font-semibold text-zinc-100 mb-1 flex items-center gap-1">
                           {tr.nav.mcp}
                           <ChevronRight size={15} className="text-zinc-500 group-hover:translate-x-0.5 transition-transform" />
                         </h3>
-                        <p className="text-sm text-zinc-400">
+                        <p className="text-sm text-[var(--stitch-muted)]">
                           {isZh
                             ? "在 Claude、Cursor 等 AI 工具里用自然语言部署。"
                             : "Deploy from AI tools like Claude or Cursor with natural language."}
@@ -314,14 +314,14 @@ export const Docs: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => goTo("cli")}
-                        className="text-left p-5 rounded-lg border border-zinc-800 bg-zinc-900/50 hover:border-zinc-600 transition-colors group"
+                        className="text-left p-5 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] hover:border-[var(--stitch-muted)] transition-colors group"
                       >
                         <Terminal className="text-zinc-300 mb-3" size={24} />
                         <h3 className="font-semibold text-zinc-100 mb-1 flex items-center gap-1">
                           {tr.nav.cli}
                           <ChevronRight size={15} className="text-zinc-500 group-hover:translate-x-0.5 transition-transform" />
                         </h3>
-                        <p className="text-sm text-zinc-400">
+                        <p className="text-sm text-[var(--stitch-muted)]">
                           {isZh
                             ? "一条命令把目录或 ZIP 部署到全球 CDN。"
                             : "One command to ship a folder or ZIP to the global CDN."}
@@ -332,7 +332,7 @@ export const Docs: React.FC = () => {
 
                   {/* 通过 MCP 接入 */}
                   <Section id="mcp" title={tr.nav.mcp} icon={Bot} refCb={reg("mcp")}>
-                    <p className="text-zinc-400 leading-relaxed mb-6">
+                    <p className="text-[var(--stitch-muted)] leading-relaxed mb-6">
                       {isZh
                         ? "把下面的配置加入你的 AI 工具配置文件，重启工具即可。首次调用部署工具时会自动打开浏览器登录。"
                         : "Add the config below to your AI tool's config file and restart it. The first deploy call opens a browser login automatically."}
@@ -361,7 +361,7 @@ export const Docs: React.FC = () => {
                       ].map(([name, path]) => (
                         <div
                           key={name}
-                          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 p-3 rounded border border-zinc-800 bg-zinc-900/50"
+                          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 p-3 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)]"
                         >
                           <span className="text-sm font-medium text-zinc-300">{name}</span>
                           <code className="text-xs font-mono text-zinc-500 break-all">{path}</code>
@@ -371,13 +371,13 @@ export const Docs: React.FC = () => {
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
                       {isZh ? "示例对话" : "Example prompt"}
                     </h3>
-                    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-5 space-y-3">
+                    <div className="rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-5 space-y-3">
                       <p className="text-zinc-200 font-mono text-sm">
                         {isZh
                           ? "“把我的 ./dist 目录部署到 Demox”"
                           : '"Deploy my ./dist folder to Demox"'}
                       </p>
-                      <div className="text-sm text-zinc-400 space-y-1 border-t border-zinc-800 pt-3">
+                      <div className="text-sm text-[var(--stitch-muted)] space-y-1 border-t border-[var(--stitch-line)] pt-3">
                         <p className="text-zinc-500">{isZh ? "AI 助手：" : "Assistant:"}</p>
                         <p>{isZh ? "[正在打包 ./dist…] 部署成功" : "[Packing ./dist…] Deployed"}</p>
                         <p className="text-zinc-300">https://xyz67890.demox.site</p>
@@ -398,7 +398,7 @@ export const Docs: React.FC = () => {
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
                       {isZh ? "2. 登录" : "2. Log in"}
                     </h3>
-                    <p className="text-zinc-400 text-sm mb-3">
+                    <p className="text-[var(--stitch-muted)] text-sm mb-3">
                       {isZh ? "打开浏览器完成 OAuth 授权。" : "Opens a browser for OAuth authorization."}
                     </p>
                     <CodeBlock lang="bash" code="demox login" {...copyProps} />
@@ -413,7 +413,7 @@ export const Docs: React.FC = () => {
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
                       {isZh ? "命令参考" : "Command reference"}
                     </h3>
-                    <div className="rounded-lg border border-zinc-800 overflow-hidden">
+                    <div className="rounded-lg border border-[var(--stitch-line)] overflow-hidden">
                       {[
                         ["demox login", isZh ? "登录到 Demox" : "Log in to Demox"],
                         ["demox logout", isZh ? "登出并删除本地 Token" : "Log out and remove local token"],
@@ -428,7 +428,7 @@ export const Docs: React.FC = () => {
                         <div
                           key={cmd}
                           className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 px-4 py-2.5 ${
-                            i % 2 ? "bg-zinc-900/30" : "bg-zinc-900/60"
+                            i % 2 ? "bg-[var(--stitch-surface)]" : "bg-[var(--stitch-blue-soft)]"
                           }`}
                         >
                           <code className="text-xs font-mono text-zinc-200">{cmd}</code>
@@ -440,26 +440,26 @@ export const Docs: React.FC = () => {
 
                   {/* 认证与凭证（MCP / CLI 共享） */}
                   <Section id="auth" title={tr.nav.auth} icon={KeyRound} refCb={reg("auth")}>
-                    <p className="text-zinc-400 leading-relaxed mb-6">
+                    <p className="text-[var(--stitch-muted)] leading-relaxed mb-6">
                       {isZh
                         ? "MCP 与 CLI 共用同一套 OAuth 登录，登录后凭证保存在本地。"
                         : "MCP and CLI share the same OAuth login. Credentials are stored locally after login."}
                     </p>
                     <div className="grid sm:grid-cols-2 gap-4 mb-6">
-                      <div className="p-4 rounded-lg border border-zinc-800 bg-zinc-900/50">
+                      <div className="p-4 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
                         <h4 className="font-semibold text-zinc-200 mb-2 text-sm">
                           {isZh ? "Token 有效期" : "Token lifetime"}
                         </h4>
-                        <ul className="text-sm text-zinc-400 space-y-1">
+                        <ul className="text-sm text-[var(--stitch-muted)] space-y-1">
                           <li>• Access Token: {isZh ? "5 分钟" : "5 minutes"}</li>
                           <li>• Refresh Token: {isZh ? "30 天" : "30 days"}</li>
                         </ul>
                       </div>
-                      <div className="p-4 rounded-lg border border-zinc-800 bg-zinc-900/50">
+                      <div className="p-4 rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
                         <h4 className="font-semibold text-zinc-200 mb-2 text-sm">
                           {isZh ? "自动续期" : "Auto refresh"}
                         </h4>
-                        <p className="text-sm text-zinc-400">
+                        <p className="text-sm text-[var(--stitch-muted)]">
                           {isZh
                             ? "Token 过期时自动打开浏览器重新登录，无需手动操作。"
                             : "On expiry, a browser login opens automatically — no manual steps."}
@@ -469,7 +469,7 @@ export const Docs: React.FC = () => {
                     <h3 className="font-semibold text-zinc-200 mb-3">
                       {isZh ? "凭证位置 / 撤销授权" : "Credential location / revoke"}
                     </h3>
-                    <p className="text-zinc-400 text-sm mb-3">
+                    <p className="text-[var(--stitch-muted)] text-sm mb-3">
                       {isZh ? "凭证保存在 " : "Credentials are stored at "}
                       <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-300 text-xs">
                         ~/.demox/token.json
@@ -492,7 +492,7 @@ export const Docs: React.FC = () => {
                         isZh ? "Markdown / TXT / DOCX 文档（自动套模板）" : "Markdown / TXT / DOCX docs (templated)",
                         isZh ? "HTTPS URL（指向 .zip）" : "HTTPS URL (to a .zip)",
                       ].map((item) => (
-                        <li key={item} className="flex items-center gap-2.5 text-sm text-zinc-400">
+                        <li key={item} className="flex items-center gap-2.5 text-sm text-[var(--stitch-muted)]">
                           <CheckCircle size={15} className="text-zinc-300 shrink-0" />
                           {item}
                         </li>
@@ -543,11 +543,11 @@ export const Docs: React.FC = () => {
                         ],
                       ].map(([q, a]) => (
                         <div key={q}>
-                          <h3 className="font-semibold text-zinc-200 mb-2 flex items-center gap-2">
-                            <HelpCircle size={16} className="text-zinc-400 shrink-0" />
+                          <h3 className="font-semibold text-[var(--stitch-ink)] mb-2 flex items-center gap-2">
+                            <HelpCircle size={16} className="text-[var(--stitch-muted)] shrink-0" />
                             {q}
                           </h3>
-                          <p className="text-sm text-zinc-400 leading-relaxed pl-6">{a}</p>
+                          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed pl-6">{a}</p>
                         </div>
                       ))}
                     </div>

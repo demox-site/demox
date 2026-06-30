@@ -6,14 +6,14 @@ const TermsPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans">
-      <nav className="border-b border-border bg-background/50 backdrop-blur-md">
+      <nav className="border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <button
               onClick={() => navigate("/index")}
               className="flex items-center gap-2 focus:outline-none"
             >
-              <div className="w-5 h-5 bg-primary rounded-sm flex items-center justify-center">
+              <div className="w-5 h-5 bg-[var(--stitch-ink)] rounded-lg flex items-center justify-center">
                 <span className="text-primary-foreground text-xs font-bold">D</span>
               </div>
               <span className="text-lg font-bold tracking-tight">
@@ -22,7 +22,7 @@ const TermsPage: React.FC = () => {
             </button>
             <button
               onClick={() => navigate(-1)}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
             >
               返回
             </button>
@@ -38,8 +38,8 @@ const TermsPage: React.FC = () => {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
             Demox 使用协议与服务条款
           </h1>
-          <p className="text-sm text-muted-foreground">最近更新：2025-12-25</p>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)]">最近更新：2025-12-25</p>
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             使用 Demox
             部署和托管您的代码，即表示您已阅读、理解并同意本使用协议与服务
             条款的全部内容。如果您不同意本条款，请不要注册、登录或使用本服务。
@@ -48,7 +48,7 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">一、适用范围</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             本协议适用于所有使用 Demox 网站、控制台、API
             以及相关产品与服务的用户，包括
             注册用户和未注册但实际使用服务的访问者。
@@ -57,13 +57,13 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">二、账号注册与登录</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             您在注册或登录 Demox
             账号时，需要提供真实、准确和完整的注册信息（例如邮箱地
             址），并保持其持续更新。您应妥善保管账号和密码，并对在该账号下发生的所有行
             为负责。
           </p>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             在注册与登录流程中，您必须勾选并同意本《使用协议与服务条款》以及《隐私政策》
             后方可继续使用服务。
           </p>
@@ -71,19 +71,19 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">三、内容自动审核</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             为了保障平台合规、安全运行以及遵守相关法律法规，您上传至 Demox
             的代码、静态
             资源以及通过本平台对外提供访问的页面内容，将被系统自动进行合规性审核。
           </p>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             审核方式可能包括但不限于：图像识别、文本 OCR 识别、LOGO
             检测、二维码/条形码 识别、关键词检测等自动化手段。
           </p>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             您在此明确知悉并同意：
           </p>
-          <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+          <ul className="text-sm text-[var(--stitch-muted)] space-y-1 list-disc pl-5">
             <li>
               内容会被自动审核，审核范围包括代码、静态资源以及生成的页面内容。
             </li>
@@ -99,13 +99,13 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">四、禁止及重点审核内容</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             您承诺不会利用 Demox
             存储、处理、传播任何违反法律法规或本平台规则的内容。系
             统将重点对以下类型内容进行检测和拦截（包括图像、视频、音频、文本等）：
           </p>
 
-          <div className="space-y-2 text-sm text-muted-foreground">
+          <div className="space-y-2 text-sm text-[var(--stitch-muted)]">
             <h3 className="font-semibold text-foreground">1. 色情内容</h3>
             <ul className="list-disc pl-5 space-y-1">
               <li>含有明显性暗示、低俗性行为展示的内容。</li>
@@ -115,7 +115,7 @@ const TermsPage: React.FC = () => {
             </ul>
           </div>
 
-          <div className="space-y-2 text-sm text-muted-foreground">
+          <div className="space-y-2 text-sm text-[var(--stitch-muted)]">
             <h3 className="font-semibold text-foreground">2. 政治内容</h3>
             <ul className="list-disc pl-5 space-y-1">
               <li>涉及国家领导人、外国或地区领导人的不当使用或歪曲。</li>
@@ -128,7 +128,7 @@ const TermsPage: React.FC = () => {
             </ul>
           </div>
 
-          <div className="space-y-2 text-sm text-muted-foreground">
+          <div className="space-y-2 text-sm text-[var(--stitch-muted)]">
             <h3 className="font-semibold text-foreground">3. 暴力恐怖内容</h3>
             <ul className="list-disc pl-5 space-y-1">
               <li>血腥场景、尸体等令人不适的内容。</li>
@@ -142,7 +142,7 @@ const TermsPage: React.FC = () => {
             </ul>
           </div>
 
-          <div className="space-y-2 text-sm text-muted-foreground">
+          <div className="space-y-2 text-sm text-[var(--stitch-muted)]">
             <h3 className="font-semibold text-foreground">4. 广告与营销内容</h3>
             <ul className="list-disc pl-5 space-y-1">
               <li>违法广告、欺诈或误导性营销信息。</li>
@@ -152,7 +152,7 @@ const TermsPage: React.FC = () => {
             </ul>
           </div>
 
-          <div className="space-y-2 text-sm text-muted-foreground">
+          <div className="space-y-2 text-sm text-[var(--stitch-muted)]">
             <h3 className="font-semibold text-foreground">
               5. 低质及其他不当内容
             </h3>
@@ -166,10 +166,10 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">五、用户责任与承诺</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             您在此确认并承诺：
           </p>
-          <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+          <ul className="text-sm text-[var(--stitch-muted)] space-y-1 list-disc pl-5">
             <li>
               您对使用 Demox
               部署和发布的全部内容（包括代码、图片、文字等）拥有合法权利，
@@ -182,7 +182,7 @@ const TermsPage: React.FC = () => {
               商标权、隐私权等侵权行为。
             </li>
           </ul>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             在您上传内容前，我们会进行二次确认。继续上传即表示：
           </p>
           <p className="text-sm text-foreground leading-relaxed font-semibold">
@@ -193,11 +193,11 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">六、违规处理</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             如我们在自动审核或人工复核过程中发现您的内容可能存在违规情形，Demox
             有权根 据情节严重程度采取包括但不限于以下一项或多项措施：
           </p>
-          <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+          <ul className="text-sm text-[var(--stitch-muted)] space-y-1 list-disc pl-5">
             <li>限制相关内容访问或对站点进行下线处理。</li>
             <li>对相关项目进行冻结、封禁或删除。</li>
             <li>限制、暂停或终止您账号的部分或全部功能。</li>
@@ -207,12 +207,12 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">七、免责声明</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             由于互联网环境复杂多变，Demox
             会在合理范围内采取技术与管理措施保障服务稳定
             与内容合规，但不对以下情形承担责任：
           </p>
-          <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+          <ul className="text-sm text-[var(--stitch-muted)] space-y-1 list-disc pl-5">
             <li>
               因用户自身原因导致的账号泄露、数据丢失或其他损失，包括但不限于弱密码、终端
               感染恶意软件等。
@@ -226,7 +226,7 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">八、协议更新</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             我们可能会根据业务发展、法律法规变化等不时更新本协议。更新内容将在本页面公
             示，并自公布之日起生效。您继续使用 Demox
             服务，即视为接受更新后的协议。
@@ -235,7 +235,7 @@ const TermsPage: React.FC = () => {
 
         <section className="space-y-3 pb-10">
           <h2 className="text-xl font-semibold">九、联系我们</h2>
-          <p className="text-sm text-muted-foreground leading-relaxed">
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             如您对本协议或平台内容审核规则有任何疑问、建议或投诉，可通过站内反馈渠道或
             官方联系方式与我们取得联系，我们会尽快进行处理。
           </p>

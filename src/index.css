@@ -84,6 +84,21 @@
     --sidebar-accent-foreground: 222.2 47.4% 11.2%;
     --sidebar-border: 214.3 31.8% 91.4%;
     --sidebar-ring: 222.2 84% 4.9%;
+
+    /*
+     * Stitch design tokens (light) — used by both console and public pages.
+     * Moved here from .stitch-console so var() references work globally.
+     */
+    --stitch-bg: #f7f7f5;
+    --stitch-bg-2: #ededeb;
+    --stitch-surface: rgba(255, 255, 255, 0.84);
+    --stitch-surface-strong: rgba(255, 255, 255, 0.96);
+    --stitch-ink: #111111;
+    --stitch-muted: #696969;
+    --stitch-line: rgba(17, 17, 17, 0.14);
+    --stitch-blue: #111111;
+    --stitch-blue-soft: rgba(17, 17, 17, 0.07);
+    --stitch-shadow: 0 24px 70px rgba(0, 0, 0, 0.11);
   }
 
   .dark {
@@ -155,6 +170,20 @@
     --sidebar-accent-foreground: 0 0% 98%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /*
+     * Stitch design tokens (dark) — global, used by console and public pages.
+     */
+    --stitch-bg: #050505;
+    --stitch-bg-2: #111111;
+    --stitch-surface: rgba(18, 18, 18, 0.76);
+    --stitch-surface-strong: rgba(8, 8, 8, 0.92);
+    --stitch-ink: #f5f5f5;
+    --stitch-muted: #a3a3a3;
+    --stitch-line: rgba(255, 255, 255, 0.14);
+    --stitch-blue: #ffffff;
+    --stitch-blue-soft: rgba(255, 255, 255, 0.08);
+    --stitch-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
   }
 }
 

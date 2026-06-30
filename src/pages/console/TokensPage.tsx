@@ -75,16 +75,14 @@ const TokensPage: React.FC = () => {
       : t.never;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <KeyRound className="w-7 h-7 text-muted-foreground" />
-          {t.title}
-        </h1>
-        <p className="text-sm text-muted-foreground mt-2">{t.subtitle}</p>
+    <div className="stitch-page max-w-3xl">
+      <div className="stitch-page-hero mb-8">
+        <div className="stitch-eyebrow"><KeyRound className="w-4 h-4" /> {t.title}</div>
+        <h1 className="stitch-title">{t.title}</h1>
+        <p className="stitch-subtitle">{t.subtitle}</p>
       </div>
 
-      <Card className="mb-6">
+      <Card className="stitch-panel mb-6">
         <CardHeader>
           <CardTitle>{t.createTitle}</CardTitle>
           <CardDescription>{t.createDesc}</CardDescription>
@@ -96,7 +94,7 @@ const TokensPage: React.FC = () => {
               onChange={(e) => setName(e.target.value)}
               placeholder={t.namePlaceholder}
             />
-            <Button onClick={notImplemented} className="shrink-0">
+            <Button onClick={notImplemented} className="stitch-primary rounded-full shrink-0">
               <Plus className="w-4 h-4 mr-1" />
               {t.create}
             </Button>
@@ -104,18 +102,18 @@ const TokensPage: React.FC = () => {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="stitch-panel">
         <CardHeader>
           <CardTitle>{t.listTitle}</CardTitle>
         </CardHeader>
         <CardContent>
           {tokens.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Terminal className="w-10 h-10 text-muted-foreground/40 mb-3" />
-              <p className="text-sm text-muted-foreground">{t.empty}</p>
+              <Terminal className="w-10 h-10 text-[var(--stitch-muted)]/40 mb-3" />
+              <p className="text-sm text-[var(--stitch-muted)]">{t.empty}</p>
             </div>
           ) : (
-            <div className="divide-y divide-border">
+            <div className="divide-y divide-[var(--stitch-line)]">
               {tokens.map((tok) => (
                 <div
                   key={tok.id}
@@ -123,10 +121,10 @@ const TokensPage: React.FC = () => {
                 >
                   <div className="flex flex-col">
                     <span className="text-sm font-medium">{tok.name}</span>
-                    <span className="text-xs text-muted-foreground font-mono">
+                    <span className="text-xs text-[var(--stitch-muted)] font-mono">
                       {tok.prefix}••••••••
                     </span>
-                    <span className="text-xs text-muted-foreground mt-0.5">
+                    <span className="text-xs text-[var(--stitch-muted)] mt-0.5">
                       {t.created} {fmt(tok.createdAt)} · {t.lastUsed}{" "}
                       {fmt(tok.lastUsedAt)}
                     </span>

@@ -112,7 +112,7 @@ export const MainHeader: React.FC = () => {
 
   return (
     <>
-      <nav className="border-b border-zinc-800 bg-black/50 backdrop-blur-md sticky top-0 z-50">
+      <nav className="border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             {/* Logo Area */}
@@ -134,7 +134,7 @@ export const MainHeader: React.FC = () => {
               <button
                 type="button"
                 onClick={toggleLang}
-                className="text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-zinc-900/50"
+                className="text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--stitch-surface-strong)]/50"
               >
                 <Languages size={16} />
                 <span className="text-xs font-mono uppercase">{lang}</span>
@@ -147,21 +147,21 @@ export const MainHeader: React.FC = () => {
               <button
                 type="button"
                 onClick={() => navigate("/pricing")}
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
+                className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
               >
                 {t.pricing}
               </button>
               <button
                 type="button"
                 onClick={() => navigate("/log")}
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
+                className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
               >
                 {t.log}
               </button>
               <button
                 type="button"
                 onClick={() => navigate("/doc")}
-                className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors"
+                className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
               >
                 {t.mcp}
               </button>
@@ -174,7 +174,7 @@ export const MainHeader: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => navigate("/console/projects")}
-                    className="flex items-center gap-2 px-5 py-2 bg-zinc-100 text-black text-sm font-bold rounded-md hover:-translate-y-0.5 hover:shadow-[0_0_15px_rgba(255,255,255,0.15)] transition-all duration-300"
+                    className="flex items-center gap-2 px-5 py-2 bg-[var(--stitch-ink)] text-[var(--stitch-surface)] text-sm font-bold rounded-md hover:-translate-y-0.5 hover:shadow-[0_0_15px_rgba(255,255,255,0.15)] transition-all duration-300"
                   >
                     <LayoutDashboard size={16} />
                     {t.console}
@@ -184,7 +184,7 @@ export const MainHeader: React.FC = () => {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button className="ml-2 outline-none rounded-full ring-offset-2 ring-offset-black focus:ring-2 focus:ring-zinc-700 transition-all">
-                        <Avatar className="h-9 w-9 border border-zinc-800 hover:border-zinc-600 transition-colors">
+                        <Avatar className="h-9 w-9 border border-[var(--stitch-line)] hover:border-[var(--stitch-muted)] transition-colors">
                           <AvatarFallback className="bg-zinc-900 text-zinc-400 text-xs font-mono">
                             {avatarLabel || <User size={16} />}
                           </AvatarFallback>
@@ -192,7 +192,7 @@ export const MainHeader: React.FC = () => {
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
-                      className="w-64 bg-zinc-950/95 backdrop-blur-xl border-zinc-800 text-zinc-400 p-1.5 shadow-2xl"
+                      className="w-64 bg-[var(--stitch-surface-strong)] backdrop-blur-xl border-[var(--stitch-line)] text-[var(--stitch-muted)] p-1.5 shadow-2xl"
                       align="end"
                       sideOffset={8}
                     >
@@ -231,7 +231,7 @@ export const MainHeader: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setIsLoginOpen(true)}
-                    className="px-4 py-2 text-sm font-medium border border-zinc-800 text-zinc-100 rounded-md hover:bg-zinc-100 hover:text-black hover:border-zinc-100 transition-all duration-300"
+                    className="px-4 py-2 text-sm font-medium border border-[var(--stitch-line)] text-[var(--stitch-ink)] rounded-md hover:bg-[var(--stitch-ink)] hover:text-[var(--stitch-surface)] hover:border-[var(--stitch-ink)] transition-all duration-300"
                   >
                     {t.login}
                   </button>
@@ -272,7 +272,7 @@ export const MainHeader: React.FC = () => {
 
         {/* Mobile Dropdown */}
         {isMobileMenuOpen && (
-          <div className="md:hidden border-b border-zinc-800 bg-black animate-in slide-in-from-top-2 duration-200">
+          <div className="md:hidden border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)] animate-in slide-in-from-top-2 duration-200">
             <div className="px-4 py-4 space-y-4">
               <button
                 type="button"
@@ -327,7 +327,7 @@ export const MainHeader: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsLoginOpen(true)}
-                  className="w-full mt-4 px-4 py-3 text-sm font-bold bg-zinc-100 text-black rounded-md hover:bg-white transition-colors text-center"
+                  className="w-full mt-4 px-4 py-3 text-sm font-bold bg-[var(--stitch-ink)] text-[var(--stitch-surface)] rounded-md hover:bg-[var(--stitch-ink)]/90 transition-colors text-center"
                 >
                   {t.login}
                 </button>

@@ -43,7 +43,7 @@ const LogPage: React.FC = () => {
             </p>
           </header>
 
-          <div className="relative border-l-2 border-zinc-800 ml-4 md:ml-0 space-y-24">
+          <div className="relative border-l-2 border-[var(--stitch-line)] ml-4 md:ml-0 space-y-24">
             <Section
               title="It Works on My Machine"
               subtitle="已上线"
@@ -297,7 +297,7 @@ const LogPage: React.FC = () => {
           </div>
 
           <footer className="mt-32 pb-10 text-center space-y-4">
-            <p className="text-zinc-600 text-xs">
+            <p className="text-[var(--stitch-muted)] text-xs">
               本站由 Demox 强力驱动（禁止套娃部署本站）
             </p>
           </footer>
@@ -342,15 +342,15 @@ const Section = ({
       <div className="mb-8">
         <h2
           className={`text-2xl md:text-3xl font-bold flex items-center gap-3 ${
-            ghost ? "text-zinc-400" : "text-zinc-100"
+            ghost ? "text-[var(--stitch-muted)]" : "text-zinc-100"
           }`}
         >
           {title}
           <span
             className={`text-sm px-2 py-1 rounded border ${
               ghost
-                ? "border-zinc-700 text-zinc-500"
-                : `border-zinc-700 bg-zinc-900 text-zinc-400`
+                ? "border-[var(--stitch-line)] text-[var(--stitch-muted)]"
+                : `border-[var(--stitch-line)] bg-zinc-900 text-[var(--stitch-muted)]`
             }`}
           >
             {subtitle}
@@ -388,15 +388,15 @@ const Feature = ({ tag, title, desc, note }: any) => {
   return (
     <motion.div
       whileHover={{ x: 10 }}
-      className="p-4 rounded-lg bg-zinc-900/30 border border-zinc-800/50 hover:bg-zinc-900/80 hover:border-zinc-700 transition-all relative group"
+      className="p-4 rounded-xl bg-[var(--stitch-surface)] border border-[var(--stitch-line)] hover:bg-[var(--stitch-surface-strong)] hover:border-[var(--stitch-muted)]/30 transition-all relative group"
     >
       <div className="flex items-start gap-3">
-        <span className="text-xs font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono uppercase tracking-wider shrink-0 mt-0.5">
+        <span className="text-xs font-bold px-2 py-0.5 rounded bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)] font-mono uppercase tracking-wider shrink-0 mt-0.5">
           {tag}
         </span>
         <div>
-          <h4 className="font-bold text-zinc-300 mb-1">{title}</h4>
-          <p className="text-zinc-400 text-sm leading-relaxed">{desc}</p>
+          <h4 className="font-bold text-[var(--stitch-ink)] mb-1">{title}</h4>
+          <p className="text-[var(--stitch-muted)] text-sm leading-relaxed">{desc}</p>
         </div>
       </div>
 

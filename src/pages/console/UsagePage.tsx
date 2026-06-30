@@ -87,61 +87,59 @@ const UsagePage: React.FC = () => {
   ) => (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-2 text-foreground">
+        <span className="flex items-center gap-2 text-[var(--stitch-ink)]">
           {icon}
           {label}
         </span>
-        <span className="text-muted-foreground font-mono text-xs">{limitText}</span>
+        <span className="text-[var(--stitch-muted)] font-mono text-xs">{limitText}</span>
       </div>
       <Progress value={0} className="h-1.5" />
     </div>
   );
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-          <Gauge className="w-7 h-7 text-muted-foreground" />
-          {t.title}
-        </h1>
-        <p className="text-sm text-muted-foreground mt-2">{t.subtitle}</p>
+    <div className="stitch-page max-w-3xl">
+      <div className="stitch-page-hero mb-8">
+        <div className="stitch-eyebrow"><Gauge className="w-4 h-4" /> {t.title}</div>
+        <h1 className="stitch-title">{t.title}</h1>
+        <p className="stitch-subtitle">{t.subtitle}</p>
       </div>
 
-      <Card className="mb-6">
+      <Card className="stitch-panel mb-6">
         <CardHeader>
           <CardTitle>{t.planTitle}</CardTitle>
         </CardHeader>
         <CardContent className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-muted border border-border flex items-center justify-center">
-              <Crown className="w-5 h-5 text-muted-foreground" />
+            <div className="w-10 h-10 rounded-xl bg-[var(--stitch-blue-soft)] border border-[var(--stitch-line)] flex items-center justify-center">
+              <Crown className="w-5 h-5 text-[var(--stitch-muted)]" />
             </div>
             <span className="text-lg font-bold capitalize">
               {loading ? t.loading : limits?.name || "user"}
             </span>
           </div>
-          <Button onClick={() => navigate("/pricing")}>{t.upgrade}</Button>
+          <Button onClick={() => navigate("/pricing")} className="stitch-action rounded-full">{t.upgrade}</Button>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="stitch-panel">
         <CardHeader>
           <CardTitle>{t.quotaTitle}</CardTitle>
-          <CardDescription>{t.todoNote}</CardDescription>
+          <CardDescription className="text-[var(--stitch-muted)]">{t.todoNote}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {quotaRow(
-            <HardDrive className="w-4 h-4 text-muted-foreground" />,
+            <HardDrive className="w-4 h-4 text-[var(--stitch-muted)]" />,
             t.storage,
             limits?.max_file_size ? formatBytes(limits.max_file_size) : t.unlimited
           )}
           {quotaRow(
-            <FileStack className="w-4 h-4 text-muted-foreground" />,
+            <FileStack className="w-4 h-4 text-[var(--stitch-muted)]" />,
             t.files,
             limits?.max_file_count ? String(limits.max_file_count) : t.unlimited
           )}
           {quotaRow(
-            <Rocket className="w-4 h-4 text-muted-foreground" />,
+            <Rocket className="w-4 h-4 text-[var(--stitch-muted)]" />,
             t.deployments,
             limits?.deployment_limit ? String(limits.deployment_limit) : t.unlimited
           )}

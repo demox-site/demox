@@ -167,7 +167,7 @@ const CloudHostLanding: React.FC = () => {
         <div className="absolute inset-0 bg-[linear-gradient(to_right,var(--grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-line)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10" />
 
         <div className="max-w-4xl mx-auto text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-zinc-800 bg-zinc-900/50 mb-8">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] mb-8">
             <span className="flex h-2 w-2 rounded-full bg-zinc-400 animate-pulse"></span>
             <span className="text-xs font-mono text-zinc-400">
               {t.hero.version}
@@ -199,13 +199,13 @@ const CloudHostLanding: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
             <button
               onClick={() => (user ? navigate("/console/projects") : setIsLoginOpen(true))}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-100 text-black font-semibold rounded-md hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
+              className="w-full sm:w-auto px-8 py-3 bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-semibold rounded-xl hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
             >
               {t.hero.start_btn}
             </button>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-zinc-500 rounded-md transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-zinc-500 opacity-50">
+                <button className="w-full sm:w-auto px-8 py-3 border border-[var(--stitch-line)] text-[var(--stitch-muted)] rounded-xl transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-zinc-500 opacity-50">
                   <Terminal size={16} />
                   {t.hero.install_cmd}
                 </button>
@@ -216,12 +216,12 @@ const CloudHostLanding: React.FC = () => {
             </Tooltip>
           </div>
 
-          <div className="max-w-2xl mx-auto rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 shadow-2xl relative group">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 bg-zinc-900/50">
+          <div className="max-w-2xl mx-auto rounded-2xl overflow-hidden border border-[var(--stitch-line)] bg-[var(--stitch-surface)] shadow-2xl relative group">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)]">
               <div className="flex gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
-                <div className="w-3 h-3 rounded-full bg-zinc-700"></div>
+                <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/40"></div>
+                <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/40"></div>
+                <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/40"></div>
               </div>
               <div className="flex-1 text-center">
                 <span className="text-xs text-zinc-500 font-mono">
@@ -263,11 +263,7 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <section className="py-24 px-4 bg-black relative overflow-hidden">
-        {/* Neon accent lines background */}
-        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/50 to-transparent -translate-y-1/2 hidden md:block" />
-        <div className="absolute top-1/2 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-purple-500/50 to-transparent translate-y-[2px] blur-[2px] hidden md:block" />
-
+      <section className="py-24 px-4 bg-[var(--stitch-bg)] relative overflow-hidden">
         <div className="max-w-6xl mx-auto relative z-10">
           <div className="text-center mb-20">
             <h2 className="text-3xl md:text-5xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-b from-white to-zinc-500">
@@ -298,11 +294,11 @@ const CloudHostLanding: React.FC = () => {
                 className="flex flex-col items-center text-center group"
               >
                 {/* Glassmorphism Icon Circle */}
-                <div className="w-24 h-24 rounded-full bg-white/5 backdrop-blur-md border border-white/10 flex items-center justify-center mb-8 relative z-10 transition-transform duration-500 group-hover:scale-110 group-hover:border-white/20 shadow-[0_0_30px_-10px_rgba(255,255,255,0.1)]">
+                <div className="w-24 h-24 rounded-full bg-[var(--stitch-blue-soft)] backdrop-blur-md border border-[var(--stitch-line)] flex items-center justify-center mb-8 relative z-10 transition-transform duration-500 group-hover:scale-110 group-hover:border-[var(--stitch-line)] shadow-[0_0_30px_-10px_rgba(255,255,255,0.1)]">
                   <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                   {step.icon}
                   {/* Step Number Badge */}
-                  <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-400 flex items-center justify-center font-mono text-sm font-bold">
+                  <div className="absolute -top-2 -right-2 w-8 h-8 rounded-full bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] text-[var(--stitch-muted)] flex items-center justify-center font-mono text-sm font-bold">
                     {i + 1}
                   </div>
                 </div>
@@ -319,7 +315,7 @@ const CloudHostLanding: React.FC = () => {
                   {step.tags.map((tag, tagIndex) => (
                     <span
                       key={tagIndex}
-                      className="px-3 py-1 rounded-full text-xs font-medium bg-zinc-900/50 border border-zinc-800 text-zinc-400 group-hover:border-zinc-600 transition-colors"
+                      className="px-3 py-1 rounded-full text-xs font-medium bg-[var(--stitch-surface)] border border-[var(--stitch-line)] text-[var(--stitch-muted)] group-hover:border-[var(--stitch-muted)] transition-colors"
                     >
                       {tag}
                     </span>
@@ -331,20 +327,20 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <section className="py-24 px-4 border-t border-zinc-900">
+      <section className="py-24 px-4 border-t border-[var(--stitch-line)]">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-4xl font-bold mb-6">{t.cta.title}</h2>
           <p className="text-zinc-400 mb-8">{t.cta.subtitle}</p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
               onClick={() => (user ? navigate("/console/projects") : setIsLoginOpen(true))}
-              className="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold rounded-md hover:bg-zinc-200 transition-colors"
+              className="w-full sm:w-auto px-8 py-3 bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-bold rounded-xl hover:opacity-90 transition-colors"
             >
               {t.cta.start_btn}
             </button>
             <button
               onClick={() => navigate("/pricing")}
-              className="w-full sm:w-auto px-8 py-3 bg-zinc-900 text-white font-medium rounded-md border border-zinc-800 hover:bg-zinc-800 transition-colors"
+              className="w-full sm:w-auto px-8 py-3 bg-[var(--stitch-surface)] text-[var(--stitch-ink)] font-medium rounded-xl border border-[var(--stitch-line)] hover:opacity-90 transition-colors"
             >
               {t.cta.contact_btn}
             </button>
