@@ -3,32 +3,30 @@ import { useNavigate } from "react-router-dom";
 import { userManager } from "../api";
 import { AuthDialog } from "../components/AuthDialog";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
-} from "../components/ui/tooltip";
-import {
-  Terminal,
   Package,
   UploadCloud,
   Rocket,
-  CheckCircle2
+  CheckCircle2,
+  ExternalLink,
+  Code2,
+  FileText,
+  Sparkles
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
 import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
+import { track } from "@/lib/track";
 
 const translations = {
   zh: {
     hero: {
       version: `v${siteConfig.version} 现已发布`,
-      title_start: "部署，从未如此简单",
+      title_start: "上传构建产物，立刻获得一个能打开的链接",
       title_end: "",
-      desc: "拖拽，上传，全球 CDN 分发。无需配置。专为追求速度的开发者设计。",
-      start_btn: "试试这个空项目",
-      install_cmd: "npm install -g demox",
-      install_tooltip: "太麻烦了，我们不兴这个。"
+      desc: "适合前端 Demo、AI 生成页面、客户评审、PDF/Markdown/DOCX 网页化。无需服务器、CDN、HTTPS 配置。",
+      start_btn: "立即上传",
+      examples_btn: "看 30 秒示例"
     },
     terminal: {
       title: "bash — 80x24",
@@ -40,6 +38,61 @@ const translations = {
       uploading_done: "完成 (1.2s)",
       success: "成功！已部署至：",
       url: "https://project-gamma.demox.site"
+    },
+    examples: {
+      title: "30 秒看完三个真实示例",
+      subtitle: "点开就能看到，都是用 Demox 发出来的页面。",
+      view_btn: "打开示例",
+      items: [
+        {
+          tag: "前端项目",
+          title: "Vite + React 构建产物",
+          desc: "npm run build 后打包 dist 为 zip，拖拽上传即得链接。",
+          url: "https://project-gamma.demox.site",
+          cmd: "cd my-app && npm run build && demox deploy ./dist"
+        },
+        {
+          tag: "Markdown 转网页",
+          title: "文档变可分享网页",
+          desc: "上传 .md 文件，内置模板渲染为带目录的网页，适合文档/笔记/草稿。",
+          url: "https://project-gamma.demox.site",
+          cmd: "demox deploy README.md"
+        },
+        {
+          tag: "AI 发布页面",
+          title: "AI 生成页面一键发布",
+          desc: "Claude/Cursor/v0 生成 HTML 后，CLI 或 MCP 直接发布，跳过服务器配置。",
+          url: "https://project-gamma.demox.site",
+          cmd: "demox deploy ./ai-generated.html"
+        }
+      ]
+    },
+    useCases: {
+      title: "我能用它做什么",
+      subtitle: "四种最常见的发布场景，全部 30 秒拿到链接。",
+      try_btn: "立即试试",
+      items: [
+        {
+          id: "frontend-demo",
+          title: "前端 Demo",
+          desc: "Vite / Next / CRA 构建产物打包 zip，秒级拿到可分享链接，适合作品集与团队预览。"
+        },
+        {
+          id: "ai-page",
+          title: "AI 生成页面",
+          desc: "Claude / Cursor / v0 生成的 HTML，跳过服务器配置，CLI 或 MCP 直接发布到边缘。"
+        },
+        {
+          id: "client-review",
+          title: "客户评审",
+          desc: "把设计稿或原型 zip 上传，发链接给客户在线看效果，对方无需本地环境。"
+        },
+        {
+          id: "docs-to-web",
+          title: "文档网页化",
+          desc: "PDF / Markdown / DOCX 一键转为带目录的可分享网页，适合文档、笔记、草稿。"
+        }
+      ]
     },
     workflow: {
       title: "从代码到全球",
@@ -64,9 +117,9 @@ const translations = {
     },
     cta: {
       title: "准备好发布了吗？",
-      subtitle: "加入 10,000+ 开发者，共同构建未来的 Web。",
-      start_btn: "立即白嫖",
-      contact_btn: "查看昂贵的套餐"
+      subtitle: "上传你的页面，30 秒拿到一个能打开的链接。",
+      start_btn: "立即上传",
+      contact_btn: "查看套餐"
     },
     footer: {
       copyright: "Demox © 2025",
@@ -79,12 +132,11 @@ const translations = {
   en: {
     hero: {
       version: `v${siteConfig.version} is now live`,
-      title_start: "Deploy Static Sites.",
-      title_end: "Instantly.",
-      desc: "Drag, drop, global CDN. No config required. Designed for developers who want speed without the hassle.",
-      start_btn: "Try this empty project",
-      install_cmd: "npm install -g demox",
-      install_tooltip: "Too much trouble. We don't do this."
+      title_start: "Upload your build,",
+      title_end: "get a link that opens.",
+      desc: "For frontend demos, AI-generated pages, client previews, and turning PDF/Markdown/DOCX into web pages. No server, CDN, or HTTPS config.",
+      start_btn: "Upload now",
+      examples_btn: "See 30s examples"
     },
     terminal: {
       title: "bash — 80x24",
@@ -96,6 +148,61 @@ const translations = {
       uploading_done: "Done (1.2s)",
       success: "Success! Deployed to:",
       url: "https://project-gamma.demox.site"
+    },
+    examples: {
+      title: "Three real examples in 30 seconds",
+      subtitle: "Click to open — all deployed with Demox.",
+      view_btn: "Open example",
+      items: [
+        {
+          tag: "Frontend project",
+          title: "Vite + React build output",
+          desc: "Run npm run build, zip the dist folder, drag and drop to get a link.",
+          url: "https://project-gamma.demox.site",
+          cmd: "cd my-app && npm run build && demox deploy ./dist"
+        },
+        {
+          tag: "Markdown to web",
+          title: "Docs as a shareable page",
+          desc: "Upload a .md file; built-in templates render it as a page with a table of contents.",
+          url: "https://project-gamma.demox.site",
+          cmd: "demox deploy README.md"
+        },
+        {
+          tag: "AI-published page",
+          title: "Ship AI-generated pages instantly",
+          desc: "After Claude/Cursor/v0 generates HTML, publish via CLI or MCP — no server setup.",
+          url: "https://project-gamma.demox.site",
+          cmd: "demox deploy ./ai-generated.html"
+        }
+      ]
+    },
+    useCases: {
+      title: "What can I use it for?",
+      subtitle: "Four common publishing scenarios — get a link in 30 seconds for each.",
+      try_btn: "Try it now",
+      items: [
+        {
+          id: "frontend-demo",
+          title: "Frontend Demo",
+          desc: "Zip Vite / Next / CRA build output and get a shareable link in seconds — perfect for portfolios and team previews."
+        },
+        {
+          id: "ai-page",
+          title: "AI-Generated Pages",
+          desc: "Skip server setup for Claude / Cursor / v0 HTML — publish directly to the edge via CLI or MCP."
+        },
+        {
+          id: "client-review",
+          title: "Client Review",
+          desc: "Upload your prototype zip and send the link to clients — they review online with no local env needed."
+        },
+        {
+          id: "docs-to-web",
+          title: "Docs to Web",
+          desc: "Turn PDF / Markdown / DOCX into a shareable web page with a table of contents — great for docs, notes, drafts."
+        }
+      ]
     },
     workflow: {
       title: "From Code to Global",
@@ -121,9 +228,9 @@ const translations = {
     },
     cta: {
       title: "Ready to ship?",
-      subtitle: "Join 10,000+ developers building the future of the web.",
-      start_btn: "Get Started for Free",
-      contact_btn: "Contact Sales"
+      subtitle: "Upload your page and get a working link in 30 seconds.",
+      start_btn: "Upload now",
+      contact_btn: "View plans"
     },
     footer: {
       copyright: "Demox © 2025",
@@ -144,6 +251,7 @@ const CloudHostLanding: React.FC = () => {
   const t = translations[lang];
 
   useEffect(() => {
+    track("landing_view");
     const checkLoginState = () => {
       const currentUser = userManager.get();
       if (currentUser) {
@@ -159,6 +267,10 @@ const CloudHostLanding: React.FC = () => {
       setUser(currentUser);
     }
     navigate("/console/projects");
+  };
+
+  const scrollToExamples = () => {
+    document.getElementById("examples")?.scrollIntoView({ behavior: "smooth" });
   };
 
   return (
@@ -177,7 +289,7 @@ const CloudHostLanding: React.FC = () => {
           <h1
             className={`font-bold tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-zinc-100 to-zinc-500 ${
               lang === "zh"
-                ? "text-4xl md:text-5xl lg:text-6xl"
+                ? "text-3xl md:text-4xl lg:text-5xl"
                 : "text-5xl md:text-7xl"
             }`}
           >
@@ -198,22 +310,21 @@ const CloudHostLanding: React.FC = () => {
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
             <button
-              onClick={() => (user ? navigate("/console/projects") : setIsLoginOpen(true))}
+              onClick={() => {
+                track("deploy_click", { source: "hero" });
+                user ? navigate("/console/projects") : setIsLoginOpen(true);
+              }}
               className="w-full sm:w-auto px-8 py-3 bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-semibold rounded-xl hover:-translate-y-1 transition-transform duration-300 shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)]"
             >
               {t.hero.start_btn}
             </button>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button className="w-full sm:w-auto px-8 py-3 border border-[var(--stitch-line)] text-[var(--stitch-muted)] rounded-xl transition-colors font-mono text-sm flex items-center justify-center gap-2 group cursor-not-allowed line-through decoration-zinc-500 opacity-50">
-                  <Terminal size={16} />
-                  {t.hero.install_cmd}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>{t.hero.install_tooltip}</p>
-              </TooltipContent>
-            </Tooltip>
+            <button
+              onClick={scrollToExamples}
+              className="w-full sm:w-auto px-8 py-3 border border-[var(--stitch-line)] text-[var(--stitch-ink)] rounded-xl transition-colors font-medium flex items-center justify-center gap-2 hover:border-[var(--stitch-muted)]"
+            >
+              <ExternalLink size={16} />
+              {t.hero.examples_btn}
+            </button>
           </div>
 
           <div className="max-w-2xl mx-auto rounded-2xl overflow-hidden border border-[var(--stitch-line)] bg-[var(--stitch-surface)] shadow-2xl relative group">
@@ -323,6 +434,100 @@ const CloudHostLanding: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* 用例区：我能用它做什么 */}
+      <section id="use-cases" className="py-24 px-4 border-t border-[var(--stitch-line)]">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-bold mb-4 text-white">
+              {t.useCases.title}
+            </h2>
+            <p className="text-zinc-400">{t.useCases.subtitle}</p>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {t.useCases.items.map((uc, i) => {
+              const icon =
+                i === 0 ? <Package className="w-5 h-5" />
+                : i === 1 ? <Sparkles className="w-5 h-5" />
+                : i === 2 ? <UploadCloud className="w-5 h-5" />
+                : <FileText className="w-5 h-5" />;
+              return (
+                <div
+                  key={uc.id}
+                  className="group rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-6 hover:border-[var(--stitch-muted)] transition-colors flex flex-col"
+                >
+                  <div className="w-10 h-10 rounded-lg bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] flex items-center justify-center text-[var(--stitch-muted)] group-hover:text-white transition-colors mb-4">
+                    {icon}
+                  </div>
+                  <h3 className="text-base font-bold mb-2 text-white">{uc.title}</h3>
+                  <p className="text-sm text-zinc-400 leading-relaxed mb-5 flex-1">{uc.desc}</p>
+                  <button
+                    onClick={() => {
+                      track("usecase_click", { case: uc.id });
+                      user ? navigate("/console/projects") : setIsLoginOpen(true);
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] text-xs font-medium text-[var(--stitch-ink)] hover:border-[var(--stitch-blue)] transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    {t.useCases.try_btn}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* 示例区：3 个真实可打开示例 */}
+      <section id="examples" className="py-24 px-4 border-t border-[var(--stitch-line)]">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-bold mb-4 text-white">
+              {t.examples.title}
+            </h2>
+            <p className="text-zinc-400">{t.examples.subtitle}</p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {t.examples.items.map((ex, i) => {
+              const icon =
+                i === 0 ? <Package className="w-5 h-5" />
+                : i === 1 ? <FileText className="w-5 h-5" />
+                : <Sparkles className="w-5 h-5" />;
+              return (
+                <div
+                  key={i}
+                  className="group relative rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-6 hover:border-[var(--stitch-muted)] transition-colors flex flex-col"
+                >
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-9 h-9 rounded-lg bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] flex items-center justify-center text-[var(--stitch-muted)] group-hover:text-white transition-colors">
+                      {icon}
+                    </div>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] text-[var(--stitch-muted)] font-mono">
+                      {ex.tag}
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-bold mb-2 text-white">{ex.title}</h3>
+                  <p className="text-sm text-zinc-400 leading-relaxed mb-4 flex-1">{ex.desc}</p>
+                  <div className="rounded-lg bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] px-3 py-2 mb-4 flex items-center gap-2">
+                    <Code2 className="w-3.5 h-3.5 text-[var(--stitch-muted)] shrink-0" />
+                    <code className="text-xs text-[var(--stitch-muted)] font-mono truncate">{ex.cmd}</code>
+                  </div>
+                  <a
+                    href={ex.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => track("example_click", { index: i, tag: ex.tag })}
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] text-sm font-medium text-[var(--stitch-ink)] hover:border-[var(--stitch-blue)] transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    {t.examples.view_btn}
+                  </a>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>

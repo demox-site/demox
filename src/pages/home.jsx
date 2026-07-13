@@ -9,7 +9,7 @@ import {
   Badge
 } from "@/components/ui";
 // @ts-ignore;
-import { Globe, RefreshCw, Tag, UploadCloud } from "lucide-react";
+import { Globe, RefreshCw, Tag, UploadCloud, CheckCircle2, Copy, X, MessageSquare, ExternalLink } from "lucide-react";
 import { Navigate, useParams } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "./home-translations";
@@ -26,6 +26,7 @@ import { useUpload } from "./use-upload";
 import { useRedeploy } from "./use-redeploy";
 import { useDomainDialog } from "./use-domain-dialog";
 import { useFilters } from "./use-filters";
+import { track } from "@/lib/track";
 
 /**
  * Home
@@ -138,6 +139,72 @@ export default function Home(props) {
   return (
     <>
       <div style={style} className="stitch-page">
+          {upload.successBanner && (
+            <div className="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <div>
+                    <p className="font-medium text-emerald-300">
+                      {lang === "zh" ? "部署成功" : "Deployed successfully"}
+                    </p>
+                    <a
+                      href={upload.successBanner.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] underline underline-offset-2 inline-flex items-center gap-1 mt-0.5"
+                    >
+                      {upload.successBanner.url}
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                </div>
+                <button
+                  onClick={() => upload.setSuccessBanner(null)}
+                  className="text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-emerald-500/20">
+                <p className="text-sm text-[var(--stitch-ink)] flex items-center gap-1.5 mb-2">
+                  <MessageSquare className="w-4 h-4 text-[var(--stitch-muted)]" />
+                  {lang === "zh"
+                    ? "这个链接准备用来发给谁？遇到什么卡点？"
+                    : "Who are you sending this link to? Any blockers?"}
+                </p>
+                <div className="flex gap-2">
+                  <textarea
+                    readOnly
+                    value={
+                      lang === "zh"
+                        ? `链接：${upload.successBanner.url}\n用途：\n卡点：`
+                        : `Link: ${upload.successBanner.url}\nUse case:\nBlockers:`
+                    }
+                    className="flex-1 text-xs font-mono bg-[var(--stitch-surface)] border border-[var(--stitch-line)] rounded-lg px-3 py-2 text-[var(--stitch-muted)] resize-none"
+                    rows={3}
+                    onClick={(e) => e.currentTarget.select()}
+                  />
+                  <button
+                    onClick={() => {
+                      track("feedback_copy", { url: upload.successBanner.url });
+                      navigator.clipboard?.writeText(
+                        lang === "zh"
+                          ? `链接：${upload.successBanner.url}\n用途：\n卡点：`
+                          : `Link: ${upload.successBanner.url}\nUse case:\nBlockers:`
+                      );
+                    }}
+                    className="shrink-0 px-3 py-2 rounded-lg bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] text-sm text-[var(--stitch-ink)] hover:border-[var(--stitch-muted)] flex items-center gap-1.5"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    {lang === "zh" ? "复制" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {isDeployMode ? (
             <UploadSection
               t={t}

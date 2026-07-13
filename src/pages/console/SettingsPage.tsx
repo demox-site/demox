@@ -43,7 +43,16 @@ const texts = {
     unbind: "解绑",
     notBound: "未绑定",
     bound: "已绑定",
-    todo: "后端接口待接入"
+    todo: "后端接口待接入",
+    passwordUpdated: "密码已更新",
+    passwordMismatch: "两次输入的新密码不一致",
+    passwordTooShort: "新密码至少 8 个字符",
+    passwordRequired: "请填写所有密码字段",
+    passwordFailed: "修改失败",
+    confirmUnbind: "确定要解绑 GitHub 吗？",
+    confirmUnbindDesc: "解绑后将无法使用 GitHub 一键登录。",
+    githubUnbound: "GitHub 已解绑",
+    unbindFailed: "解绑失败"
   },
   en: {
     title: "Settings",
@@ -69,7 +78,16 @@ const texts = {
     unbind: "Unbind",
     notBound: "Not bound",
     bound: "Bound",
-    todo: "Backend endpoint pending"
+    todo: "Backend endpoint pending",
+    passwordUpdated: "Password updated",
+    passwordMismatch: "New passwords do not match",
+    passwordTooShort: "New password must be at least 8 characters",
+    passwordRequired: "Please fill in all password fields",
+    passwordFailed: "Update failed",
+    confirmUnbind: "Unbind GitHub?",
+    confirmUnbindDesc: "You won't be able to sign in with GitHub after unbinding.",
+    githubUnbound: "GitHub unbound",
+    unbindFailed: "Unbind failed"
   }
 } as const;
 
@@ -87,6 +105,13 @@ const SettingsPage: React.FC = () => {
   const [githubLogin, setGithubLogin] = useState<string | null>(
     user?.githubLogin || null
   );
+
+  // 密码表单
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [unbindingGithub, setUnbindingGithub] = useState(false);
 
   // 进入页面时拉取真实账号信息，刷新绑定状态并回写本地
   useEffect(() => {
@@ -121,8 +146,62 @@ const SettingsPage: React.FC = () => {
     };
   }, []);
 
-  const notImplemented = () =>
-    toast({ title: t.todo, variant: "destructive" });
+  const handleChangePassword = async () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      toast({ title: t.passwordRequired, variant: "destructive" });
+      return;
+    }
+    if (newPassword.length < 8) {
+      toast({ title: t.passwordTooShort, variant: "destructive" });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast({ title: t.passwordMismatch, variant: "destructive" });
+      return;
+    }
+
+    setSavingPassword(true);
+    try {
+      await authApi.changePassword({ currentPassword, newPassword });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      toast({ title: t.passwordUpdated });
+    } catch (error: any) {
+      toast({
+        title: t.passwordFailed,
+        description: error?.message || "",
+        variant: "destructive"
+      });
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
+  const handleUnbindGithub = async () => {
+    if (!window.confirm(`${t.confirmUnbind}\n${t.confirmUnbindDesc}`)) return;
+    setUnbindingGithub(true);
+    try {
+      await authApi.unbindGithub();
+      setGithubBound(false);
+      setGithubLogin(null);
+      const local = userManager.get() || {};
+      userManager.set({
+        ...local,
+        githubId: null,
+        githubLogin: null
+      });
+      toast({ title: t.githubUnbound });
+    } catch (error: any) {
+      toast({
+        title: t.unbindFailed,
+        description: error?.message || "",
+        variant: "destructive"
+      });
+    } finally {
+      setUnbindingGithub(false);
+    }
+  };
 
   const handleSaveProfile = async () => {
     const nextNickname = nickname.trim();
@@ -242,6 +321,8 @@ const SettingsPage: React.FC = () => {
                 <Label className="text-[var(--stitch-ink)]">{t.currentPassword}</Label>
                 <Input
                   type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
                   className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
                 />
               </div>
@@ -249,6 +330,8 @@ const SettingsPage: React.FC = () => {
                 <Label className="text-[var(--stitch-ink)]">{t.newPassword}</Label>
                 <Input
                   type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
                   className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
                 />
               </div>
@@ -256,14 +339,17 @@ const SettingsPage: React.FC = () => {
                 <Label className="text-[var(--stitch-ink)]">{t.confirmPassword}</Label>
                 <Input
                   type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
                   className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
                 />
               </div>
               <Button
-                onClick={notImplemented}
+                onClick={handleChangePassword}
+                disabled={savingPassword}
                 className="stitch-primary rounded-full"
               >
-                {t.updatePassword}
+                {savingPassword ? "..." : t.updatePassword}
               </Button>
             </CardContent>
           </Card>
@@ -297,12 +383,17 @@ const SettingsPage: React.FC = () => {
                   variant="outline"
                   onClick={() =>
                     githubBound
-                      ? notImplemented()
+                      ? handleUnbindGithub()
                       : authApi.startGithubLogin("bind")
                   }
+                  disabled={unbindingGithub}
                   className="stitch-action rounded-full"
                 >
-                  {githubBound ? t.unbind : t.bind}
+                  {unbindingGithub
+                    ? "..."
+                    : githubBound
+                    ? t.unbind
+                    : t.bind}
                 </Button>
               </div>
             </CardContent>

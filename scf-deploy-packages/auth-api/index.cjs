@@ -48,6 +48,10 @@ exports.main = async (event, context) => {
       return await handleGetCurrentUser(event);
     } else if (path === '/auth/update-profile' || event.body?.action === 'update_profile') {
       return await handleUpdateProfile(event);
+    } else if (path === '/auth/change-password' || event.body?.action === 'change_password') {
+      return await handleChangePassword(event);
+    } else if (path === '/auth/unbind-github' || event.body?.action === 'unbind_github') {
+      return await handleUnbindGithub(event);
     } else if (path === '/auth/migrate-nicknames' || event.body?.action === 'migrate_nicknames') {
       return await handleMigrateNicknames(event);
     } else if (path === '/auth/verify' || event.body?.action === 'verify') {
@@ -932,6 +936,134 @@ async function handleUpdateProfile(event) {
       },
       nickname: userData.nickname,
       message: '资料已更新'
+    })
+  };
+}
+
+/**
+ * 修改当前用户密码
+ * body: { currentPassword, newPassword }
+ */
+async function handleChangePassword(event) {
+  const current = authenticate(event);
+  if (!current) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const { currentPassword, newPassword } = event.body || event;
+
+  if (!currentPassword || !newPassword) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '请输入当前密码与新密码' })
+    };
+  }
+
+  if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '新密码长度需在 8-128 个字符之间' })
+    };
+  }
+
+  const users = await query('SELECT password_hash FROM users WHERE id = ?', [current.userId]);
+  if (users.length === 0) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '用户不存在' })
+    };
+  }
+
+  const storedHash = users[0].password_hash;
+  if (!storedHash) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前账号未设置密码，请先通过忘记密码流程设置' })
+    };
+  }
+
+  const valid = await bcrypt.compare(currentPassword, storedHash);
+  if (!valid) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前密码错误' })
+    };
+  }
+
+  const newHash = await bcrypt.hash(newPassword, 10);
+  await query('UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?', [newHash, current.userId]);
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      message: '密码已更新'
+    })
+  };
+}
+
+/**
+ * 解绑当前用户的 GitHub 账号
+ * 安全约束：仅当用户已设置密码（password_hash 非空）时才允许解绑，
+ * 避免解绑后账号无法登录。
+ */
+async function handleUnbindGithub(event) {
+  const current = authenticate(event);
+  if (!current) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const users = await query('SELECT password_hash, github_id FROM users WHERE id = ?', [current.userId]);
+  if (users.length === 0) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '用户不存在' })
+    };
+  }
+
+  const userData = users[0];
+  if (!userData.github_id) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前账号未绑定 GitHub' })
+    };
+  }
+
+  if (!userData.password_hash) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前账号未设置密码，解绑后将无法登录，请先设置密码' })
+    };
+  }
+
+  await query(
+    'UPDATE users SET github_id = NULL, github_login = NULL, updated_at = NOW() WHERE id = ?',
+    [current.userId]
+  );
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      message: 'GitHub 已解绑'
     })
   };
 }

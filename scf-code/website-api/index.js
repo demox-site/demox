@@ -14,7 +14,7 @@ try {
   geoip = null;
 }
 const { query, transaction } = require('./shared/db.js');
-const { getUserId, authenticate } = require('./shared/jwt.js');
+const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
@@ -346,6 +346,33 @@ exports.main = async (event, context) => {
       return { statusCode: 200, headers: getCORSHeaders(), body: '' };
     }
 
+    // PAT（个人访问令牌）吊销拦截：PAT 是带 jti 声明的长效 JWT，
+    // 现有 authenticate 可正常解析；此处仅查表确认未吊销。
+    // 会话 JWT 无 jti 声明，直接跳过，零影响。
+    const _authPayload = authenticate(event);
+    if (_authPayload && _authPayload.jti) {
+      try {
+        await ensureAccessTokensTable();
+        const _patRows = await query(
+          'SELECT revoked_at, expires_at FROM access_tokens WHERE jti = ? LIMIT 1',
+          [_authPayload.jti]
+        );
+        const _revoked = !_patRows.length || _patRows[0].revoked_at;
+        const _expired = _patRows[0] && _patRows[0].expires_at && new Date(_patRows[0].expires_at) < new Date();
+        if (_revoked || _expired) {
+          return {
+            statusCode: 401,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ success: false, error: 'Token已吊销或过期' })
+          };
+        }
+        // fire-and-forget 更新最近使用时间，不阻塞请求
+        query('UPDATE access_tokens SET last_used_at = NOW() WHERE jti = ?', [_authPayload.jti]).catch(() => {});
+      } catch (e) {
+        console.warn('PAT 吊销检查失败，放行:', e.message);
+      }
+    }
+
     // 路由分发
     // 优先按 body.action 精确分发(前端总是带 action);
     // path 含义模糊(如 /list 会匹配 /list-user-roles),仅作无 action 时的回退。
@@ -391,6 +418,15 @@ exports.main = async (event, context) => {
       delete_role_limit: handleDeleteRoleLimit,
       resolve_user_emails: handleResolveUserEmails,
       get_role_limits: handleGetRoleLimits,
+      get_usage: handleGetUsage,
+      migrate_website_usage: handleMigrateWebsiteUsage,
+      create_token: handleCreateToken,
+      list_tokens: handleListTokens,
+      revoke_token: handleRevokeToken,
+      migrate_access_tokens: handleMigrateAccessTokens,
+      track_product_event: handleTrackProductEvent,
+      get_product_funnel: handleGetProductFunnel,
+      migrate_product_events: handleMigrateProductEvents,
       // 多云存储桶注册制
       list_buckets: handleListBuckets,
       register_bucket: handleRegisterBucket,
@@ -415,6 +451,18 @@ exports.main = async (event, context) => {
       return await handleListUserRoles(event);
     } else if (pathUrl.includes('/list-role-limits')) {
       return await handleListRoleLimits(event);
+    } else if (pathUrl.includes('/get-usage')) {
+      return await handleGetUsage(event);
+    } else if (pathUrl.includes('/create-token')) {
+      return await handleCreateToken(event);
+    } else if (pathUrl.includes('/list-tokens')) {
+      return await handleListTokens(event);
+    } else if (pathUrl.includes('/revoke-token')) {
+      return await handleRevokeToken(event);
+    } else if (pathUrl.includes('/track-product-event')) {
+      return await handleTrackProductEvent(event);
+    } else if (pathUrl.includes('/get-product-funnel')) {
+      return await handleGetProductFunnel(event);
     } else if (pathUrl.includes('/list-projects')) {
       return await handleListProjects(event);
     } else if (pathUrl.includes('/create-project')) {
@@ -475,6 +523,12 @@ exports.main = async (event, context) => {
       return await handleMigrateProjectCollaboration(event);
     } else if (pathUrl.includes('/migrate-site-analytics')) {
       return await handleMigrateSiteAnalytics(event);
+    } else if (pathUrl.includes('/migrate-website-usage')) {
+      return await handleMigrateWebsiteUsage(event);
+    } else if (pathUrl.includes('/migrate-access-tokens')) {
+      return await handleMigrateAccessTokens(event);
+    } else if (pathUrl.includes('/migrate-product-events')) {
+      return await handleMigrateProductEvents(event);
     } else {
       return {
         statusCode: 404,
@@ -561,6 +615,88 @@ async function getUserLimits(userId) {
       max_file_count: 100
     };
   }
+}
+
+/**
+ * 幂等确保 websites 表存在 file_count / storage_size 列（用量统计用）。
+ * 冷启动后只检查一次；列已存在时仅一次轻量 information_schema 查询。
+ * 未执行 008 迁移的历史库也能自动补列，避免部署写入失败。
+ */
+let _usageColumnsEnsured = false;
+async function ensureUsageColumns() {
+  if (_usageColumnsEnsured) return;
+  try {
+    const cols = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
+         AND COLUMN_NAME IN ('file_count','storage_size')`
+    );
+    const have = new Set((cols || []).map((r) => r.COLUMN_NAME));
+    if (!have.has('file_count')) {
+      await query(`ALTER TABLE websites ADD COLUMN file_count INT DEFAULT NULL COMMENT '本次部署的文件数量（单次上传包）'`);
+    }
+    if (!have.has('storage_size')) {
+      await query(`ALTER TABLE websites ADD COLUMN storage_size BIGINT DEFAULT NULL COMMENT '本次部署的上传包体积(字节)'`);
+    }
+  } catch (e) {
+    // 列可能已存在（并发）或库不可用；写入时若仍缺列会再兜底。
+    console.warn('ensureUsageColumns 跳过:', e.message);
+  }
+  _usageColumnsEnsured = true;
+}
+
+/**
+ * 幂等确保 access_tokens 表存在（个人访问令牌）。
+ */
+let _accessTokensTableEnsured = false;
+async function ensureAccessTokensTable() {
+  if (_accessTokensTableEnsured) return;
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS access_tokens (
+        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id      VARCHAR(64) NOT NULL COMMENT '所属用户ID',
+        name         VARCHAR(255) NOT NULL COMMENT '令牌名称（用户自取）',
+        jti          VARCHAR(64) NOT NULL COMMENT 'JWT ID，用于吊销查表',
+        prefix       VARCHAR(32) NOT NULL COMMENT '令牌前缀（展示用，不可还原）',
+        expires_at   TIMESTAMP NULL DEFAULT NULL COMMENT '过期时间',
+        last_used_at TIMESTAMP NULL DEFAULT NULL COMMENT '最近使用时间',
+        revoked_at   TIMESTAMP NULL DEFAULT NULL COMMENT '吊销时间',
+        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_access_tokens_jti (jti),
+        INDEX idx_access_tokens_user (user_id),
+        INDEX idx_access_tokens_prefix (prefix)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='个人访问令牌'`
+    );
+  } catch (e) {
+    console.warn('ensureAccessTokensTable 跳过:', e.message);
+  }
+  _accessTokensTableEnsured = true;
+}
+
+/**
+ * 幂等确保 product_events 表存在（产品漏斗埋点）。
+ */
+let _productEventsTableEnsured = false;
+async function ensureProductEventsTable() {
+  if (_productEventsTableEnsured) return;
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS product_events (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        event_name  VARCHAR(64) NOT NULL COMMENT '事件名',
+        visitor_id  VARCHAR(64) NOT NULL DEFAULT '' COMMENT '匿名访客ID',
+        page        VARCHAR(128) NOT NULL DEFAULT '' COMMENT '触发页面路径',
+        props       JSON NULL COMMENT '附加属性（JSON）',
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_product_events_name_time (event_name, created_at),
+        INDEX idx_product_events_visitor (visitor_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品漏斗埋点'`
+    );
+  } catch (e) {
+    console.warn('ensureProductEventsTable 跳过:', e.message);
+  }
+  _productEventsTableEnsured = true;
 }
 
 /**
@@ -2299,6 +2435,281 @@ async function handleGetRoleLimits(event) {
     enabled: r.enabled === null ? null : !!r.enabled
   }));
   return ok({ code: 0, data });
+}
+
+/**
+ * 获取当前用户的真实用量与套餐限额。
+ * - deployments: 累计站点数（与 deployment_limit 累计上限对比，是真正的配额比）。
+ * - files / storage: 各站点单次部署文件数与上传包体积之和；对应 max_file_count /
+ *   max_file_size 是「单次上传」上限而非累计配额，故同时返回 maxSite 供前端展示
+ *   「最大单站 vs 单次上限」这一真正受约束的比例。
+ * - 历史站点未记录用量列时按 0 聚合。
+ */
+async function handleGetUsage(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: null, message: '未登录' });
+
+  try {
+    await ensureUsageColumns();
+    const limits = await getUserLimits(userId);
+
+    // 仅统计用户归属站点（与 deployment_limit 的计数口径一致）。
+    const rows = await query(
+      `SELECT COUNT(*) AS deployments,
+              COALESCE(SUM(file_count), 0) AS files,
+              COALESCE(SUM(storage_size), 0) AS storage,
+              COALESCE(MAX(file_count), 0) AS maxSiteFiles,
+              COALESCE(MAX(storage_size), 0) AS maxSiteStorage
+       FROM websites WHERE user_id = ?`,
+      [userId]
+    );
+    const r = (rows && rows[0]) || {};
+    const usage = {
+      deployments: Number(r.deployments || 0),
+      files: Number(r.files || 0),
+      storage: Number(r.storage || 0)
+    };
+    const maxSite = {
+      fileCount: Number(r.maxSiteFiles || 0),
+      storageSize: Number(r.maxSiteStorage || 0)
+    };
+
+    return ok({
+      code: 0,
+      data: {
+        role: { name: limits.name, priority: limits.priority },
+        usage,
+        maxSite,
+        limits: {
+          deployment_limit: limits.deployment_limit ?? null,
+          max_file_count: limits.max_file_count ?? null,
+          max_file_size: limits.max_file_size ?? null
+        }
+      }
+    });
+  } catch (e) {
+    console.error('获取用量失败:', e);
+    return ok({ code: 500, data: null, message: e.message });
+  }
+}
+
+/**
+ * 幂等迁移：补 websites.file_count / storage_size 列。可由管理员通过
+ * migrate_website_usage action 触发（需 MIGRATION_KEY），与 008 SQL 等价。
+ */
+async function handleMigrateWebsiteUsage(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
+  }
+  _usageColumnsEnsured = false;
+  await ensureUsageColumns();
+  return ok({ success: true, message: 'websites 用量列已就绪' });
+}
+
+// ── 个人访问令牌（PAT）─────────────────────────────────────────
+// PAT = 带 jti 声明的长效 JWT，用 JWT_SECRET 签名。
+// 现有 getUserId/authenticate 无需改动即可解析；吊销靠 jti 查表拦截（见 exports.main）。
+
+const PAT_EXPIRES_IN = process.env.PAT_EXPIRES_IN || '730d'; // 默认 2 年
+
+/**
+ * 创建个人访问令牌。明文 token 仅此次返回，后续只存 prefix。
+ */
+async function handleCreateToken(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: null, message: '未登录' });
+
+  const name = String(event.body?.name || '').trim();
+  if (!name) return ok({ code: 1, data: null, message: '请填写令牌名称' });
+  if (name.length > 120) return ok({ code: 1, data: null, message: '令牌名称过长' });
+
+  await ensureAccessTokensTable();
+
+  const jti = nodeCrypto.randomBytes(16).toString('hex');
+  const token = sign({ userId, jti, type: 'pat' }, PAT_EXPIRES_IN);
+  const prefix = token.slice(0, 12);
+
+  // 解析 JWT 过期时间写入 expires_at（便于列表展示与过期判断）
+  let expiresAt = null;
+  try {
+    const decoded = require('jsonwebtoken').decode(token);
+    if (decoded && decoded.exp) expiresAt = new Date(decoded.exp * 1000);
+  } catch (e) { /* ignore */ }
+
+  const result = await query(
+    `INSERT INTO access_tokens (user_id, name, jti, prefix, expires_at) VALUES (?, ?, ?, ?, ?)`,
+    [userId, name, jti, prefix, expiresAt]
+  );
+
+  return ok({
+    code: 0,
+    data: {
+      id: result.insertId,
+      token, // 明文 token，仅此一次返回
+      name,
+      prefix,
+      createdAt: Date.now()
+    }
+  });
+}
+
+/**
+ * 列出当前用户的令牌（不含明文 token，仅 prefix）。
+ */
+async function handleListTokens(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: [], message: '未登录' });
+
+  await ensureAccessTokensTable();
+  const rows = await query(
+    `SELECT id, name, prefix, created_at, last_used_at, expires_at, revoked_at
+     FROM access_tokens WHERE user_id = ? ORDER BY created_at DESC`,
+    [userId]
+  );
+
+  const data = rows.map((r) => ({
+    id: String(r.id),
+    name: r.name,
+    prefix: r.prefix,
+    createdAt: r.created_at ? new Date(r.created_at).getTime() : null,
+    lastUsedAt: r.last_used_at ? new Date(r.last_used_at).getTime() : null,
+    expiresAt: r.expires_at ? new Date(r.expires_at).getTime() : null,
+    revoked: !!r.revoked_at
+  }));
+
+  return ok({ code: 0, data });
+}
+
+/**
+ * 吊销令牌（软删除：置 revoked_at）。
+ */
+async function handleRevokeToken(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: null, message: '未登录' });
+
+  const tokenId = String(event.body?.id || '').trim();
+  if (!tokenId) return ok({ code: 1, data: null, message: '缺少令牌 ID' });
+
+  await ensureAccessTokensTable();
+  const result = await query(
+    `UPDATE access_tokens SET revoked_at = NOW() WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+    [tokenId, userId]
+  );
+
+  if (result.affectedRows === 0) {
+    return ok({ code: 1, data: null, message: '令牌不存在或已吊销' });
+  }
+  return ok({ code: 0, data: { revoked: true } });
+}
+
+/**
+ * 幂等迁移：建 access_tokens 表。
+ */
+async function handleMigrateAccessTokens(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
+  }
+  _accessTokensTableEnsured = false;
+  await ensureAccessTokensTable();
+  return ok({ success: true, message: 'access_tokens 表已就绪' });
+}
+
+// ── 产品漏斗埋点 ────────────────────────────────────────────────
+// 匿名埋点：无需登录，visitor_id 由前端 localStorage 生成。
+
+const PRODUCT_EVENT_NAMES = new Set([
+  'landing_view',
+  'deploy_click',
+  'deploy_success',
+  'deploy_fail',
+  'example_click',
+  'feedback_copy',
+  'usecase_click'
+]);
+
+/**
+ * 接收匿名产品事件（无需鉴权）。
+ * body: { eventName, visitorId, page, props }
+ */
+async function handleTrackProductEvent(event) {
+  const body = event.body || {};
+  const eventName = String(body.eventName || '').trim();
+  if (!PRODUCT_EVENT_NAMES.has(eventName)) {
+    return ok({ code: 1, data: null, message: '未知事件名' });
+  }
+  const visitorId = String(body.visitorId || '').trim().slice(0, 64);
+  const page = String(body.page || '').trim().slice(0, 128);
+  let props = null;
+  if (body.props && typeof body.props === 'object') {
+    try { props = JSON.stringify(body.props); } catch (e) { /* ignore */ }
+  }
+
+  try {
+    await ensureProductEventsTable();
+    await query(
+      `INSERT INTO product_events (event_name, visitor_id, page, props) VALUES (?, ?, ?, ?)`,
+      [eventName, visitorId, page, props]
+    );
+  } catch (e) {
+    console.warn('埋点写入失败（不阻塞）:', e.message);
+  }
+  // 永远返回成功——埋点失败不应影响用户流程
+  return ok({ code: 0, data: { tracked: true } });
+}
+
+/**
+ * 管理员：查询产品漏斗（最近 N 天的事件计数）。
+ */
+async function handleGetProductFunnel(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ code: 401, data: null, message: '未登录' });
+  const isAdmin = await checkAdmin(userId);
+  if (!isAdmin) return ok({ code: 403, data: null, message: '无权限' });
+
+  const days = Math.min(90, Math.max(1, Number(event.body?.days) || 14));
+  await ensureProductEventsTable();
+
+  const rows = await query(
+    `SELECT event_name, DATE(created_at) AS d, COUNT(*) AS cnt
+     FROM product_events
+     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+     GROUP BY event_name, d
+     ORDER BY d, event_name`,
+    [days]
+  );
+
+  // 汇总每个事件的总量
+  const totals = {};
+  for (const r of rows) {
+    totals[r.event_name] = (totals[r.event_name] || 0) + Number(r.cnt);
+  }
+
+  return ok({
+    code: 0,
+    data: {
+      days,
+      totals,
+      daily: rows.map((r) => ({ event: r.event_name, date: r.d, count: Number(r.cnt) }))
+    }
+  });
+}
+
+/**
+ * 幂等迁移：建 product_events 表。
+ */
+async function handleMigrateProductEvents(event) {
+  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
+  const expected = process.env.MIGRATION_KEY || '';
+  if (!expected || provided !== expected) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
+  }
+  _productEventsTableEnsured = false;
+  await ensureProductEventsTable();
+  return ok({ success: true, message: 'product_events 表已就绪' });
 }
 
 /**
@@ -4680,6 +5091,9 @@ async function handleUploadAndDeploy(event) {
     const extractedTitle = extractTitleFromZip(zipEntries);
     const defaultName = extractedTitle || fileName;
 
+    // 确保用量列存在（幂等），再写入 file_count/storage_size
+    await ensureUsageColumns();
+
     // 保存到数据库
     if (existing.length > 0) {
       // 重部署:仅当用户从未自定义过名称(name 为空或等于旧 file_name)时,才用新默认名覆盖
@@ -4688,15 +5102,15 @@ async function handleUploadAndDeploy(event) {
       const userCustomized = prevName && prevName !== (prev.file_name || '').trim();
       const nextName = userCustomized ? prevName : defaultName;
       await query(
-        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, updated_at = NOW() WHERE id = ?`,
-        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, prev.id]
+        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, file_count = ?, storage_size = ?, updated_at = NOW() WHERE id = ?`,
+        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, validEntries.length, totalSize, prev.id]
       );
       // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
       // （边缘缓存最长 60s 后自然刷新）
     } else {
       await query(
-        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags, bucket_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([]), bucketIdToStore]
+        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags, bucket_id, file_count, storage_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([]), bucketIdToStore, validEntries.length, totalSize]
       );
     }
 

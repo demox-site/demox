@@ -13,6 +13,7 @@ import {
   isSupportedSpreadsheet
 } from "@/lib/spreadsheet-to-site";
 import { buildHtmlSiteZipFile, isSupportedHtml } from "@/lib/html-to-site";
+import { track } from "@/lib/track";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
@@ -67,6 +68,7 @@ export function useUpload({
   const [uploadFileSize, setUploadFileSize] = useState(0);
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef(null);
+  const [successBanner, setSuccessBanner] = useState(null); // { url, name } | null
 
   // 上传中轮播趣味文案
   useEffect(() => {
@@ -166,6 +168,7 @@ export function useUpload({
     setUploadStatusText("");
     setUploadStage(1);
     setUploadFileSize(file.size);
+    setSuccessBanner(null);
 
     let websiteId = null;
 
@@ -231,6 +234,11 @@ export function useUpload({
 
       setDeploying((prev) => ({ ...prev, [websiteId]: false }));
       if (deployResult && deployResult.success) {
+        setSuccessBanner({
+          url: deployResult.url || "",
+          name: safeFileName
+        });
+        track("deploy_success", { fileName: safeFileName });
         toast({
           title: t.toastDeploySuccessTitle,
           description: t.toastDeploySuccessDesc
@@ -241,6 +249,7 @@ export function useUpload({
       }
     } catch (error) {
       console.error("Deployment failed:", error);
+      track("deploy_fail", { fileName: file?.name, error: error?.message });
       if (websiteId) {
         setWebsites((prev) =>
           prev.map((w) => (w._id === websiteId ? { ...w, status: "failed" } : w))
@@ -444,6 +453,8 @@ export function useUpload({
     isDragActive,
     setIsDragActive,
     fileInputRef,
+    successBanner,
+    setSuccessBanner,
     uploadZipFile,
     uploadDocFile,
     uploadPdfFile,

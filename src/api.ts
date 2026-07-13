@@ -242,6 +242,24 @@ export const authApi = {
     );
   },
 
+  // 修改当前用户密码
+  changePassword: async (data: { currentPassword: string; newPassword: string }) => {
+    return request<{ success: boolean; message?: string }>(
+      AUTH_API_URL,
+      "/auth/change-password",
+      { method: "POST", body: data }
+    );
+  },
+
+  // 解绑当前用户的 GitHub 账号
+  unbindGithub: async () => {
+    return request<{ success: boolean; message?: string }>(
+      AUTH_API_URL,
+      "/auth/unbind-github",
+      { method: "POST", body: {} }
+    );
+  },
+
   // 验证Token
   verifyToken: async () => {
     return request<{ valid: boolean; userId: string }>(AUTH_API_URL, "/auth/verify");
@@ -395,6 +413,108 @@ export const websiteApi = {
       WEBSITE_API_URL,
       "/website/get-role-limits",
       { method: "POST", body: { action: "get_role_limits", roles } }
+    );
+  },
+
+  // 获取当前用户真实用量与套餐限额（用量与套餐页）
+  getUsage: async () => {
+    return request<{
+      code: number;
+      data?: {
+        role: { name: string; priority: number };
+        usage: { deployments: number; files: number; storage: number };
+        maxSite: { fileCount: number; storageSize: number };
+        limits: {
+          deployment_limit: number | null;
+          max_file_count: number | null;
+          max_file_size: number | null;
+        };
+      };
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/get-usage",
+      { method: "POST", body: { action: "get_usage" } }
+    );
+  },
+
+  // 创建个人访问令牌（明文 token 仅此次返回）
+  createToken: async (name: string) => {
+    return request<{
+      code: number;
+      data?: {
+        id: string;
+        token: string;
+        name: string;
+        prefix: string;
+        createdAt: number;
+      };
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/create-token",
+      { method: "POST", body: { action: "create_token", name } }
+    );
+  },
+
+  // 列出当前用户令牌
+  listTokens: async () => {
+    return request<{
+      code: number;
+      data?: Array<{
+        id: string;
+        name: string;
+        prefix: string;
+        createdAt: number | null;
+        lastUsedAt: number | null;
+        expiresAt: number | null;
+        revoked: boolean;
+      }>;
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/list-tokens",
+      { method: "POST", body: { action: "list_tokens" } }
+    );
+  },
+
+  // 吊销令牌
+  revokeToken: async (id: string) => {
+    return request<{ code: number; data?: { revoked: boolean }; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/revoke-token",
+      { method: "POST", body: { action: "revoke_token", id } }
+    );
+  },
+
+  // 匿名产品事件埋点（无需鉴权，fire-and-forget）
+  trackProductEvent: async (
+    eventName: string,
+    visitorId: string,
+    page: string,
+    props?: Record<string, unknown>
+  ) => {
+    return request<{ code: number; data?: { tracked: boolean } }>(
+      WEBSITE_API_URL,
+      "/website/track-product-event",
+      { method: "POST", body: { action: "track_product_event", eventName, visitorId, page, props } }
+    );
+  },
+
+  // 管理员：查询产品漏斗
+  getProductFunnel: async (days = 14) => {
+    return request<{
+      code: number;
+      data?: {
+        days: number;
+        totals: Record<string, number>;
+        daily: Array<{ event: string; date: string; count: number }>;
+      };
+      message?: string;
+    }>(
+      WEBSITE_API_URL,
+      "/website/get-product-funnel",
+      { method: "POST", body: { action: "get_product_funnel", days } }
     );
   },
 
