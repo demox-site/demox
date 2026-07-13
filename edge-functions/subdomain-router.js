@@ -202,8 +202,78 @@ async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, me
         headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
       }), meta);
     }
+    // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
+    return serveCustom404(req, event, u, sitePath, originHost, meta);
   }
   return withDemoxBadge(req, event, resp, meta);
+}
+
+/**
+ * 404 处理：优先返回站点自定义 404.html，不存在则返回 Demox 默认 404 页面。
+ * 保持 HTTP 404 状态码（SEO 友好）；仅对页面导航请求生效。
+ */
+async function serveCustom404(req, event, u, sitePath, originHost, meta) {
+  // 1) 尝试站点的 404.html
+  if (sitePath && originHost) {
+    try {
+      const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
+      if (custom404.ok) {
+        const html = await custom404.text();
+        const headers = new Headers(custom404.headers);
+        headers.set('Content-Type', 'text/html; charset=utf-8');
+        headers.set('Cache-Control', 'no-cache');
+        return new Response(html, { status: 404, headers });
+      }
+    } catch (e) {}
+  }
+  // 2) 兜底：Demox 默认 404 页面
+  const html = getDefault404Html(meta, u);
+  return new Response(html, {
+    status: 404,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
+  });
+}
+
+/**
+ * Demox 默认 404 页面：暗色主题，显示站点名 + 返回首页链接 + Demox 品牌。
+ */
+function getDefault404Html(meta, u) {
+  const siteName = (meta && meta.seo && meta.seo.title) || (meta && meta.label) || 'This site';
+  const homeUrl = (u && u.origin) || '/';
+  const escapedName = String(siteName).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>404 - Page Not Found</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; color: #e4e4e7; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .container { text-align: center; padding: 2rem; max-width: 480px; }
+  .code { font-size: 6rem; font-weight: 800; color: #18181b; text-shadow: 0 0 40px rgba(255,255,255,0.05); letter-spacing: -0.05em; }
+  .title { font-size: 1.25rem; font-weight: 600; margin: 0.5rem 0 0.75rem; color: #f4f4f5; }
+  .desc { font-size: 0.875rem; color: #71717a; margin-bottom: 2rem; line-height: 1.6; }
+  .desc .site { color: #a1a1aa; }
+  .btn { display: inline-block; padding: 0.625rem 1.5rem; background: #f4f4f5; color: #09090b; border-radius: 0.5rem; text-decoration: none; font-size: 0.875rem; font-weight: 600; transition: background 0.15s; }
+  .btn:hover { background: #e4e4e7; }
+  .brand { margin-top: 2.5rem; font-size: 0.75rem; color: #52525b; }
+  .brand a { color: #71717a; text-decoration: none; border-bottom: 1px solid #27272a; padding-bottom: 1px; }
+  .brand a:hover { color: #a1a1aa; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="code">404</div>
+  <h1 class="title">Page Not Found</h1>
+  <p class="desc">The page you're looking for doesn't exist.<br><span class="site">${escapedName}</span></p>
+  <a href="${homeUrl}" class="btn">&larr; Back to Home</a>
+  <div class="brand">Published with <a href="https://www.demox.site">Demox</a></div>
+</div>
+</body>
+</html>`;
 }
 
 function shouldInjectDemoxBadge(req, resp) {
