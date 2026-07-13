@@ -422,6 +422,59 @@ function injectDemoxBadge(html, meta) {
   return html + badge;
 }
 
+/**
+ * 向 <head> 注入 SEO meta 标签（title / description / og / twitter）。
+ * 注入的标签带 data-demox-seo 属性，先移除旧注入再补新值，避免重复。
+ * 不修改用户原始 HTML 中的 meta 标签，只追加补充。
+ */
+function injectSeoMeta(html, meta) {
+  if (!html || !meta || !meta.seo) return html;
+  const seo = meta.seo;
+  if (!seo.title && !seo.description && !seo.ogImage) return html;
+
+  // 移除上一次注入的 SEO 标签（边缘缓存命中时防止重复）
+  html = html.replace(/<meta[^>]*data-demox-seo[^>]*>/gi, '');
+  html = html.replace(/<title[^>]*data-demox-seo[^>]*>[\s\S]*?<\/title>/gi, '');
+
+  const tags = [];
+  if (seo.title) {
+    tags.push('<title data-demox-seo>' + escapeHtml(seo.title) + '</title>');
+    tags.push('<meta data-demox-seo property="og:title" content="' + escapeHtml(seo.title) + '">');
+    tags.push('<meta data-demox-seo name="twitter:title" content="' + escapeHtml(seo.title) + '">');
+  }
+  if (seo.description) {
+    tags.push('<meta data-demox-seo name="description" content="' + escapeHtml(seo.description) + '">');
+    tags.push('<meta data-demox-seo property="og:description" content="' + escapeHtml(seo.description) + '">');
+    tags.push('<meta data-demox-seo name="twitter:description" content="' + escapeHtml(seo.description) + '">');
+  }
+  if (seo.ogImage) {
+    tags.push('<meta data-demox-seo property="og:image" content="' + escapeHtml(seo.ogImage) + '">');
+    tags.push('<meta data-demox-seo name="twitter:image" content="' + escapeHtml(seo.ogImage) + '">');
+    tags.push('<meta data-demox-seo name="twitter:card" content="summary_large_image">');
+  }
+  tags.push('<meta data-demox-seo property="og:type" content="website">');
+
+  const block = tags.join('\n  ');
+  if (/<\/head\s*>/i.test(html)) {
+    return html.replace(/<\/head\s*>/i, function (match) {
+      return '  ' + block + '\n' + match;
+    });
+  }
+  // 无 <head> 的极简 HTML，在 <html> 后或开头补
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, function (match) {
+      return match + '\n<head>\n  ' + block + '\n</head>';
+    });
+  }
+  return '<head>\n  ' + block + '\n</head>' + html;
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
 async function withDemoxBadge(req, event, resp, meta) {
   if (shouldTrackSiteView(req, resp)) {
     trackSiteEvent(req, event, meta, 'view');
@@ -436,7 +489,10 @@ async function withDemoxBadge(req, event, resp, meta) {
     headers.set('content-type', 'text/html; charset=utf-8');
   }
 
-  return new Response(injectDemoxBadge(html, meta), {
+  let finalHtml = injectSeoMeta(html, meta);
+  finalHtml = injectDemoxBadge(finalHtml, meta);
+
+  return new Response(finalHtml, {
     status: resp.status,
     statusText: resp.statusText,
     headers
@@ -599,7 +655,8 @@ async function resolveSite(label, domain) {
           path: j && j.path ? j.path : null,
           websiteId: (j && j.websiteId) || null,
           origin: (j && j.origin) || null,
-          visibility: (j && j.visibility) || 'public'
+          visibility: (j && j.visibility) || 'public',
+          seo: (j && j.seo) || null
         };
       }
     } catch (e) {}
@@ -610,6 +667,7 @@ async function resolveSite(label, domain) {
   let origin = null;
   let websiteId = null;
   let visibility = 'public';
+  let seo = null;
   try {
     const resp = await fetch(backendUrl('/resolve-subdomain'), {
       method: 'POST',
@@ -623,6 +681,7 @@ async function resolveSite(label, domain) {
         websiteId = data.websiteId || null;
         origin = data.origin || null;
         visibility = data.visibility || 'public';
+        seo = data.seo || null;
       }
     }
   } catch (e) {
@@ -632,7 +691,7 @@ async function resolveSite(label, domain) {
   // 写缓存（命中和未命中都缓存，未命中缓存空对象以挡住穿透）
   if (cache) {
     try {
-      const body = JSON.stringify({ path: path, websiteId: websiteId, origin: origin, visibility: visibility });
+      const body = JSON.stringify({ path: path, websiteId: websiteId, origin: origin, visibility: visibility, seo: seo });
       const cacheResp = new Response(body, {
         headers: {
           'Content-Type': 'application/json',
@@ -643,7 +702,7 @@ async function resolveSite(label, domain) {
     } catch (e) {}
   }
 
-  return { path: path, websiteId: websiteId, origin: origin, visibility: visibility };
+  return { path: path, websiteId: websiteId, origin: origin, visibility: visibility, seo: seo };
 }
 
 async function handle(req, event) {

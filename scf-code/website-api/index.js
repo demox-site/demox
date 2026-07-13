@@ -388,6 +388,7 @@ exports.main = async (event, context) => {
       check_subdomain: handleCheckSubdomain,
       clear_subdomain: handleClearSubdomain,
       update_visibility: handleUpdateWebsiteVisibility,
+      update_seo: handleUpdateSeo,
       resolve_subdomain: handleResolveSubdomain,
       check_site_access: handleCheckSiteAccess,
       track_site_event: handleTrackSiteEvent,
@@ -499,6 +500,8 @@ exports.main = async (event, context) => {
       return await handleClearSubdomain(event);
     } else if (pathUrl.includes('/update-visibility')) {
       return await handleUpdateWebsiteVisibility(event);
+    } else if (pathUrl.includes('/update-seo')) {
+      return await handleUpdateSeo(event);
     } else if (pathUrl.includes('/resolve-subdomain')) {
       return await handleResolveSubdomain(event);
     } else if (pathUrl.includes('/check-site-access')) {
@@ -643,6 +646,35 @@ async function ensureUsageColumns() {
     console.warn('ensureUsageColumns 跳过:', e.message);
   }
   _usageColumnsEnsured = true;
+}
+
+/**
+ * 幂等确保 websites 表存在 seo_title / seo_description / og_image 列。
+ * 冷启动后只检查一次；用于边缘函数在回源时向 <head> 注入 SEO meta。
+ */
+let _seoColumnsEnsured = false;
+async function ensureSeoColumns() {
+  if (_seoColumnsEnsured) return;
+  try {
+    const cols = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
+         AND COLUMN_NAME IN ('seo_title','seo_description','og_image')`
+    );
+    const have = new Set((cols || []).map((r) => r.COLUMN_NAME));
+    if (!have.has('seo_title')) {
+      await query(`ALTER TABLE websites ADD COLUMN seo_title VARCHAR(255) NULL COMMENT 'SEO 标题，为空回退 name'`);
+    }
+    if (!have.has('seo_description')) {
+      await query(`ALTER TABLE websites ADD COLUMN seo_description VARCHAR(500) NULL COMMENT 'SEO 描述（meta description）'`);
+    }
+    if (!have.has('og_image')) {
+      await query(`ALTER TABLE websites ADD COLUMN og_image VARCHAR(500) NULL COMMENT 'OG 图片外链 URL'`);
+    }
+  } catch (e) {
+    console.warn('ensureSeoColumns 跳过:', e.message);
+  }
+  _seoColumnsEnsured = true;
 }
 
 /**
@@ -1391,6 +1423,65 @@ async function handleUpdateWebsiteVisibility(event) {
   } catch (error) {
     console.error('更新站点访问级别失败:', error);
     return ok({ success: false, message: error.message || '更新访问级别失败' });
+  }
+}
+
+/**
+ * 更新站点 SEO 元信息（title / description / og_image）。
+ * 边缘函数在回源时读取这些字段，向 <head> 注入 meta 标签。
+ * 修改后清边缘缓存，约 60s 内生效。
+ */
+async function handleUpdateSeo(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, error: '未登录或token已过期' })
+    };
+  }
+
+  const body = event.body || event;
+  const docId = normalizePositiveId(body.docId || body.id);
+  const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
+  if (!docId && !websiteId) {
+    return ok({ success: false, message: '缺少 docId 或 websiteId' });
+  }
+
+  const seoTitle = String(body.seoTitle || '').trim().slice(0, 255);
+  const seoDescription = String(body.seoDescription || '').trim().slice(0, 500);
+  const ogImage = String(body.ogImage || '').trim().slice(0, 500);
+
+  try {
+    await ensureSeoColumns();
+    const site = await getWebsiteByIdentity({ docId, websiteId });
+    if (!site || !(await canUserManageSite(userId, site))) {
+      return ok({ success: false, message: '站点不存在或无权限' });
+    }
+
+    await query(
+      'UPDATE websites SET seo_title = ?, seo_description = ?, og_image = ?, updated_at = NOW() WHERE id = ?',
+      [seoTitle || null, seoDescription || null, ogImage || null, site.id]
+    );
+    const cachePurge = await purgeSiteCache({
+      websiteId: site.website_id,
+      subdomain: site.subdomain,
+      subdomainDomain: site.subdomain_domain
+    });
+    return ok({
+      success: true,
+      seo: {
+        title: seoTitle || null,
+        description: seoDescription || null,
+        ogImage: ogImage || null
+      },
+      websiteId: site.website_id,
+      cachePurge,
+      message: 'SEO 设置已更新'
+    });
+  } catch (error) {
+    console.error('更新 SEO 失败:', error);
+    return ok({ success: false, message: error.message || '更新 SEO 失败' });
   }
 }
 
@@ -2754,6 +2845,10 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBuc
             w.project_id AS project_id,
             w.website_id AS website_id,
             w.subdomain AS subdomain,
+            w.name AS site_name,
+            w.seo_title AS seo_title,
+            w.seo_description AS seo_description,
+            w.og_image AS og_image,
             ${subdomainDomainExpr} AS subdomain_domain,
             ${visibilityExpr} AS visibility,
             ${originExpr} AS origin_host
@@ -2834,6 +2929,7 @@ async function handleResolveSubdomain(event) {
   }
 
   try {
+    await ensureSeoColumns();
     const site = await resolveSiteMetadataByLabel(label, suffix);
     if (!site || !site.path) {
       return {
@@ -2852,7 +2948,12 @@ async function handleResolveSubdomain(event) {
         origin: site.origin_host || null,
         domain: suffix,
         host: `${label}.${suffix}`,
-        visibility: normalizeVisibility(site.visibility)
+        visibility: normalizeVisibility(site.visibility),
+        seo: {
+          title: site.seo_title || site.site_name || null,
+          description: site.seo_description || null,
+          ogImage: site.og_image || null
+        }
       })
     };
   } catch (error) {

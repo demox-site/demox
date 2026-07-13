@@ -17,6 +17,7 @@ import { parseTags, joinTags } from "@/lib/website-utils";
 import DeleteConfirmDialog from "@/components/home/DeleteConfirmDialog";
 import RedeployDialog from "@/components/home/RedeployDialog";
 import DomainDialog from "@/components/home/DomainDialog";
+import SiteSettingsDialog from "@/components/home/SiteSettingsDialog";
 import UploadSection from "@/components/home/UploadSection";
 import WebsiteCard from "@/components/home/WebsiteCard";
 import { useAuth } from "./use-auth";
@@ -91,6 +92,23 @@ export default function Home(props) {
   });
 
   const domain = useDomainDialog({ t, setWebsites });
+
+  // SEO 设置弹窗状态
+  const [seoDialogOpen, setSeoDialogOpen] = React.useState(false);
+  const [seoWebsite, setSeoWebsite] = React.useState(null);
+  const openSeoDialog = React.useCallback((website) => {
+    setSeoWebsite(website);
+    setSeoDialogOpen(true);
+  }, []);
+  const handleSeoSaved = React.useCallback((seo) => {
+    if (seoWebsite && seo) {
+      setWebsites((prev) => prev.map((w) =>
+        w._id === seoWebsite._id
+          ? { ...w, seoTitle: seo.title, seoDescription: seo.description, ogImage: seo.ogImage }
+          : w
+      ));
+    }
+  }, [seoWebsite, setWebsites]);
 
   // 登录成功后加载站点和项目列表。
   React.useEffect(() => {
@@ -346,6 +364,7 @@ export default function Home(props) {
                         setWebsiteVisibility={sites.setWebsiteVisibility}
                         openRedeployDialog={redeploy.openRedeployDialog}
                         openDomainDialog={domain.openDomainDialog}
+                        openSeoDialog={openSeoDialog}
                         confirmDeleteWebsite={sites.confirmDeleteWebsite}
                       />
                     ))}
@@ -394,6 +413,15 @@ export default function Home(props) {
                 onOpenChange={sites.setDeleteConfirmOpen}
                 onConfirm={sites.executeDeleteWebsite}
                 t={t}
+              />
+
+              <SiteSettingsDialog
+                open={seoDialogOpen}
+                onOpenChange={setSeoDialogOpen}
+                website={seoWebsite}
+                t={t}
+                lang={lang}
+                onSaved={handleSeoSaved}
               />
             </>
           )}

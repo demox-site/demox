@@ -362,6 +362,24 @@ export const websiteApi = {
     );
   },
 
+  // 更新站点 SEO 元信息
+  updateSeo: async (data: {
+    docId?: string;
+    websiteId?: string;
+    seoTitle?: string;
+    seoDescription?: string;
+    ogImage?: string;
+  }) => {
+    return request<{
+      success: boolean;
+      seo?: { title: string | null; description: string | null; ogImage: string | null };
+      message?: string;
+    }>(WEBSITE_API_URL, "/website/update-seo", {
+      method: "POST",
+      body: { action: "update_seo", ...data }
+    });
+  },
+
   // 删除网站
   delete: async (websiteId: string) => {
     return request<{ success: boolean; message: string; deletedCount: number }>(

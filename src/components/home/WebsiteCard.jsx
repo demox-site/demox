@@ -27,7 +27,8 @@ import {
   Globe2,
   LockKeyhole,
   BarChart3,
-  Settings2
+  Settings2,
+  Search
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import {
@@ -70,6 +71,7 @@ export default function WebsiteCard({
   setWebsiteVisibility,
   openRedeployDialog,
   openDomainDialog,
+  openSeoDialog,
   confirmDeleteWebsite
 }) {
   const navigate = useNavigate();
@@ -431,6 +433,19 @@ export default function WebsiteCard({
                       {website.subdomain ? t.domainBound : t.customDomain}
                     </Button>
                   </div>
+                )}
+
+                {canManageSite && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openSeoDialog && openSeoDialog(website)}
+                    className={`${settingsActionClass} w-full justify-start`}
+                    title={t.seoSettings || "SEO"}
+                  >
+                    <Search className="w-4 h-4 mr-2" />
+                    {t.seoSettings || "SEO"}
+                  </Button>
                 )}
 
                 {canManageSite && (
