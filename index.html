@@ -20,6 +20,16 @@
           root.style.colorScheme = dark ? "dark" : "light";
         } catch (e) {}
       })();
+      // 兼容旧 CLI 的 hash 鉴权链接（/#/mcp-authorize?... → /mcp-authorize?...）
+      (function () {
+        try {
+          var hash = window.location.hash || "";
+          var match = hash.match(/^#\/(mcp-authorize|mcp-login)(\?.*)?$/);
+          if (!match) return;
+          var path = "/" + match[1] + (match[2] || "");
+          window.location.replace(window.location.origin + path);
+        } catch (e) {}
+      })();
     </script>
   </head>
 
