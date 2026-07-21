@@ -1,15 +1,67 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
+
+const normalizeProjectId = (projectId) => String(projectId || "").trim();
+
+export const websiteMatchesProject = (website, projectId, enableProjectFilter = true) => {
+  const normalizedProjectId = normalizeProjectId(projectId);
+  if (!enableProjectFilter || !normalizedProjectId) return true;
+  return Boolean(
+    (website?.projectId && String(website.projectId) === normalizedProjectId) ||
+    (website?.projectInternalId &&
+      String(website.projectInternalId) === normalizedProjectId)
+  );
+};
+
+export const extractProjectTags = (
+  websites,
+  projectId,
+  enableProjectFilter = true
+) => {
+  const tags = new Set();
+  (websites || []).forEach((website) => {
+    if (!websiteMatchesProject(website, projectId, enableProjectFilter)) return;
+    if (Array.isArray(website.tags)) {
+      website.tags.forEach((tag) => tags.add(tag));
+    }
+  });
+  return Array.from(tags).sort();
+};
 
 /**
  * useFilters
  * 站点列表的标签筛选与用户筛选（管理员）。
  * 暴露已筛选的 visibleWebsites，避免在 JSX 里重复写两遍 filter。
- * @param {{ websites:any[], allUsers:any[], enableProjectFilter?:boolean }} deps
+ * @param {{ websites:any[], allUsers:any[], projectId?:string, enableProjectFilter?:boolean }} deps
  */
-export function useFilters({ websites, allUsers, enableProjectFilter = true }) {
+export function useFilters({
+  websites,
+  allUsers,
+  projectId,
+  enableProjectFilter = true
+}) {
   const [selectedTags, setSelectedTags] = useState([]);
   const [selectedUserIds, setSelectedUserIds] = useState([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    () => normalizeProjectId(projectId) || null
+  );
+  const scopedProjectId = normalizeProjectId(projectId) || selectedProjectId;
+
+  const allTags = useMemo(
+    () => extractProjectTags(websites, scopedProjectId, enableProjectFilter),
+    [websites, scopedProjectId, enableProjectFilter]
+  );
+  const activeSelectedTags = useMemo(
+    () => selectedTags.filter((tag) => allTags.includes(tag)),
+    [selectedTags, allTags]
+  );
+
+  // 切换项目或标签被删完后，移除当前项目中已经不可用的筛选条件。
+  useEffect(() => {
+    setSelectedTags((prev) => {
+      const next = prev.filter((tag) => allTags.includes(tag));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [allTags]);
 
   // 标签筛选 ---------------------------------------------------------------
   const toggleFilterTag = (tag) => {
@@ -31,7 +83,7 @@ export function useFilters({ websites, allUsers, enableProjectFilter = true }) {
 
   // 项目上下文：必选单选，不提供清空态。
   const selectProjectId = (projectId) => {
-    const id = String(projectId || "").trim();
+    const id = normalizeProjectId(projectId);
     if (!id) return;
     setSelectedProjectId(id);
   };
@@ -48,25 +100,24 @@ export function useFilters({ websites, allUsers, enableProjectFilter = true }) {
     () =>
       (websites || []).filter((w) => {
         const tagOk =
-          selectedTags.length === 0 ||
-          (Array.isArray(w.tags) && w.tags.some((tag) => selectedTags.includes(tag)));
+          activeSelectedTags.length === 0 ||
+          (Array.isArray(w.tags) &&
+            w.tags.some((tag) => activeSelectedTags.includes(tag)));
         const userOk =
           selectedUserIds.length === 0 ||
           (w.userId && selectedUserIds.includes(w.userId));
         const projectOk =
-          !enableProjectFilter ||
-          !selectedProjectId ||
-          (w.projectId && String(w.projectId) === String(selectedProjectId)) ||
-          (w.projectInternalId && String(w.projectInternalId) === String(selectedProjectId));
+          websiteMatchesProject(w, scopedProjectId, enableProjectFilter);
         return tagOk && userOk && projectOk;
       }),
-    [websites, selectedTags, selectedUserIds, selectedProjectId, enableProjectFilter]
+    [websites, activeSelectedTags, selectedUserIds, scopedProjectId, enableProjectFilter]
   );
 
   return {
-    selectedTags,
+    allTags,
+    selectedTags: activeSelectedTags,
     selectedUserIds,
-    selectedProjectId,
+    selectedProjectId: scopedProjectId,
     selectProjectId,
     toggleFilterTag,
     clearFilterTags,

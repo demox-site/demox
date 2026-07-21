@@ -9,27 +9,13 @@ import {
 } from "@/lib/website-utils";
 
 /**
- * recomputeAllTags
- * 从站点列表中提取去重排序后的标签集合
- */
-const recomputeAllTags = (list) => {
-  const tagsSet = new Set();
-  (list || []).forEach((w) => {
-    if (Array.isArray(w.tags)) w.tags.forEach((tag) => tagsSet.add(tag));
-  });
-  return Array.from(tagsSet).sort();
-};
-
-/**
  * useWebsites
  * 站点列表的加载与维护：拉取、名称内联编辑、标签内联编辑、删除。
- * 同时维护派生的 allTags（供筛选区使用）。
  * @param {{ t:Record<string,any>, handleAuthError:Function }} deps
  */
 export function useWebsites({ t, handleAuthError }) {
   const { toast } = useToast();
   const [websites, setWebsites] = useState([]);
-  const [allTags, setAllTags] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   // 部署中状态：{ [websiteId]: boolean }，上传/重新部署/卡片三处共用
   const [deploying, setDeploying] = useState({});
@@ -59,7 +45,6 @@ export function useWebsites({ t, handleAuthError }) {
           (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
         );
         setWebsites(sorted);
-        setAllTags(recomputeAllTags(sorted));
         setAllUsers([]);
       } else {
         throw new Error(result?.message || t.loadListFailed);
@@ -137,13 +122,11 @@ export function useWebsites({ t, handleAuthError }) {
     try {
       const res = await websiteApi.updateTags(website._id, tags);
       if (res && res.success) {
-        setWebsites((prev) => {
-          const next = prev.map((w) =>
+        setWebsites((prev) =>
+          prev.map((w) =>
             w._id === website._id ? { ...w, tags, updatedAt: Date.now() } : w
-          );
-          setAllTags(recomputeAllTags(next));
-          return next;
-        });
+          )
+        );
         cancelEditTags();
         toast({ title: t.savedTitle, description: "标签已更新" });
       } else {
@@ -297,7 +280,6 @@ export function useWebsites({ t, handleAuthError }) {
     setWebsites,
     deploying,
     setDeploying,
-    allTags,
     allUsers,
     loadWebsites,
     // 名称编辑

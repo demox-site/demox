@@ -50,7 +50,6 @@ export default function Home(props) {
     setWebsites,
     deploying,
     setDeploying,
-    allTags,
     allUsers,
     loadWebsites
   } = sites;
@@ -60,9 +59,10 @@ export default function Home(props) {
   const filters = useFilters({
     websites,
     allUsers,
+    projectId: currentProjectId,
     enableProjectFilter: !!currentProjectId
   });
-  const { visibleWebsites } = filters;
+  const { allTags, visibleWebsites } = filters;
 
   const uploadProject =
     projects.getProjectById(currentProjectId) ||
