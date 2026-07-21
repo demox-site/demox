@@ -110,6 +110,7 @@ function redactSensitiveFields(body) {
     'newPassword',
     'code',
     'codeVerifier',
+    'codeChallenge',
     'ticket',
     'token',
     'client_secret'
@@ -741,7 +742,7 @@ async function resolveGithubUser(event, profile) {
  * 不保存飞书 user_access_token 或 refresh_token。
  */
 async function handleFeishuLogin(event) {
-  const { code, codeVerifier } = event.body || event;
+  const { code, codeVerifier, codeChallenge } = event.body || event;
 
   if (!code || !codeVerifier) {
     return {
@@ -756,6 +757,28 @@ async function handleFeishuLogin(event) {
       statusCode: 400,
       headers: getCORSHeaders(),
       body: JSON.stringify({ error: 'PKCE codeVerifier 格式错误' })
+    };
+  }
+
+  const computedChallenge = createPkceChallenge(codeVerifier);
+  const challengeProvided = typeof codeChallenge === 'string';
+  const challengeMatches = challengeProvided && safeStringEqual(codeChallenge, computedChallenge);
+  const pkceLog = {
+    verifierLength: codeVerifier.length,
+    challengeFingerprint: computedChallenge.slice(0, 12),
+    challengeProvided,
+    challengeMatches
+  };
+
+  if (challengeProvided && (!isValidPkceChallenge(codeChallenge) || !challengeMatches)) {
+    console.warn('飞书 PKCE 本地配对失败:', JSON.stringify(pkceLog));
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        error: 'PKCE 配对校验失败，请重新发起飞书登录',
+        errorCode: 'PKCE_PAIR_MISMATCH'
+      })
     };
   }
 
@@ -796,11 +819,15 @@ async function handleFeishuLogin(event) {
     });
 
     if (tokenResp.code !== 0 || !tokenResp.access_token) {
+      const feishuCode = Number.isInteger(tokenResp.code) ? tokenResp.code : null;
+      console.warn('飞书 token 兑换失败:', JSON.stringify({ ...pkceLog, feishuCode }));
       return {
         statusCode: 401,
         headers: getCORSHeaders(),
         body: JSON.stringify({
-          error: '飞书授权失败: ' + (tokenResp.error_description || tokenResp.msg || tokenResp.error || '未知错误')
+          error: `飞书授权失败${feishuCode === null ? '' : ` (${feishuCode})`}: ` +
+            (tokenResp.error_description || tokenResp.msg || tokenResp.error || '未知错误'),
+          feishuCode
         })
       };
     }
@@ -1123,6 +1150,22 @@ function feishuSyntheticEmail(openId) {
 
 function isValidPkceVerifier(value) {
   return typeof value === 'string' && /^[A-Za-z0-9._~-]{43,128}$/.test(value);
+}
+
+function isValidPkceChallenge(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+function createPkceChallenge(verifier) {
+  return require('crypto').createHash('sha256').update(verifier, 'ascii').digest('base64url');
+}
+
+function safeStringEqual(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left, 'ascii');
+  const rightBuffer = Buffer.from(right, 'ascii');
+  return leftBuffer.length === rightBuffer.length &&
+    require('crypto').timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function isValidRedirectUri(value) {

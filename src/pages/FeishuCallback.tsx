@@ -8,6 +8,7 @@ import {
   consumeSiteAuthNext,
   submitSiteAuthCompletion
 } from "@/lib/site-auth";
+import { consumeFeishuOAuthFlow } from "@/lib/feishu-oauth";
 
 function getCallbackParams() {
   const search = window.location.search;
@@ -32,17 +33,16 @@ export function FeishuCallback() {
     const code = params.get("code");
     const returnedState = params.get("state");
     const oauthError = params.get("error");
-    const savedState = sessionStorage.getItem("feishu_oauth_state");
-    const codeVerifier = sessionStorage.getItem("feishu_pkce_verifier");
-    sessionStorage.removeItem("feishu_oauth_state");
-    sessionStorage.removeItem("feishu_pkce_verifier");
+    const flow = returnedState
+      ? consumeFeishuOAuthFlow(returnedState)
+      : null;
 
     const fail = (value: string) => {
       setStatus("error");
       setMessage(value);
     };
 
-    if (!returnedState || returnedState !== savedState) {
+    if (!returnedState || !flow) {
       fail("授权状态校验失败，请重新发起飞书登录");
       return;
     }
@@ -50,14 +50,14 @@ export function FeishuCallback() {
       fail(`飞书授权被拒绝: ${oauthError}`);
       return;
     }
-    if (!code || !codeVerifier) {
+    if (!code) {
       fail("飞书授权信息不完整，请重新登录");
       return;
     }
 
     const isBind = returnedState.startsWith("bind.");
     authApi
-      .feishuLogin(code, codeVerifier)
+      .feishuLogin(code, flow.verifier, flow.challenge)
       .then((res) => {
         if (!res.success) throw new Error("登录失败");
 

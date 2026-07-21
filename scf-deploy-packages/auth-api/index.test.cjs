@@ -75,6 +75,92 @@ test('feishu login fails closed when the server redirect URI is missing', async 
   }
 });
 
+test('feishu login rejects a verifier and challenge mismatch before contacting Feishu', async () => {
+  const originalRequest = https.request;
+  let providerCalled = false;
+  https.request = () => {
+    providerCalled = true;
+    throw new Error('Feishu must not be called');
+  };
+  Object.assign(process.env, {
+    FEISHU_APP_ID: 'cli_test',
+    FEISHU_APP_SECRET: 'test-secret',
+    FEISHU_REDIRECT_URI: 'https://www.demox.site/feishu-callback'
+  });
+
+  try {
+    const response = await request('/auth/feishu', {
+      code: 'one-time-code',
+      codeVerifier: 'a'.repeat(43),
+      codeChallenge: 'b'.repeat(43)
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 400);
+    assert.equal(body.errorCode, 'PKCE_PAIR_MISMATCH');
+    assert.equal(providerCalled, false);
+  } finally {
+    https.request = originalRequest;
+    delete process.env.FEISHU_APP_ID;
+    delete process.env.FEISHU_APP_SECRET;
+    delete process.env.FEISHU_REDIRECT_URI;
+  }
+});
+
+test('feishu provider errors retain the numeric error code without exposing PKCE secrets', async () => {
+  const originalRequest = https.request;
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  https.request = (options, callback) => {
+    const req = new EventEmitter();
+    req.write = () => {};
+    req.setTimeout = () => req;
+    req.end = () => {
+      const res = new EventEmitter();
+      callback(res);
+      process.nextTick(() => {
+        res.emit('data', JSON.stringify({
+          code: 20049,
+          error: 'invalid_grant',
+          error_description: 'PKCE code challenge failed.'
+        }));
+        res.emit('end');
+      });
+    };
+    return req;
+  };
+  Object.assign(process.env, {
+    FEISHU_APP_ID: 'cli_test',
+    FEISHU_APP_SECRET: 'test-secret',
+    FEISHU_REDIRECT_URI: 'https://www.demox.site/feishu-callback'
+  });
+
+  try {
+    const verifier = 'a'.repeat(43);
+    const challenge = require('crypto')
+      .createHash('sha256')
+      .update(verifier, 'ascii')
+      .digest('base64url');
+    const response = await request('/auth/feishu', {
+      code: 'one-time-code',
+      codeVerifier: verifier,
+      codeChallenge: challenge
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 401);
+    assert.equal(body.feishuCode, 20049);
+    assert.match(body.error, /\(20049\)/);
+    assert.doesNotMatch(warnings.join('\n'), new RegExp(verifier));
+    assert.doesNotMatch(warnings.join('\n'), new RegExp(challenge));
+  } finally {
+    https.request = originalRequest;
+    console.warn = originalWarn;
+    delete process.env.FEISHU_APP_ID;
+    delete process.env.FEISHU_APP_SECRET;
+    delete process.env.FEISHU_REDIRECT_URI;
+  }
+});
+
 test('feishu finalize rejects an invalid short-lived ticket', async () => {
   const response = await request('/auth/feishu/finalize', {
     ticket: 'invalid-ticket',
@@ -91,7 +177,8 @@ test('request logs redact OAuth secrets', async () => {
   try {
     await request('/auth/feishu', {
       code: 'sensitive-code',
-      codeVerifier: 'sensitive-verifier'
+      codeVerifier: 'sensitive-verifier',
+      codeChallenge: 'sensitive-challenge'
     });
   } finally {
     console.log = originalLog;
@@ -99,7 +186,7 @@ test('request logs redact OAuth secrets', async () => {
 
   const output = lines.join('\n');
   assert.match(output, /\[REDACTED\]/);
-  assert.doesNotMatch(output, /sensitive-code|sensitive-verifier/);
+  assert.doesNotMatch(output, /sensitive-code|sensitive-verifier|sensitive-challenge/);
 });
 
 test('returning feishu user exchanges code and signs into the bound account', async () => {

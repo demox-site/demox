@@ -3,6 +3,10 @@
  */
 import config from "./configs/env";
 import { OFFICIAL_DOMAINS, normalizeOfficialDomain } from "./lib/official-domains";
+import {
+  assertFeishuPkceSupport,
+  beginFeishuOAuthFlow
+} from "./lib/feishu-oauth";
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
@@ -59,42 +63,6 @@ export const userManager = {
   set: (user: any) => localStorage.setItem(USER_KEY, JSON.stringify(user)),
   remove: () => localStorage.removeItem(USER_KEY)
 };
-
-function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-async function createPkcePair(): Promise<{ verifier: string; challenge: string }> {
-  if (!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle) {
-    throw new Error("当前浏览器不支持安全的飞书登录，请升级浏览器后重试");
-  }
-
-  const verifier = base64UrlEncode(globalThis.crypto.getRandomValues(new Uint8Array(48)));
-  const digest = await globalThis.crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier)
-  );
-  return { verifier, challenge: base64UrlEncode(new Uint8Array(digest)) };
-}
-
-let preparedFeishuPkce: { verifier: string; challenge: string } | null = null;
-let preparingFeishuPkce: Promise<{ verifier: string; challenge: string }> | null = null;
-
-async function prepareFeishuPkce(): Promise<void> {
-  if (preparedFeishuPkce) return;
-  if (!preparingFeishuPkce) {
-    preparingFeishuPkce = createPkcePair();
-  }
-  try {
-    preparedFeishuPkce = await preparingFeishuPkce;
-  } finally {
-    preparingFeishuPkce = null;
-  }
-}
 
 // API请求封装
 async function request<T>(baseUrl: string, path: string, options: RequestInit = {}): Promise<T> {
@@ -269,11 +237,11 @@ export const authApi = {
 
   prepareFeishuLogin: async () => {
     if (!config.feishu.clientId) throw new Error("飞书登录尚未配置");
-    await prepareFeishuPkce();
+    assertFeishuPkceSupport();
   },
 
-  // 发起飞书 OAuth。PKCE verifier 仅保存在当前标签页，回调成功后立即删除。
-  startFeishuLogin: (
+  // 每次发起授权都生成独立 PKCE，并按 state 隔离，避免并发或旧回调串线。
+  startFeishuLogin: async (
     mode: "login" | "bind" = "login",
     navigationTarget: "_self" | "_top" = "_self"
   ) => {
@@ -281,18 +249,7 @@ export const authApi = {
     if (!clientId) {
       throw new Error("飞书登录尚未配置");
     }
-    if (!globalThis.crypto?.getRandomValues) {
-      throw new Error("当前浏览器不支持安全的飞书登录，请升级浏览器后重试");
-    }
-    if (!preparedFeishuPkce) {
-      throw new Error("飞书登录正在初始化，请稍后重试");
-    }
-
-    const state = `${mode}.${base64UrlEncode(globalThis.crypto.getRandomValues(new Uint8Array(24)))}`;
-    const { verifier, challenge } = preparedFeishuPkce;
-    preparedFeishuPkce = null;
-    sessionStorage.setItem("feishu_oauth_state", state);
-    sessionStorage.setItem("feishu_pkce_verifier", verifier);
+    const { state, challenge } = await beginFeishuOAuthFlow(mode);
 
     const url = new URL("https://accounts.feishu.cn/open-apis/authen/v1/authorize");
     url.searchParams.set("client_id", clientId);
@@ -308,7 +265,7 @@ export const authApi = {
     window.location.href = url.toString();
   },
 
-  feishuLogin: async (code: string, codeVerifier: string) => {
+  feishuLogin: async (code: string, codeVerifier: string, codeChallenge: string) => {
     const data = await request<{
       success: boolean;
       token?: string;
@@ -322,7 +279,7 @@ export const authApi = {
       feishuName?: string;
     }>(AUTH_API_URL, "/auth/feishu", {
       method: "POST",
-      body: { code, codeVerifier }
+      body: { code, codeVerifier, codeChallenge }
     });
 
     if (data.success && data.token && !data.needsChoice) {

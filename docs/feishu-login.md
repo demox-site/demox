@@ -70,3 +70,10 @@ VITE_FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
 6. 账号设置页能够显示绑定状态；未设置密码时拒绝解绑，避免账号失去登录入口。
 
 前端构建、auth-api 发布和数据库迁移只证明代码已就位；必须完成至少一次真实飞书账号授权，才能确认生产登录闭环。
+
+## 6. PKCE 故障诊断
+
+飞书返回 `20049` 时，不要关闭 PKCE。前端为每次授权生成独立的 verifier/challenge，
+并按 OAuth `state` 隔离保存；auth-api 会在请求飞书前重算 challenge。日志只记录 verifier
+长度、challenge 的短指纹、配对结果和飞书数字错误码，不记录授权码、verifier、App Secret
+或 access token。
