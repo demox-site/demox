@@ -60,6 +60,42 @@ export const userManager = {
   remove: () => localStorage.removeItem(USER_KEY)
 };
 
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function createPkcePair(): Promise<{ verifier: string; challenge: string }> {
+  if (!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle) {
+    throw new Error("当前浏览器不支持安全的飞书登录，请升级浏览器后重试");
+  }
+
+  const verifier = base64UrlEncode(globalThis.crypto.getRandomValues(new Uint8Array(48)));
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier)
+  );
+  return { verifier, challenge: base64UrlEncode(new Uint8Array(digest)) };
+}
+
+let preparedFeishuPkce: { verifier: string; challenge: string } | null = null;
+let preparingFeishuPkce: Promise<{ verifier: string; challenge: string }> | null = null;
+
+async function prepareFeishuPkce(): Promise<void> {
+  if (preparedFeishuPkce) return;
+  if (!preparingFeishuPkce) {
+    preparingFeishuPkce = createPkcePair();
+  }
+  try {
+    preparedFeishuPkce = await preparingFeishuPkce;
+  } finally {
+    preparingFeishuPkce = null;
+  }
+}
+
 // API请求封装
 async function request<T>(baseUrl: string, path: string, options: RequestInit = {}): Promise<T> {
   const token = tokenManager.get();
@@ -229,6 +265,108 @@ export const authApi = {
     return data;
   },
 
+  isFeishuConfigured: () => Boolean(config.feishu.clientId),
+
+  prepareFeishuLogin: async () => {
+    if (!config.feishu.clientId) throw new Error("飞书登录尚未配置");
+    await prepareFeishuPkce();
+  },
+
+  // 发起飞书 OAuth。PKCE verifier 仅保存在当前标签页，回调成功后立即删除。
+  startFeishuLogin: (
+    mode: "login" | "bind" = "login",
+    navigationTarget: "_self" | "_top" = "_self"
+  ) => {
+    const { clientId, redirectUri } = config.feishu;
+    if (!clientId) {
+      throw new Error("飞书登录尚未配置");
+    }
+    if (!globalThis.crypto?.getRandomValues) {
+      throw new Error("当前浏览器不支持安全的飞书登录，请升级浏览器后重试");
+    }
+    if (!preparedFeishuPkce) {
+      throw new Error("飞书登录正在初始化，请稍后重试");
+    }
+
+    const state = `${mode}.${base64UrlEncode(globalThis.crypto.getRandomValues(new Uint8Array(24)))}`;
+    const { verifier, challenge } = preparedFeishuPkce;
+    preparedFeishuPkce = null;
+    sessionStorage.setItem("feishu_oauth_state", state);
+    sessionStorage.setItem("feishu_pkce_verifier", verifier);
+
+    const url = new URL("https://accounts.feishu.cn/open-apis/authen/v1/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", challenge);
+    url.searchParams.set("code_challenge_method", "S256");
+    if (navigationTarget === "_top" && window.top) {
+      window.top.location.href = url.toString();
+      return;
+    }
+    window.location.href = url.toString();
+  },
+
+  feishuLogin: async (code: string, codeVerifier: string) => {
+    const data = await request<{
+      success: boolean;
+      token?: string;
+      userId?: string;
+      email?: string;
+      nickname?: string;
+      isNewUser?: boolean;
+      bound?: boolean;
+      needsChoice?: boolean;
+      feishuTicket?: string;
+      feishuName?: string;
+    }>(AUTH_API_URL, "/auth/feishu", {
+      method: "POST",
+      body: { code, codeVerifier }
+    });
+
+    if (data.success && data.token && !data.needsChoice) {
+      tokenManager.set(data.token);
+      const roles = data.email === "phosa@qq.com" ? ["admin", "user"] : ["user"];
+      userManager.set({
+        userId: data.userId,
+        email: data.email,
+        nickname: data.nickname || "",
+        roles
+      });
+    }
+
+    return data;
+  },
+
+  feishuFinalize: async (ticket: string, choice: "create" | "link") => {
+    const data = await request<{
+      success: boolean;
+      token: string;
+      userId: string;
+      email: string;
+      nickname?: string;
+      isNewUser?: boolean;
+      bound?: boolean;
+    }>(AUTH_API_URL, "/auth/feishu/finalize", {
+      method: "POST",
+      body: { ticket, choice }
+    });
+
+    if (data.success && data.token) {
+      tokenManager.set(data.token);
+      const roles = data.email === "phosa@qq.com" ? ["admin", "user"] : ["user"];
+      userManager.set({
+        userId: data.userId,
+        email: data.email,
+        nickname: data.nickname || "",
+        roles
+      });
+    }
+
+    return data;
+  },
+
   // 登出
   logout: () => {
     tokenManager.remove();
@@ -263,6 +401,15 @@ export const authApi = {
     return request<{ success: boolean; message?: string }>(
       AUTH_API_URL,
       "/auth/unbind-github",
+      { method: "POST", body: {} }
+    );
+  },
+
+  // 解绑当前用户的飞书账号
+  unbindFeishu: async () => {
+    return request<{ success: boolean; message?: string }>(
+      AUTH_API_URL,
+      "/auth/unbind-feishu",
       { method: "POST", body: {} }
     );
   },

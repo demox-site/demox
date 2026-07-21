@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { authApi } from "../api";
 import { Github } from "lucide-react";
+import { FeishuIcon } from "@/components/FeishuIcon";
 import {
   Button,
   Dialog,
@@ -41,6 +42,7 @@ export function AuthDialog({
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [feishuReady, setFeishuReady] = useState(false);
   const isSiteGate = presentation === "site-gate";
 
   useEffect(() => {
@@ -51,6 +53,23 @@ export function AuthDialog({
       setCode("");
       setCountdown(0);
     }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !authApi.isFeishuConfigured()) return;
+    let active = true;
+    setFeishuReady(false);
+    authApi
+      .prepareFeishuLogin()
+      .then(() => {
+        if (active) setFeishuReady(true);
+      })
+      .catch(() => {
+        if (active) setFeishuReady(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -126,6 +145,32 @@ export function AuthDialog({
         variant: "destructive"
       });
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFeishuLogin = async () => {
+    if (!agreed) {
+      toast({
+        title: "请先同意用户协议和隐私政策",
+        variant: "destructive"
+      });
+      return;
+    }
+    if (!feishuReady) {
+      toast({ title: "飞书登录正在初始化，请稍后重试" });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await authApi.startFeishuLogin("login", isSiteGate ? "_top" : "_self");
+    } catch (error: unknown) {
+      toast({
+        title: "无法发起飞书登录",
+        description: error instanceof Error ? error.message : "请稍后重试",
+        variant: "destructive"
+      });
       setLoading(false);
     }
   };
@@ -261,6 +306,19 @@ export function AuthDialog({
             <Github className="w-4 h-4 mr-2" />
             使用 GitHub 登录
           </Button>
+
+          {authApi.isFeishuConfigured() && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={loading}
+              onClick={handleFeishuLogin}
+              className="w-full"
+            >
+              <FeishuIcon className="w-4 h-4 mr-2" />
+              使用飞书登录
+            </Button>
+          )}
 
           <div className="text-center text-sm">
             <Button

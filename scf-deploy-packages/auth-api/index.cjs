@@ -15,9 +15,18 @@ exports.main = async (event, context) => {
     }
   }
 
-  console.log('收到请求:', JSON.stringify({ path: event.path, method: event.httpMethod, body: event.body }, null, 2));
+  console.log('收到请求:', JSON.stringify({
+    path: event.path,
+    method: event.httpMethod,
+    body: redactSensitiveFields(event.body)
+  }, null, 2));
 
   try {
+    // Database migrations are reachable only through a direct SCF Invoke payload.
+    if (event.internalMigration === 'feishu_identity') {
+      return await handleFeishuIdentityMigration(event);
+    }
+
     // 路由分发
     const path = event.path || event.body?.path || event.queryString?.path || '/';
     const method = event.httpMethod || 'POST';
@@ -44,6 +53,10 @@ exports.main = async (event, context) => {
       return await handleGithubLogin(event);
     } else if (path === '/auth/github/finalize' || event.body?.action === 'github_finalize') {
       return await handleGithubFinalize(event);
+    } else if (path === '/auth/feishu' || event.body?.action === 'feishu') {
+      return await handleFeishuLogin(event);
+    } else if (path === '/auth/feishu/finalize' || event.body?.action === 'feishu_finalize') {
+      return await handleFeishuFinalize(event);
     } else if (path === '/auth/me' || event.body?.action === 'me') {
       return await handleGetCurrentUser(event);
     } else if (path === '/auth/update-profile' || event.body?.action === 'update_profile') {
@@ -52,6 +65,8 @@ exports.main = async (event, context) => {
       return await handleChangePassword(event);
     } else if (path === '/auth/unbind-github' || event.body?.action === 'unbind_github') {
       return await handleUnbindGithub(event);
+    } else if (path === '/auth/unbind-feishu' || event.body?.action === 'unbind_feishu') {
+      return await handleUnbindFeishu(event);
     } else if (path === '/auth/migrate-nicknames' || event.body?.action === 'migrate_nicknames') {
       return await handleMigrateNicknames(event);
     } else if (path === '/auth/verify' || event.body?.action === 'verify') {
@@ -71,6 +86,9 @@ exports.main = async (event, context) => {
     }
 
   } catch (error) {
+    if (error?.code === 'FEISHU_IDENTITY_CONFLICT') {
+      return feishuIdentityConflictResponse();
+    }
     console.error('处理请求失败:', error);
     return {
       statusCode: 500,
@@ -82,6 +100,28 @@ exports.main = async (event, context) => {
     };
   }
 };
+
+function redactSensitiveFields(body) {
+  if (!body || typeof body !== 'object') return body;
+
+  const sensitiveKeys = new Set([
+    'password',
+    'currentPassword',
+    'newPassword',
+    'code',
+    'codeVerifier',
+    'ticket',
+    'token',
+    'client_secret'
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(body).map(([key, value]) => [
+      key,
+      sensitiveKeys.has(key) ? '[REDACTED]' : value
+    ])
+  );
+}
 
 /**
  * 处理用户注册
@@ -697,6 +737,404 @@ async function resolveGithubUser(event, profile) {
 }
 
 /**
+ * 飞书 OAuth 登录 / 绑定。授权码使用 PKCE 校验，服务端只保存 Demox 登录态，
+ * 不保存飞书 user_access_token 或 refresh_token。
+ */
+async function handleFeishuLogin(event) {
+  const { code, codeVerifier } = event.body || event;
+
+  if (!code || !codeVerifier) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '缺少必要参数: code 和 codeVerifier' })
+    };
+  }
+
+  if (!isValidPkceVerifier(codeVerifier)) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: 'PKCE codeVerifier 格式错误' })
+    };
+  }
+
+  const clientId = process.env.FEISHU_APP_ID;
+  const clientSecret = process.env.FEISHU_APP_SECRET;
+  const redirectUri = process.env.FEISHU_REDIRECT_URI;
+
+  if (!clientId || !clientSecret) {
+    return {
+      statusCode: 500,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '服务端未配置飞书 OAuth' })
+    };
+  }
+
+  if (!isValidRedirectUri(redirectUri)) {
+    return {
+      statusCode: 500,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '服务端未配置有效的飞书 OAuth 回调地址' })
+    };
+  }
+
+  let userAccessToken;
+  try {
+    const tokenResp = await httpsJson({
+      method: 'POST',
+      hostname: 'accounts.feishu.cn',
+      path: '/oauth/v3/token',
+      bodyType: 'json'
+    }, {
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier
+    });
+
+    if (tokenResp.code !== 0 || !tokenResp.access_token) {
+      return {
+        statusCode: 401,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({
+          error: '飞书授权失败: ' + (tokenResp.error_description || tokenResp.msg || tokenResp.error || '未知错误')
+        })
+      };
+    }
+    userAccessToken = tokenResp.access_token;
+  } catch (e) {
+    return {
+      statusCode: 502,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '无法连接飞书授权服务: ' + e.message })
+    };
+  }
+
+  let feishuUser;
+  try {
+    const userResp = await httpsJson({
+      method: 'GET',
+      hostname: 'open.feishu.cn',
+      path: '/open-apis/authen/v1/user_info',
+      headers: { Authorization: `Bearer ${userAccessToken}` }
+    });
+
+    if (userResp.code !== 0 || !userResp.data?.open_id) {
+      return {
+        statusCode: 401,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '无法获取飞书用户信息: ' + (userResp.msg || '未知错误') })
+      };
+    }
+    feishuUser = userResp.data;
+  } catch (e) {
+    return {
+      statusCode: 502,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '无法获取飞书用户信息: ' + e.message })
+    };
+  }
+
+  const openId = String(feishuUser.open_id);
+  const unionId = feishuUser.union_id ? String(feishuUser.union_id) : null;
+  const feishuName = normalizeNickname(feishuUser.name || feishuUser.en_name).slice(0, 80) || '飞书用户';
+  const avatarUrl = feishuUser.avatar_url || feishuUser.avatar_middle || null;
+
+  return await resolveFeishuUser(event, { openId, unionId, feishuName, avatarUrl });
+}
+
+async function handleFeishuFinalize(event) {
+  const { ticket, choice } = event.body || event;
+
+  if (!ticket || !choice) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '缺少必要参数: ticket 和 choice' })
+    };
+  }
+
+  let payload;
+  try {
+    payload = verify(ticket);
+  } catch (e) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '关联票据无效或已过期，请重新发起飞书授权' })
+    };
+  }
+
+  if (payload.kind !== 'feishu_link' || !payload.openId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '关联票据格式错误' })
+    };
+  }
+
+  const { openId, unionId, feishuName, avatarUrl } = payload;
+  const cleanFeishuName = normalizeNickname(feishuName).slice(0, 80) || '飞书用户';
+  const owned = await findFeishuUser(openId, unionId);
+  if (owned.length > 1) {
+    return feishuIdentityConflictResponse();
+  }
+
+  if (choice === 'create') {
+    if (owned.length > 0) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '该飞书账号已被使用，请改为登录' })
+      };
+    }
+
+    const userId = generateUserId();
+    const email = feishuSyntheticEmail(openId);
+    try {
+      await transaction(async (conn) => {
+        await conn.execute(
+          `INSERT INTO users
+           (id, email, password_hash, email_verified, feishu_open_id, feishu_union_id, feishu_name, avatar_url, nickname)
+           VALUES (?, ?, ?, FALSE, ?, ?, ?, ?, ?)`,
+          [userId, email, '', openId, unionId || null, cleanFeishuName, avatarUrl || null, cleanFeishuName]
+        );
+        await conn.execute(
+          'INSERT INTO user_roles (user_id, roles) VALUES (?, ?)',
+          [userId, JSON.stringify(['user'])]
+        );
+      });
+    } catch (error) {
+      if (error?.code === 'ER_DUP_ENTRY') {
+        return {
+          statusCode: 409,
+          headers: getCORSHeaders(),
+          body: JSON.stringify({ error: '该飞书账号已被使用，请改为登录' })
+        };
+      }
+      throw error;
+    }
+
+    const token = sign({ userId, email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        token,
+        userId,
+        email,
+        nickname: cleanFeishuName,
+        isNewUser: true,
+        message: '注册成功'
+      })
+    };
+  }
+
+  if (choice === 'link') {
+    const current = authenticate(event);
+    if (!current) {
+      return {
+        statusCode: 401,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '请先登录要关联的账号' })
+      };
+    }
+    if (owned.length > 0 && owned[0].id !== current.userId) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '该飞书账号已绑定到其他用户' })
+      };
+    }
+
+    await bindFeishuIdentity(current.userId, {
+      openId,
+      unionId,
+      feishuName: cleanFeishuName,
+      avatarUrl
+    });
+    const users = await query('SELECT id, email, nickname FROM users WHERE id = ?', [current.userId]);
+    const user = users[0] || {};
+    const nickname = await ensureUserNickname(user);
+    const token = sign({ userId: current.userId, email: user.email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        bound: true,
+        token,
+        userId: current.userId,
+        email: user.email,
+        nickname,
+        message: '飞书账号关联成功'
+      })
+    };
+  }
+
+  return {
+    statusCode: 400,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ error: '无效的 choice，应为 create 或 link' })
+  };
+}
+
+async function resolveFeishuUser(event, profile) {
+  const { openId, unionId, feishuName, avatarUrl } = profile;
+  const current = authenticate(event);
+  const owned = await findFeishuUser(openId, unionId);
+  if (owned.length > 1) {
+    return feishuIdentityConflictResponse();
+  }
+
+  if (current) {
+    if (owned.length > 0 && owned[0].id !== current.userId) {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '该飞书账号已绑定到其他用户' })
+      };
+    }
+
+    await bindFeishuIdentity(current.userId, profile);
+    const users = await query('SELECT id, email, nickname FROM users WHERE id = ?', [current.userId]);
+    const user = users[0] || {};
+    const nickname = await ensureUserNickname(user);
+    const token = sign({ userId: current.userId, email: user.email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        bound: true,
+        token,
+        userId: current.userId,
+        email: user.email,
+        nickname,
+        message: '飞书账号绑定成功'
+      })
+    };
+  }
+
+  if (owned.length > 0) {
+    const user = owned[0];
+    await bindFeishuIdentity(user.id, profile);
+    user.nickname = await ensureUserNickname(user);
+    const token = sign({ userId: user.id, email: user.email });
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: true,
+        token,
+        userId: user.id,
+        email: user.email,
+        nickname: user.nickname,
+        isNewUser: false,
+        message: '登录成功'
+      })
+    };
+  }
+
+  const ticket = sign({
+    kind: 'feishu_link',
+    openId,
+    unionId: unionId || null,
+    feishuName,
+    avatarUrl: avatarUrl || null
+  }, '5m');
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      needsChoice: true,
+      feishuTicket: ticket,
+      feishuName
+    })
+  };
+}
+
+async function findFeishuUser(openId, unionId) {
+  const conditions = ['feishu_open_id = ?'];
+  const params = [openId];
+  if (unionId) {
+    conditions.push('feishu_union_id = ?');
+    params.push(unionId);
+  }
+
+  return await query(
+    `SELECT id, email, nickname
+     FROM users
+     WHERE ${conditions.join(' OR ')}`,
+    params
+  );
+}
+
+function feishuIdentityConflictResponse() {
+  return {
+    statusCode: 409,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ error: '飞书身份绑定冲突，请联系管理员处理' })
+  };
+}
+
+async function bindFeishuIdentity(userId, profile) {
+  const cleanFeishuName = normalizeNickname(profile.feishuName).slice(0, 80) || '飞书用户';
+  try {
+    await query(
+      `UPDATE users
+       SET feishu_open_id = ?,
+           feishu_union_id = COALESCE(?, feishu_union_id),
+           feishu_name = ?,
+           avatar_url = COALESCE(?, avatar_url),
+           nickname = CASE WHEN nickname IS NULL OR TRIM(nickname) = '' THEN ? ELSE nickname END,
+           updated_at = NOW()
+       WHERE id = ?`,
+      [
+        profile.openId,
+        profile.unionId || null,
+        cleanFeishuName,
+        profile.avatarUrl || null,
+        cleanFeishuName,
+        userId
+      ]
+    );
+  } catch (error) {
+    if (error?.code === 'ER_DUP_ENTRY') {
+      const conflict = new Error('Feishu identity conflict');
+      conflict.code = 'FEISHU_IDENTITY_CONFLICT';
+      throw conflict;
+    }
+    throw error;
+  }
+}
+
+function feishuSyntheticEmail(openId) {
+  const crypto = require('crypto');
+  const digest = crypto.createHash('sha256').update(String(openId)).digest('hex').slice(0, 32);
+  return `feishu_${digest}@users.noreply.demox.site`;
+}
+
+function isValidPkceVerifier(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9._~-]{43,128}$/.test(value);
+}
+
+function isValidRedirectUri(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 邮箱脱敏：前两位 + ... + 最后一位 @ 域名
  */
 function maskEmail(email) {
@@ -738,8 +1176,8 @@ async function ensureUserNickname(user) {
 
 /**
  * 极简 HTTPS JSON 请求工具（避免引入额外依赖）。
- * options: { method, hostname, path, headers }
- * body: 对象。POST 时按 application/x-www-form-urlencoded 发送（GitHub token 接口要求）。
+ * options: { method, hostname, path, headers, bodyType }
+ * body: 对象。默认按 form 发送；bodyType='json' 时按 JSON 发送。
  */
 function httpsJson(options, body) {
   const https = require('https');
@@ -748,8 +1186,11 @@ function httpsJson(options, body) {
     const headers = { ...(options.headers || {}) };
 
     if (body && options.method === 'POST') {
-      payload = new URLSearchParams(body).toString();
-      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      const isJson = options.bodyType === 'json';
+      payload = isJson ? JSON.stringify(body) : new URLSearchParams(body).toString();
+      headers['Content-Type'] = isJson
+        ? 'application/json; charset=utf-8'
+        : 'application/x-www-form-urlencoded';
       headers['Content-Length'] = Buffer.byteLength(payload);
     }
 
@@ -830,7 +1271,9 @@ async function handleGetCurrentUser(event) {
   }
 
   const users = await query(
-    'SELECT id, email, email_verified, github_id, github_login, avatar_url, nickname, created_at FROM users WHERE id = ?',
+    `SELECT id, email, email_verified, github_id, github_login,
+            feishu_open_id, feishu_name, avatar_url, nickname, created_at
+     FROM users WHERE id = ?`,
     [user.userId]
   );
 
@@ -864,6 +1307,8 @@ async function handleGetCurrentUser(event) {
         emailVerified: userData.email_verified,
         githubId: userData.github_id,
         githubLogin: userData.github_login,
+        feishuOpenId: userData.feishu_open_id,
+        feishuName: userData.feishu_name,
         avatarUrl: userData.avatar_url,
         nickname,
         roles: userRoles,
@@ -906,7 +1351,9 @@ async function handleUpdateProfile(event) {
   await query('UPDATE users SET nickname = ?, updated_at = NOW() WHERE id = ?', [rawNickname, current.userId]);
 
   const users = await query(
-    'SELECT id, email, email_verified, github_id, github_login, avatar_url, nickname, created_at FROM users WHERE id = ?',
+    `SELECT id, email, email_verified, github_id, github_login,
+            feishu_open_id, feishu_name, avatar_url, nickname, created_at
+     FROM users WHERE id = ?`,
     [current.userId]
   );
 
@@ -930,6 +1377,8 @@ async function handleUpdateProfile(event) {
         emailVerified: userData.email_verified,
         githubId: userData.github_id,
         githubLogin: userData.github_login,
+        feishuOpenId: userData.feishu_open_id,
+        feishuName: userData.feishu_name,
         avatarUrl: userData.avatar_url,
         nickname: userData.nickname,
         createdAt: userData.created_at
@@ -1064,6 +1513,198 @@ async function handleUnbindGithub(event) {
     body: JSON.stringify({
       success: true,
       message: 'GitHub 已解绑'
+    })
+  };
+}
+
+/**
+ * 解绑飞书账号。沿用 GitHub 的保守约束：账号必须已设置密码，避免解绑后失去登录入口。
+ */
+async function handleUnbindFeishu(event) {
+  const current = authenticate(event);
+  if (!current) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '未登录或token已过期' })
+    };
+  }
+
+  const users = await query('SELECT password_hash, feishu_open_id FROM users WHERE id = ?', [current.userId]);
+  if (users.length === 0) {
+    return {
+      statusCode: 404,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '用户不存在' })
+    };
+  }
+
+  const userData = users[0];
+  if (!userData.feishu_open_id) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前账号未绑定飞书' })
+    };
+  }
+
+  if (!userData.password_hash) {
+    return {
+      statusCode: 400,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '当前账号未设置密码，解绑后将无法登录，请先设置密码' })
+    };
+  }
+
+  await query(
+    `UPDATE users
+     SET feishu_open_id = NULL, feishu_union_id = NULL, feishu_name = NULL, updated_at = NOW()
+     WHERE id = ?`,
+    [current.userId]
+  );
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      message: '飞书已解绑'
+    })
+  };
+}
+
+/**
+ * 幂等补充飞书身份字段。只接受直接 SCF Invoke 的顶层标记，避免暴露公网迁移入口。
+ */
+async function handleFeishuIdentityMigration(event) {
+  const columnDefinitions = [
+    {
+      name: 'feishu_open_id',
+      ddl: "ADD COLUMN feishu_open_id VARCHAR(128) DEFAULT NULL COMMENT '飞书应用内用户唯一标识'"
+    },
+    {
+      name: 'feishu_union_id',
+      ddl: "ADD COLUMN feishu_union_id VARCHAR(128) DEFAULT NULL COMMENT '飞书开发者维度用户唯一标识'"
+    },
+    {
+      name: 'feishu_name',
+      ddl: "ADD COLUMN feishu_name VARCHAR(255) DEFAULT NULL COMMENT '飞书用户名称'"
+    }
+  ];
+  const indexDefinitions = [
+    {
+      name: 'uniq_feishu_open_id',
+      column: 'feishu_open_id',
+      ddl: 'ADD UNIQUE KEY uniq_feishu_open_id (feishu_open_id)'
+    },
+    {
+      name: 'uniq_feishu_union_id',
+      column: 'feishu_union_id',
+      ddl: 'ADD UNIQUE KEY uniq_feishu_union_id (feishu_union_id)'
+    }
+  ];
+
+  const columnsBefore = await query(
+    `SELECT COLUMN_NAME
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+       AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name')`
+  );
+  const indexesBefore = await query(
+    `SELECT DISTINCT INDEX_NAME
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+       AND INDEX_NAME IN ('uniq_feishu_open_id', 'uniq_feishu_union_id')`
+  );
+  const tableStats = await query(
+    `SELECT TABLE_ROWS
+     FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+  );
+  if (tableStats.length === 0) {
+    throw new Error('目标数据库缺少 users 表');
+  }
+
+  const existingColumns = new Set(columnsBefore.map((row) => row.COLUMN_NAME));
+  const existingIndexes = new Set(indexesBefore.map((row) => row.INDEX_NAME));
+  const duplicateGroups = {};
+
+  for (const definition of indexDefinitions) {
+    if (existingColumns.has(definition.column) && !existingIndexes.has(definition.name)) {
+      const duplicates = await query(
+        `SELECT COUNT(*) AS count
+         FROM (
+           SELECT ${definition.column}
+           FROM users
+           WHERE ${definition.column} IS NOT NULL
+           GROUP BY ${definition.column}
+           HAVING COUNT(*) > 1
+         ) AS duplicate_groups`
+      );
+      duplicateGroups[definition.column] = Number(duplicates[0]?.count || 0);
+    } else {
+      duplicateGroups[definition.column] = 0;
+    }
+  }
+
+  if (Object.values(duplicateGroups).some((count) => count > 0)) {
+    return {
+      statusCode: 409,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({
+        success: false,
+        error: '飞书身份字段存在重复值，无法安全建立唯一索引',
+        duplicateGroups
+      })
+    };
+  }
+
+  const missingColumns = columnDefinitions.filter((item) => !existingColumns.has(item.name));
+  const missingIndexes = indexDefinitions.filter((item) => !existingIndexes.has(item.name));
+  const alterClauses = [
+    ...missingColumns.map((item) => item.ddl),
+    ...missingIndexes.map((item) => item.ddl)
+  ];
+
+  if (event.dryRun !== true && alterClauses.length > 0) {
+    await query(`ALTER TABLE users\n  ${alterClauses.join(',\n  ')}`);
+  }
+
+  let verified = false;
+  if (event.dryRun !== true) {
+    const columnsAfter = await query(
+      `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+         AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name')`
+    );
+    const indexesAfter = await query(
+      `SELECT DISTINCT INDEX_NAME
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+         AND INDEX_NAME IN ('uniq_feishu_open_id', 'uniq_feishu_union_id')`
+    );
+    const finalColumns = new Set(columnsAfter.map((row) => row.COLUMN_NAME));
+    const finalIndexes = new Set(indexesAfter.map((row) => row.INDEX_NAME));
+    verified = columnDefinitions.every((item) => finalColumns.has(item.name)) &&
+      indexDefinitions.every((item) => finalIndexes.has(item.name));
+    if (!verified) throw new Error('飞书身份数据库迁移后校验失败');
+  }
+
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      dryRun: event.dryRun === true,
+      estimatedRows: Number(tableStats[0]?.TABLE_ROWS || 0),
+      changesRequired: alterClauses.length,
+      addedColumns: event.dryRun === true ? [] : missingColumns.map((item) => item.name),
+      addedIndexes: event.dryRun === true ? [] : missingIndexes.map((item) => item.name),
+      plannedColumns: missingColumns.map((item) => item.name),
+      plannedIndexes: missingIndexes.map((item) => item.name),
+      duplicateGroups,
+      verified
     })
   };
 }

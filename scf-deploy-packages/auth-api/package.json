@@ -1,6 +1,9 @@
 {
   "name": "auth-api",
   "version": "1.0.0",
+  "scripts": {
+    "test": "node --test index.test.cjs"
+  },
   "dependencies": {
     "bcrypt": "*",
     "bcryptjs": "^3.0.3",

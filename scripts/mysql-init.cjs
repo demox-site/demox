@@ -26,12 +26,17 @@ async function initDatabase() {
         email_verified BOOLEAN DEFAULT FALSE COMMENT '邮箱是否验证',
         github_id VARCHAR(32) UNIQUE COMMENT 'GitHub 用户数字ID',
         github_login VARCHAR(255) COMMENT 'GitHub 用户名',
+        feishu_open_id VARCHAR(128) COMMENT '飞书应用内用户唯一标识',
+        feishu_union_id VARCHAR(128) COMMENT '飞书开发者维度用户唯一标识',
+        feishu_name VARCHAR(255) COMMENT '飞书用户名称',
         avatar_url VARCHAR(500) COMMENT '头像URL',
         nickname VARCHAR(255) COMMENT '昵称',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_email (email),
-        INDEX idx_github_id (github_id)
+        INDEX idx_github_id (github_id),
+        UNIQUE KEY uniq_feishu_open_id (feishu_open_id),
+        UNIQUE KEY uniq_feishu_union_id (feishu_union_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     console.log('✅ users 表创建成功\n');
@@ -50,8 +55,21 @@ async function initDatabase() {
     };
     await addColumn('github_id', `github_id VARCHAR(32) UNIQUE COMMENT 'GitHub 用户数字ID'`);
     await addColumn('github_login', `github_login VARCHAR(255) COMMENT 'GitHub 用户名'`);
+    await addColumn('feishu_open_id', `feishu_open_id VARCHAR(128) COMMENT '飞书应用内用户唯一标识'`);
+    await addColumn('feishu_union_id', `feishu_union_id VARCHAR(128) COMMENT '飞书开发者维度用户唯一标识'`);
+    await addColumn('feishu_name', `feishu_name VARCHAR(255) COMMENT '飞书用户名称'`);
     await addColumn('avatar_url', `avatar_url VARCHAR(500) COMMENT '头像URL'`);
     await addColumn('nickname', `nickname VARCHAR(255) COMMENT '昵称'`);
+    const [userIndexes] = await connection.execute(
+      `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+    const existingIndexes = new Set(userIndexes.map((r) => r.INDEX_NAME));
+    if (!existingIndexes.has('uniq_feishu_open_id')) {
+      await connection.execute('ALTER TABLE users ADD UNIQUE KEY uniq_feishu_open_id (feishu_open_id)');
+    }
+    if (!existingIndexes.has('uniq_feishu_union_id')) {
+      await connection.execute('ALTER TABLE users ADD UNIQUE KEY uniq_feishu_union_id (feishu_union_id)');
+    }
     console.log('✅ users 表迁移完成\n');
 
     // 1c. 项目表

@@ -15,6 +15,8 @@ env:
   DEPLOY_URL: ${{ vars.DEMOX_DEPLOY_URL }}
   VITE_DEMOX_API_URL: ${{ vars.VITE_DEMOX_API_URL }}
   VITE_DEMOX_SITE_URL: ${{ vars.VITE_DEMOX_SITE_URL }}
+  VITE_FEISHU_APP_ID: ${{ vars.VITE_FEISHU_APP_ID }}
+  VITE_FEISHU_REDIRECT_URI: ${{ vars.VITE_FEISHU_REDIRECT_URI }}
 
 jobs:
   deploy:
@@ -33,6 +35,7 @@ jobs:
         run: |
           : "${VITE_DEMOX_API_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_API_URL}"
           : "${VITE_DEMOX_SITE_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_SITE_URL}"
+          : "${VITE_FEISHU_APP_ID:?请在 GitHub Actions Variables 中配置 VITE_FEISHU_APP_ID}"
           # npm 网络偶发 ECONNRESET，加重试与超时
           npm config set fetch-retries 5
           npm config set fetch-retry-factor 2

@@ -38,7 +38,7 @@ const PrivacyPage: React.FC = () => {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
             Demox 隐私政策
           </h1>
-          <p className="text-sm text-[var(--stitch-muted)]">最近更新：2025-12-25</p>
+          <p className="text-sm text-[var(--stitch-muted)]">最近更新：2026-07-21</p>
           <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             我们非常重视您的隐私与数据安全。本隐私政策旨在说明 Demox
             如何收集、使用、
@@ -54,6 +54,10 @@ const PrivacyPage: React.FC = () => {
           <ul className="text-sm text-[var(--stitch-muted)] space-y-1 list-disc pl-5">
             <li>
               账号信息：用于注册和登录的邮箱地址、密码（以不可逆形式存储）、验证码等。
+            </li>
+            <li>
+              第三方登录信息：当您选择飞书登录时，我们会接收并保存飞书用户标识、姓名和头像，
+              用于识别账号与展示资料；我们不会保存飞书访问令牌。
             </li>
             <li>
               使用信息：包括登录时间、登录
@@ -184,6 +188,10 @@ const PrivacyPage: React.FC = () => {
             上部署的站点可能会嵌入第三方服务（如统计工具、第三方脚本、外链
             资源等）。这些第三方可能会依据其自身的隐私政策收集和处理您的访问者数据，该
             等行为不由 Demox 控制或负责。
+          </p>
+          <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
+            当您主动使用飞书登录时，授权页面与身份认证由飞书提供，并受飞书相关服务条款与
+            隐私政策约束；Demox 仅请求完成登录所需的最小用户身份信息。
           </p>
           <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             我们建议您在部署前仔细阅读相关第三方服务的隐私政策，并在您自建的站点中向您

@@ -20,6 +20,7 @@ if (!authApiUrl || !websiteApiUrl) {
   throw new Error("Missing required environment variable: VITE_DEMOX_API_URL");
 }
 const siteUrl = readEnv("VITE_DEMOX_SITE_URL") || currentOrigin();
+const feishuRedirectUri = readEnv("VITE_FEISHU_REDIRECT_URI");
 
 export const siteConfig = {
   name: "Demox",
@@ -38,6 +39,11 @@ const config = {
     // 回调走真实路径（非 hash），由 index.html 启动脚本改写成 hash 路由
     redirectUri: `${siteConfig.url.replace(/\/$/, "")}/github-callback`,
     scope: "read:user user:email"
+  },
+  feishu: {
+    clientId: readEnv("VITE_FEISHU_APP_ID"),
+    redirectUri:
+      feishuRedirectUri || `${siteConfig.url.replace(/\/$/, "")}/feishu-callback`
   },
   site: siteConfig
 };

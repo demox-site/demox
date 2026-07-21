@@ -16,6 +16,7 @@ import {
   useToast
 } from "@/components/ui";
 import { Github, Lock, User as UserIcon } from "lucide-react";
+import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
 
 const texts = {
@@ -39,6 +40,7 @@ const texts = {
     bindingTitle: "第三方登录",
     bindingDesc: "绑定后可使用第三方账号一键登录。",
     github: "GitHub",
+    feishu: "飞书",
     bind: "绑定",
     unbind: "解绑",
     notBound: "未绑定",
@@ -52,6 +54,9 @@ const texts = {
     confirmUnbind: "确定要解绑 GitHub 吗？",
     confirmUnbindDesc: "解绑后将无法使用 GitHub 一键登录。",
     githubUnbound: "GitHub 已解绑",
+    confirmUnbindFeishu: "确定要解绑飞书吗？",
+    confirmUnbindFeishuDesc: "解绑后将无法使用飞书一键登录。",
+    feishuUnbound: "飞书已解绑",
     unbindFailed: "解绑失败"
   },
   en: {
@@ -74,6 +79,7 @@ const texts = {
     bindingTitle: "Third-party login",
     bindingDesc: "Bind an account to enable one-click sign-in.",
     github: "GitHub",
+    feishu: "Feishu",
     bind: "Bind",
     unbind: "Unbind",
     notBound: "Not bound",
@@ -87,6 +93,9 @@ const texts = {
     confirmUnbind: "Unbind GitHub?",
     confirmUnbindDesc: "You won't be able to sign in with GitHub after unbinding.",
     githubUnbound: "GitHub unbound",
+    confirmUnbindFeishu: "Unbind Feishu?",
+    confirmUnbindFeishuDesc: "You won't be able to sign in with Feishu after unbinding.",
+    feishuUnbound: "Feishu unbound",
     unbindFailed: "Unbind failed"
   }
 } as const;
@@ -105,6 +114,8 @@ const SettingsPage: React.FC = () => {
   const [githubLogin, setGithubLogin] = useState<string | null>(
     user?.githubLogin || null
   );
+  const [feishuBound, setFeishuBound] = useState<boolean>(!!user?.feishuOpenId);
+  const [feishuName, setFeishuName] = useState<string | null>(user?.feishuName || null);
 
   // 密码表单
   const [currentPassword, setCurrentPassword] = useState("");
@@ -112,10 +123,16 @@ const SettingsPage: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [savingPassword, setSavingPassword] = useState(false);
   const [unbindingGithub, setUnbindingGithub] = useState(false);
+  const [unbindingFeishu, setUnbindingFeishu] = useState(false);
 
   // 进入页面时拉取真实账号信息，刷新绑定状态并回写本地
   useEffect(() => {
     let alive = true;
+    if (authApi.isFeishuConfigured()) {
+      authApi.prepareFeishuLogin().catch(() => {
+        /* 点击绑定时展示具体错误 */
+      });
+    }
     authApi
       .getCurrentUser()
       .then((res) => {
@@ -123,6 +140,8 @@ const SettingsPage: React.FC = () => {
         const u = res.user;
         setGithubBound(!!u.githubId);
         setGithubLogin(u.githubLogin || null);
+        setFeishuBound(!!u.feishuOpenId);
+        setFeishuName(u.feishuName || null);
         setNickname(u.nickname || "");
         setAccountEmail(u.email || "");
         // 回写本地，保持其它页面一致
@@ -133,6 +152,8 @@ const SettingsPage: React.FC = () => {
           email: u.email || local.email,
           githubId: u.githubId || null,
           githubLogin: u.githubLogin || null,
+          feishuOpenId: u.feishuOpenId || null,
+          feishuName: u.feishuName || null,
           avatarUrl: u.avatarUrl || null,
           nickname: u.nickname || "",
           roles: u.roles || local.roles
@@ -200,6 +221,43 @@ const SettingsPage: React.FC = () => {
       });
     } finally {
       setUnbindingGithub(false);
+    }
+  };
+
+  const handleUnbindFeishu = async () => {
+    if (!window.confirm(`${t.confirmUnbindFeishu}\n${t.confirmUnbindFeishuDesc}`)) return;
+    setUnbindingFeishu(true);
+    try {
+      await authApi.unbindFeishu();
+      setFeishuBound(false);
+      setFeishuName(null);
+      const local = userManager.get() || {};
+      userManager.set({
+        ...local,
+        feishuOpenId: null,
+        feishuName: null
+      });
+      toast({ title: t.feishuUnbound });
+    } catch (error: unknown) {
+      toast({
+        title: t.unbindFailed,
+        description: error instanceof Error ? error.message : "",
+        variant: "destructive"
+      });
+    } finally {
+      setUnbindingFeishu(false);
+    }
+  };
+
+  const handleBindFeishu = async () => {
+    try {
+      await authApi.startFeishuLogin("bind");
+    } catch (error: unknown) {
+      toast({
+        title: language === "zh" ? "无法发起飞书绑定" : "Unable to start Feishu binding",
+        description: error instanceof Error ? error.message : "",
+        variant: "destructive"
+      });
     }
   };
 
@@ -364,7 +422,7 @@ const SettingsPage: React.FC = () => {
                 {t.bindingDesc}
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
               <div className="flex items-center justify-between rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-4">
                 <div className="flex items-center gap-3">
                   <Github className="w-5 h-5 text-[var(--stitch-ink)]" />
@@ -396,6 +454,33 @@ const SettingsPage: React.FC = () => {
                     : t.bind}
                 </Button>
               </div>
+              {(authApi.isFeishuConfigured() || feishuBound) && (
+                <div className="flex items-center justify-between rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-4">
+                  <div className="flex items-center gap-3">
+                    <FeishuIcon className="w-5 h-5 text-[var(--stitch-ink)]" />
+                    <div className="flex flex-col">
+                      <span className="text-sm text-[var(--stitch-ink)]">{t.feishu}</span>
+                      <span className="text-xs text-[var(--stitch-muted)]">
+                        {feishuBound
+                          ? feishuName
+                            ? `${t.bound} · ${feishuName}`
+                            : t.bound
+                          : t.notBound}
+                      </span>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      feishuBound ? handleUnbindFeishu() : handleBindFeishu()
+                    }
+                    disabled={unbindingFeishu}
+                    className="stitch-action rounded-full"
+                  >
+                    {unbindingFeishu ? "..." : feishuBound ? t.unbind : t.bind}
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

@@ -10,6 +10,8 @@ import { MCPAuthorize } from "../pages/MCPAuthorize";
 import { Docs } from "../pages/Docs";
 import { GithubCallback } from "../pages/GithubCallback";
 import { GithubLink } from "../pages/GithubLink";
+import { FeishuCallback } from "../pages/FeishuCallback";
+import { FeishuLink } from "../pages/FeishuLink";
 import { SiteAuth } from "../pages/SiteAuth";
 
 export const routers = [
@@ -57,6 +59,14 @@ export const routers = [
   {
     id: "github-link",
     component: GithubLink
+  },
+  {
+    id: "feishu-callback",
+    component: FeishuCallback
+  },
+  {
+    id: "feishu-link",
+    component: FeishuLink
   },
   {
     id: "site-auth",
