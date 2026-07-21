@@ -778,7 +778,7 @@ export const websiteApi = {
 
   // 项目成员列表
   listProjectMembers: async (projectId: string | number) => {
-    return request<{ success: boolean; project?: any; role?: string; members: any[]; invitations: any[]; message?: string }>(
+    return request<{ success: boolean; project?: any; role?: string; members: any[]; invitations: any[]; feishuGrants?: any[]; currentFeishuIdentity?: any; message?: string }>(
       WEBSITE_API_URL,
       "/website/list-project-members",
       { method: "POST", body: { action: "list_project_members", projectId } }
@@ -791,6 +791,28 @@ export const websiteApi = {
       WEBSITE_API_URL,
       "/website/invite-project-member",
       { method: "POST", body: { action: "invite_project_member", ...data } }
+    );
+  },
+
+  grantProjectToFeishu: async (data: {
+    projectId: string | number;
+    principalType: "user" | "organization";
+    principalKey: string;
+    displayName?: string;
+    role: "admin" | "member";
+  }) => {
+    return request<{ success: boolean; grant?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/grant-project-to-feishu",
+      { method: "POST", body: { action: "grant_project_to_feishu", ...data } }
+    );
+  },
+
+  removeProjectFeishuGrant: async (data: { projectId: string | number; grantId: string | number }) => {
+    return request<{ success: boolean; removedGrantId?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/remove-project-feishu-grant",
+      { method: "POST", body: { action: "remove_project_feishu_grant", ...data } }
     );
   },
 

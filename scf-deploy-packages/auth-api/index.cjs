@@ -871,10 +871,12 @@ async function handleFeishuLogin(event) {
 
   const openId = String(feishuUser.open_id);
   const unionId = feishuUser.union_id ? String(feishuUser.union_id) : null;
+  const tenantKey = feishuUser.tenant_key ? String(feishuUser.tenant_key) : null;
+  const feishuEmail = normalizeEmail(feishuUser.enterprise_email || feishuUser.email || '');
   const feishuName = normalizeNickname(feishuUser.name || feishuUser.en_name).slice(0, 80) || '飞书用户';
   const avatarUrl = feishuUser.avatar_url || feishuUser.avatar_middle || null;
 
-  return await resolveFeishuUser(event, { openId, unionId, feishuName, avatarUrl });
+  return await resolveFeishuUser(event, { openId, unionId, tenantKey, feishuEmail, feishuName, avatarUrl });
 }
 
 async function handleFeishuFinalize(event) {
@@ -907,7 +909,7 @@ async function handleFeishuFinalize(event) {
     };
   }
 
-  const { openId, unionId, feishuName, avatarUrl } = payload;
+  const { openId, unionId, tenantKey, feishuEmail, feishuName, avatarUrl } = payload;
   const cleanFeishuName = normalizeNickname(feishuName).slice(0, 80) || '飞书用户';
   const owned = await findFeishuUser(openId, unionId);
   if (owned.length > 1) {
@@ -929,9 +931,11 @@ async function handleFeishuFinalize(event) {
       await transaction(async (conn) => {
         await conn.execute(
           `INSERT INTO users
-           (id, email, password_hash, email_verified, feishu_open_id, feishu_union_id, feishu_name, avatar_url, nickname)
-           VALUES (?, ?, ?, FALSE, ?, ?, ?, ?, ?)`,
-          [userId, email, '', openId, unionId || null, cleanFeishuName, avatarUrl || null, cleanFeishuName]
+           (id, email, password_hash, email_verified, feishu_open_id, feishu_union_id,
+            feishu_tenant_key, feishu_email, feishu_name, avatar_url, nickname)
+           VALUES (?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?, ?)`,
+          [userId, email, '', openId, unionId || null, tenantKey || null, feishuEmail || null,
+            cleanFeishuName, avatarUrl || null, cleanFeishuName]
         );
         await conn.execute(
           'INSERT INTO user_roles (user_id, roles) VALUES (?, ?)',
@@ -985,6 +989,8 @@ async function handleFeishuFinalize(event) {
     await bindFeishuIdentity(current.userId, {
       openId,
       unionId,
+      tenantKey,
+      feishuEmail,
       feishuName: cleanFeishuName,
       avatarUrl
     });
@@ -1015,7 +1021,7 @@ async function handleFeishuFinalize(event) {
 }
 
 async function resolveFeishuUser(event, profile) {
-  const { openId, unionId, feishuName, avatarUrl } = profile;
+  const { openId, unionId, tenantKey, feishuEmail, feishuName, avatarUrl } = profile;
   const current = authenticate(event);
   const owned = await findFeishuUser(openId, unionId);
   if (owned.length > 1) {
@@ -1075,6 +1081,8 @@ async function resolveFeishuUser(event, profile) {
     kind: 'feishu_link',
     openId,
     unionId: unionId || null,
+    tenantKey: tenantKey || null,
+    feishuEmail: feishuEmail || null,
     feishuName,
     avatarUrl: avatarUrl || null
   }, '5m');
@@ -1122,6 +1130,8 @@ async function bindFeishuIdentity(userId, profile) {
       `UPDATE users
        SET feishu_open_id = ?,
            feishu_union_id = COALESCE(?, feishu_union_id),
+           feishu_tenant_key = COALESCE(?, feishu_tenant_key),
+           feishu_email = COALESCE(?, feishu_email),
            feishu_name = ?,
            avatar_url = COALESCE(?, avatar_url),
            nickname = CASE WHEN nickname IS NULL OR TRIM(nickname) = '' THEN ? ELSE nickname END,
@@ -1130,6 +1140,8 @@ async function bindFeishuIdentity(userId, profile) {
       [
         profile.openId,
         profile.unionId || null,
+        profile.tenantKey || null,
+        profile.feishuEmail || null,
         cleanFeishuName,
         profile.avatarUrl || null,
         cleanFeishuName,
@@ -1605,7 +1617,8 @@ async function handleUnbindFeishu(event) {
 
   await query(
     `UPDATE users
-     SET feishu_open_id = NULL, feishu_union_id = NULL, feishu_name = NULL, updated_at = NOW()
+     SET feishu_open_id = NULL, feishu_union_id = NULL, feishu_tenant_key = NULL,
+         feishu_email = NULL, feishu_name = NULL, updated_at = NOW()
      WHERE id = ?`,
     [current.userId]
   );
@@ -1636,6 +1649,14 @@ async function handleFeishuIdentityMigration(event) {
     {
       name: 'feishu_name',
       ddl: "ADD COLUMN feishu_name VARCHAR(255) DEFAULT NULL COMMENT '飞书用户名称'"
+    },
+    {
+      name: 'feishu_tenant_key',
+      ddl: "ADD COLUMN feishu_tenant_key VARCHAR(128) DEFAULT NULL COMMENT '飞书租户唯一标识'"
+    },
+    {
+      name: 'feishu_email',
+      ddl: "ADD COLUMN feishu_email VARCHAR(255) DEFAULT NULL COMMENT '飞书认证邮箱'"
     }
   ];
   const indexDefinitions = [
@@ -1655,7 +1676,7 @@ async function handleFeishuIdentityMigration(event) {
     `SELECT COLUMN_NAME
      FROM information_schema.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-       AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name')`
+       AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name', 'feishu_tenant_key', 'feishu_email')`
   );
   const indexesBefore = await query(
     `SELECT DISTINCT INDEX_NAME
@@ -1723,7 +1744,7 @@ async function handleFeishuIdentityMigration(event) {
       `SELECT COLUMN_NAME
        FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-         AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name')`
+         AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name', 'feishu_tenant_key', 'feishu_email')`
     );
     const indexesAfter = await query(
       `SELECT DISTINCT INDEX_NAME

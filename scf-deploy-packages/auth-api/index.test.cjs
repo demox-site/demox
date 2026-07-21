@@ -208,6 +208,8 @@ test('returning feishu user exchanges code and signs into the bound account', as
             data: {
               open_id: 'ou_test',
               union_id: 'on_test',
+              tenant_key: 'tenant_test',
+              enterprise_email: 'user@company.example',
               name: 'Feishu User',
               avatar_url: 'https://example.com/avatar.png'
             }
@@ -271,6 +273,8 @@ test('first-time feishu identity is created atomically from a short-lived ticket
     kind: 'feishu_link',
     openId: 'ou_new_user',
     unionId: 'on_new_user',
+    tenantKey: 'tenant_new',
+    feishuEmail: 'new.user@company.example',
     feishuName: 'New User',
     avatarUrl: null
   }, '5m');
@@ -285,6 +289,9 @@ test('first-time feishu identity is created atomically from a short-lived ticket
   assert.match(body.email, /^feishu_[a-f0-9]{32}@users\.noreply\.demox\.site$/);
   assert.equal(writes.length, 2);
   assert.match(writes[0].sql, /INSERT INTO users/);
+  assert.match(writes[0].sql, /feishu_tenant_key, feishu_email/);
+  assert.ok(writes[0].params.includes('tenant_new'));
+  assert.ok(writes[0].params.includes('new.user@company.example'));
   assert.match(writes[1].sql, /INSERT INTO user_roles/);
 });
 
@@ -310,7 +317,9 @@ test('direct SCF invoke applies and verifies the feishu schema migration', async
         ? [
             { COLUMN_NAME: 'feishu_open_id' },
             { COLUMN_NAME: 'feishu_union_id' },
-            { COLUMN_NAME: 'feishu_name' }
+            { COLUMN_NAME: 'feishu_name' },
+            { COLUMN_NAME: 'feishu_tenant_key' },
+            { COLUMN_NAME: 'feishu_email' }
           ]
         : [];
     }
@@ -345,12 +354,15 @@ test('direct SCF invoke applies and verifies the feishu schema migration', async
   assert.deepEqual(body.addedColumns, [
     'feishu_open_id',
     'feishu_union_id',
-    'feishu_name'
+    'feishu_name',
+    'feishu_tenant_key',
+    'feishu_email'
   ]);
   assert.deepEqual(body.addedIndexes, [
     'uniq_feishu_open_id',
     'uniq_feishu_union_id'
   ]);
   assert.match(alterSql, /ADD COLUMN feishu_open_id/);
+  assert.match(alterSql, /ADD COLUMN feishu_tenant_key/);
   assert.match(alterSql, /ADD UNIQUE KEY uniq_feishu_union_id/);
 });

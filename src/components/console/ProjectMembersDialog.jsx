@@ -13,7 +13,7 @@ import {
   useToast
 } from "@/components/ui";
 // @ts-ignore
-import { Loader2, MailPlus, ShieldCheck, UserMinus, UsersRound } from "lucide-react";
+import { Building2, Loader2, MailPlus, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import { websiteApi } from "@/api";
 
 const roleLabels = {
@@ -35,11 +35,17 @@ export function ProjectMembersPanel({
   const { toast } = useToast();
   const [members, setMembers] = React.useState([]);
   const [invitations, setInvitations] = React.useState([]);
+  const [feishuGrants, setFeishuGrants] = React.useState([]);
+  const [currentFeishuIdentity, setCurrentFeishuIdentity] = React.useState(null);
   const [serverProject, setServerProject] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
   const [inviteEmail, setInviteEmail] = React.useState("");
   const [inviteRole, setInviteRole] = React.useState("member");
+  const [feishuPrincipalType, setFeishuPrincipalType] = React.useState("user");
+  const [feishuPrincipalKey, setFeishuPrincipalKey] = React.useState("");
+  const [feishuDisplayName, setFeishuDisplayName] = React.useState("");
+  const [feishuRole, setFeishuRole] = React.useState("member");
   const resolvedProjectId = project?.id || project?._id || projectId;
   const effectiveProject = serverProject ? { ...(project || {}), ...serverProject } : project;
   const myRole = normalizeRole(effectiveProject?.role);
@@ -62,6 +68,8 @@ export function ProjectMembersPanel({
       setServerProject(res.project ? { ...res.project, role: res.role || res.project.role } : { id: resolvedProjectId, role: res.role });
       setMembers(res.members || []);
       setInvitations(res.invitations || []);
+      setFeishuGrants(res.feishuGrants || []);
+      setCurrentFeishuIdentity(res.currentFeishuIdentity || null);
     } catch (error) {
       toast({
         title: t.projectMembersLoadFailed,
@@ -93,6 +101,55 @@ export function ProjectMembersPanel({
       toast({
         title: t.projectInviteFailed,
         description: error.message || t.projectInviteFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const grantToFeishu = async (event) => {
+    event.preventDefault();
+    const principalKey = String(feishuPrincipalKey || "").trim();
+    if (!principalKey || !resolvedProjectId) return;
+    setBusyKey("feishu-grant");
+    try {
+      const res = await websiteApi.grantProjectToFeishu({
+        projectId: resolvedProjectId,
+        principalType: feishuPrincipalType,
+        principalKey,
+        displayName: feishuDisplayName.trim(),
+        role: feishuRole
+      });
+      if (!res?.success) throw new Error(res?.message || t.projectFeishuGrantFailed);
+      setFeishuPrincipalKey("");
+      setFeishuDisplayName("");
+      setFeishuRole("member");
+      toast({ title: t.projectFeishuGrantSaved, description: res.message || t.projectFeishuGrantSavedDesc });
+      await loadMembers();
+    } catch (error) {
+      toast({
+        title: t.projectFeishuGrantFailed,
+        description: error.message || t.projectFeishuGrantFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const removeFeishuGrant = async (grant) => {
+    if (!resolvedProjectId || !grant?.id) return;
+    setBusyKey(`feishu:${grant.id}`);
+    try {
+      const res = await websiteApi.removeProjectFeishuGrant({ projectId: resolvedProjectId, grantId: grant.id });
+      if (!res?.success) throw new Error(res?.message || t.projectFeishuGrantRemoveFailed);
+      setFeishuGrants((prev) => prev.filter((item) => item.id !== grant.id));
+      toast({ title: t.projectFeishuGrantRemoved, description: res.message || t.projectFeishuGrantRemovedDesc });
+    } catch (error) {
+      toast({
+        title: t.projectFeishuGrantRemoveFailed,
+        description: error.message || t.projectFeishuGrantRemoveFailedDesc,
         variant: "destructive"
       });
     } finally {
@@ -150,6 +207,68 @@ export function ProjectMembersPanel({
   return (
     <div className="space-y-5">
       {canManage && (
+        <form onSubmit={grantToFeishu} className="rounded-2xl border border-[var(--stitch-blue)]/40 bg-[var(--stitch-blue-soft)] p-3">
+          <div className="mb-3 flex items-start gap-2">
+            <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />
+            <div>
+              <div className="text-sm font-semibold text-[var(--stitch-ink)]">{t.projectFeishuGrantTitle}</div>
+              <div className="mt-0.5 text-xs text-[var(--stitch-muted)]">{t.projectFeishuGrantDesc}</div>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_120px_auto]">
+            <select
+              value={feishuPrincipalType}
+              onChange={(event) => setFeishuPrincipalType(event.target.value)}
+              disabled={busyKey === "feishu-grant"}
+              className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
+            >
+              <option value="user">{t.projectFeishuUser}</option>
+              <option value="organization">{t.projectFeishuOrganization}</option>
+            </select>
+            <Input
+              value={feishuPrincipalKey}
+              onChange={(event) => setFeishuPrincipalKey(event.target.value)}
+              placeholder={feishuPrincipalType === "organization" ? t.projectFeishuTenantPlaceholder : t.projectFeishuUserPlaceholder}
+              disabled={busyKey === "feishu-grant"}
+              className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
+            />
+            <select
+              value={feishuRole}
+              onChange={(event) => setFeishuRole(event.target.value)}
+              disabled={busyKey === "feishu-grant"}
+              className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
+            >
+              {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
+              <option value="member">{roleText("member")}</option>
+            </select>
+            <Button type="submit" className="stitch-primary shrink-0" disabled={busyKey === "feishu-grant" || !feishuPrincipalKey.trim()}>
+              {busyKey === "feishu-grant" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+              {t.projectFeishuGrantButton}
+            </Button>
+          </div>
+          <Input
+            value={feishuDisplayName}
+            onChange={(event) => setFeishuDisplayName(event.target.value)}
+            placeholder={t.projectFeishuDisplayNamePlaceholder}
+            disabled={busyKey === "feishu-grant"}
+            className="mt-2 border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
+          />
+          {feishuPrincipalType === "organization" && currentFeishuIdentity?.tenantKey && (
+            <button
+              type="button"
+              onClick={() => {
+                setFeishuPrincipalKey(currentFeishuIdentity.tenantKey);
+                if (!feishuDisplayName) setFeishuDisplayName(t.projectFeishuMyOrganization);
+              }}
+              className="mt-2 text-xs font-medium text-[var(--stitch-blue)] hover:underline"
+            >
+              {t.projectFeishuUseMyOrganization}
+            </button>
+          )}
+        </form>
+      )}
+
+      {canManage && (
         <form onSubmit={inviteMember} className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-3">
           <div className="flex flex-col gap-3 sm:flex-row">
             <Input
@@ -175,6 +294,45 @@ export function ProjectMembersPanel({
             </Button>
           </div>
         </form>
+      )}
+
+      {feishuGrants.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-mono uppercase tracking-[0.18em] text-[var(--stitch-muted)]">
+            {t.projectFeishuGrantsSection}
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
+            {feishuGrants.map((grant) => (
+              <div key={grant.id} className="flex items-center justify-between gap-3 border-b border-[var(--stitch-line)] p-3 text-sm last:border-b-0">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate font-semibold text-[var(--stitch-ink)]">{grant.displayName || grant.principalKey}</span>
+                    <Badge variant="outline" className="border-[var(--stitch-line)] text-[var(--stitch-muted)]">
+                      {grant.principalType === "organization" ? t.projectFeishuOrganization : t.projectFeishuUser}
+                    </Badge>
+                    <Badge className="border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
+                      {roleText(grant.role)}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 truncate font-mono text-xs text-[var(--stitch-muted)]">{grant.keyType}: {grant.principalKey}</div>
+                </div>
+                {canManage && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={busyKey === `feishu:${grant.id}`}
+                    onClick={() => removeFeishuGrant(grant)}
+                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-red-950/30 hover:text-red-400"
+                    aria-label={t.projectFeishuGrantRemove}
+                  >
+                    {busyKey === `feishu:${grant.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-4 w-4" />}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <div className="space-y-2">

@@ -34,6 +34,9 @@ const PROJECT_ROLE_ADMIN = 'admin';
 const PROJECT_ROLE_MEMBER = 'member';
 const PROJECT_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN, PROJECT_ROLE_MEMBER];
 const PROJECT_WRITE_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN];
+const FEISHU_PRINCIPAL_USER = 'user';
+const FEISHU_PRINCIPAL_ORGANIZATION = 'organization';
+const FEISHU_USER_KEY_TYPES = ['email', 'open_id', 'union_id'];
 
 function normalizeDomainValue(input) {
   return String(input || '')
@@ -403,6 +406,8 @@ exports.main = async (event, context) => {
       set_website_project: handleSetWebsiteProject,
       list_project_members: handleListProjectMembers,
       invite_project_member: handleInviteProjectMember,
+      grant_project_to_feishu: handleGrantProjectToFeishu,
+      remove_project_feishu_grant: handleRemoveProjectFeishuGrant,
       update_project_member_role: handleUpdateProjectMemberRole,
       remove_project_member: handleRemoveProjectMember,
       migrate_subdomain: handleMigrateSubdomain,
@@ -755,6 +760,8 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
   const normalizedProjectId = await resolveProjectId(projectId);
 
   try {
+    const grantRoles = includeAll ? new Map() : await getFeishuGrantedProjectRoles(userId);
+    const grantedProjectIds = Array.from(grantRoles.keys());
     const params = [];
     const where = [];
     let roleSelect = 'NULL AS project_role';
@@ -770,8 +777,12 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
       params.push(userId);
       memberJoin = 'LEFT JOIN project_members pm ON pm.project_id = w.project_id AND pm.user_id = ?';
       params.push(userId);
-      where.push('(w.user_id = ? OR p.user_id = ? OR pm.user_id = ?)');
+      const grantSql = grantedProjectIds.length
+        ? ` OR w.project_id IN (${grantedProjectIds.map(() => '?').join(', ')})`
+        : '';
+      where.push(`(w.user_id = ? OR p.user_id = ? OR pm.user_id = ?${grantSql})`);
       params.push(userId, userId, userId);
+      params.push(...grantedProjectIds);
     }
     if (normalizedProjectId) {
       where.push('w.project_id = ?');
@@ -779,7 +790,7 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    return await query(
+    const rows = await query(
       `SELECT w.*,
               p.name AS project_name,
               p.project_key AS project_key,
@@ -795,6 +806,10 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
        ORDER BY w.created_at DESC`,
       params
     );
+    return rows.map((row) => ({
+      ...row,
+      project_role: strongestProjectRole(row.project_role, grantRoles.get(String(row.project_id)))
+    }));
   } catch (e) {
     console.warn('查询站点项目/协作字段失败，降级只查归属站点:', e.message);
     const fallbackWhere = [];
@@ -1608,6 +1623,92 @@ function projectRoleRank(role) {
   return 0;
 }
 
+function strongestProjectRole(...roles) {
+  return roles
+    .filter((role) => PROJECT_ROLES.includes(role))
+    .sort((a, b) => projectRoleRank(b) - projectRoleRank(a))[0] || null;
+}
+
+function normalizeFeishuGrantInput(body) {
+  const principalType = body.principalType === FEISHU_PRINCIPAL_ORGANIZATION
+    ? FEISHU_PRINCIPAL_ORGANIZATION
+    : FEISHU_PRINCIPAL_USER;
+  let keyType = String(body.keyType || '').trim().toLowerCase();
+  let principalKey = String(body.principalKey || body.identifier || '').trim();
+  if (principalType === FEISHU_PRINCIPAL_ORGANIZATION) {
+    keyType = 'tenant_key';
+  } else if (!keyType) {
+    if (principalKey.includes('@')) keyType = 'email';
+    else if (principalKey.startsWith('ou_')) keyType = 'open_id';
+    else if (principalKey.startsWith('on_')) keyType = 'union_id';
+  }
+  if (keyType === 'email') principalKey = normalizeEmail(principalKey);
+  const validKeyType = principalType === FEISHU_PRINCIPAL_ORGANIZATION
+    ? keyType === 'tenant_key'
+    : FEISHU_USER_KEY_TYPES.includes(keyType);
+  return {
+    principalType,
+    keyType,
+    principalKey,
+    displayName: String(body.displayName || '').trim().slice(0, 120),
+    valid: validKeyType && !!principalKey && principalKey.length <= 255 &&
+      (keyType !== 'email' || isValidEmail(principalKey))
+  };
+}
+
+function formatFeishuProjectGrant(row) {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    principalType: row.principal_type,
+    keyType: row.key_type,
+    principalKey: row.principal_key,
+    displayName: row.display_name || '',
+    role: normalizeProjectRole(row.role),
+    createdBy: row.created_by || null,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined
+  };
+}
+
+async function getFeishuGrantedProjectRoles(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return new Map();
+  try {
+    const rows = await query(
+      `SELECT g.project_id, g.role
+       FROM project_feishu_grants g
+       JOIN users u ON u.id = ?
+       WHERE g.active = 1
+         AND (
+           (g.principal_type = '${FEISHU_PRINCIPAL_ORGANIZATION}'
+             AND g.key_type = 'tenant_key'
+             AND u.feishu_tenant_key IS NOT NULL
+             AND g.principal_key = u.feishu_tenant_key)
+           OR
+           (g.principal_type = '${FEISHU_PRINCIPAL_USER}' AND (
+             (g.key_type = 'email' AND u.feishu_email IS NOT NULL
+               AND g.principal_key = LOWER(u.feishu_email))
+             OR (g.key_type = 'open_id' AND g.principal_key = u.feishu_open_id)
+             OR (g.key_type = 'union_id' AND g.principal_key = u.feishu_union_id)
+           ))
+         )`,
+      [uid]
+    );
+    const roles = new Map();
+    for (const row of rows) {
+      const key = String(row.project_id);
+      roles.set(key, roles.has(key) ? strongestProjectRole(roles.get(key), row.role) : normalizeProjectRole(row.role));
+    }
+    return roles;
+  } catch (e) {
+    if (!/project_feishu_grants|feishu_tenant_key|feishu_email/i.test(e.message || '')) {
+      console.warn('读取飞书项目授权失败:', e.message);
+    }
+    return new Map();
+  }
+}
+
 function formatProjectMemberForClient(row) {
   const role = normalizeProjectRole(row.role);
   const email = String(row.email || '').trim();
@@ -1663,6 +1764,27 @@ async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
+async function getFeishuIdentityForUser(userId) {
+  try {
+    const rows = await query(
+      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key, feishu_email, feishu_name
+       FROM users WHERE id = ? LIMIT 1`,
+      [userId]
+    );
+    const row = rows[0];
+    if (!row?.feishu_open_id) return null;
+    return {
+      openId: row.feishu_open_id,
+      unionId: row.feishu_union_id || null,
+      tenantKey: row.feishu_tenant_key || null,
+      email: row.feishu_email || null,
+      name: row.feishu_name || null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function ensureProjectOwnerMembership(projectId, ownerId) {
   const pid = normalizePositiveId(projectId);
   const uid = String(ownerId || '').trim();
@@ -1691,6 +1813,8 @@ async function getProjectWithUserRole(userId, projectId, { includeArchived = tru
 
   const archivedSql = includeArchived ? '' : 'AND p.archived = 0';
   try {
+    const grantRoles = await getFeishuGrantedProjectRoles(uid);
+    const grantRole = grantRoles.get(String(pid)) || null;
     const rows = await query(
       `SELECT p.*,
               CASE
@@ -1701,12 +1825,12 @@ async function getProjectWithUserRole(userId, projectId, { includeArchived = tru
        FROM projects p
        LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
        WHERE p.id = ? ${archivedSql}
-         AND (p.user_id = ? OR pm.user_id = ?)
+         AND (p.user_id = ? OR pm.user_id = ? OR ? IS NOT NULL)
        LIMIT 1`,
-      [uid, uid, pid, uid, uid]
+      [uid, uid, pid, uid, uid, grantRole]
     );
     if (!rows[0]) return null;
-    return { ...rows[0], project_role: normalizeProjectRole(rows[0].project_role) };
+    return { ...rows[0], project_role: strongestProjectRole(rows[0].project_role, grantRole) };
   } catch (e) {
     const rows = await query(
       `SELECT *, '${PROJECT_ROLE_OWNER}' AS project_role
@@ -1871,11 +1995,17 @@ async function handleListProjects(event) {
       await ensureDefaultProjectForUser(userId);
       await acceptPendingProjectInvitationsForUser(userId);
     }
+    const grantRoles = includeAll ? new Map() : await getFeishuGrantedProjectRoles(userId);
+    const grantedProjectIds = Array.from(grantRoles.keys());
     const params = [userId, userId];
     const where = [];
     if (!includeAll) {
-      where.push('(p.user_id = ? OR pm.user_id = ?)');
+      const grantSql = grantedProjectIds.length
+        ? ` OR p.id IN (${grantedProjectIds.map(() => '?').join(', ')})`
+        : '';
+      where.push(`(p.user_id = ? OR pm.user_id = ?${grantSql})`);
       params.push(userId, userId);
+      params.push(...grantedProjectIds);
     }
     if (!includeArchived) where.push('p.archived = 0');
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -1896,7 +2026,11 @@ async function handleListProjects(event) {
        ORDER BY p.archived ASC, p.updated_at DESC, p.id ASC`,
       params
     );
-    return ok({ success: true, projects: rows.map(formatProjectForClient), count: rows.length });
+    const projects = rows.map((row) => formatProjectForClient({
+      ...row,
+      project_role: strongestProjectRole(row.project_role, grantRoles.get(String(row.id)))
+    }));
+    return ok({ success: true, projects, count: projects.length });
   } catch (e) {
     console.warn('协作项目列表查询失败，尝试 owner-only 降级:', e.message);
     try {
@@ -2118,6 +2252,13 @@ async function handleListProjectMembers(event) {
          pm.joined_at ASC`,
       [projectId]
     );
+    const feishuGrants = await query(
+      `SELECT * FROM project_feishu_grants
+       WHERE project_id = ? AND active = 1
+       ORDER BY created_at DESC`,
+      [projectId]
+    );
+    const currentFeishuIdentity = await getFeishuIdentityForUser(userId);
     const invitations = await query(
       `SELECT *
        FROM project_invitations
@@ -2131,10 +2272,88 @@ async function handleListProjectMembers(event) {
       project: project ? formatProjectForClient(project) : null,
       role: project?.project_role || (isPlatformAdmin ? PROJECT_ROLE_OWNER : null),
       members: members.map(formatProjectMemberForClient),
-      invitations: invitations.map(formatProjectInvitationForClient)
+      invitations: invitations.map(formatProjectInvitationForClient),
+      feishuGrants: feishuGrants.map(formatFeishuProjectGrant),
+      currentFeishuIdentity
     });
   } catch (e) {
     return ok({ success: false, message: '协作表未初始化，请先执行 migrate_project_collaboration', error: e.message });
+  }
+}
+
+async function handleGrantProjectToFeishu(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const role = normalizeProjectRole(body.role);
+  const principal = normalizeFeishuGrantInput(body);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!principal.valid) {
+    return ok({ success: false, message: '请输入有效的飞书邮箱、open_id、union_id 或 tenant_key' });
+  }
+  if (role === PROJECT_ROLE_OWNER) return ok({ success: false, message: 'owner 只能由项目创建者担任' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && role === PROJECT_ROLE_ADMIN) {
+      return ok({ success: false, message: 'admin 只能授予 member' });
+    }
+    await query(
+      `INSERT INTO project_feishu_grants
+       (project_id, principal_type, key_type, principal_key, display_name, role, created_by, active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+       ON DUPLICATE KEY UPDATE
+         display_name = VALUES(display_name), role = VALUES(role), created_by = VALUES(created_by),
+         active = 1, updated_at = NOW()`,
+      [projectId, principal.principalType, principal.keyType, principal.principalKey,
+        principal.displayName || null, role, userId]
+    );
+    const rows = await query(
+      `SELECT * FROM project_feishu_grants
+       WHERE project_id = ? AND principal_type = ? AND key_type = ? AND principal_key = ? LIMIT 1`,
+      [projectId, principal.principalType, principal.keyType, principal.principalKey]
+    );
+    return ok({
+      success: true,
+      grant: rows[0] ? formatFeishuProjectGrant(rows[0]) : null,
+      message: principal.principalType === FEISHU_PRINCIPAL_ORGANIZATION
+        ? '已授权给飞书组织，该组织用户使用飞书登录后即可访问'
+        : '已授权给飞书用户，对方无需预先注册 Demox'
+    });
+  } catch (e) {
+    return ok({ success: false, message: '飞书授权失败：' + e.message });
+  }
+}
+
+async function handleRemoveProjectFeishuGrant(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const grantId = normalizePositiveId(body.grantId);
+  if (!projectId || !grantId) return ok({ success: false, message: '缺少 projectId 或 grantId' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    const rows = await query(
+      'SELECT role FROM project_feishu_grants WHERE id = ? AND project_id = ? AND active = 1 LIMIT 1',
+      [grantId, projectId]
+    );
+    if (!rows[0]) return ok({ success: false, message: '飞书授权不存在' });
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && normalizeProjectRole(rows[0].role) !== PROJECT_ROLE_MEMBER) {
+      return ok({ success: false, message: 'admin 只能移除 member 授权' });
+    }
+    await query(
+      'UPDATE project_feishu_grants SET active = 0, updated_at = NOW() WHERE id = ? AND project_id = ?',
+      [grantId, projectId]
+    );
+    return ok({ success: true, removedGrantId: String(grantId), message: '飞书授权已移除' });
+  } catch (e) {
+    return ok({ success: false, message: '移除飞书授权失败：' + e.message });
   }
 }
 
@@ -4403,6 +4622,26 @@ async function handleMigrateProjectCollaboration(event) {
     );
     steps.push('ensured project_invitations table');
 
+    await query(
+      `CREATE TABLE IF NOT EXISTS project_feishu_grants (
+        id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_id     BIGINT NOT NULL COMMENT 'projects.id',
+        principal_type VARCHAR(16) NOT NULL COMMENT 'user/organization',
+        key_type       VARCHAR(16) NOT NULL COMMENT 'email/open_id/union_id/tenant_key',
+        principal_key  VARCHAR(255) NOT NULL COMMENT '标准化后的飞书主体标识',
+        display_name   VARCHAR(120) DEFAULT NULL,
+        role           VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'admin/member',
+        created_by     VARCHAR(64) NOT NULL,
+        active         TINYINT(1) NOT NULL DEFAULT 1,
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_project_feishu_principal (project_id, principal_type, key_type, principal_key),
+        INDEX idx_project_feishu_principal (principal_type, key_type, principal_key, active),
+        INDEX idx_project_feishu_project (project_id, active, role)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目飞书主体授权表'`
+    );
+    steps.push('ensured project_feishu_grants table');
+
     const ownerRowsBefore = await query(`SELECT COUNT(*) AS c FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}'`);
     const backfill = await query(
       `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
@@ -4424,7 +4663,8 @@ async function handleMigrateProjectCollaboration(event) {
       `SELECT
          (SELECT COUNT(*) FROM project_members) AS membersTotal,
          (SELECT COUNT(*) FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}') AS ownersTotal,
-         (SELECT COUNT(*) FROM project_invitations WHERE status = 'pending') AS pendingInvitations`
+         (SELECT COUNT(*) FROM project_invitations WHERE status = 'pending') AS pendingInvitations,
+         (SELECT COUNT(*) FROM project_feishu_grants WHERE active = 1) AS activeFeishuGrants`
     );
 
     return ok({
@@ -4433,7 +4673,8 @@ async function handleMigrateProjectCollaboration(event) {
       createdOwnerMemberships: Math.max(0, Number(totals[0]?.ownersTotal || 0) - Number(ownerRowsBefore[0]?.c || 0)),
       membersTotal: Number(totals[0]?.membersTotal || 0),
       ownersTotal: Number(totals[0]?.ownersTotal || 0),
-      pendingInvitations: Number(totals[0]?.pendingInvitations || 0)
+      pendingInvitations: Number(totals[0]?.pendingInvitations || 0),
+      activeFeishuGrants: Number(totals[0]?.activeFeishuGrants || 0)
     });
   } catch (error) {
     console.error('项目协作迁移失败:', error);
