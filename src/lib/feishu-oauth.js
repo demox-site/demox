@@ -47,7 +47,8 @@ export async function derivePkceChallenge(verifier, cryptoProvider = globalThis.
 /** @param {Crypto | undefined} [cryptoProvider] */
 export async function createPkcePair(cryptoProvider = globalThis.crypto) {
   const crypto = requirePkceCrypto(cryptoProvider);
-  const verifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(48)));
+  // 32 random bytes encode to the 43-character verifier shape used by Feishu's examples.
+  const verifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
   return { verifier, challenge: await derivePkceChallenge(verifier, crypto) };
 }
 

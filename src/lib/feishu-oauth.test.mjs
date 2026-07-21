@@ -48,6 +48,8 @@ test("keeps concurrent OAuth verifier pairs isolated by state", async () => {
 
   assert.notEqual(first.state, second.state);
   assert.notEqual(first.verifier, second.verifier);
+  assert.equal(first.verifier.length, 43);
+  assert.equal(second.verifier.length, 43);
   assert.equal(await derivePkceChallenge(first.verifier), first.challenge);
   assert.equal(await derivePkceChallenge(second.verifier), second.challenge);
   assert.deepEqual(consumeFeishuOAuthFlow(first.state, storage, 3_000), {
