@@ -97,6 +97,61 @@ test('a direct open_id grant ignores a different Demox account email', async () 
   assert.equal(body.role, 'member');
 });
 
+test('a first-time Feishu account sees its open_id-granted project in the project list', async () => {
+  let listParams;
+  queryImpl = async (sql, params) => {
+    if (sql.includes('SELECT id FROM projects WHERE project_key = ?')) return [];
+    if (sql.includes('INSERT INTO projects')) return { affectedRows: 1 };
+    if (sql.includes("SELECT id, project_key FROM projects WHERE user_id = ? AND slug = 'default'")) {
+      return [{ id: 99, project_key: 'PDEFAULT1' }];
+    }
+    if (sql.includes('INSERT INTO project_members')) return { affectedRows: 1 };
+    if (sql.includes('SELECT id, email, nickname FROM users WHERE id = ?')) {
+      return [{ id: 'new-demox-account', email: 'different@demox.example', nickname: 'New user' }];
+    }
+    if (sql.includes('FROM project_invitations pi')) return [];
+    if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) {
+      return [{
+        feishu_open_id: 'ou_target',
+        feishu_tenant_key: 'tenant_a',
+        feishu_department_ids: '[]',
+        feishu_directory_synced_at: new Date()
+      }];
+    }
+    if (sql.includes("principal_type = 'user'") && sql.includes("key_type = 'open_id'")) {
+      return [{ project_id: 42, role: 'member' }];
+    }
+    if (sql.includes("principal_type = 'department'") && sql.includes('COUNT(*)')) return [{ c: 0 }];
+    if (sql.includes('FROM projects p') && sql.includes('LEFT JOIN project_members pm')) {
+      listParams = params;
+      return [{
+        id: 42,
+        project_key: 'PGRANTED1',
+        user_id: 'project-owner',
+        name: 'Granted project',
+        slug: 'granted-project',
+        archived: 0,
+        websites_count: 1,
+        project_role: null
+      }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request(
+    'list_projects',
+    {},
+    'new-demox-account',
+    'different@demox.example'
+  )).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.count, 1);
+  assert.equal(body.projects[0].name, 'Granted project');
+  assert.equal(body.projects[0].role, 'member');
+  assert.equal(listParams.includes('42'), true);
+  assert.equal(listParams.includes('different@demox.example'), false);
+});
+
 test('a child-department user matches a parent department grant', async () => {
   const stale = new Date(0);
   directoryImpl.getUserDepartmentClosure = async () => ({ departmentIds: ['od-child', 'od-parent'] });
