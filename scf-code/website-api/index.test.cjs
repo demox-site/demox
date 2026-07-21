@@ -222,6 +222,7 @@ test('grant creation stores resolved open_id, never the lookup or Demox email', 
     role: 'member'
   }, 'project-owner', 'different@demox.example')).body);
   assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.grant.name, 'Feishu Person');
   assert.equal(insertedParams[3], 'ou_target');
   assert.equal(insertedParams[4], 'tenant_a');
   assert.equal(insertedParams.includes('different@demox.example'), false);

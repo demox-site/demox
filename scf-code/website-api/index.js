@@ -1648,12 +1648,12 @@ function normalizeFeishuGrantInput(body) {
     principalType,
     keyType,
     principalKey,
-    displayName: String(body.displayName || '').trim().slice(0, 120),
     valid: validKey && principalKey.length <= 255
   };
 }
 
 function formatFeishuProjectGrant(row) {
+  const name = row.display_name || '';
   return {
     id: String(row.id),
     projectId: String(row.project_id),
@@ -1661,7 +1661,8 @@ function formatFeishuProjectGrant(row) {
     keyType: row.key_type,
     principalKey: row.principal_key,
     tenantKey: row.tenant_key || null,
-    displayName: row.display_name || '',
+    name,
+    displayName: name,
     role: normalizeProjectRole(row.role),
     createdBy: row.created_by || null,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
@@ -2391,6 +2392,7 @@ async function handleSearchFeishuProjectPrincipals(event) {
           principalType,
           keyType: 'open_id',
           principalKey: user.openId,
+          name: user.name,
           displayName: user.name,
           secondaryText: user.email,
           avatarUrl: user.avatarUrl || null
@@ -2410,6 +2412,7 @@ async function handleSearchFeishuProjectPrincipals(event) {
         principalType,
         keyType: 'open_department_id',
         principalKey: department.open_department_id,
+        name: department.name || department.i18n_name?.zh_cn || department.open_department_id,
         displayName: department.name || department.i18n_name?.zh_cn || department.open_department_id,
         secondaryText: `${Number(department.member_count || 0)} 人（含下级部门）`,
         memberCount: Number(department.member_count || 0)
@@ -2443,15 +2446,15 @@ async function handleGrantProjectToFeishu(event) {
     const identity = await getFeishuIdentityForUser(userId);
     if (!identity?.tenantKey) return ok({ success: false, message: '请先关联飞书账号再创建飞书授权' });
 
-    let verifiedName = principal.displayName;
+    let verifiedName;
     if (principal.principalType === FEISHU_PRINCIPAL_USER) {
       const target = await feishuDirectory.getUser(principal.principalKey);
       if (!target || target.status?.is_resigned) return ok({ success: false, message: '飞书用户不存在或已离职' });
-      verifiedName = target.name || target.en_name || verifiedName || principal.principalKey;
+      verifiedName = target.name || target.en_name || principal.principalKey;
     } else {
       const target = await feishuDirectory.getDepartment(principal.principalKey);
       if (!target || target.status?.is_deleted) return ok({ success: false, message: '飞书部门不存在或已删除' });
-      verifiedName = target.name || target.i18n_name?.zh_cn || verifiedName || principal.principalKey;
+      verifiedName = target.name || target.i18n_name?.zh_cn || principal.principalKey;
     }
     await query(
       `INSERT INTO project_feishu_grants

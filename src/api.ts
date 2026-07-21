@@ -810,7 +810,6 @@ export const websiteApi = {
     projectId: string | number;
     principalType: "user" | "department";
     principalKey: string;
-    displayName?: string;
     role: "admin" | "member";
   }) => {
     return request<{ success: boolean; grant?: any; message?: string }>(

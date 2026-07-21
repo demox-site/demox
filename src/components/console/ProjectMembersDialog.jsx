@@ -147,7 +147,6 @@ export function ProjectMembersPanel({
         projectId: resolvedProjectId,
         principalType: feishuPrincipalType,
         principalKey: selectedFeishuPrincipal.principalKey,
-        displayName: selectedFeishuPrincipal.displayName,
         role: feishuRole
       });
       if (!res?.success) throw new Error(res?.message || t.projectFeishuGrantFailed);
@@ -290,7 +289,7 @@ export function ProjectMembersPanel({
                     className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors ${selected ? "border-[var(--stitch-blue)] bg-[var(--stitch-blue)]/10" : "border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] hover:border-[var(--stitch-blue)]/60"}`}
                   >
                     <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold text-[var(--stitch-ink)]">{principal.displayName}</span>
+                      <span className="block truncate text-sm font-semibold text-[var(--stitch-ink)]">{principal.name}</span>
                       <span className="block truncate text-xs text-[var(--stitch-muted)]">{principal.secondaryText}</span>
                     </span>
                     {selected && <ShieldCheck className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
@@ -358,15 +357,14 @@ export function ProjectMembersPanel({
               <div key={grant.id} className="flex items-center justify-between gap-3 border-b border-[var(--stitch-line)] p-3 text-sm last:border-b-0">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate font-semibold text-[var(--stitch-ink)]">{grant.displayName || grant.principalKey}</span>
+                    <span className="truncate font-semibold text-[var(--stitch-ink)]">{grant.name || grant.displayName || grant.principalKey}</span>
                     <Badge variant="outline" className="border-[var(--stitch-line)] text-[var(--stitch-muted)]">
-                      {grant.principalType === "department" ? t.projectFeishuDepartment : t.projectFeishuUser}
+                      {t.projectFeishuSource}
                     </Badge>
                     <Badge className="border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
                       {roleText(grant.role)}
                     </Badge>
                   </div>
-                  <div className="mt-1 truncate font-mono text-xs text-[var(--stitch-muted)]">{grant.keyType}: {grant.principalKey}</div>
                 </div>
                 {canManage && (
                   <Button
