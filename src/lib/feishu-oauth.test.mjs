@@ -75,3 +75,22 @@ test("rejects an expired OAuth flow", async () => {
     null
   );
 });
+
+test("keeps state protection when a confidential client does not use PKCE", async () => {
+  const storage = new MemoryStorage();
+  const flow = await beginFeishuOAuthFlow(
+    "login",
+    storage,
+    globalThis.crypto,
+    1_000,
+    false
+  );
+  assert.equal(flow.verifier, null);
+  assert.equal(flow.challenge, null);
+  assert.deepEqual(consumeFeishuOAuthFlow(flow.state, storage, 2_000), {
+    mode: "login",
+    verifier: null,
+    challenge: null,
+    createdAt: 1_000
+  });
+});

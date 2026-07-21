@@ -744,33 +744,35 @@ async function resolveGithubUser(event, profile) {
 async function handleFeishuLogin(event) {
   const { code, codeVerifier, codeChallenge } = event.body || event;
 
-  if (!code || !codeVerifier) {
+  if (!code) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '缺少必要参数: code 和 codeVerifier' })
+      body: JSON.stringify({ error: '缺少必要参数: code' })
     };
   }
 
-  if (!isValidPkceVerifier(codeVerifier)) {
+  const pkceEnabled = codeVerifier !== undefined || codeChallenge !== undefined;
+  if (pkceEnabled && (!isValidPkceVerifier(codeVerifier) || !isValidPkceChallenge(codeChallenge))) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ error: 'PKCE codeVerifier 格式错误' })
+      body: JSON.stringify({ error: 'PKCE 参数格式错误' })
     };
   }
 
-  const computedChallenge = createPkceChallenge(codeVerifier);
-  const challengeProvided = typeof codeChallenge === 'string';
-  const challengeMatches = challengeProvided && safeStringEqual(codeChallenge, computedChallenge);
-  const pkceLog = {
-    verifierLength: codeVerifier.length,
-    challengeFingerprint: computedChallenge.slice(0, 12),
-    challengeProvided,
-    challengeMatches
-  };
+  const computedChallenge = pkceEnabled ? createPkceChallenge(codeVerifier) : null;
+  const challengeMatches = pkceEnabled && safeStringEqual(codeChallenge, computedChallenge);
+  const pkceLog = pkceEnabled
+    ? {
+        pkceEnabled: true,
+        verifierLength: codeVerifier.length,
+        challengeFingerprint: computedChallenge.slice(0, 12),
+        challengeMatches
+      }
+    : { pkceEnabled: false };
 
-  if (challengeProvided && (!isValidPkceChallenge(codeChallenge) || !challengeMatches)) {
+  if (pkceEnabled && !challengeMatches) {
     console.warn('飞书 PKCE 本地配对失败:', JSON.stringify(pkceLog));
     return {
       statusCode: 400,
@@ -804,19 +806,21 @@ async function handleFeishuLogin(event) {
 
   let userAccessToken;
   try {
+    const tokenRequest = {
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri
+    };
+    if (pkceEnabled) tokenRequest.code_verifier = codeVerifier;
+
     const tokenResp = await httpsJson({
       method: 'POST',
       hostname: 'accounts.feishu.cn',
       path: '/oauth/v3/token',
       bodyType: 'json'
-    }, {
-      grant_type: 'authorization_code',
-      client_id: clientId,
-      client_secret: clientSecret,
-      code,
-      redirect_uri: redirectUri,
-      code_verifier: codeVerifier
-    });
+    }, tokenRequest);
 
     if (tokenResp.code !== 0 || !tokenResp.access_token) {
       const feishuCode = Number.isInteger(tokenResp.code) ? tokenResp.code : null;

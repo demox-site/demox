@@ -1,6 +1,7 @@
 # 飞书登录配置与发布
 
-Demox 使用飞书 OAuth 2.0 授权码流程，并启用 PKCE（S256）。系统只读取基础用户信息
+Demox 使用飞书 OAuth 2.0 授权码流程。飞书自建应用属于 Confidential Client，授权码
+只在持有 App Secret 的 auth-api 中兑换；系统只读取基础用户信息
 `open_id`、`union_id`、姓名和头像，不申请通讯录邮箱权限，也不保存飞书
 `user_access_token` 或 `refresh_token`。
 
@@ -73,7 +74,9 @@ VITE_FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
 
 ## 6. PKCE 故障诊断
 
-飞书返回 `20049` 时，不要关闭 PKCE。前端为每次授权生成独立的 verifier/challenge，
-并按 OAuth `state` 隔离保存；auth-api 会在请求飞书前重算 challenge。日志只记录 verifier
-长度、challenge 的短指纹、配对结果和飞书数字错误码，不记录授权码、verifier、App Secret
-或 access token。
+前端按 OAuth `state` 隔离每次授权，避免并发或旧回调串线。auth-api 同时兼容 PKCE
+请求，并会在请求飞书前重算 challenge。日志只记录 PKCE 是否启用、verifier 长度、challenge
+短指纹、配对结果和飞书数字错误码，不记录授权码、verifier、App Secret 或 access token。
+
+当前飞书自建应用使用服务端 App Secret 保护 token 兑换，不在授权 URL 中启用 PKCE。
+Public Client 没有 App Secret，必须启用 PKCE，不能复用本配置。

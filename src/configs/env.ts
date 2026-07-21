@@ -42,6 +42,8 @@ const config = {
   },
   feishu: {
     clientId: readEnv("VITE_FEISHU_APP_ID"),
+    // Feishu custom apps are confidential clients; token exchange is protected by App Secret.
+    usePkce: false,
     redirectUri:
       feishuRedirectUri || `${siteConfig.url.replace(/\/$/, "")}/feishu-callback`
   },

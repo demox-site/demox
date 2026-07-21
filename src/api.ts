@@ -249,15 +249,23 @@ export const authApi = {
     if (!clientId) {
       throw new Error("飞书登录尚未配置");
     }
-    const { state, challenge } = await beginFeishuOAuthFlow(mode);
+    const { state, challenge } = await beginFeishuOAuthFlow(
+      mode,
+      sessionStorage,
+      globalThis.crypto,
+      Date.now(),
+      config.feishu.usePkce
+    );
 
     const url = new URL("https://accounts.feishu.cn/open-apis/authen/v1/authorize");
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
-    url.searchParams.set("code_challenge", challenge);
-    url.searchParams.set("code_challenge_method", "S256");
+    if (challenge) {
+      url.searchParams.set("code_challenge", challenge);
+      url.searchParams.set("code_challenge_method", "S256");
+    }
     if (navigationTarget === "_top" && window.top) {
       window.top.location.href = url.toString();
       return;
@@ -265,7 +273,11 @@ export const authApi = {
     window.location.href = url.toString();
   },
 
-  feishuLogin: async (code: string, codeVerifier: string, codeChallenge: string) => {
+  feishuLogin: async (
+    code: string,
+    codeVerifier?: string | null,
+    codeChallenge?: string | null
+  ) => {
     const data = await request<{
       success: boolean;
       token?: string;
@@ -279,7 +291,10 @@ export const authApi = {
       feishuName?: string;
     }>(AUTH_API_URL, "/auth/feishu", {
       method: "POST",
-      body: { code, codeVerifier, codeChallenge }
+      body: {
+        code,
+        ...(codeVerifier && codeChallenge ? { codeVerifier, codeChallenge } : {})
+      }
     });
 
     if (data.success && data.token && !data.needsChoice) {

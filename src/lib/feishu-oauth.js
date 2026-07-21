@@ -1,6 +1,6 @@
 /**
  * @typedef {"login" | "bind"} FeishuOAuthMode
- * @typedef {{ mode: FeishuOAuthMode, verifier: string, challenge: string, createdAt: number }} FeishuOAuthFlow
+ * @typedef {{ mode: FeishuOAuthMode, verifier: string | null, challenge: string | null, createdAt: number }} FeishuOAuthFlow
  * @typedef {Pick<Storage, "length" | "getItem" | "key" | "removeItem" | "setItem">} StorageLike
  */
 
@@ -72,12 +72,15 @@ function isValidFlow(value, state, now) {
   if (!value || typeof value !== "object") return false;
   const flow = /** @type {Partial<FeishuOAuthFlow>} */ (value);
   const stateMode = state.startsWith("bind.") ? "bind" : "login";
-  return (
-    flow.mode === stateMode &&
+  const hasValidPkce =
     typeof flow.verifier === "string" &&
     /^[A-Za-z0-9._~-]{43,128}$/.test(flow.verifier) &&
     typeof flow.challenge === "string" &&
-    /^[A-Za-z0-9_-]{43}$/.test(flow.challenge) &&
+    /^[A-Za-z0-9_-]{43}$/.test(flow.challenge);
+  const hasNoPkce = flow.verifier === null && flow.challenge === null;
+  return (
+    flow.mode === stateMode &&
+    (hasValidPkce || hasNoPkce) &&
     typeof flow.createdAt === "number" &&
     flow.createdAt <= now + 60_000 &&
     now - flow.createdAt <= FEISHU_OAUTH_FLOW_TTL_MS
@@ -111,17 +114,21 @@ export function purgeExpiredFeishuOAuthFlows(storage, now = Date.now()) {
  * @param {StorageLike} [storage]
  * @param {Crypto | undefined} [cryptoProvider]
  * @param {number} [now]
+ * @param {boolean} [usePkce]
  */
 export async function beginFeishuOAuthFlow(
   mode,
   storage = sessionStorage,
   cryptoProvider = globalThis.crypto,
-  now = Date.now()
+  now = Date.now(),
+  usePkce = true
 ) {
   const crypto = requirePkceCrypto(cryptoProvider);
   purgeExpiredFeishuOAuthFlows(storage, now);
 
-  const { verifier, challenge } = await createPkcePair(crypto);
+  const { verifier, challenge } = usePkce
+    ? await createPkcePair(crypto)
+    : { verifier: null, challenge: null };
   const state = `${mode}.${base64UrlEncode(crypto.getRandomValues(new Uint8Array(24)))}`;
   storage.setItem(flowKey(state), JSON.stringify({ mode, verifier, challenge, createdAt: now }));
   return { state, verifier, challenge };

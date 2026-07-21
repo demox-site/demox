@@ -34,10 +34,10 @@ function request(path, body = {}) {
   return main({ path, httpMethod: 'POST', body });
 }
 
-test('feishu login requires an authorization code and PKCE verifier', async () => {
+test('feishu login requires an authorization code', async () => {
   const response = await request('/auth/feishu');
   assert.equal(response.statusCode, 400);
-  assert.match(JSON.parse(response.body).error, /code 和 codeVerifier/);
+  assert.match(JSON.parse(response.body).error, /code/);
 });
 
 test('feishu login rejects malformed PKCE before contacting the provider', async () => {
@@ -51,8 +51,7 @@ test('feishu login rejects malformed PKCE before contacting the provider', async
 
 test('feishu login fails closed when server credentials are missing', async () => {
   const response = await request('/auth/feishu', {
-    code: 'one-time-code',
-    codeVerifier: 'a'.repeat(43)
+    code: 'one-time-code'
   });
   assert.equal(response.statusCode, 500);
   assert.match(JSON.parse(response.body).error, /未配置飞书 OAuth/);
@@ -64,8 +63,7 @@ test('feishu login fails closed when the server redirect URI is missing', async 
   delete process.env.FEISHU_REDIRECT_URI;
   try {
     const response = await request('/auth/feishu', {
-      code: 'one-time-code',
-      codeVerifier: 'a'.repeat(43)
+      code: 'one-time-code'
     });
     assert.equal(response.statusCode, 500);
     assert.match(JSON.parse(response.body).error, /回调地址/);
@@ -237,8 +235,7 @@ test('returning feishu user exchanges code and signs into the bound account', as
 
   try {
     const response = await request('/auth/feishu', {
-      code: 'one-time-code',
-      codeVerifier: 'a'.repeat(43)
+      code: 'one-time-code'
     });
     const body = JSON.parse(response.body);
     assert.equal(response.statusCode, 200);
@@ -250,7 +247,7 @@ test('returning feishu user exchanges code and signs into the bound account', as
       'open.feishu.cn'
     ]);
     const tokenRequest = JSON.parse(requests[0].body);
-    assert.equal(tokenRequest.code_verifier, 'a'.repeat(43));
+    assert.equal('code_verifier' in tokenRequest, false);
     assert.equal(tokenRequest.redirect_uri, process.env.FEISHU_REDIRECT_URI);
   } finally {
     https.request = originalRequest;
