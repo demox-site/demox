@@ -13,7 +13,7 @@ import {
   useToast
 } from "@/components/ui";
 // @ts-ignore
-import { Building2, Loader2, MailPlus, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
+import { Building2, Loader2, MailPlus, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import { websiteApi } from "@/api";
 
 const roleLabels = {
@@ -36,15 +36,15 @@ export function ProjectMembersPanel({
   const [members, setMembers] = React.useState([]);
   const [invitations, setInvitations] = React.useState([]);
   const [feishuGrants, setFeishuGrants] = React.useState([]);
-  const [currentFeishuIdentity, setCurrentFeishuIdentity] = React.useState(null);
   const [serverProject, setServerProject] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
   const [inviteEmail, setInviteEmail] = React.useState("");
   const [inviteRole, setInviteRole] = React.useState("member");
   const [feishuPrincipalType, setFeishuPrincipalType] = React.useState("user");
-  const [feishuPrincipalKey, setFeishuPrincipalKey] = React.useState("");
-  const [feishuDisplayName, setFeishuDisplayName] = React.useState("");
+  const [feishuQuery, setFeishuQuery] = React.useState("");
+  const [feishuResults, setFeishuResults] = React.useState([]);
+  const [selectedFeishuPrincipal, setSelectedFeishuPrincipal] = React.useState(null);
   const [feishuRole, setFeishuRole] = React.useState("member");
   const resolvedProjectId = project?.id || project?._id || projectId;
   const effectiveProject = serverProject ? { ...(project || {}), ...serverProject } : project;
@@ -69,7 +69,6 @@ export function ProjectMembersPanel({
       setMembers(res.members || []);
       setInvitations(res.invitations || []);
       setFeishuGrants(res.feishuGrants || []);
-      setCurrentFeishuIdentity(res.currentFeishuIdentity || null);
     } catch (error) {
       toast({
         title: t.projectMembersLoadFailed,
@@ -80,6 +79,37 @@ export function ProjectMembersPanel({
       setLoading(false);
     }
   }, [active, resolvedProjectId, t, toast]);
+
+  const resetFeishuSelection = (nextQuery = "") => {
+    setFeishuQuery(nextQuery);
+    setFeishuResults([]);
+    setSelectedFeishuPrincipal(null);
+  };
+
+  const searchFeishuPrincipals = async () => {
+    const query = String(feishuQuery || "").trim();
+    if (!query || !resolvedProjectId) return;
+    setBusyKey("feishu-search");
+    setSelectedFeishuPrincipal(null);
+    try {
+      const res = await websiteApi.searchFeishuProjectPrincipals({
+        projectId: resolvedProjectId,
+        principalType: feishuPrincipalType,
+        query
+      });
+      if (!res?.success) throw new Error(res?.message || t.projectFeishuSearchFailed);
+      setFeishuResults(res.principals || []);
+    } catch (error) {
+      setFeishuResults([]);
+      toast({
+        title: t.projectFeishuSearchFailed,
+        description: error.message || t.projectFeishuSearchFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setBusyKey("");
+    }
+  };
 
   React.useEffect(() => {
     loadMembers();
@@ -110,20 +140,18 @@ export function ProjectMembersPanel({
 
   const grantToFeishu = async (event) => {
     event.preventDefault();
-    const principalKey = String(feishuPrincipalKey || "").trim();
-    if (!principalKey || !resolvedProjectId) return;
+    if (!selectedFeishuPrincipal?.principalKey || !resolvedProjectId) return;
     setBusyKey("feishu-grant");
     try {
       const res = await websiteApi.grantProjectToFeishu({
         projectId: resolvedProjectId,
         principalType: feishuPrincipalType,
-        principalKey,
-        displayName: feishuDisplayName.trim(),
+        principalKey: selectedFeishuPrincipal.principalKey,
+        displayName: selectedFeishuPrincipal.displayName,
         role: feishuRole
       });
       if (!res?.success) throw new Error(res?.message || t.projectFeishuGrantFailed);
-      setFeishuPrincipalKey("");
-      setFeishuDisplayName("");
+      resetFeishuSelection();
       setFeishuRole("member");
       toast({ title: t.projectFeishuGrantSaved, description: res.message || t.projectFeishuGrantSavedDesc });
       await loadMembers();
@@ -215,23 +243,66 @@ export function ProjectMembersPanel({
               <div className="mt-0.5 text-xs text-[var(--stitch-muted)]">{t.projectFeishuGrantDesc}</div>
             </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_120px_auto]">
+          <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
             <select
               value={feishuPrincipalType}
-              onChange={(event) => setFeishuPrincipalType(event.target.value)}
-              disabled={busyKey === "feishu-grant"}
+              onChange={(event) => {
+                setFeishuPrincipalType(event.target.value);
+                resetFeishuSelection();
+              }}
+              disabled={busyKey.startsWith("feishu-")}
               className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
             >
               <option value="user">{t.projectFeishuUser}</option>
-              <option value="organization">{t.projectFeishuOrganization}</option>
+              <option value="department">{t.projectFeishuDepartment}</option>
             </select>
             <Input
-              value={feishuPrincipalKey}
-              onChange={(event) => setFeishuPrincipalKey(event.target.value)}
-              placeholder={feishuPrincipalType === "organization" ? t.projectFeishuTenantPlaceholder : t.projectFeishuUserPlaceholder}
-              disabled={busyKey === "feishu-grant"}
+              value={feishuQuery}
+              onChange={(event) => resetFeishuSelection(event.target.value)}
+              placeholder={feishuPrincipalType === "department" ? t.projectFeishuDepartmentPlaceholder : t.projectFeishuUserPlaceholder}
+              type={feishuPrincipalType === "user" ? "email" : "text"}
+              disabled={busyKey.startsWith("feishu-")}
               className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
             />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={searchFeishuPrincipals}
+              disabled={busyKey.startsWith("feishu-") || !feishuQuery.trim()}
+              className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)]"
+            >
+              {busyKey === "feishu-search" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+              {t.projectFeishuSearchButton}
+            </Button>
+          </div>
+          {feishuPrincipalType === "user" && (
+            <div className="mt-2 text-xs text-[var(--stitch-muted)]">{t.projectFeishuEmailLookupOnly}</div>
+          )}
+          {feishuResults.length > 0 && (
+            <div className="mt-3 grid gap-2">
+              {feishuResults.map((principal) => {
+                const selected = selectedFeishuPrincipal?.principalKey === principal.principalKey;
+                return (
+                  <button
+                    key={principal.principalKey}
+                    type="button"
+                    onClick={() => setSelectedFeishuPrincipal(principal)}
+                    className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors ${selected ? "border-[var(--stitch-blue)] bg-[var(--stitch-blue)]/10" : "border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] hover:border-[var(--stitch-blue)]/60"}`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-[var(--stitch-ink)]">{principal.displayName}</span>
+                      <span className="block truncate text-xs text-[var(--stitch-muted)]">{principal.secondaryText}</span>
+                    </span>
+                    {selected && <ShieldCheck className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {feishuResults.length === 0 && busyKey !== "feishu-search" && feishuQuery.trim() && (
+            <div className="mt-2 text-xs text-[var(--stitch-muted)]">{t.projectFeishuSearchHint}</div>
+          )}
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-end">
             <select
               value={feishuRole}
               onChange={(event) => setFeishuRole(event.target.value)}
@@ -241,30 +312,11 @@ export function ProjectMembersPanel({
               {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
               <option value="member">{roleText("member")}</option>
             </select>
-            <Button type="submit" className="stitch-primary shrink-0" disabled={busyKey === "feishu-grant" || !feishuPrincipalKey.trim()}>
+            <Button type="submit" className="stitch-primary shrink-0" disabled={busyKey.startsWith("feishu-") || !selectedFeishuPrincipal}>
               {busyKey === "feishu-grant" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
               {t.projectFeishuGrantButton}
             </Button>
           </div>
-          <Input
-            value={feishuDisplayName}
-            onChange={(event) => setFeishuDisplayName(event.target.value)}
-            placeholder={t.projectFeishuDisplayNamePlaceholder}
-            disabled={busyKey === "feishu-grant"}
-            className="mt-2 border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
-          />
-          {feishuPrincipalType === "organization" && currentFeishuIdentity?.tenantKey && (
-            <button
-              type="button"
-              onClick={() => {
-                setFeishuPrincipalKey(currentFeishuIdentity.tenantKey);
-                if (!feishuDisplayName) setFeishuDisplayName(t.projectFeishuMyOrganization);
-              }}
-              className="mt-2 text-xs font-medium text-[var(--stitch-blue)] hover:underline"
-            >
-              {t.projectFeishuUseMyOrganization}
-            </button>
-          )}
         </form>
       )}
 
@@ -308,7 +360,7 @@ export function ProjectMembersPanel({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate font-semibold text-[var(--stitch-ink)]">{grant.displayName || grant.principalKey}</span>
                     <Badge variant="outline" className="border-[var(--stitch-line)] text-[var(--stitch-muted)]">
-                      {grant.principalType === "organization" ? t.projectFeishuOrganization : t.projectFeishuUser}
+                      {grant.principalType === "department" ? t.projectFeishuDepartment : t.projectFeishuUser}
                     </Badge>
                     <Badge className="border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
                       {roleText(grant.role)}

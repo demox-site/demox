@@ -8,7 +8,7 @@
     "build": "vite build && cp dist/index.html dist/404.html && for route in pricing github-callback github-link feishu-callback feishu-link; do mkdir -p \"dist/$route\" && cp dist/index.html \"dist/$route/index.html\"; done",
     "build:dev": "vite build --mode development",
     "test:oauth": "node --test src/lib/feishu-oauth.test.mjs && node --test scf-deploy-packages/auth-api/index.test.cjs",
-    "test:project-feishu": "node --test scf-code/website-api/index.test.cjs",
+    "test:project-feishu": "node --test scf-code/website-api/index.test.cjs scf-code/website-api/shared/feishu-directory.test.cjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\""

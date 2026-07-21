@@ -794,9 +794,21 @@ export const websiteApi = {
     );
   },
 
+  searchFeishuProjectPrincipals: async (data: {
+    projectId: string | number;
+    principalType: "user" | "department";
+    query: string;
+  }) => {
+    return request<{ success: boolean; principals?: any[]; message?: string; errorCode?: string | number }>(
+      WEBSITE_API_URL,
+      "/website/search-feishu-project-principals",
+      { method: "POST", body: { action: "search_feishu_project_principals", ...data } }
+    );
+  },
+
   grantProjectToFeishu: async (data: {
     projectId: string | number;
-    principalType: "user" | "organization";
+    principalType: "user" | "department";
     principalKey: string;
     displayName?: string;
     role: "admin" | "member";

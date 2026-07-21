@@ -18,6 +18,7 @@ const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
+const { createFeishuDirectoryClient, FeishuDirectoryError } = require('./shared/feishu-directory.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -35,8 +36,12 @@ const PROJECT_ROLE_MEMBER = 'member';
 const PROJECT_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN, PROJECT_ROLE_MEMBER];
 const PROJECT_WRITE_ROLES = [PROJECT_ROLE_OWNER, PROJECT_ROLE_ADMIN];
 const FEISHU_PRINCIPAL_USER = 'user';
-const FEISHU_PRINCIPAL_ORGANIZATION = 'organization';
-const FEISHU_USER_KEY_TYPES = ['email', 'open_id', 'union_id'];
+const FEISHU_PRINCIPAL_DEPARTMENT = 'department';
+const FEISHU_DIRECTORY_TTL_MS = 15 * 60 * 1000;
+const feishuDirectory = createFeishuDirectoryClient({
+  appId: process.env.FEISHU_APP_ID,
+  appSecret: process.env.FEISHU_APP_SECRET
+});
 
 function normalizeDomainValue(input) {
   return String(input || '')
@@ -406,6 +411,7 @@ exports.main = async (event, context) => {
       set_website_project: handleSetWebsiteProject,
       list_project_members: handleListProjectMembers,
       invite_project_member: handleInviteProjectMember,
+      search_feishu_project_principals: handleSearchFeishuProjectPrincipals,
       grant_project_to_feishu: handleGrantProjectToFeishu,
       remove_project_feishu_grant: handleRemoveProjectFeishuGrant,
       update_project_member_role: handleUpdateProjectMemberRole,
@@ -1630,29 +1636,20 @@ function strongestProjectRole(...roles) {
 }
 
 function normalizeFeishuGrantInput(body) {
-  const principalType = body.principalType === FEISHU_PRINCIPAL_ORGANIZATION
-    ? FEISHU_PRINCIPAL_ORGANIZATION
+  const principalType = body.principalType === FEISHU_PRINCIPAL_DEPARTMENT
+    ? FEISHU_PRINCIPAL_DEPARTMENT
     : FEISHU_PRINCIPAL_USER;
-  let keyType = String(body.keyType || '').trim().toLowerCase();
-  let principalKey = String(body.principalKey || body.identifier || '').trim();
-  if (principalType === FEISHU_PRINCIPAL_ORGANIZATION) {
-    keyType = 'tenant_key';
-  } else if (!keyType) {
-    if (principalKey.includes('@')) keyType = 'email';
-    else if (principalKey.startsWith('ou_')) keyType = 'open_id';
-    else if (principalKey.startsWith('on_')) keyType = 'union_id';
-  }
-  if (keyType === 'email') principalKey = normalizeEmail(principalKey);
-  const validKeyType = principalType === FEISHU_PRINCIPAL_ORGANIZATION
-    ? keyType === 'tenant_key'
-    : FEISHU_USER_KEY_TYPES.includes(keyType);
+  const keyType = principalType === FEISHU_PRINCIPAL_DEPARTMENT ? 'open_department_id' : 'open_id';
+  const principalKey = String(body.principalKey || body.identifier || '').trim();
+  const validKey = principalType === FEISHU_PRINCIPAL_DEPARTMENT
+    ? /^od-[A-Za-z0-9_-]+$/.test(principalKey)
+    : /^ou_[A-Za-z0-9_-]+$/.test(principalKey);
   return {
     principalType,
     keyType,
     principalKey,
     displayName: String(body.displayName || '').trim().slice(0, 120),
-    valid: validKeyType && !!principalKey && principalKey.length <= 255 &&
-      (keyType !== 'email' || isValidEmail(principalKey))
+    valid: validKey && principalKey.length <= 255
   };
 }
 
@@ -1663,6 +1660,7 @@ function formatFeishuProjectGrant(row) {
     principalType: row.principal_type,
     keyType: row.key_type,
     principalKey: row.principal_key,
+    tenantKey: row.tenant_key || null,
     displayName: row.display_name || '',
     role: normalizeProjectRole(row.role),
     createdBy: row.created_by || null,
@@ -1671,42 +1669,108 @@ function formatFeishuProjectGrant(row) {
   };
 }
 
+function mergeGrantedRole(roles, row) {
+  const key = String(row.project_id);
+  roles.set(key, roles.has(key) ? strongestProjectRole(roles.get(key), row.role) : normalizeProjectRole(row.role));
+}
+
+function parseDepartmentIds(value) {
+  if (Array.isArray(value)) return value.filter((id) => typeof id === 'string' && id.startsWith('od-'));
+  if (typeof value !== 'string' || !value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string' && id.startsWith('od-')) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function isDirectoryIdentityFresh(identity) {
+  if (!identity?.directorySyncedAt) return false;
+  return Date.now() - new Date(identity.directorySyncedAt).getTime() <= FEISHU_DIRECTORY_TTL_MS;
+}
+
+async function refreshFeishuDirectoryIdentity(userId, identity) {
+  if (!identity?.openId) return { ...identity, directoryFresh: false };
+  if (isDirectoryIdentityFresh(identity)) return { ...identity, directoryFresh: true };
+  try {
+    const directory = await feishuDirectory.getUserDepartmentClosure(identity.openId);
+    await query(
+      `UPDATE users
+       SET feishu_department_ids = ?, feishu_directory_synced_at = NOW(), updated_at = NOW()
+       WHERE id = ? AND feishu_open_id = ?`,
+      [JSON.stringify(directory.departmentIds), userId, identity.openId]
+    );
+    return {
+      ...identity,
+      departmentIds: directory.departmentIds,
+      directorySyncedAt: new Date(),
+      directoryFresh: true
+    };
+  } catch (error) {
+    console.warn('刷新飞书部门身份失败:', JSON.stringify({ code: error.code || null, message: error.message }));
+    return { ...identity, departmentIds: [], directoryFresh: false };
+  }
+}
+
 async function getFeishuGrantedProjectRoles(userId) {
   const uid = String(userId || '').trim();
   if (!uid) return new Map();
+  const roles = new Map();
   try {
-    const rows = await query(
-      `SELECT g.project_id, g.role
-       FROM project_feishu_grants g
-       JOIN users u ON u.id = ?
-       WHERE g.active = 1
-         AND (
-           (g.principal_type = '${FEISHU_PRINCIPAL_ORGANIZATION}'
-             AND g.key_type = 'tenant_key'
-             AND u.feishu_tenant_key IS NOT NULL
-             AND g.principal_key = u.feishu_tenant_key)
-           OR
-           (g.principal_type = '${FEISHU_PRINCIPAL_USER}' AND (
-             (g.key_type = 'email' AND u.feishu_email IS NOT NULL
-               AND g.principal_key = LOWER(u.feishu_email))
-             OR (g.key_type = 'open_id' AND g.principal_key = u.feishu_open_id)
-             OR (g.key_type = 'union_id' AND g.principal_key = u.feishu_union_id)
-           ))
-         )`,
+    const identityRows = await query(
+      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key,
+              feishu_department_ids, feishu_directory_synced_at
+       FROM users WHERE id = ? LIMIT 1`,
       [uid]
     );
-    const roles = new Map();
-    for (const row of rows) {
-      const key = String(row.project_id);
-      roles.set(key, roles.has(key) ? strongestProjectRole(roles.get(key), row.role) : normalizeProjectRole(row.role));
-    }
-    return roles;
+    const row = identityRows[0];
+    if (!row?.feishu_open_id) return roles;
+    let identity = {
+      openId: row.feishu_open_id,
+      unionId: row.feishu_union_id || null,
+      tenantKey: row.feishu_tenant_key || null,
+      departmentIds: parseDepartmentIds(row.feishu_department_ids),
+      directorySyncedAt: row.feishu_directory_synced_at || null
+    };
+
+    const directRows = await query(
+      `SELECT project_id, role
+       FROM project_feishu_grants
+       WHERE active = 1 AND principal_type = '${FEISHU_PRINCIPAL_USER}'
+         AND key_type = 'open_id' AND principal_key = ?
+         AND tenant_key = ?`,
+      [identity.openId, identity.tenantKey]
+    );
+    directRows.forEach((grant) => mergeGrantedRole(roles, grant));
+
+    if (!identity.tenantKey) return roles;
+    const departmentGrantCount = await query(
+      `SELECT COUNT(*) AS c FROM project_feishu_grants
+       WHERE active = 1 AND principal_type = '${FEISHU_PRINCIPAL_DEPARTMENT}'
+         AND key_type = 'open_department_id' AND tenant_key = ?`,
+      [identity.tenantKey]
+    );
+    if (Number(departmentGrantCount[0]?.c || 0) === 0) return roles;
+
+    identity = await refreshFeishuDirectoryIdentity(uid, identity);
+    if (!identity.directoryFresh || identity.departmentIds.length === 0) return roles;
+    const placeholders = identity.departmentIds.map(() => '?').join(', ');
+    const departmentRows = await query(
+      `SELECT project_id, role
+       FROM project_feishu_grants
+       WHERE active = 1 AND principal_type = '${FEISHU_PRINCIPAL_DEPARTMENT}'
+         AND key_type = 'open_department_id' AND tenant_key = ?
+         AND principal_key IN (${placeholders})`,
+      [identity.tenantKey, ...identity.departmentIds]
+    );
+    departmentRows.forEach((grant) => mergeGrantedRole(roles, grant));
   } catch (e) {
-    if (!/project_feishu_grants|feishu_tenant_key|feishu_email/i.test(e.message || '')) {
+    if (!/project_feishu_grants|feishu_tenant_key|feishu_department_ids|feishu_directory_synced_at/i.test(e.message || '')) {
       console.warn('读取飞书项目授权失败:', e.message);
     }
-    return new Map();
   }
+  return roles;
 }
 
 function formatProjectMemberForClient(row) {
@@ -1767,7 +1831,8 @@ async function getUserByEmail(email) {
 async function getFeishuIdentityForUser(userId) {
   try {
     const rows = await query(
-      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key, feishu_email, feishu_name
+      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key, feishu_email, feishu_name,
+              feishu_department_ids, feishu_directory_synced_at
        FROM users WHERE id = ? LIMIT 1`,
       [userId]
     );
@@ -1778,7 +1843,9 @@ async function getFeishuIdentityForUser(userId) {
       unionId: row.feishu_union_id || null,
       tenantKey: row.feishu_tenant_key || null,
       email: row.feishu_email || null,
-      name: row.feishu_name || null
+      name: row.feishu_name || null,
+      departmentIds: parseDepartmentIds(row.feishu_department_ids),
+      directorySyncedAt: row.feishu_directory_synced_at || null
     };
   } catch (e) {
     return null;
@@ -2281,6 +2348,78 @@ async function handleListProjectMembers(event) {
   }
 }
 
+function feishuDirectoryFailure(error) {
+  if (error instanceof FeishuDirectoryError) {
+    const permissionMissing = Number(error.code) === 99991672 || Number(error.code) === 40004;
+    return {
+      success: false,
+      message: permissionMissing
+        ? '飞书应用尚未开通通讯录读取权限或数据范围，请先完成应用权限配置'
+        : error.message,
+      errorCode: error.code || null,
+      permissionMissing
+    };
+  }
+  return { success: false, message: '飞书通讯录请求失败：' + error.message };
+}
+
+async function handleSearchFeishuProjectPrincipals(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const principalType = body.principalType === FEISHU_PRINCIPAL_DEPARTMENT
+    ? FEISHU_PRINCIPAL_DEPARTMENT
+    : FEISHU_PRINCIPAL_USER;
+  const keyword = String(body.query || body.keyword || '').trim();
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!keyword) return ok({ success: false, message: principalType === FEISHU_PRINCIPAL_USER ? '请输入飞书登录邮箱' : '请输入部门名称' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    const identity = await getFeishuIdentityForUser(userId);
+    if (!identity?.tenantKey) {
+      return ok({ success: false, message: '请先在账号设置中关联飞书，再搜索飞书用户或部门' });
+    }
+
+    if (principalType === FEISHU_PRINCIPAL_USER) {
+      const user = await feishuDirectory.resolveUserByEmail(keyword);
+      return ok({
+        success: true,
+        principals: [{
+          principalType,
+          keyType: 'open_id',
+          principalKey: user.openId,
+          displayName: user.name,
+          secondaryText: user.email,
+          avatarUrl: user.avatarUrl || null
+        }]
+      });
+    }
+
+    const normalizedKeyword = keyword.toLocaleLowerCase();
+    const departments = await feishuDirectory.listDepartments();
+    const principals = departments
+      .filter((department) => {
+        const name = String(department.name || department.i18n_name?.zh_cn || '').toLocaleLowerCase();
+        return name.includes(normalizedKeyword) || String(department.open_department_id).includes(keyword);
+      })
+      .slice(0, 20)
+      .map((department) => ({
+        principalType,
+        keyType: 'open_department_id',
+        principalKey: department.open_department_id,
+        displayName: department.name || department.i18n_name?.zh_cn || department.open_department_id,
+        secondaryText: `${Number(department.member_count || 0)} 人（含下级部门）`,
+        memberCount: Number(department.member_count || 0)
+      }));
+    return ok({ success: true, principals });
+  } catch (error) {
+    return ok(feishuDirectoryFailure(error));
+  }
+}
+
 async function handleGrantProjectToFeishu(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
@@ -2291,7 +2430,7 @@ async function handleGrantProjectToFeishu(event) {
   const principal = normalizeFeishuGrantInput(body);
   if (!projectId) return ok({ success: false, message: '缺少 projectId' });
   if (!principal.valid) {
-    return ok({ success: false, message: '请输入有效的飞书邮箱、open_id、union_id 或 tenant_key' });
+    return ok({ success: false, message: '请先搜索并选择一个有效的飞书用户或部门' });
   }
   if (role === PROJECT_ROLE_OWNER) return ok({ success: false, message: 'owner 只能由项目创建者担任' });
 
@@ -2301,15 +2440,29 @@ async function handleGrantProjectToFeishu(event) {
     if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && role === PROJECT_ROLE_ADMIN) {
       return ok({ success: false, message: 'admin 只能授予 member' });
     }
+    const identity = await getFeishuIdentityForUser(userId);
+    if (!identity?.tenantKey) return ok({ success: false, message: '请先关联飞书账号再创建飞书授权' });
+
+    let verifiedName = principal.displayName;
+    if (principal.principalType === FEISHU_PRINCIPAL_USER) {
+      const target = await feishuDirectory.getUser(principal.principalKey);
+      if (!target || target.status?.is_resigned) return ok({ success: false, message: '飞书用户不存在或已离职' });
+      verifiedName = target.name || target.en_name || verifiedName || principal.principalKey;
+    } else {
+      const target = await feishuDirectory.getDepartment(principal.principalKey);
+      if (!target || target.status?.is_deleted) return ok({ success: false, message: '飞书部门不存在或已删除' });
+      verifiedName = target.name || target.i18n_name?.zh_cn || verifiedName || principal.principalKey;
+    }
     await query(
       `INSERT INTO project_feishu_grants
-       (project_id, principal_type, key_type, principal_key, display_name, role, created_by, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+       (project_id, principal_type, key_type, principal_key, tenant_key, display_name, role, created_by, active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
        ON DUPLICATE KEY UPDATE
-         display_name = VALUES(display_name), role = VALUES(role), created_by = VALUES(created_by),
+         tenant_key = VALUES(tenant_key), display_name = VALUES(display_name),
+         role = VALUES(role), created_by = VALUES(created_by),
          active = 1, updated_at = NOW()`,
-      [projectId, principal.principalType, principal.keyType, principal.principalKey,
-        principal.displayName || null, role, userId]
+      [projectId, principal.principalType, principal.keyType, principal.principalKey, identity.tenantKey,
+        verifiedName || null, role, userId]
     );
     const rows = await query(
       `SELECT * FROM project_feishu_grants
@@ -2319,12 +2472,12 @@ async function handleGrantProjectToFeishu(event) {
     return ok({
       success: true,
       grant: rows[0] ? formatFeishuProjectGrant(rows[0]) : null,
-      message: principal.principalType === FEISHU_PRINCIPAL_ORGANIZATION
-        ? '已授权给飞书组织，该组织用户使用飞书登录后即可访问'
+      message: principal.principalType === FEISHU_PRINCIPAL_DEPARTMENT
+        ? '已授权给飞书部门，该部门及下级部门用户使用飞书登录后即可访问'
         : '已授权给飞书用户，对方无需预先注册 Demox'
     });
   } catch (e) {
-    return ok({ success: false, message: '飞书授权失败：' + e.message });
+    return ok(feishuDirectoryFailure(e));
   }
 }
 
@@ -4626,9 +4779,10 @@ async function handleMigrateProjectCollaboration(event) {
       `CREATE TABLE IF NOT EXISTS project_feishu_grants (
         id             BIGINT AUTO_INCREMENT PRIMARY KEY,
         project_id     BIGINT NOT NULL COMMENT 'projects.id',
-        principal_type VARCHAR(16) NOT NULL COMMENT 'user/organization',
-        key_type       VARCHAR(16) NOT NULL COMMENT 'email/open_id/union_id/tenant_key',
+        principal_type VARCHAR(16) NOT NULL COMMENT 'user/department',
+        key_type       VARCHAR(32) NOT NULL COMMENT 'open_id/open_department_id',
         principal_key  VARCHAR(255) NOT NULL COMMENT '标准化后的飞书主体标识',
+        tenant_key     VARCHAR(128) DEFAULT NULL COMMENT '授权主体所属飞书租户',
         display_name   VARCHAR(120) DEFAULT NULL,
         role           VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'admin/member',
         created_by     VARCHAR(64) NOT NULL,
@@ -4641,6 +4795,49 @@ async function handleMigrateProjectCollaboration(event) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目飞书主体授权表'`
     );
     steps.push('ensured project_feishu_grants table');
+
+    const grantColumns = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'project_feishu_grants'`
+    );
+    const grantColumnNames = new Set(grantColumns.map((row) => row.COLUMN_NAME));
+    if (!grantColumnNames.has('tenant_key')) {
+      await query("ALTER TABLE project_feishu_grants ADD COLUMN tenant_key VARCHAR(128) DEFAULT NULL COMMENT '授权主体所属飞书租户' AFTER principal_key");
+      steps.push('added project_feishu_grants.tenant_key');
+    } else {
+      steps.push('project_feishu_grants.tenant_key already exists');
+    }
+    await query("ALTER TABLE project_feishu_grants MODIFY COLUMN key_type VARCHAR(32) NOT NULL COMMENT 'open_id/open_department_id'");
+    steps.push('ensured project_feishu_grants.key_type capacity');
+
+    const userColumns = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+    const userColumnNames = new Set(userColumns.map((row) => row.COLUMN_NAME));
+    if (!userColumnNames.has('feishu_department_ids')) {
+      await query("ALTER TABLE users ADD COLUMN feishu_department_ids TEXT DEFAULT NULL COMMENT '飞书直属部门及祖先部门 open_department_id JSON' AFTER feishu_email");
+      steps.push('added users.feishu_department_ids');
+    } else {
+      steps.push('users.feishu_department_ids already exists');
+    }
+    if (!userColumnNames.has('feishu_directory_synced_at')) {
+      await query("ALTER TABLE users ADD COLUMN feishu_directory_synced_at TIMESTAMP NULL DEFAULT NULL COMMENT '飞书部门身份同步时间' AFTER feishu_department_ids");
+      steps.push('added users.feishu_directory_synced_at');
+    } else {
+      steps.push('users.feishu_directory_synced_at already exists');
+    }
+
+    const legacyGrants = await query(
+      `UPDATE project_feishu_grants
+       SET active = 0, updated_at = NOW()
+       WHERE active = 1 AND (
+         tenant_key IS NULL
+         OR principal_type NOT IN ('${FEISHU_PRINCIPAL_USER}', '${FEISHU_PRINCIPAL_DEPARTMENT}')
+         OR key_type NOT IN ('open_id', 'open_department_id')
+       )`
+    );
+    steps.push(`deactivated legacy Feishu grants: ${legacyGrants.affectedRows || 0}`);
 
     const ownerRowsBefore = await query(`SELECT COUNT(*) AS c FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}'`);
     const backfill = await query(
