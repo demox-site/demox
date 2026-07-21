@@ -30,6 +30,8 @@ var OFFICIAL_DOMAINS = ['demox.site', 'vibeme.cn'];
 var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底 path（改绑主站时同步改 DB 与此）
 var DEMOX_BADGE_MARKER = 'data-demox-site-badge';
 var DEMOX_AUTH_COOKIE = 'demox_access';
+var DEMOX_SITE_AUTH_COMPLETE_PATH = '/.demox/auth-complete';
+var DEMOX_SITE_AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
 function runtimeEnv(name) {
   try {
@@ -587,17 +589,147 @@ function getCookie(req, name) {
   return '';
 }
 
-function redirectToLogin(req) {
-  const next = new URL(req.url);
-  const target = new URL('/site-auth', 'https://' + WWW_HOST);
-  target.searchParams.set('next', next.toString());
-  return new Response(null, {
-    status: 302,
+function isDocumentRequest(req) {
+  const destination = (req.headers.get('sec-fetch-dest') || '').toLowerCase();
+  const accept = (req.headers.get('accept') || '').toLowerCase();
+  return destination === 'document' || accept.includes('text/html');
+}
+
+function loginRequiredResponse() {
+  return new Response('Authentication required', {
+    status: 401,
     headers: {
-      Location: target.toString(),
+      'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store'
     }
   });
+}
+
+function privateSiteLoginGate(req) {
+  const next = new URL(req.url);
+  const target = new URL('/site-auth', 'https://' + WWW_HOST);
+  target.searchParams.set('next', next.toString());
+  target.searchParams.set('embedded', '1');
+
+  const host = escapeHtml(next.hostname);
+  const frameUrl = escapeHtml(target.toString());
+  // URL fragments never reach the edge, so the gate restores the browser's hash locally.
+  const frameLoader = "(function(){var f=document.getElementById('demox-auth-frame');var u=new URL(f.dataset.src);var n=new URL(u.searchParams.get('next'));n.hash=window.location.hash;u.searchParams.set('next',n.toString());f.src=u.toString();})();";
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>登录后查看 ${host}</title>
+  <style>
+    :root { color-scheme: light dark; background: #e9e9e6; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #e9e9e6; }
+    .auth-frame { width: 100%; height: 100%; border: 0; }
+    .fallback { position: fixed; inset: 0; display: grid; place-items: center; font: 14px sans-serif; }
+    .fallback a { color: inherit; }
+    @media (prefers-color-scheme: dark) { :root, body { background: #0d0d0d; color: #f5f5f5; } }
+  </style>
+</head>
+<body>
+  <iframe
+    id="demox-auth-frame"
+    class="auth-frame"
+    data-src="${frameUrl}"
+    title="登录 Demox 后查看私有项目"
+    referrerpolicy="no-referrer"
+    sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin allow-top-navigation"
+  ></iframe>
+  <script>${frameLoader}</script>
+  <noscript><p class="fallback">需要启用 JavaScript，或<a href="${frameUrl}">前往登录</a>。</p></noscript>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': "default-src 'none'; frame-src https://" + WWW_HOST + "; script-src 'sha256-29k9IDwlfsUcc+yDMI+K34/rKJWIEVngWepmVWailgM='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
+}
+
+async function completePrivateSiteLogin(req, label, domain) {
+  const requestUrl = new URL(req.url);
+  const sourceOrigin = (req.headers.get('origin') || '').toLowerCase();
+  if (sourceOrigin !== ('https://' + WWW_HOST)) {
+    return new Response('Invalid authentication origin', {
+      status: 403,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/x-www-form-urlencoded')) {
+    return new Response('Unsupported authentication request', {
+      status: 415,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+
+  let rawBody = '';
+  try {
+    rawBody = await req.text();
+  } catch (e) {
+    return new Response('Invalid authentication request', {
+      status: 400,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+  if (rawBody.length > 32768) {
+    return new Response('Authentication request too large', {
+      status: 413,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+
+  const params = new URLSearchParams(rawBody);
+  const token = String(params.get('token') || '');
+  const rawNext = String(params.get('next') || '');
+  let next;
+  try {
+    next = new URL(rawNext);
+  } catch (e) {
+    next = null;
+  }
+
+  if (
+    !token || token.length > 16384 || !next || next.protocol !== 'https:' ||
+    next.origin !== requestUrl.origin || next.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH
+  ) {
+    return new Response('Invalid authentication request', {
+      status: 400,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+
+  const access = await checkPrivateSiteAccessToken(token, label, domain);
+  const location = next.pathname + next.search + next.hash;
+  if (!access.allowed) {
+    if (!access.loginRequired) return accessDeniedPage(req);
+    return new Response(null, {
+      status: 303,
+      headers: { Location: location, 'Cache-Control': 'no-store' }
+    });
+  }
+
+  const headers = { Location: location, 'Cache-Control': 'no-store' };
+  if (domain !== DEFAULT_OFFICIAL_DOMAIN) {
+    headers['Set-Cookie'] = DEMOX_AUTH_COOKIE + '=' + encodeURIComponent(token) +
+      '; Max-Age=' + DEMOX_SITE_AUTH_COOKIE_MAX_AGE +
+      '; Path=/; HttpOnly; Secure; SameSite=Lax';
+  }
+  return new Response(null, { status: 303, headers: headers });
 }
 
 function accessDeniedPage(req) {
@@ -686,6 +818,10 @@ async function checkPrivateSiteAccess(req, label, domain) {
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
+  return checkPrivateSiteAccessToken(token, label, domain);
+}
+
+async function checkPrivateSiteAccessToken(token, label, domain) {
   try {
     const resp = await fetch(backendUrl('/check-site-access'), {
       method: 'POST',
@@ -816,11 +952,32 @@ async function handle(req, event) {
     websiteId = 'EPX2UU43';
   }
 
+  // Never pass an auth-completion POST through to a user-controlled origin.
+  if (
+    u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH &&
+    (!path || visibility !== VISIBILITY_PRIVATE || (domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www'))
+  ) {
+    return new Response('Not Found', {
+      status: 404,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+
   if (path) {
     if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
+      if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
+        if (req.method !== 'POST') {
+          return new Response('Method Not Allowed', {
+            status: 405,
+            headers: { Allow: 'POST', 'Cache-Control': 'no-store' }
+          });
+        }
+        return completePrivateSiteLogin(req, label, domain);
+      }
       const access = await checkPrivateSiteAccess(req, label, domain);
       if (!access.allowed) {
-        return access.loginRequired ? redirectToLogin(req) : accessDeniedPage(req);
+        if (!access.loginRequired) return accessDeniedPage(req);
+        return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
       }
     }
     // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site

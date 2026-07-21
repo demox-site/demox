@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { authApi } from "../api";
+import { authApi, tokenManager } from "../api";
 import { CheckCircle, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui";
-import { consumeSiteAuthNext } from "@/lib/site-auth";
+import {
+  consumeSiteAuthHandoff,
+  consumeSiteAuthNext,
+  submitSiteAuthCompletion
+} from "@/lib/site-auth";
 
 // 解析 OAuth 回调参数。browser history 下走 ?code=...&state=...；
 // 兼容旧的 hash 形式(#/github-callback?code=...)，避免历史链接失效。
@@ -78,6 +82,7 @@ export function GithubCallback() {
 
         setStatus("success");
         const privateSiteNext = !isBind ? consumeSiteAuthNext() : null;
+        const privateSiteHandoff = !isBind ? consumeSiteAuthHandoff() : false;
         setMessage(
           res.bound
             ? "GitHub 账号绑定成功"
@@ -89,6 +94,11 @@ export function GithubCallback() {
         );
         setTimeout(() => {
           if (privateSiteNext) {
+            const token = tokenManager.get();
+            if (
+              privateSiteHandoff && token &&
+              submitSiteAuthCompletion(privateSiteNext, token)
+            ) return;
             window.location.href = privateSiteNext;
             return;
           }

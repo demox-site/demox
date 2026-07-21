@@ -18,6 +18,9 @@ interface AuthDialogProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onLoginSuccess: () => void;
+  presentation?: "dialog" | "site-gate";
+  title?: string;
+  description?: string;
 }
 
 type LoginMode = "password" | "code";
@@ -25,7 +28,10 @@ type LoginMode = "password" | "code";
 export function AuthDialog({
   isOpen,
   onOpenChange,
-  onLoginSuccess
+  onLoginSuccess,
+  presentation = "dialog",
+  title = "登录 Demox",
+  description = "登录您的 Demox 账号"
 }: AuthDialogProps) {
   const { toast } = useToast();
   const [email, setEmail] = useState("");
@@ -35,6 +41,7 @@ export function AuthDialog({
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const isSiteGate = presentation === "site-gate";
 
   useEffect(() => {
     if (!isOpen) {
@@ -124,11 +131,26 @@ export function AuthDialog({
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!isSiteGate || open) onOpenChange(open);
+      }}
+    >
+      <DialogContent
+        className={
+          isSiteGate
+            ? "max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[425px] overflow-y-auto rounded-2xl border-white/15 bg-background/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
+            : "sm:max-w-[425px]"
+        }
+        overlayClassName={isSiteGate ? "bg-black/15" : undefined}
+        showClose={!isSiteGate}
+        onEscapeKeyDown={isSiteGate ? (event) => event.preventDefault() : undefined}
+        onPointerDownOutside={isSiteGate ? (event) => event.preventDefault() : undefined}
+      >
         <DialogHeader>
-          <DialogTitle>登录 Demox</DialogTitle>
-          <DialogDescription>登录您的 Demox 账号</DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
@@ -192,6 +214,8 @@ export function AuthDialog({
               我已阅读并同意{" "}
               <a
                 href="/terms"
+                target={isSiteGate ? "_blank" : undefined}
+                rel={isSiteGate ? "noopener noreferrer" : undefined}
                 className="underline underline-offset-4 hover:text-foreground"
               >
                 《服务条款》
@@ -199,6 +223,8 @@ export function AuthDialog({
               和{" "}
               <a
                 href="/privacy"
+                target={isSiteGate ? "_blank" : undefined}
+                rel={isSiteGate ? "noopener noreferrer" : undefined}
                 className="underline underline-offset-4 hover:text-foreground"
               >
                 《隐私政策》
@@ -228,7 +254,7 @@ export function AuthDialog({
                 });
                 return;
               }
-              authApi.startGithubLogin("login");
+              authApi.startGithubLogin("login", isSiteGate ? "_top" : "_self");
             }}
             className="w-full"
           >

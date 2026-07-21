@@ -149,7 +149,10 @@ export const authApi = {
 
   // 发起 GitHub 授权：跳转到 GitHub 授权页
   // mode='bind' 时用于已登录用户绑定（回调页据此决定后续跳转）
-  startGithubLogin: (mode: "login" | "bind" = "login") => {
+  startGithubLogin: (
+    mode: "login" | "bind" = "login",
+    navigationTarget: "_self" | "_top" = "_self"
+  ) => {
     const { clientId, redirectUri, scope } = config.github;
     // 随机 state 防 CSRF，存 sessionStorage 供回调校验
     const state = `${mode}.${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
@@ -160,6 +163,10 @@ export const authApi = {
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&scope=${encodeURIComponent(scope)}` +
       `&state=${encodeURIComponent(state)}`;
+    if (navigationTarget === "_top" && window.top) {
+      window.top.location.href = url;
+      return;
+    }
     window.location.href = url;
   },
 
