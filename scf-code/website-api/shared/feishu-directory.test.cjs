@@ -70,6 +70,22 @@ test('user listing walks departments, deduplicates users, and ignores resigned a
   assert.deepEqual(seenDepartments.sort(), ['0', 'od-engineering']);
 });
 
+test('concurrent user searches share one in-flight directory scan', async () => {
+  let userRequests = 0;
+  const client = clientWith(async (input) => {
+    if (input.path.includes('/departments/0/children')) {
+      return { code: 0, data: { items: [{ open_department_id: 'od-engineering', name: 'Engineering' }], has_more: false } };
+    }
+    userRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return { code: 0, data: { items: [{ open_id: `ou_${userRequests}`, name: 'Person' }], has_more: false } };
+  });
+
+  const [first, second] = await Promise.all([client.listUsers(), client.listUsers()]);
+  assert.equal(userRequests, 2);
+  assert.deepEqual(second, first);
+});
+
 test('department closure includes direct departments and ancestors', async () => {
   const client = clientWith(async (input) => {
     if (input.path.includes('/users/')) return { code: 0, data: { user: { open_id: 'ou_target', department_ids: ['od-child'] } } };
