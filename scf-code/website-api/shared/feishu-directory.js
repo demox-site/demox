@@ -47,6 +47,7 @@ function requestJson({ method = 'GET', path, headers = {}, body = null }) {
 function createFeishuDirectoryClient({ appId, appSecret, request = requestJson }) {
   let tokenCache = null;
   let departmentsCache = null;
+  let usersCache = null;
 
   async function getTenantToken() {
     if (!appId || !appSecret) {
@@ -146,6 +147,41 @@ function createFeishuDirectoryClient({ appId, appSecret, request = requestJson }
     return items;
   }
 
+  async function listUsers({ force = false } = {}) {
+    if (!force && usersCache && usersCache.expiresAt > Date.now()) return usersCache.items;
+
+    const departments = await listDepartments({ force });
+    const departmentIds = ['0', ...departments.map((item) => item.open_department_id).filter(Boolean)];
+    const usersById = new Map();
+
+    async function loadDepartmentUsers(departmentId) {
+      let pageToken = '';
+      do {
+        const params = new URLSearchParams({
+          department_id: departmentId,
+          department_id_type: 'open_department_id',
+          user_id_type: 'open_id',
+          page_size: '50'
+        });
+        if (pageToken) params.set('page_token', pageToken);
+        const data = await api('GET', `/open-apis/contact/v3/users/find_by_department?${params.toString()}`);
+        for (const user of data.items || []) {
+          if (user.open_id && !user.status?.is_resigned) usersById.set(user.open_id, user);
+        }
+        pageToken = data.has_more ? String(data.page_token || '') : '';
+      } while (pageToken && usersById.size < 5000);
+    }
+
+    // Keep pressure on Feishu bounded for tenants with a large department tree.
+    for (let offset = 0; offset < departmentIds.length && usersById.size < 5000; offset += 5) {
+      await Promise.all(departmentIds.slice(offset, offset + 5).map(loadDepartmentUsers));
+    }
+
+    const items = Array.from(usersById.values()).slice(0, 5000);
+    usersCache = { items, expiresAt: Date.now() + 5 * 60 * 1000 };
+    return items;
+  }
+
   async function getDepartmentAncestors(departmentId) {
     const ancestors = [];
     let pageToken = '';
@@ -186,6 +222,7 @@ function createFeishuDirectoryClient({ appId, appSecret, request = requestJson }
     resolveUserByEmail,
     getDepartment,
     listDepartments,
+    listUsers,
     getDepartmentAncestors,
     getUserDepartmentClosure
   };

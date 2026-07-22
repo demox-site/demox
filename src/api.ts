@@ -786,6 +786,14 @@ export const websiteApi = {
   },
 
   // 邀请项目成员
+  searchProjectInviteUsers: async (data: { projectId: string | number; query: string }) => {
+    return request<{ success: boolean; users?: Array<{ userId: string; email: string; nickname?: string }>; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/search-project-invite-users",
+      { method: "POST", body: { action: "search_project_invite_users", ...data } }
+    );
+  },
+
   inviteProjectMember: async (data: { projectId: string | number; email: string; role: "admin" | "member" }) => {
     return request<{ success: boolean; member?: any; invitation?: any; message?: string }>(
       WEBSITE_API_URL,

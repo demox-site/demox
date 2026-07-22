@@ -44,6 +44,32 @@ test('department listing follows pagination', async () => {
   assert.deepEqual((await client.listDepartments()).map((item) => item.open_department_id), ['od-one', 'od-two']);
 });
 
+test('user listing walks departments, deduplicates users, and ignores resigned accounts', async () => {
+  const seenDepartments = [];
+  const client = clientWith(async (input) => {
+    if (input.path.includes('/departments/0/children')) {
+      return { code: 0, data: { items: [{ open_department_id: 'od-engineering', name: 'Engineering' }], has_more: false } };
+    }
+    const departmentId = new URL(`https://open.feishu.cn${input.path}`).searchParams.get('department_id');
+    seenDepartments.push(departmentId);
+    return {
+      code: 0,
+      data: {
+        items: departmentId === '0'
+          ? [{ open_id: 'ou_alice', name: 'Alice' }]
+          : [
+              { open_id: 'ou_alice', name: 'Alice' },
+              { open_id: 'ou_resigned', name: 'Former user', status: { is_resigned: true } }
+            ],
+        has_more: false
+      }
+    };
+  });
+
+  assert.deepEqual((await client.listUsers()).map((item) => item.open_id), ['ou_alice']);
+  assert.deepEqual(seenDepartments.sort(), ['0', 'od-engineering']);
+});
+
 test('department closure includes direct departments and ancestors', async () => {
   const client = clientWith(async (input) => {
     if (input.path.includes('/users/')) return { code: 0, data: { user: { open_id: 'ou_target', department_ids: ['od-child'] } } };

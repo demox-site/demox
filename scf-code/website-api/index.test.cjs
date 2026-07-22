@@ -38,6 +38,7 @@ require.cache[directoryModulePath] = {
       getDepartment: (...args) => directoryImpl.getDepartment(...args),
       resolveUserByEmail: (...args) => directoryImpl.resolveUserByEmail(...args),
       listDepartments: (...args) => directoryImpl.listDepartments(...args),
+      listUsers: (...args) => directoryImpl.listUsers(...args),
       getUserDepartmentClosure: (...args) => directoryImpl.getUserDepartmentClosure(...args)
     })
   }
@@ -71,8 +72,55 @@ test.beforeEach(() => {
     getDepartment: async (id) => ({ open_department_id: id, name: 'Engineering', status: { is_deleted: false } }),
     resolveUserByEmail: async (email) => ({ openId: 'ou_target', name: 'Feishu Person', email }),
     listDepartments: async () => [],
+    listUsers: async () => [],
     getUserDepartmentClosure: async () => ({ departmentIds: [] })
   };
+});
+
+test('system invite search fuzzily matches email or nickname and excludes current members', async () => {
+  let searchParams;
+  queryImpl = async (sql, params) => {
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    if (sql.includes('FROM users u') && sql.includes('NOT EXISTS')) {
+      searchParams = params;
+      return [{ id: 'target-user', email: 'alice@example.com', nickname: 'Alice Chen' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('search_project_invite_users', {
+    projectId: 42,
+    query: ' Ali '
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.deepEqual(body.users, [{ userId: 'target-user', email: 'alice@example.com', nickname: 'Alice Chen' }]);
+  assert.deepEqual(searchParams, ['project-owner', 'ali', 'ali', 42, 'ali']);
+});
+
+test('Feishu people search fuzzily matches directory names and returns stable open_id values', async () => {
+  directoryImpl.listUsers = async () => [
+    { open_id: 'ou_alice', name: 'Alice Chen', email: 'alice@example.com' },
+    { open_id: 'ou_bob', name: 'Bob Li', email: 'bob@example.com' }
+  ];
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT feishu_open_id') && sql.includes('feishu_email')) {
+      return [{ feishu_open_id: 'ou_owner', feishu_tenant_key: 'tenant_a' }];
+    }
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('search_feishu_project_principals', {
+    projectId: 42,
+    principalType: 'user',
+    query: 'ice'
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.principals.length, 1);
+  assert.equal(body.principals[0].name, 'Alice Chen');
+  assert.equal(body.principals[0].principalKey, 'ou_alice');
 });
 
 test('a direct open_id grant ignores a different Demox account email', async () => {

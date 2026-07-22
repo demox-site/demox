@@ -10,10 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   useToast
 } from "@/components/ui";
 // @ts-ignore
-import { Building2, Loader2, MailPlus, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
+import { Building2, Check, Loader2, Mail, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import { websiteApi } from "@/api";
 
 const roleLabels = {
@@ -39,13 +43,27 @@ export function ProjectMembersPanel({
   const [serverProject, setServerProject] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
-  const [inviteEmail, setInviteEmail] = React.useState("");
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [inviteTab, setInviteTab] = React.useState("email");
+  const [inviteQuery, setInviteQuery] = React.useState("");
+  const [inviteResults, setInviteResults] = React.useState([]);
+  const [selectedInviteUser, setSelectedInviteUser] = React.useState(null);
+  const [inviteSearchOpen, setInviteSearchOpen] = React.useState(false);
+  const [inviteSearchLoading, setInviteSearchLoading] = React.useState(false);
+  const [inviteSearchError, setInviteSearchError] = React.useState("");
+  const [inviteActiveIndex, setInviteActiveIndex] = React.useState(-1);
   const [inviteRole, setInviteRole] = React.useState("member");
   const [feishuPrincipalType, setFeishuPrincipalType] = React.useState("user");
   const [feishuQuery, setFeishuQuery] = React.useState("");
   const [feishuResults, setFeishuResults] = React.useState([]);
   const [selectedFeishuPrincipal, setSelectedFeishuPrincipal] = React.useState(null);
+  const [feishuSearchOpen, setFeishuSearchOpen] = React.useState(false);
+  const [feishuSearchLoading, setFeishuSearchLoading] = React.useState(false);
+  const [feishuSearchError, setFeishuSearchError] = React.useState("");
+  const [feishuActiveIndex, setFeishuActiveIndex] = React.useState(-1);
   const [feishuRole, setFeishuRole] = React.useState("member");
+  const inviteSearchRequest = React.useRef(0);
+  const feishuSearchRequest = React.useRef(0);
   const resolvedProjectId = project?.id || project?._id || projectId;
   const effectiveProject = serverProject ? { ...(project || {}), ...serverProject } : project;
   const myRole = normalizeRole(effectiveProject?.role);
@@ -80,51 +98,100 @@ export function ProjectMembersPanel({
     }
   }, [active, resolvedProjectId, t, toast]);
 
-  const resetFeishuSelection = (nextQuery = "") => {
+  const resetFeishuSelection = React.useCallback((nextQuery = "") => {
     setFeishuQuery(nextQuery);
     setFeishuResults([]);
     setSelectedFeishuPrincipal(null);
-  };
+    setFeishuSearchError("");
+    setFeishuActiveIndex(-1);
+    setFeishuSearchOpen(Boolean(nextQuery.trim()));
+  }, []);
 
-  const searchFeishuPrincipals = async () => {
-    const query = String(feishuQuery || "").trim();
-    if (!query || !resolvedProjectId) return;
-    setBusyKey("feishu-search");
-    setSelectedFeishuPrincipal(null);
-    try {
-      const res = await websiteApi.searchFeishuProjectPrincipals({
-        projectId: resolvedProjectId,
-        principalType: feishuPrincipalType,
-        query
-      });
-      if (!res?.success) throw new Error(res?.message || t.projectFeishuSearchFailed);
-      setFeishuResults(res.principals || []);
-    } catch (error) {
-      setFeishuResults([]);
-      toast({
-        title: t.projectFeishuSearchFailed,
-        description: error.message || t.projectFeishuSearchFailedDesc,
-        variant: "destructive"
-      });
-    } finally {
-      setBusyKey("");
-    }
-  };
+  const resetInviteDialog = React.useCallback(() => {
+    setInviteTab("email");
+    setInviteQuery("");
+    setInviteResults([]);
+    setSelectedInviteUser(null);
+    setInviteSearchOpen(false);
+    setInviteSearchError("");
+    setInviteRole("member");
+    resetFeishuSelection();
+    setFeishuPrincipalType("user");
+    setFeishuRole("member");
+  }, [resetFeishuSelection]);
 
   React.useEffect(() => {
     loadMembers();
   }, [loadMembers]);
 
+  React.useEffect(() => {
+    const query = inviteQuery.trim();
+    const requestId = ++inviteSearchRequest.current;
+    if (!inviteOpen || inviteTab !== "email" || !query || !resolvedProjectId) {
+      setInviteSearchLoading(false);
+      setInviteResults([]);
+      return undefined;
+    }
+    setInviteSearchLoading(true);
+    setInviteSearchError("");
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await websiteApi.searchProjectInviteUsers({ projectId: resolvedProjectId, query });
+        if (!res?.success) throw new Error(res?.message || t.projectInviteSearchFailed);
+        if (inviteSearchRequest.current === requestId) setInviteResults(res.users || []);
+      } catch (error) {
+        if (inviteSearchRequest.current === requestId) {
+          setInviteResults([]);
+          setInviteSearchError(error.message || t.projectInviteSearchFailedDesc);
+        }
+      } finally {
+        if (inviteSearchRequest.current === requestId) setInviteSearchLoading(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [inviteOpen, inviteQuery, inviteTab, resolvedProjectId, t]);
+
+  React.useEffect(() => {
+    const query = feishuQuery.trim();
+    const requestId = ++feishuSearchRequest.current;
+    if (!inviteOpen || inviteTab !== "feishu" || !query || !resolvedProjectId) {
+      setFeishuSearchLoading(false);
+      setFeishuResults([]);
+      return undefined;
+    }
+    setFeishuSearchLoading(true);
+    setFeishuSearchError("");
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await websiteApi.searchFeishuProjectPrincipals({
+          projectId: resolvedProjectId,
+          principalType: feishuPrincipalType,
+          query
+        });
+        if (!res?.success) throw new Error(res?.message || t.projectFeishuSearchFailed);
+        if (feishuSearchRequest.current === requestId) setFeishuResults(res.principals || []);
+      } catch (error) {
+        if (feishuSearchRequest.current === requestId) {
+          setFeishuResults([]);
+          setFeishuSearchError(error.message || t.projectFeishuSearchFailedDesc);
+        }
+      } finally {
+        if (feishuSearchRequest.current === requestId) setFeishuSearchLoading(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [feishuPrincipalType, feishuQuery, inviteOpen, inviteTab, resolvedProjectId, t]);
+
   const inviteMember = async (event) => {
     event.preventDefault();
-    const email = String(inviteEmail || "").trim();
+    const email = String(selectedInviteUser?.email || "").trim();
     if (!email || !resolvedProjectId) return;
     setBusyKey("invite");
     try {
       const res = await websiteApi.inviteProjectMember({ projectId: resolvedProjectId, email, role: inviteRole });
       if (!res?.success) throw new Error(res?.message || t.projectInviteFailed);
-      setInviteEmail("");
-      setInviteRole("member");
+      setInviteOpen(false);
+      resetInviteDialog();
       toast({ title: t.projectInviteSent, description: res.message || t.projectInviteSentDesc });
       await loadMembers();
     } catch (error) {
@@ -150,8 +217,8 @@ export function ProjectMembersPanel({
         role: feishuRole
       });
       if (!res?.success) throw new Error(res?.message || t.projectFeishuGrantFailed);
-      resetFeishuSelection();
-      setFeishuRole("member");
+      setInviteOpen(false);
+      resetInviteDialog();
       toast({ title: t.projectFeishuGrantSaved, description: res.message || t.projectFeishuGrantSavedDesc });
       await loadMembers();
     } catch (error) {
@@ -234,117 +301,247 @@ export function ProjectMembersPanel({
   return (
     <div className="space-y-5">
       {canManage && (
-        <form onSubmit={grantToFeishu} className="rounded-2xl border border-[var(--stitch-blue)]/40 bg-[var(--stitch-blue-soft)] p-3">
-          <div className="mb-3 flex items-start gap-2">
-            <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />
-            <div>
-              <div className="text-sm font-semibold text-[var(--stitch-ink)]">{t.projectFeishuGrantTitle}</div>
-              <div className="mt-0.5 text-xs text-[var(--stitch-muted)]">{t.projectFeishuGrantDesc}</div>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-[140px_minmax(0,1fr)_auto]">
-            <select
-              value={feishuPrincipalType}
-              onChange={(event) => {
-                setFeishuPrincipalType(event.target.value);
-                resetFeishuSelection();
-              }}
-              disabled={busyKey.startsWith("feishu-")}
-              className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
-            >
-              <option value="user">{t.projectFeishuUser}</option>
-              <option value="department">{t.projectFeishuDepartment}</option>
-            </select>
-            <Input
-              value={feishuQuery}
-              onChange={(event) => resetFeishuSelection(event.target.value)}
-              placeholder={feishuPrincipalType === "department" ? t.projectFeishuDepartmentPlaceholder : t.projectFeishuUserPlaceholder}
-              type={feishuPrincipalType === "user" ? "email" : "text"}
-              disabled={busyKey.startsWith("feishu-")}
-              className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={searchFeishuPrincipals}
-              disabled={busyKey.startsWith("feishu-") || !feishuQuery.trim()}
-              className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)]"
-            >
-              {busyKey === "feishu-search" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
-              {t.projectFeishuSearchButton}
-            </Button>
-          </div>
-          {feishuPrincipalType === "user" && (
-            <div className="mt-2 text-xs text-[var(--stitch-muted)]">{t.projectFeishuEmailLookupOnly}</div>
-          )}
-          {feishuResults.length > 0 && (
-            <div className="mt-3 grid gap-2">
-              {feishuResults.map((principal) => {
-                const selected = selectedFeishuPrincipal?.principalKey === principal.principalKey;
-                return (
-                  <button
-                    key={principal.principalKey}
-                    type="button"
-                    onClick={() => setSelectedFeishuPrincipal(principal)}
-                    className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left transition-colors ${selected ? "border-[var(--stitch-blue)] bg-[var(--stitch-blue)]/10" : "border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] hover:border-[var(--stitch-blue)]/60"}`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-semibold text-[var(--stitch-ink)]">{principal.name}</span>
-                      <span className="block truncate text-xs text-[var(--stitch-muted)]">{principal.secondaryText}</span>
-                    </span>
-                    {selected && <ShieldCheck className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {feishuResults.length === 0 && busyKey !== "feishu-search" && feishuQuery.trim() && (
-            <div className="mt-2 text-xs text-[var(--stitch-muted)]">{t.projectFeishuSearchHint}</div>
-          )}
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <select
-              value={feishuRole}
-              onChange={(event) => setFeishuRole(event.target.value)}
-              disabled={busyKey === "feishu-grant"}
-              className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
-            >
-              {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
-              <option value="member">{roleText("member")}</option>
-            </select>
-            <Button type="submit" className="stitch-primary shrink-0" disabled={busyKey.startsWith("feishu-") || !selectedFeishuPrincipal}>
-              {busyKey === "feishu-grant" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
-              {t.projectFeishuGrantButton}
-            </Button>
-          </div>
-        </form>
-      )}
+        <div className="flex justify-end">
+          <Button type="button" className="stitch-primary" onClick={() => setInviteOpen(true)}>
+            <UserPlus className="mr-2 h-4 w-4" />
+            {t.projectInviteButton}
+          </Button>
+          <Dialog
+            open={inviteOpen}
+            onOpenChange={(nextOpen) => {
+              setInviteOpen(nextOpen);
+              if (!nextOpen) resetInviteDialog();
+            }}
+          >
+            <DialogContent className="max-w-lg border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
+              <DialogHeader>
+                <DialogTitle>{t.projectInviteDialogTitle}</DialogTitle>
+                <DialogDescription className="text-[var(--stitch-muted)]">{t.projectInviteDialogDesc}</DialogDescription>
+              </DialogHeader>
+              <Tabs
+                value={inviteTab}
+                onValueChange={(value) => {
+                  setInviteTab(value);
+                  setInviteSearchOpen(false);
+                  setFeishuSearchOpen(false);
+                }}
+              >
+                <TabsList className="grid w-full grid-cols-2 border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
+                  <TabsTrigger value="email" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
+                    <Mail className="h-4 w-4" />
+                    {t.projectInviteEmailTab}
+                  </TabsTrigger>
+                  <TabsTrigger value="feishu" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
+                    <Building2 className="h-4 w-4" />
+                    {t.projectInviteFeishuTab}
+                  </TabsTrigger>
+                </TabsList>
 
-      {canManage && (
-        <form onSubmit={inviteMember} className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-3">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <Input
-              value={inviteEmail}
-              onChange={(event) => setInviteEmail(event.target.value)}
-              placeholder={t.projectInviteEmailPlaceholder}
-              className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
-              type="email"
-              disabled={busyKey === "invite"}
-            />
-            <select
-              value={inviteRole}
-              onChange={(event) => setInviteRole(event.target.value)}
-              disabled={busyKey === "invite"}
-              className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-3 text-sm text-[var(--stitch-ink)] outline-none"
-            >
-              {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
-              <option value="member">{roleText("member")}</option>
-            </select>
-            <Button type="submit" className="stitch-primary shrink-0" disabled={busyKey === "invite" || !inviteEmail.trim()}>
-              {busyKey === "invite" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MailPlus className="mr-2 h-4 w-4" />}
-              {t.projectInviteButton}
-            </Button>
-          </div>
-        </form>
+                <TabsContent value="email" className="mt-5">
+                  <form onSubmit={inviteMember} className="space-y-4" autoComplete="off">
+                    <div>
+                      <label htmlFor="project-member-query" className="mb-2 block text-sm font-semibold text-[var(--stitch-ink)]">
+                        {t.projectInviteEmailLabel}
+                      </label>
+                      <div
+                        className="relative"
+                        onBlur={(event) => {
+                          if (!event.currentTarget.contains(event.relatedTarget)) setInviteSearchOpen(false);
+                        }}
+                      >
+                        <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-[var(--stitch-muted)]" />
+                        <Input
+                          id="project-member-query"
+                          name="project-member-query"
+                          type="search"
+                          value={inviteQuery}
+                          onChange={(event) => {
+                            setInviteQuery(event.target.value);
+                            setSelectedInviteUser(null);
+                            setInviteActiveIndex(-1);
+                            setInviteSearchOpen(Boolean(event.target.value.trim()));
+                          }}
+                          onFocus={() => setInviteSearchOpen(Boolean(inviteQuery.trim()))}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape" && inviteSearchOpen) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setInviteSearchOpen(false);
+                            } else if (event.key === "ArrowDown" && inviteResults.length) {
+                              event.preventDefault();
+                              setInviteSearchOpen(true);
+                              setInviteActiveIndex((index) => (index + 1) % inviteResults.length);
+                            } else if (event.key === "ArrowUp" && inviteResults.length) {
+                              event.preventDefault();
+                              setInviteSearchOpen(true);
+                              setInviteActiveIndex((index) => (index <= 0 ? inviteResults.length - 1 : index - 1));
+                            } else if (event.key === "Enter" && inviteSearchOpen && inviteActiveIndex >= 0) {
+                              event.preventDefault();
+                              setSelectedInviteUser(inviteResults[inviteActiveIndex]);
+                              setInviteSearchOpen(false);
+                            }
+                          }}
+                          placeholder={t.projectInviteEmailPlaceholder}
+                          autoComplete="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          data-1p-ignore="true"
+                          data-lpignore="true"
+                          data-form-type="other"
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-expanded={Boolean(inviteQuery.trim() && inviteSearchOpen)}
+                          aria-controls="project-member-results"
+                          aria-activedescendant={inviteActiveIndex >= 0 ? `project-member-result-${inviteActiveIndex}` : undefined}
+                          className="pl-9 border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
+                        />
+                        {inviteQuery.trim() && inviteSearchOpen && (
+                          <div id="project-member-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
+                            {inviteSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
+                            {!inviteSearchLoading && inviteSearchError && <div className="px-3 py-3 text-sm text-red-400">{inviteSearchError}</div>}
+                            {!inviteSearchLoading && !inviteSearchError && inviteResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectInviteNoUsers}</div>}
+                            {!inviteSearchLoading && inviteResults.map((user, index) => (
+                              <button
+                                id={`project-member-result-${index}`}
+                                key={user.userId}
+                                type="button"
+                                role="option"
+                                aria-selected={selectedInviteUser?.userId === user.userId}
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setSelectedInviteUser(user);
+                                  setInviteSearchOpen(false);
+                                }}
+                                className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left ${inviteActiveIndex === index ? "bg-[var(--stitch-blue-soft)]" : "hover:bg-[var(--stitch-blue-soft)]"}`}
+                              >
+                                <span className="min-w-0">
+                                  <span className="block truncate text-sm font-semibold">{user.nickname || user.email}</span>
+                                  <span className="block truncate text-xs text-[var(--stitch-muted)]">{user.email}</span>
+                                </span>
+                                {selectedInviteUser?.userId === user.userId && <Check className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {selectedInviteUser && (
+                      <div className="flex items-center justify-between rounded-xl border border-[var(--stitch-blue)]/40 bg-[var(--stitch-blue-soft)] px-3 py-2">
+                        <div className="min-w-0"><div className="truncate text-sm font-semibold">{selectedInviteUser.nickname || selectedInviteUser.email}</div><div className="truncate text-xs text-[var(--stitch-muted)]">{selectedInviteUser.email}</div></div>
+                        <Check className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />
+                      </div>
+                    )}
+                    <div className="flex items-center justify-end gap-2">
+                      <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)} disabled={busyKey === "invite"} className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 text-sm text-[var(--stitch-ink)] outline-none">
+                        {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
+                        <option value="member">{roleText("member")}</option>
+                      </select>
+                      <Button type="submit" className="stitch-primary" disabled={busyKey === "invite" || !selectedInviteUser}>
+                        {busyKey === "invite" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                        {t.projectInviteButton}
+                      </Button>
+                    </div>
+                  </form>
+                </TabsContent>
+
+                <TabsContent value="feishu" className="mt-5">
+                  <form onSubmit={grantToFeishu} className="space-y-4" autoComplete="off">
+                    <div className="grid grid-cols-2 gap-2 rounded-xl bg-[var(--stitch-surface)] p-1">
+                      {[{ value: "user", label: t.projectFeishuUser }, { value: "department", label: t.projectFeishuDepartment }].map((option) => (
+                        <button key={option.value} type="button" onClick={() => { setFeishuPrincipalType(option.value); resetFeishuSelection(); }} className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${feishuPrincipalType === option.value ? "bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] shadow-sm" : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"}`}>{option.label}</button>
+                      ))}
+                    </div>
+                    <div
+                      className="relative"
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget)) setFeishuSearchOpen(false);
+                      }}
+                    >
+                      <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-[var(--stitch-muted)]" />
+                      <Input
+                        name="project-directory-query"
+                        type="search"
+                        value={feishuQuery}
+                        onChange={(event) => resetFeishuSelection(event.target.value)}
+                        onFocus={() => setFeishuSearchOpen(Boolean(feishuQuery.trim()))}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape" && feishuSearchOpen) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setFeishuSearchOpen(false);
+                          } else if (event.key === "ArrowDown" && feishuResults.length) {
+                            event.preventDefault();
+                            setFeishuSearchOpen(true);
+                            setFeishuActiveIndex((index) => (index + 1) % feishuResults.length);
+                          } else if (event.key === "ArrowUp" && feishuResults.length) {
+                            event.preventDefault();
+                            setFeishuSearchOpen(true);
+                            setFeishuActiveIndex((index) => (index <= 0 ? feishuResults.length - 1 : index - 1));
+                          } else if (event.key === "Enter" && feishuSearchOpen && feishuActiveIndex >= 0) {
+                            event.preventDefault();
+                            setSelectedFeishuPrincipal(feishuResults[feishuActiveIndex]);
+                            setFeishuSearchOpen(false);
+                          }
+                        }}
+                        placeholder={feishuPrincipalType === "department" ? t.projectFeishuDepartmentPlaceholder : t.projectFeishuUserPlaceholder}
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-1p-ignore="true"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={Boolean(feishuQuery.trim() && feishuSearchOpen)}
+                        aria-controls="project-feishu-results"
+                        aria-activedescendant={feishuActiveIndex >= 0 ? `project-feishu-result-${feishuActiveIndex}` : undefined}
+                        className="pl-9 border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
+                      />
+                      {feishuQuery.trim() && feishuSearchOpen && (
+                        <div id="project-feishu-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
+                          {feishuSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
+                          {!feishuSearchLoading && feishuSearchError && <div className="px-3 py-3 text-sm text-red-400">{feishuSearchError}</div>}
+                          {!feishuSearchLoading && !feishuSearchError && feishuResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectFeishuNoResults}</div>}
+                          {!feishuSearchLoading && feishuResults.map((principal, index) => (
+                            <button
+                              id={`project-feishu-result-${index}`}
+                              key={principal.principalKey}
+                              type="button"
+                              role="option"
+                              aria-selected={selectedFeishuPrincipal?.principalKey === principal.principalKey}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => { setSelectedFeishuPrincipal(principal); setFeishuSearchOpen(false); }}
+                              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left ${feishuActiveIndex === index ? "bg-[var(--stitch-blue-soft)]" : "hover:bg-[var(--stitch-blue-soft)]"}`}
+                            >
+                              <span className="min-w-0"><span className="block truncate text-sm font-semibold">{principal.name}</span>{principal.secondaryText && <span className="block truncate text-xs text-[var(--stitch-muted)]">{principal.secondaryText}</span>}</span>
+                              {selectedFeishuPrincipal?.principalKey === principal.principalKey && <Check className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {selectedFeishuPrincipal && (
+                      <div className="flex items-center justify-between rounded-xl border border-[var(--stitch-blue)]/40 bg-[var(--stitch-blue-soft)] px-3 py-2">
+                        <div className="min-w-0"><div className="truncate text-sm font-semibold">{selectedFeishuPrincipal.name}</div>{selectedFeishuPrincipal.secondaryText && <div className="truncate text-xs text-[var(--stitch-muted)]">{selectedFeishuPrincipal.secondaryText}</div>}</div>
+                        <Badge variant="outline" className="ml-3 border-[var(--stitch-line)]">{t.projectFeishuSource}</Badge>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-end gap-2">
+                      <select value={feishuRole} onChange={(event) => setFeishuRole(event.target.value)} disabled={busyKey === "feishu-grant"} className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 text-sm text-[var(--stitch-ink)] outline-none">
+                        {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
+                        <option value="member">{roleText("member")}</option>
+                      </select>
+                      <Button type="submit" className="stitch-primary" disabled={busyKey === "feishu-grant" || !selectedFeishuPrincipal}>
+                        {busyKey === "feishu-grant" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                        {t.projectFeishuGrantButton}
+                      </Button>
+                    </div>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            </DialogContent>
+          </Dialog>
+        </div>
       )}
 
       {feishuGrants.length > 0 && (

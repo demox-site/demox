@@ -410,6 +410,7 @@ exports.main = async (event, context) => {
       archive_project: handleArchiveProject,
       set_website_project: handleSetWebsiteProject,
       list_project_members: handleListProjectMembers,
+      search_project_invite_users: handleSearchProjectInviteUsers,
       invite_project_member: handleInviteProjectMember,
       search_feishu_project_principals: handleSearchFeishuProjectPrincipals,
       grant_project_to_feishu: handleGrantProjectToFeishu,
@@ -2349,6 +2350,49 @@ async function handleListProjectMembers(event) {
   }
 }
 
+async function handleSearchProjectInviteUsers(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const keyword = String(body.query || body.keyword || '').trim().toLocaleLowerCase();
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!keyword) return ok({ success: true, users: [] });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    const users = await query(
+      `SELECT u.id, u.email, u.nickname
+       FROM users u
+       WHERE u.id <> ?
+         AND u.email IS NOT NULL AND u.email <> ''
+         AND (INSTR(LOWER(COALESCE(u.email, '')), ?) > 0
+              OR INSTR(LOWER(COALESCE(u.nickname, '')), ?) > 0)
+         AND NOT EXISTS (
+           SELECT 1 FROM project_members pm
+           WHERE pm.project_id = ? AND pm.user_id = u.id
+         )
+       ORDER BY
+         CASE WHEN LOWER(COALESCE(u.email, '')) = ? THEN 0 ELSE 1 END,
+         u.email ASC
+       LIMIT 20`,
+      [access.project.user_id, keyword, keyword, projectId, keyword]
+    );
+    return ok({
+      success: true,
+      users: users.map((user) => ({
+        userId: String(user.id),
+        email: user.email || '',
+        nickname: user.nickname || ''
+      }))
+    });
+  } catch (e) {
+    return ok({ success: false, message: '搜索系统用户失败：' + e.message });
+  }
+}
+
 function feishuDirectoryFailure(error) {
   if (error instanceof FeishuDirectoryError) {
     const permissionMissing = Number(error.code) === 99991672 || Number(error.code) === 40004;
@@ -2374,7 +2418,7 @@ async function handleSearchFeishuProjectPrincipals(event) {
     : FEISHU_PRINCIPAL_USER;
   const keyword = String(body.query || body.keyword || '').trim();
   if (!projectId) return ok({ success: false, message: '缺少 projectId' });
-  if (!keyword) return ok({ success: false, message: principalType === FEISHU_PRINCIPAL_USER ? '请输入飞书登录邮箱' : '请输入部门名称' });
+  if (!keyword) return ok({ success: true, principals: [] });
 
   try {
     const access = await requireProjectMembershipManager(userId, projectId);
@@ -2385,18 +2429,23 @@ async function handleSearchFeishuProjectPrincipals(event) {
     }
 
     if (principalType === FEISHU_PRINCIPAL_USER) {
-      const user = await feishuDirectory.resolveUserByEmail(keyword);
+      const normalizedKeyword = keyword.toLocaleLowerCase();
+      const users = await feishuDirectory.listUsers();
       return ok({
         success: true,
-        principals: [{
-          principalType,
-          keyType: 'open_id',
-          principalKey: user.openId,
-          name: user.name,
-          displayName: user.name,
-          secondaryText: user.email,
-          avatarUrl: user.avatarUrl || null
-        }]
+        principals: users
+          .filter((user) => [user.name, user.en_name, user.email, user.mobile]
+            .some((value) => String(value || '').toLocaleLowerCase().includes(normalizedKeyword)))
+          .slice(0, 20)
+          .map((user) => ({
+            principalType,
+            keyType: 'open_id',
+            principalKey: user.open_id,
+            name: user.name || user.en_name || user.open_id,
+            displayName: user.name || user.en_name || user.open_id,
+            secondaryText: user.email || '',
+            avatarUrl: user.avatar?.avatar_72 || user.avatar?.avatar_240 || null
+          }))
       });
     }
 
