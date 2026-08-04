@@ -901,6 +901,15 @@ export const websiteApi = {
     );
   },
 
+  // 永久删除空项目
+  deleteProject: async (data: { id: string | number }) => {
+    return request<{ success: boolean; deleted?: boolean; code?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-project",
+      { method: "POST", body: { action: "delete_project", ...data } }
+    );
+  },
+
   // 移动站点到项目
   setWebsiteProject: async (data: { docId?: string | number; websiteId?: string; projectId?: string | number | null }) => {
     return request<{ success: boolean; project?: any; websiteId?: string; docId?: string; message?: string }>(

@@ -3,6 +3,14 @@ import { useNavigate } from "react-router-dom";
 // @ts-ignore;
 import {
   Button,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Card,
   CardContent,
   Dialog,
@@ -15,7 +23,7 @@ import {
   Badge
 } from "@/components/ui";
 // @ts-ignore;
-import { FolderKanban, Loader2, Plus, ArrowRight, Globe2, Sparkles } from "lucide-react";
+import { FolderKanban, Loader2, Plus, ArrowRight, Globe2, Sparkles, Trash2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "../home-translations";
 import { useProjects } from "../use-projects";
@@ -29,6 +37,7 @@ export default function ProjectsPage() {
     handleAuthError: (error) => console.warn("Project page auth error:", error)
   });
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState(null);
 
   React.useEffect(() => {
     projects.loadProjects();
@@ -53,6 +62,13 @@ export default function ProjectsPage() {
       setCreateOpen(false);
       navigate(`/console/projects/${project.id}/sites`);
     }
+  };
+
+  const handleDeleteProject = async (event) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteTarget.websitesCount > 0) return;
+    const deleted = await projects.deleteProject(deleteTarget);
+    if (deleted) setDeleteTarget(null);
   };
 
   const roleLabel = (role) => {
@@ -122,6 +138,27 @@ export default function ProjectsPage() {
                         {roleLabel(project.role)}
                       </Badge>
                     )}
+                    {project.role === "owner" && project.slug !== "default" && (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        disabled={String(projects.projectBusyId || "") === String(project.id)}
+                        aria-label={t.deleteProject}
+                        title={project.websitesCount > 0 ? t.projectDeleteBlockedSites : t.deleteProject}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDeleteTarget(project);
+                        }}
+                        className="h-8 w-8 rounded-full text-[var(--stitch-muted)] hover:bg-red-500/10 hover:text-red-500"
+                      >
+                        {String(projects.projectBusyId || "") === String(project.id) ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    )}
                     <ArrowRight className="h-4 w-4 text-[var(--stitch-muted)] transition-transform group-hover:translate-x-1 group-hover:text-[var(--stitch-blue)]" />
                   </div>
                 </div>
@@ -141,6 +178,44 @@ export default function ProjectsPage() {
           ))}
         </div>
       )}
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open && !projects.projectBusyId) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t.projectDeleteDialogTitle}</AlertDialogTitle>
+            <AlertDialogDescription className="text-[var(--stitch-muted)]">
+              {deleteTarget?.websitesCount > 0
+                ? t.projectDeleteBlockedSites
+                : t.projectDeleteDialogDesc(deleteTarget?.name || "")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={!!projects.projectBusyId}
+              className="border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)]"
+            >
+              {t.cancel}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!!projects.projectBusyId || deleteTarget?.websitesCount > 0}
+              onClick={handleDeleteProject}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              {projects.projectBusyId ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 h-4 w-4" />
+              )}
+              {t.projectDeleteConfirm}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={createOpen} onOpenChange={handleCreateOpenChange}>
         <DialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">

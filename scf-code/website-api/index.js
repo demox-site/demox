@@ -433,6 +433,7 @@ exports.main = async (event, context) => {
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
       archive_project: handleArchiveProject,
+      delete_project: handleDeleteProject,
       set_website_project: handleSetWebsiteProject,
       list_project_members: handleListProjectMembers,
       search_project_invite_users: handleSearchProjectInviteUsers,
@@ -517,6 +518,8 @@ exports.main = async (event, context) => {
       return await handleUpdateProject(event);
     } else if (pathUrl.includes('/archive-project')) {
       return await handleArchiveProject(event);
+    } else if (pathUrl.includes('/delete-project')) {
+      return await handleDeleteProject(event);
     } else if (pathUrl.includes('/set-website-project')) {
       return await handleSetWebsiteProject(event);
     } else if (pathUrl.includes('/list-project-members')) {
@@ -2361,6 +2364,64 @@ async function handleArchiveProject(event) {
   }
 }
 
+async function handleDeleteProject(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const id = await resolveProjectId(body.id || body.projectId);
+  if (!id) return ok({ success: false, message: '缺少 projectId' });
+
+  try {
+    const isPlatformAdmin = await checkAdmin(userId);
+    const result = await transaction(async (conn) => {
+      const [rows] = await conn.query(
+        'SELECT id, user_id, slug FROM projects WHERE id = ? LIMIT 1 FOR UPDATE',
+        [id]
+      );
+      const project = rows[0];
+      if (!project) {
+        return { success: false, code: 'PROJECT_NOT_FOUND', message: '项目不存在或无权限' };
+      }
+      if (!isPlatformAdmin && String(project.user_id) !== String(userId)) {
+        return { success: false, code: 'PROJECT_DELETE_FORBIDDEN', message: '只有项目 owner 可以删除项目' };
+      }
+      if (project.slug === 'default') {
+        return { success: false, code: 'DEFAULT_PROJECT_DELETE_FORBIDDEN', message: 'default 项目不能删除' };
+      }
+
+      const [websites] = await conn.query(
+        'SELECT id FROM websites WHERE project_id = ? LIMIT 1 FOR UPDATE',
+        [id]
+      );
+      if (websites.length > 0) {
+        return { success: false, code: 'PROJECT_NOT_EMPTY', message: '项目下仍有站点，请先移动或删除站点' };
+      }
+
+      await conn.query('DELETE FROM project_feishu_grants WHERE project_id = ?', [id]);
+      await conn.query('DELETE FROM project_invitations WHERE project_id = ?', [id]);
+      await conn.query('DELETE FROM project_members WHERE project_id = ?', [id]);
+      const [deleted] = await conn.query(
+        `DELETE p FROM projects p
+         WHERE p.id = ? AND p.slug <> 'default'
+           AND NOT EXISTS (SELECT 1 FROM websites w WHERE w.project_id = p.id)`,
+        [id]
+      );
+      if (deleted.affectedRows !== 1) {
+        const error = new Error('项目状态已变化，请刷新后重试');
+        error.code = 'PROJECT_DELETE_CONFLICT';
+        throw error;
+      }
+      return { success: true, deleted: true, id: String(body.id || body.projectId), message: '项目已删除' };
+    });
+    return ok(result);
+  } catch (e) {
+    if (e.code === 'PROJECT_DELETE_CONFLICT') {
+      return ok({ success: false, code: e.code, message: e.message });
+    }
+    return ok({ success: false, message: '删除项目失败：' + e.message });
+  }
+}
+
 async function handleSetWebsiteProject(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
@@ -2392,7 +2453,7 @@ async function handleSetWebsiteProject(event) {
       return ok({ success: false, message: '只有目标项目 owner/admin 可以移动站点' });
     }
 
-    await query('UPDATE websites SET project_id = ?, updated_at = NOW() WHERE id = ?', [project.id, site.id]);
+    await updateWebsiteProjectWithLock(project.id, { docId: site.id });
     return ok({
       success: true,
       project: formatProjectForClient(project),
@@ -5125,6 +5186,27 @@ async function ensureWebsiteDefaultProject(userId, websiteId) {
   }
 }
 
+async function updateWebsiteProjectWithLock(projectId, { docId = null, websiteId = null } = {}) {
+  const pid = normalizePositiveId(projectId);
+  if (!pid || (!docId && !websiteId)) throw new Error('缺少站点或项目信息');
+
+  return transaction(async (conn) => {
+    const [projects] = await conn.query(
+      'SELECT id FROM projects WHERE id = ? AND archived = 0 LIMIT 1 FOR UPDATE',
+      [pid]
+    );
+    if (projects.length === 0) throw new Error('目标项目不存在或已删除');
+
+    const sql = docId
+      ? 'UPDATE websites SET project_id = ?, updated_at = NOW() WHERE id = ?'
+      : 'UPDATE websites SET project_id = ?, updated_at = NOW() WHERE website_id = ?';
+    const identity = docId || websiteId;
+    const [updated] = await conn.query(sql, [pid, identity]);
+    if (updated.affectedRows !== 1) throw new Error('站点不存在或项目绑定失败');
+    return pid;
+  });
+}
+
 async function assignWebsiteProject(userId, websiteId, projectId) {
   const pid = await resolveProjectId(projectId);
   if (!pid) return await ensureWebsiteDefaultProject(userId, websiteId);
@@ -5144,10 +5226,7 @@ async function assignWebsiteProject(userId, websiteId, projectId) {
     if (project && !PROJECT_WRITE_ROLES.includes(project.project_role) && !isPlatformAdmin) {
       throw new Error('只有项目 owner/admin 可以写入站点');
     }
-    await query(
-      `UPDATE websites SET project_id = ? WHERE website_id = ?`,
-      [pid, websiteId]
-    );
+    await updateWebsiteProjectWithLock(pid, { websiteId });
     return pid;
   } catch (e) {
     console.warn('写入站点项目失败:', e.message);

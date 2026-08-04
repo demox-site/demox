@@ -179,6 +179,34 @@ export function useProjects({ t, handleAuthError }) {
     }
   };
 
+  const deleteProject = async (project) => {
+    const id = project?.id;
+    if (!id) return false;
+    setProjectBusyId(id);
+    try {
+      const res = await websiteApi.deleteProject({ id });
+      if (res && res.success) {
+        setProjects((prev) => prev.filter((p) => p.id !== String(id)));
+        if (String(uploadProjectId || "") === String(id)) {
+          const fallback = activeProjects.find((p) => p.id !== String(id));
+          setUploadProjectId(fallback?.id || null);
+        }
+        toast({ title: t.projectDeletedTitle, description: t.projectDeletedDesc });
+        return true;
+      }
+      throw new Error(res?.message || t.projectDeleteFailedTitle);
+    } catch (error) {
+      toast({
+        title: t.projectDeleteFailedTitle,
+        description: error.message || t.projectDeleteFailedDesc,
+        variant: "destructive"
+      });
+      return false;
+    } finally {
+      setProjectBusyId(null);
+    }
+  };
+
   const getProjectById = (id) => {
     const key = String(id || "");
     return activeProjects.find((p) => p.id === key || p.numericId === key) || null;
@@ -210,6 +238,7 @@ export function useProjects({ t, handleAuthError }) {
     cancelEditProject,
     saveProjectName,
     archiveProject,
+    deleteProject,
     getProjectById,
     getUploadProject
   };

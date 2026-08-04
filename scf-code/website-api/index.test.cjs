@@ -21,7 +21,9 @@ require.cache[dbModulePath] = {
   loaded: true,
   exports: {
     query: (...args) => queryImpl(...args),
-    transaction: async (callback) => callback({ query: (...args) => queryImpl(...args) })
+    transaction: async (callback) => callback({
+      query: async (...args) => [await queryImpl(...args), []]
+    })
   }
 };
 
@@ -75,6 +77,165 @@ test.beforeEach(() => {
     listUsers: async () => [],
     getUserDepartmentClosure: async () => ({ departmentIds: [] })
   };
+});
+
+test('project deletion requires authentication', async () => {
+  let queried = false;
+  queryImpl = async () => {
+    queried = true;
+    return [];
+  };
+
+  const response = await main({
+    path: '/website/delete-project',
+    httpMethod: 'POST',
+    headers: {},
+    body: { action: 'delete_project', id: 42 }
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(body.success, false);
+  assert.equal(body.error, '未登录或token已过期');
+  assert.equal(queried, false);
+});
+
+test('project admins cannot delete a project they do not own', async () => {
+  let deleteAttempted = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'team-project' }];
+    }
+    if (sql.includes('DELETE')) deleteAttempted = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-admin')).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'PROJECT_DELETE_FORBIDDEN');
+  assert.equal(deleteAttempted, false);
+});
+
+test('default projects cannot be deleted', async () => {
+  let websiteCheckAttempted = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'default' }];
+    }
+    if (sql.includes('FROM websites')) websiteCheckAttempted = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-owner')).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'DEFAULT_PROJECT_DELETE_FORBIDDEN');
+  assert.equal(websiteCheckAttempted, false);
+});
+
+test('projects containing websites cannot be deleted', async () => {
+  let deleteAttempted = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'team-project' }];
+    }
+    if (sql.includes('FROM websites') && sql.includes('FOR UPDATE')) return [{ id: 9 }];
+    if (sql.includes('DELETE')) deleteAttempted = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-owner')).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'PROJECT_NOT_EMPTY');
+  assert.equal(deleteAttempted, false);
+});
+
+test('an owner deletes an empty project and its collaboration data in one guarded transaction', async () => {
+  const deletionOrder = [];
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'team-project' }];
+    }
+    if (sql.includes('FROM websites') && sql.includes('FOR UPDATE')) return [];
+    if (sql.startsWith('DELETE FROM project_feishu_grants')) { deletionOrder.push('grants'); return { affectedRows: 2 }; }
+    if (sql.startsWith('DELETE FROM project_invitations')) { deletionOrder.push('invitations'); return { affectedRows: 1 }; }
+    if (sql.startsWith('DELETE FROM project_members')) { deletionOrder.push('members'); return { affectedRows: 3 }; }
+    if (sql.includes('DELETE p FROM projects p')) {
+      assert.match(sql, /NOT EXISTS[\s\S]+FROM websites/);
+      deletionOrder.push('project');
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.deleted, true);
+  assert.deepEqual(deletionOrder, ['grants', 'invitations', 'members', 'project']);
+});
+
+test('a platform admin can delete another owners empty project', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [{ roles: ['admin'] }];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'team-project' }];
+    }
+    if (sql.includes('FROM websites') && sql.includes('FOR UPDATE')) return [];
+    if (sql.startsWith('DELETE FROM project_')) return { affectedRows: 0 };
+    if (sql.includes('DELETE p FROM projects p')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+});
+
+test('project deletion fails closed if the final empty-project guard no longer matches', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('FROM projects WHERE id') && sql.includes('FOR UPDATE')) {
+      return [{ id: 42, user_id: 'project-owner', slug: 'team-project' }];
+    }
+    if (sql.includes('FROM websites') && sql.includes('FOR UPDATE')) return [];
+    if (sql.startsWith('DELETE FROM project_')) return { affectedRows: 1 };
+    if (sql.includes('DELETE p FROM projects p')) return { affectedRows: 0 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-owner')).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'PROJECT_DELETE_CONFLICT');
+});
+
+test('moving a site locks and rechecks the target project before changing its project id', async () => {
+  const writes = [];
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+      return [{ id: 7, website_id: 'MOVESITE', user_id: 'project-owner', project_id: 9 }];
+    }
+    if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) return [];
+    if (sql.includes('FROM projects p') && sql.includes('LEFT JOIN project_members')) {
+      return [{ id: 42, user_id: 'project-owner', archived: 0, project_role: 'owner' }];
+    }
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('SELECT id FROM projects') && sql.includes('FOR UPDATE')) {
+      writes.push('lock-project');
+      return [{ id: 42 }];
+    }
+    if (sql.includes('UPDATE websites SET project_id')) {
+      writes.push('update-website');
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('set_website_project', {
+    docId: 7,
+    projectId: 42
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.deepEqual(writes, ['lock-project', 'update-website']);
 });
 
 test('system invite search fuzzily matches email or nickname and excludes current members', async () => {
