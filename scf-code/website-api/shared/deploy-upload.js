@@ -55,6 +55,14 @@ function parseResultJson(value) {
   }
 }
 
+function isDeployUploadExpired(session, now = Date.now()) {
+  if (!session || !session.expires_at) return false;
+  if (session.is_expired !== undefined && session.is_expired !== null) {
+    return Number(session.is_expired) === 1;
+  }
+  return new Date(session.expires_at).getTime() <= now;
+}
+
 module.exports = {
   DEPLOY_UPLOAD_CHUNK_SIZE,
   DEPLOY_UPLOAD_TTL_SECONDS,
@@ -65,5 +73,6 @@ module.exports = {
   expectedChunkSize,
   uploadObjectPrefix,
   uploadObjectKey,
-  parseResultJson
+  parseResultJson,
+  isDeployUploadExpired
 };

@@ -29,7 +29,8 @@ const {
   expectedChunkSize,
   uploadObjectPrefix,
   uploadObjectKey,
-  parseResultJson
+  parseResultJson,
+  isDeployUploadExpired
 } = require('./shared/deploy-upload.js');
 
 const defaultDomain = 'demox.site';
@@ -5718,13 +5719,10 @@ function deployUploadError(statusCode, code, message, extra = {}) {
   };
 }
 
-function isDeployUploadExpired(session) {
-  return !!(session && session.expires_at && new Date(session.expires_at).getTime() <= Date.now());
-}
-
 async function getDeployUploadSession(uploadId, userId) {
   const rows = await query(
-    'SELECT * FROM deploy_upload_sessions WHERE upload_id = ? AND user_id = ? LIMIT 1',
+    `SELECT *, expires_at <= NOW() AS is_expired
+     FROM deploy_upload_sessions WHERE upload_id = ? AND user_id = ? LIMIT 1`,
     [String(uploadId || ''), String(userId || '')]
   );
   return rows[0] || null;

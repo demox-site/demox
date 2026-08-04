@@ -5,6 +5,7 @@ const {
   DEPLOY_UPLOAD_CHUNK_SIZE,
   decodeBase64Chunk,
   expectedChunkSize,
+  isDeployUploadExpired,
   normalizeSha256,
   sha256Hex,
   uploadObjectKey
@@ -41,4 +42,10 @@ test('hashes and temporary keys are deterministic and sanitized', () => {
     uploadObjectKey('user/../id', '550e8400-e29b-41d4-a716-446655440000', 12),
     '_deploy_uploads/user____id/550e8400-e29b-41d4-a716-446655440000/00000012.part'
   );
+});
+
+test('database expiration result wins over a timezone-shifted JavaScript date', () => {
+  const apparentlyExpired = new Date(Date.now() - 60_000);
+  assert.equal(isDeployUploadExpired({ expires_at: apparentlyExpired, is_expired: 0 }), false);
+  assert.equal(isDeployUploadExpired({ expires_at: apparentlyExpired, is_expired: 1 }), true);
 });
