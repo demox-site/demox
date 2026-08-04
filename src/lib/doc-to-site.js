@@ -51,6 +51,86 @@ const extractTitleFromHtml = (html) => {
   return h ? h.textContent.trim() : "";
 };
 
+/** HTML 文本转义（目录链接文案） */
+const escapeHtml = (s) =>
+  String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+/** 去掉 HTML 标签，取纯文本 */
+const stripTags = (html) => String(html || "").replace(/<[^>]+>/g, "").trim();
+
+/** 标题文本 → 稳定 slug（支持中文） */
+const slugifyHeading = (text) => {
+  const slug = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^\w\u4e00-\u9fff-]+/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "section";
+};
+
+/**
+ * 给正文标题补 id，并生成目录 HTML。
+ * 首个 h1 通常与页面大标题重复，目录中跳过；至少 2 个条目才展示目录。
+ * @param {string} html
+ * @returns {{ bodyHtml: string, tocHtml: string }}
+ */
+export function enrichBodyWithToc(html) {
+  const used = new Set();
+  const items = [];
+
+  const uniqueSlug = (text) => {
+    const base = slugifyHeading(text);
+    let slug = base;
+    let i = 2;
+    while (used.has(slug)) slug = `${base}-${i++}`;
+    used.add(slug);
+    return slug;
+  };
+
+  const bodyHtml = String(html || "").replace(
+    /<h([1-6])(\s[^>]*)?>([\s\S]*?)<\/h\1>/gi,
+    (match, levelStr, attrs = "", inner) => {
+      const text = stripTags(inner);
+      if (!text) return match;
+
+      const existing = /\sid\s*=\s*["']([^"']+)["']/i.exec(attrs || "");
+      let id;
+      if (existing) {
+        id = existing[1];
+        used.add(id);
+      } else {
+        id = uniqueSlug(text);
+      }
+
+      items.push({ level: Number(levelStr), text, id });
+      if (existing) return match;
+      return `<h${levelStr}${attrs} id="${id}">${inner}</h${levelStr}>`;
+    }
+  );
+
+  let tocItems = items;
+  if (tocItems.length && tocItems[0].level === 1) tocItems = tocItems.slice(1);
+  if (tocItems.length < 2) return { bodyHtml, tocHtml: "" };
+
+  const minLevel = Math.min(...tocItems.map((item) => item.level));
+  const tocHtml = `<ul class="doc-toc-list">
+${tocItems
+  .map(
+    (item) =>
+      `<li class="doc-toc-item level-${item.level - minLevel}"><a href="#${escapeHtml(item.id)}">${escapeHtml(item.text)}</a></li>`
+  )
+  .join("\n")}
+</ul>`;
+
+  return { bodyHtml, tocHtml };
+}
+
 /** 读文件为 ArrayBuffer */
 const readArrayBuffer = (file) =>
   new Promise((resolve, reject) => {
@@ -71,10 +151,10 @@ const readText = (file) =>
 
 /**
  * parseDocument
- * 解析文档为 { title, bodyHtml }。bodyHtml 已经过 DOMPurify 清洗。
+ * 解析文档为 { title, bodyHtml, tocHtml }。bodyHtml 已经过 DOMPurify 清洗，并补好标题锚点。
  * docx 走 mammoth（动态 import，避免拖累首屏）；doc（旧二进制）不支持时抛错。
  * @param {File} file
- * @returns {Promise<{ title:string, bodyHtml:string }>}
+ * @returns {Promise<{ title:string, bodyHtml:string, tocHtml:string }>}
  */
 export async function parseDocument(file) {
   if (!file) throw new Error("缺少文件");
@@ -99,13 +179,14 @@ export async function parseDocument(file) {
     throw new Error("UNSUPPORTED_FORMAT");
   }
 
-  const bodyHtml = DOMPurify.sanitize(rawHtml, {
+  const cleaned = DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ["target", "rel"]
+    ADD_ATTR: ["target", "rel", "id"]
   });
 
-  const title = extractTitleFromHtml(bodyHtml) || stripExt(file.name);
-  return { title, bodyHtml };
+  const title = extractTitleFromHtml(cleaned) || stripExt(file.name);
+  const { bodyHtml, tocHtml } = enrichBodyWithToc(cleaned);
+  return { title, bodyHtml, tocHtml };
 }
 
 /** 安全的子域名/文件名片段：仅保留字母数字与连字符 */
@@ -123,9 +204,9 @@ const safeSlug = (name) =>
  * @returns {Promise<{ zipFile:File, title:string }>}
  */
 export async function buildSiteZipFile({ file, templateId }) {
-  const { title, bodyHtml } = await parseDocument(file);
+  const { title, bodyHtml, tocHtml } = await parseDocument(file);
   const tpl = getTemplate(templateId);
-  const html = tpl.render({ title, bodyHtml });
+  const html = tpl.render({ title, bodyHtml, tocHtml });
 
   const zip = new JSZip();
   zip.file("index.html", html);

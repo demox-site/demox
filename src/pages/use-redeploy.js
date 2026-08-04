@@ -5,21 +5,6 @@ import { sanitizeFileName, getComparableTimestamp } from "@/lib/website-utils";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
- * fileToBase64
- * 将文件读为 base64（去掉 dataURL 前缀）
- */
-const fileToBase64 = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const res = String(reader.result || "");
-      resolve(res.includes(",") ? res.split(",")[1] : res);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
-/**
  * useRedeploy
  * 重新部署弹窗：选择/拖拽 .zip 覆盖原站点。
  * @param {{
@@ -166,10 +151,7 @@ export function useRedeploy({
       }
 
       const safeFileName = sanitizeFileName(file.name);
-      const fileContentBase64 = await fileToBase64(file);
-
-      const deployResult = await websiteApi.uploadAndDeploy({
-        fileContentBase64,
+      const deployResult = await websiteApi.uploadFileAndDeploy(file, {
         fileName: safeFileName,
         websiteId: website.websiteId || website._id
       });

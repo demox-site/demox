@@ -407,7 +407,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID`}
+                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID\n\n# 页面水印（仅 pro/admin）\ndemox watermark hide WEBSITE_ID\ndemox watermark show WEBSITE_ID`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
@@ -421,6 +421,8 @@ export const Docs: React.FC = () => {
                         ["demox deploy <path>", isZh ? "部署目录、ZIP、PDF 或文档" : "Deploy folder, ZIP, PDF, or docs"],
                         ["demox domain set <id> <subdomain>", isZh ? "设置自定义子域名" : "Set custom subdomain"],
                         ["demox domain clear <id>", isZh ? "清除自定义子域名" : "Clear custom subdomain"],
+                        ["demox watermark hide <id>", isZh ? "隐藏页面水印（仅 pro/admin）" : "Hide page watermark (pro/admin only)"],
+                        ["demox watermark show <id>", isZh ? "重新显示页面水印（仅 pro/admin）" : "Show page watermark (pro/admin only)"],
                         ["demox list / ls", isZh ? "列出所有网站" : "List all sites"],
                         ["demox info <id>", isZh ? "查看网站详情" : "Show site details"],
                         ["demox delete <id> / rm", isZh ? "删除网站" : "Delete a site"],
@@ -500,16 +502,16 @@ export const Docs: React.FC = () => {
                     </ul>
                     <div className="flex flex-wrap gap-3">
                       <Badge variant="outline" className="border-zinc-700 text-zinc-300">
-                        MCP {isZh ? "上限" : "max"}: 8MB
+                        MCP: {isZh ? "按角色配额" : "role quota"}
                       </Badge>
                       <Badge variant="outline" className="border-zinc-700 text-zinc-300">
-                        CLI {isZh ? "上限" : "max"}: 8MB
+                        CLI: {isZh ? "按角色配额" : "role quota"}
                       </Badge>
                     </div>
                     <p className="text-xs text-zinc-500 mt-3">
                       {isZh
-                        ? "当前 CLI 与 MCP 通过 SCF 请求体上传，超过 8MB 请先压缩或拆分。"
-                        : "CLI and MCP currently upload through SCF request bodies; compress or split files over 8MB."}
+                        ? "CLI、MCP、网页和 CI 均使用分块上传，不再受单请求 8MB 限制；文件大小仍受账户角色配额约束。"
+                        : "CLI, MCP, web, and CI use chunked uploads with no single-request 8MB limit; account role quotas still apply."}
                     </p>
                   </Section>
 

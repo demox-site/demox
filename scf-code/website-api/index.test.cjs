@@ -307,3 +307,94 @@ test('removing a grant changes active to zero immediately', async () => {
   assert.equal(body.success, true);
   assert.equal(revoked, true);
 });
+
+test('pro and admin roles can configure whether a site hides the watermark', async () => {
+  for (const role of ['pro', 'admin']) {
+    let updatedParams = null;
+    queryImpl = async (sql, params) => {
+      if (sql.includes('information_schema.COLUMNS') && sql.includes('hide_watermark')) {
+        return [{ COLUMN_NAME: 'hide_watermark' }];
+      }
+      if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+        return [{ id: 7, user_id: `watermark-${role}`, hide_watermark: 0 }];
+      }
+      if (sql.includes('FROM user_roles')) return [{ roles: [role, 'user'] }];
+      if (sql.includes('UPDATE websites SET hide_watermark')) {
+        updatedParams = params;
+        return { affectedRows: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+
+    const body = JSON.parse((await request(
+      'update_watermark',
+      { docId: 7, hideWatermark: true },
+      `watermark-${role}`
+    )).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.hideWatermark, true);
+    assert.deepEqual(updatedParams, [1, 7]);
+  }
+});
+
+test('roles other than pro and admin cannot configure the watermark', async () => {
+  let updateAttempted = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('information_schema.COLUMNS') && sql.includes('hide_watermark')) {
+      return [{ COLUMN_NAME: 'hide_watermark' }];
+    }
+    if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+      return [{ id: 8, user_id: 'watermark-basic', hide_watermark: 0 }];
+    }
+    if (sql.includes('FROM user_roles')) return [{ roles: ['user'] }];
+    if (sql.includes('UPDATE websites SET hide_watermark')) {
+      updateAttempted = true;
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  for (const hideWatermark of [true, false]) {
+    const body = JSON.parse((await request(
+      'update_watermark',
+      { docId: 8, hideWatermark },
+      'watermark-basic'
+    )).body);
+    assert.equal(body.success, false, JSON.stringify(body));
+    assert.equal(body.code, 'WATERMARK_ROLE_REQUIRED');
+  }
+  assert.equal(updateAttempted, false);
+});
+
+test('public site resolution exposes the persisted watermark preference to the edge', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('information_schema.COLUMNS') && sql.includes("COLUMN_NAME IN ('seo_title'")) {
+      return [
+        { COLUMN_NAME: 'seo_title' },
+        { COLUMN_NAME: 'seo_description' },
+        { COLUMN_NAME: 'og_image' }
+      ];
+    }
+    if (sql.includes('FROM websites w') && sql.includes('hide_watermark')) {
+      return [{
+        path: 'sites/watermark/index.html',
+        user_id: 'watermark-pro',
+        project_id: null,
+        website_id: 'WATERMARK1',
+        site_name: 'Watermark site',
+        visibility: 'public',
+        hide_watermark: 1,
+        origin_host: 'sites.demox.site'
+      }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('resolve_subdomain', {
+    subdomain: 'watermark1',
+    domain: 'demox.site'
+  })).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.websiteId, 'WATERMARK1');
+  assert.equal(body.hideWatermark, true);
+});

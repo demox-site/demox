@@ -19,6 +19,18 @@ const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
 const { createFeishuDirectoryClient, FeishuDirectoryError } = require('./shared/feishu-directory.js');
+const {
+  DEPLOY_UPLOAD_CHUNK_SIZE,
+  DEPLOY_UPLOAD_TTL_SECONDS,
+  COMPLETING_STALE_SECONDS,
+  sha256Hex,
+  normalizeSha256,
+  decodeBase64Chunk,
+  expectedChunkSize,
+  uploadObjectPrefix,
+  uploadObjectKey,
+  parseResultJson
+} = require('./shared/deploy-upload.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -85,6 +97,10 @@ function buildCustomSiteUrl(subdomain, domain) {
   return label ? `https://${label}.${suffix}/` : '';
 }
 
+function normalizeBooleanFlag(value) {
+  return value === true || value === 1 || value === '1';
+}
+
 function formatWebsiteForClient(row) {
   const defaultUrl = buildDefaultSiteUrl(row.website_id || row.websiteId);
   const subdomainDomain = getRowSubdomainDomain(row);
@@ -97,6 +113,8 @@ function formatWebsiteForClient(row) {
   return {
     ...row,
     visibility,
+    hide_watermark: normalizeBooleanFlag(row.hide_watermark),
+    hideWatermark: normalizeBooleanFlag(row.hide_watermark),
     project_id: projectPublicId == null ? null : String(projectPublicId),
     projectId: projectPublicId == null ? null : String(projectPublicId),
     projectInternalId: row.project_id == null ? null : String(row.project_id),
@@ -387,6 +405,10 @@ exports.main = async (event, context) => {
     const action = body?.action;
     const actionMap = {
       upload_and_deploy: handleUploadAndDeploy,
+      init_deploy_upload: handleInitDeployUpload,
+      upload_deploy_chunk: handleUploadDeployChunk,
+      complete_deploy_upload: handleCompleteDeployUpload,
+      abort_deploy_upload: handleAbortDeployUpload,
       list: handleListWebsites,
       delete: handleDeleteWebsite,
       list_all: handleListAllWebsites,
@@ -396,6 +418,7 @@ exports.main = async (event, context) => {
       check_subdomain: handleCheckSubdomain,
       clear_subdomain: handleClearSubdomain,
       update_visibility: handleUpdateWebsiteVisibility,
+      update_watermark: handleUpdateWebsiteWatermark,
       update_seo: handleUpdateSeo,
       resolve_subdomain: handleResolveSubdomain,
       check_site_access: handleCheckSiteAccess,
@@ -458,7 +481,15 @@ exports.main = async (event, context) => {
     }
 
     // 无 action 时按 path 回退(兼容旧调用)。注意顺序:更长/更具体的放前面。
-    if (pathUrl.includes('/upload')) {
+    if (pathUrl.includes('/deploy-upload/init')) {
+      return await handleInitDeployUpload(event);
+    } else if (pathUrl.includes('/deploy-upload/chunk')) {
+      return await handleUploadDeployChunk(event);
+    } else if (pathUrl.includes('/deploy-upload/complete')) {
+      return await handleCompleteDeployUpload(event);
+    } else if (pathUrl.includes('/deploy-upload/abort')) {
+      return await handleAbortDeployUpload(event);
+    } else if (pathUrl.includes('/upload')) {
       return await handleUploadAndDeploy(event);
     } else if (pathUrl.includes('/list-user-roles')) {
       return await handleListUserRoles(event);
@@ -512,6 +543,8 @@ exports.main = async (event, context) => {
       return await handleClearSubdomain(event);
     } else if (pathUrl.includes('/update-visibility')) {
       return await handleUpdateWebsiteVisibility(event);
+    } else if (pathUrl.includes('/update-watermark')) {
+      return await handleUpdateWebsiteWatermark(event);
     } else if (pathUrl.includes('/update-seo')) {
       return await handleUpdateSeo(event);
     } else if (pathUrl.includes('/resolve-subdomain')) {
@@ -689,6 +722,28 @@ async function ensureSeoColumns() {
   _seoColumnsEnsured = true;
 }
 
+/** Ensure the per-site watermark preference exists before reads or writes. */
+let _watermarkColumnEnsured = false;
+async function ensureWatermarkColumn() {
+  if (_watermarkColumnEnsured) return;
+  try {
+    const cols = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
+         AND COLUMN_NAME = 'hide_watermark'`
+    );
+    if (!cols.length) {
+      await query(
+        `ALTER TABLE websites ADD COLUMN hide_watermark TINYINT(1) NOT NULL DEFAULT 0
+         COMMENT 'Whether the hosted-page Demox watermark is hidden'`
+      );
+    }
+  } catch (e) {
+    console.warn('ensureWatermarkColumn skipped:', e.message);
+  }
+  _watermarkColumnEnsured = true;
+}
+
 /**
  * 幂等确保 access_tokens 表存在（个人访问令牌）。
  */
@@ -746,10 +801,10 @@ async function ensureProductEventsTable() {
 /**
  * 检查管理员权限
  */
-async function checkAdmin(userId) {
+async function getUserRoleIds(userId) {
   const roles = await query('SELECT roles FROM user_roles WHERE user_id = ?', [userId]);
   if (roles.length === 0) {
-    return false;
+    return [];
   }
   // mysql2 对 JSON 列会自动解析为数组;字符串时才需 JSON.parse
   let userRoles = roles[0].roles;
@@ -757,7 +812,16 @@ async function checkAdmin(userId) {
     try { userRoles = JSON.parse(userRoles || '[]'); } catch (e) { userRoles = []; }
   }
   if (!Array.isArray(userRoles)) userRoles = [];
-  return userRoles.includes('admin');
+  return userRoles.map((role) => String(role).trim().toLowerCase()).filter(Boolean);
+}
+
+async function checkAdmin(userId) {
+  return (await getUserRoleIds(userId)).includes('admin');
+}
+
+async function canHideWebsiteWatermark(userId) {
+  const roles = await getUserRoleIds(userId);
+  return roles.includes('pro') || roles.includes('admin');
 }
 
 /**
@@ -850,6 +914,7 @@ async function handleListWebsites(event) {
     };
   }
 
+  await ensureWatermarkColumn();
   const projectId = (event.body || event).projectId;
   const websites = await queryWebsitesWithProjects({ userId, projectId });
 
@@ -886,6 +951,7 @@ async function handleListAllWebsites(event) {
     };
   }
 
+  await ensureWatermarkColumn();
   const projectId = (event.body || event).projectId;
   const websites = await queryWebsitesWithProjects({ includeAll: true, projectId });
 
@@ -1445,6 +1511,67 @@ async function handleUpdateWebsiteVisibility(event) {
   } catch (error) {
     console.error('更新站点访问级别失败:', error);
     return ok({ success: false, message: error.message || '更新访问级别失败' });
+  }
+}
+
+/**
+ * Configure whether EdgeOne injects the hosted-page watermark.
+ * This is a role capability: only pro/admin users may change the setting.
+ */
+async function handleUpdateWebsiteWatermark(event) {
+  const userId = getUserId(event);
+  if (!userId) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, error: '未登录或token已过期' })
+    };
+  }
+
+  const body = event.body || event;
+  const docId = normalizePositiveId(body.docId || body.id);
+  const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
+  if (!docId && !websiteId) {
+    return ok({ success: false, message: '缺少 docId 或 websiteId' });
+  }
+  if (typeof body.hideWatermark !== 'boolean') {
+    return ok({ success: false, message: 'hideWatermark 必须是布尔值' });
+  }
+
+  try {
+    await ensureWatermarkColumn();
+    const site = await getWebsiteByIdentity({ docId, websiteId });
+    if (!site || !(await canUserManageSite(userId, site))) {
+      return ok({ success: false, message: '站点不存在或无权限' });
+    }
+    if (!(await canHideWebsiteWatermark(userId))) {
+      return ok({
+        success: false,
+        code: 'WATERMARK_ROLE_REQUIRED',
+        message: '仅 pro 和 admin 角色可以配置页面水印'
+      });
+    }
+
+    const hideWatermark = body.hideWatermark;
+    await query(
+      'UPDATE websites SET hide_watermark = ?, updated_at = NOW() WHERE id = ?',
+      [hideWatermark ? 1 : 0, site.id]
+    );
+    const cachePurge = await purgeSiteCache({
+      websiteId: site.website_id,
+      subdomain: site.subdomain,
+      subdomainDomain: site.subdomain_domain
+    });
+    return ok({
+      success: true,
+      hideWatermark,
+      websiteId: site.website_id,
+      cachePurge,
+      message: hideWatermark ? '页面水印已关闭' : '页面水印已开启'
+    });
+  } catch (error) {
+    console.error('更新页面水印设置失败:', error);
+    return ok({ success: false, message: error.message || '更新页面水印设置失败' });
   }
 }
 
@@ -3254,7 +3381,12 @@ async function handleResolveUserEmails(event) {
   }
 }
 
-async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBucket = true, withVisibility = true, withSubdomainDomain = true } = {}) {
+async function queryResolvedSiteByLabel(label, domain = defaultDomain, {
+  withBucket = true,
+  withVisibility = true,
+  withSubdomainDomain = true,
+  withWatermark = true
+} = {}) {
   const visibilityExpr = withVisibility
     ? `COALESCE(NULLIF(w.visibility, ''), '${VISIBILITY_PUBLIC}')`
     : `'${VISIBILITY_PUBLIC}'`;
@@ -3263,6 +3395,7 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBuc
   const subdomainDomainExpr = withSubdomainDomain
     ? `COALESCE(NULLIF(w.subdomain_domain, ''), '${defaultDomain}')`
     : `'${defaultDomain}'`;
+  const hideWatermarkExpr = withWatermark ? 'COALESCE(w.hide_watermark, 0)' : '0';
   const selectSql =
     `SELECT w.path AS path,
             w.user_id AS user_id,
@@ -3275,6 +3408,7 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBuc
             w.og_image AS og_image,
             ${subdomainDomainExpr} AS subdomain_domain,
             ${visibilityExpr} AS visibility,
+            ${hideWatermarkExpr} AS hide_watermark,
             ${originExpr} AS origin_host
      FROM websites w ${bucketJoin}`;
 
@@ -3300,11 +3434,15 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, { withBuc
  * 3) 旧表结构(public)
  */
 async function resolveSiteMetadataByLabel(label, domain = defaultDomain) {
-  const modes = [
+  const baseModes = [
     { withBucket: true, withVisibility: true, withSubdomainDomain: true },
     { withBucket: false, withVisibility: true, withSubdomainDomain: true },
     { withBucket: false, withVisibility: false, withSubdomainDomain: true },
     { withBucket: false, withVisibility: false, withSubdomainDomain: false }
+  ];
+  const modes = [
+    ...baseModes.map((mode) => ({ ...mode, withWatermark: true })),
+    ...baseModes.map((mode) => ({ ...mode, withWatermark: false }))
   ];
   let lastErr = null;
   for (const mode of modes) {
@@ -3354,6 +3492,7 @@ async function handleResolveSubdomain(event) {
 
   try {
     await ensureSeoColumns();
+    await ensureWatermarkColumn();
     const site = await resolveSiteMetadataByLabel(label, suffix);
     if (!site || !site.path) {
       return {
@@ -3373,6 +3512,7 @@ async function handleResolveSubdomain(event) {
         domain: suffix,
         host: `${label}.${suffix}`,
         visibility: normalizeVisibility(site.visibility),
+        hideWatermark: normalizeBooleanFlag(site.hide_watermark),
         seo: {
           title: site.seo_title || site.site_name || null,
           description: site.seo_description || null,
@@ -5540,6 +5680,394 @@ async function handleMigrateBuckets(event) {
 
 
 
+let _deployUploadSessionsEnsured = false;
+
+async function ensureDeployUploadSessionsTable() {
+  if (_deployUploadSessionsEnsured) return;
+  await query(
+    `CREATE TABLE IF NOT EXISTS deploy_upload_sessions (
+      upload_id     CHAR(36) NOT NULL,
+      user_id       VARCHAR(64) NOT NULL,
+      website_id    VARCHAR(32) NOT NULL,
+      file_name     VARCHAR(255) NOT NULL,
+      project_id    VARCHAR(64) DEFAULT NULL,
+      bucket_id     INT DEFAULT NULL,
+      total_size    BIGINT UNSIGNED NOT NULL,
+      chunk_size    INT UNSIGNED NOT NULL,
+      total_chunks  INT UNSIGNED NOT NULL,
+      sha256        CHAR(64) NOT NULL,
+      status        VARCHAR(16) NOT NULL DEFAULT 'UPLOADING',
+      result_json   LONGTEXT DEFAULT NULL,
+      error_message VARCHAR(500) DEFAULT NULL,
+      expires_at    TIMESTAMP NOT NULL,
+      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (upload_id),
+      INDEX idx_deploy_upload_user_status (user_id, status, updated_at),
+      INDEX idx_deploy_upload_expires (expires_at, status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署分块上传会话'`
+  );
+  _deployUploadSessionsEnsured = true;
+}
+
+function deployUploadError(statusCode, code, message, extra = {}) {
+  return {
+    statusCode,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ success: false, code, message, ...extra })
+  };
+}
+
+function isDeployUploadExpired(session) {
+  return !!(session && session.expires_at && new Date(session.expires_at).getTime() <= Date.now());
+}
+
+async function getDeployUploadSession(uploadId, userId) {
+  const rows = await query(
+    'SELECT * FROM deploy_upload_sessions WHERE upload_id = ? AND user_id = ? LIMIT 1',
+    [String(uploadId || ''), String(userId || '')]
+  );
+  return rows[0] || null;
+}
+
+async function cleanupDeployUploadChunks(session) {
+  if (!session) return;
+  try {
+    const bucketCfg = await resolveBucketConfig(session.bucket_id || null);
+    const provider = providerFor(bucketCfg);
+    const objects = await provider.list(uploadObjectPrefix(session.user_id, session.upload_id));
+    await Promise.all(objects.map((object) => provider.delete(object.key)));
+  } catch (error) {
+    console.warn(`清理上传会话 ${session.upload_id} 的暂存分块失败:`, error.message);
+  }
+}
+
+async function cleanupExpiredDeployUploads() {
+  try {
+    const rows = await query(
+      `SELECT * FROM deploy_upload_sessions
+       WHERE expires_at < NOW() AND status <> 'COMPLETED'
+       ORDER BY expires_at ASC LIMIT 10`
+    );
+    for (const session of rows) {
+      const result = await query(
+        `UPDATE deploy_upload_sessions SET status = 'EXPIRED', error_message = '上传会话已过期'
+         WHERE upload_id = ? AND status <> 'COMPLETED'`,
+        [session.upload_id]
+      );
+      if (result.affectedRows) await cleanupDeployUploadChunks(session);
+    }
+    await query(
+      `DELETE FROM deploy_upload_sessions
+       WHERE expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY)
+         AND status IN ('COMPLETED', 'FAILED', 'ABORTED', 'EXPIRED')`
+    );
+  } catch (error) {
+    console.warn('清理过期部署上传会话失败:', error.message);
+  }
+}
+
+async function markDeployUploadFailed(session, code, message) {
+  await query(
+    `UPDATE deploy_upload_sessions
+     SET status = 'FAILED', error_message = ?, updated_at = NOW()
+     WHERE upload_id = ? AND user_id = ?`,
+    [String(message || code).slice(0, 500), session.upload_id, session.user_id]
+  );
+  await cleanupDeployUploadChunks(session);
+}
+
+async function handleInitDeployUpload(event) {
+  const userId = getUserId(event);
+  if (!userId) return deployUploadError(401, 'UNAUTHORIZED', '未登录或token已过期');
+
+  try {
+    await ensureDeployUploadSessionsTable();
+    await cleanupExpiredDeployUploads();
+
+    const body = event.body || event;
+    const fileName = String(body.fileName || '').trim();
+    const totalSize = Number(body.totalSize);
+    const fileSha256 = normalizeSha256(body.sha256);
+    if (!fileName || fileName.length > 255) {
+      return deployUploadError(400, 'INVALID_FILE_NAME', 'fileName 必须为 1-255 个字符');
+    }
+    if (!Number.isSafeInteger(totalSize) || totalSize <= 0) {
+      return deployUploadError(400, 'INVALID_TOTAL_SIZE', 'totalSize 必须为正整数');
+    }
+    if (!fileSha256) {
+      return deployUploadError(400, 'INVALID_SHA256', 'sha256 必须为 64 位十六进制摘要');
+    }
+
+    const requestId = String(body.requestId || '').trim().toLowerCase();
+    const uploadId = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(requestId)
+      ? requestId
+      : nodeCrypto.randomUUID();
+    const prior = await getDeployUploadSession(uploadId, userId);
+    if (prior) {
+      const sameRequest = Number(prior.total_size) === totalSize &&
+        prior.sha256 === fileSha256 && prior.file_name === fileName &&
+        (body.websiteId == null || prior.website_id === normalizeWebsiteId(body.websiteId)) &&
+        (body.projectId == null ? prior.project_id == null : String(prior.project_id || '') === String(body.projectId));
+      if (!sameRequest) {
+        return deployUploadError(409, 'UPLOAD_REQUEST_CONFLICT', 'requestId 已用于另一份部署文件');
+      }
+      if (isDeployUploadExpired(prior) || ['FAILED', 'ABORTED', 'EXPIRED'].includes(prior.status)) {
+        return deployUploadError(409, 'UPLOAD_NOT_WRITABLE', `上传会话当前状态为 ${prior.status}`);
+      }
+      return ok({
+        success: true,
+        uploadId: prior.upload_id,
+        websiteId: prior.website_id,
+        chunkSize: Number(prior.chunk_size),
+        totalChunks: Number(prior.total_chunks),
+        expiresInSeconds: DEPLOY_UPLOAD_TTL_SECONDS,
+        resumed: true
+      });
+    }
+
+    const roleConfig = await getUserLimits(userId);
+    if (roleConfig.max_file_size && totalSize > Number(roleConfig.max_file_size)) {
+      return ok({
+        success: false,
+        code: 'FILE_SIZE_LIMIT_EXCEEDED',
+        message: `文件大小超出限制！当前文件大小 ${Math.round(totalSize / 1024 / 1024)}MB，您的角色限制为 ${Math.round(roleConfig.max_file_size / 1024 / 1024)}MB。`
+      });
+    }
+
+    const inputWebsiteId = body.websiteId;
+    const websiteId = inputWebsiteId ? normalizeWebsiteId(inputWebsiteId) : generateWebsiteId();
+    const existing = inputWebsiteId
+      ? await query('SELECT * FROM websites WHERE website_id = ? LIMIT 1', [websiteId])
+      : [];
+    if (existing.length > 0 && !(await canUserManageSite(userId, existing[0]))) {
+      return deployUploadError(403, 'SITE_FORBIDDEN', '无权限重新部署该站点');
+    }
+
+    const bucketCfg = await resolveBucketConfig(existing.length > 0 ? existing[0].bucket_id : null);
+    const totalChunks = Math.ceil(totalSize / DEPLOY_UPLOAD_CHUNK_SIZE);
+    await query(
+      `INSERT INTO deploy_upload_sessions
+       (upload_id, user_id, website_id, file_name, project_id, bucket_id,
+        total_size, chunk_size, total_chunks, sha256, status, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UPLOADING',
+               DATE_ADD(NOW(), INTERVAL ${DEPLOY_UPLOAD_TTL_SECONDS} SECOND))`,
+      [
+        uploadId,
+        userId,
+        websiteId,
+        fileName,
+        body.projectId == null ? null : String(body.projectId),
+        bucketCfg.id || null,
+        totalSize,
+        DEPLOY_UPLOAD_CHUNK_SIZE,
+        totalChunks,
+        fileSha256
+      ]
+    );
+
+    return ok({
+      success: true,
+      uploadId,
+      websiteId,
+      chunkSize: DEPLOY_UPLOAD_CHUNK_SIZE,
+      totalChunks,
+      expiresInSeconds: DEPLOY_UPLOAD_TTL_SECONDS
+    });
+  } catch (error) {
+    console.error('初始化分块上传失败:', error);
+    return deployUploadError(500, 'UPLOAD_INIT_FAILED', error.message || '初始化分块上传失败');
+  }
+}
+
+async function handleUploadDeployChunk(event) {
+  const userId = getUserId(event);
+  if (!userId) return deployUploadError(401, 'UNAUTHORIZED', '未登录或token已过期');
+
+  try {
+    await ensureDeployUploadSessionsTable();
+    const body = event.body || event;
+    const session = await getDeployUploadSession(body.uploadId, userId);
+    if (!session) return deployUploadError(404, 'UPLOAD_NOT_FOUND', '上传会话不存在');
+    if (isDeployUploadExpired(session) || session.status === 'EXPIRED') {
+      return deployUploadError(410, 'UPLOAD_EXPIRED', '上传会话已过期');
+    }
+    if (session.status !== 'UPLOADING') {
+      return deployUploadError(409, 'UPLOAD_NOT_WRITABLE', `上传会话当前状态为 ${session.status}`);
+    }
+
+    const chunkIndex = Number(body.chunkIndex);
+    const wantedSize = expectedChunkSize(session, chunkIndex);
+    if (wantedSize === null) {
+      return deployUploadError(400, 'INVALID_CHUNK_INDEX', 'chunkIndex 超出上传会话范围');
+    }
+    const chunk = decodeBase64Chunk(body.chunkBase64);
+    if (chunk.length !== wantedSize) {
+      return deployUploadError(400, 'INVALID_CHUNK_SIZE', `分块大小不正确，应为 ${wantedSize} 字节`);
+    }
+    const chunkSha256 = normalizeSha256(body.chunkSha256);
+    if (!chunkSha256 || sha256Hex(chunk) !== chunkSha256) {
+      return deployUploadError(400, 'CHUNK_HASH_MISMATCH', '分块 SHA-256 校验失败');
+    }
+
+    const bucketCfg = await resolveBucketConfig(session.bucket_id || null);
+    const provider = providerFor(bucketCfg);
+    const objectKey = uploadObjectKey(userId, session.upload_id, chunkIndex);
+    await provider.put(objectKey, chunk, {
+      contentType: 'application/octet-stream',
+      cacheControl: 'no-store'
+    });
+    const updated = await query(
+      `UPDATE deploy_upload_sessions SET updated_at = NOW(), error_message = NULL
+       WHERE upload_id = ? AND user_id = ? AND status = 'UPLOADING'`,
+      [session.upload_id, userId]
+    );
+    if (!updated.affectedRows) {
+      await provider.delete(objectKey).catch(() => {});
+      return deployUploadError(409, 'UPLOAD_NOT_WRITABLE', '上传会话状态已变化，请重新开始');
+    }
+    return ok({ success: true, uploadId: session.upload_id, chunkIndex });
+  } catch (error) {
+    console.error('上传部署分块失败:', error);
+    return deployUploadError(500, 'CHUNK_UPLOAD_FAILED', error.message || '上传部署分块失败', { retryable: true });
+  }
+}
+
+async function handleCompleteDeployUpload(event) {
+  const userId = getUserId(event);
+  if (!userId) return deployUploadError(401, 'UNAUTHORIZED', '未登录或token已过期');
+
+  let session;
+  try {
+    await ensureDeployUploadSessionsTable();
+    const body = event.body || event;
+    session = await getDeployUploadSession(body.uploadId, userId);
+    if (!session) return deployUploadError(404, 'UPLOAD_NOT_FOUND', '上传会话不存在');
+    if (session.status === 'COMPLETED') {
+      const result = parseResultJson(session.result_json);
+      return result ? ok(result) : deployUploadError(500, 'UPLOAD_RESULT_MISSING', '部署已完成但结果记录缺失');
+    }
+    if (isDeployUploadExpired(session) || session.status === 'EXPIRED') {
+      return deployUploadError(410, 'UPLOAD_EXPIRED', '上传会话已过期');
+    }
+    if (!['UPLOADING', 'COMPLETING'].includes(session.status)) {
+      return deployUploadError(409, 'UPLOAD_NOT_COMPLETABLE', `上传会话当前状态为 ${session.status}`);
+    }
+
+    const claimed = await query(
+      `UPDATE deploy_upload_sessions
+       SET status = 'COMPLETING', error_message = NULL, updated_at = NOW()
+       WHERE upload_id = ? AND user_id = ?
+         AND (status = 'UPLOADING'
+              OR (status = 'COMPLETING' AND updated_at < DATE_SUB(NOW(), INTERVAL ${COMPLETING_STALE_SECONDS} SECOND)))`,
+      [session.upload_id, userId]
+    );
+    if (!claimed.affectedRows) {
+      const current = await getDeployUploadSession(session.upload_id, userId);
+      if (current && current.status === 'COMPLETED') {
+        const result = parseResultJson(current.result_json);
+        return result ? ok(result) : deployUploadError(500, 'UPLOAD_RESULT_MISSING', '部署已完成但结果记录缺失');
+      }
+      return ok({
+        success: false,
+        code: 'UPLOAD_COMPLETING',
+        message: '部署正在完成，请稍后重试',
+        retryable: true,
+        retryAfterMs: 1500
+      });
+    }
+
+    session.status = 'COMPLETING';
+    const bucketCfg = await resolveBucketConfig(session.bucket_id || null);
+    const provider = providerFor(bucketCfg);
+    const chunks = [];
+    const hasher = nodeCrypto.createHash('sha256');
+    for (let index = 0; index < Number(session.total_chunks); index++) {
+      const chunk = await provider.getBuffer(uploadObjectKey(userId, session.upload_id, index));
+      const wantedSize = expectedChunkSize(session, index);
+      if (chunk.length !== wantedSize) {
+        throw Object.assign(new Error(`分块 ${index} 大小不正确，应为 ${wantedSize} 字节`), { code: 'UPLOAD_INCOMPLETE' });
+      }
+      hasher.update(chunk);
+      chunks.push(chunk);
+    }
+    const digest = hasher.digest('hex');
+    if (digest !== session.sha256) {
+      await markDeployUploadFailed(session, 'UPLOAD_HASH_MISMATCH', '完整 ZIP 的 SHA-256 校验失败');
+      return deployUploadError(400, 'UPLOAD_HASH_MISMATCH', '完整 ZIP 的 SHA-256 校验失败');
+    }
+
+    const buffer = Buffer.concat(chunks, Number(session.total_size));
+    const deployResponse = await deployZipBuffer({
+      userId,
+      buffer,
+      inputWebsiteId: session.website_id,
+      fileName: session.file_name,
+      inputProjectId: session.project_id
+    });
+    const payload = parseResultJson(deployResponse.body) || { success: false, message: '部署响应无效' };
+    if (!payload.success) {
+      const terminal = payload.code === 'INVALID_STATIC_SITE';
+      if (terminal) {
+        await markDeployUploadFailed(session, payload.code, payload.message);
+      } else {
+        await query(
+          `UPDATE deploy_upload_sessions SET status = 'UPLOADING', error_message = ?, updated_at = NOW()
+           WHERE upload_id = ? AND user_id = ? AND status = 'COMPLETING'`,
+          [String(payload.message || '部署失败').slice(0, 500), session.upload_id, userId]
+        );
+      }
+      return deployResponse;
+    }
+
+    await query(
+      `UPDATE deploy_upload_sessions
+       SET status = 'COMPLETED', result_json = ?, error_message = NULL,
+           expires_at = DATE_ADD(NOW(), INTERVAL ${DEPLOY_UPLOAD_TTL_SECONDS} SECOND), updated_at = NOW()
+       WHERE upload_id = ? AND user_id = ? AND status = 'COMPLETING'`,
+      [JSON.stringify(payload), session.upload_id, userId]
+    );
+    await cleanupDeployUploadChunks(session);
+    return deployResponse;
+  } catch (error) {
+    console.error('完成分块部署失败:', error);
+    if (session) {
+      await query(
+        `UPDATE deploy_upload_sessions SET status = 'UPLOADING', error_message = ?, updated_at = NOW()
+         WHERE upload_id = ? AND user_id = ? AND status = 'COMPLETING'`,
+        [String(error.message || '完成部署失败').slice(0, 500), session.upload_id, userId]
+      ).catch(() => {});
+    }
+    return deployUploadError(500, error.code || 'UPLOAD_COMPLETE_FAILED', error.message || '完成分块部署失败', { retryable: true });
+  }
+}
+
+async function handleAbortDeployUpload(event) {
+  const userId = getUserId(event);
+  if (!userId) return deployUploadError(401, 'UNAUTHORIZED', '未登录或token已过期');
+
+  try {
+    await ensureDeployUploadSessionsTable();
+    const body = event.body || event;
+    const session = await getDeployUploadSession(body.uploadId, userId);
+    if (!session) return ok({ success: true, aborted: false });
+    if (session.status === 'COMPLETED') return ok({ success: true, aborted: false, completed: true });
+    if (session.status === 'COMPLETING') {
+      return ok({ success: false, code: 'UPLOAD_COMPLETING', message: '部署正在完成，不能中止' });
+    }
+    await query(
+      `UPDATE deploy_upload_sessions SET status = 'ABORTED', error_message = '客户端中止上传', updated_at = NOW()
+       WHERE upload_id = ? AND user_id = ? AND status <> 'COMPLETED'`,
+      [session.upload_id, userId]
+    );
+    await cleanupDeployUploadChunks(session);
+    return ok({ success: true, aborted: true });
+  } catch (error) {
+    console.error('中止分块上传失败:', error);
+    return deployUploadError(500, 'UPLOAD_ABORT_FAILED', error.message || '中止分块上传失败');
+  }
+}
+
 /**
  * 处理上传并部署
  */
@@ -5563,13 +6091,29 @@ async function handleUploadAndDeploy(event) {
     };
   }
 
+  let buffer;
+  try {
+    buffer = Buffer.from(String(fileContentBase64), 'base64');
+  } catch (error) {
+    return ok({ success: false, message: '上传内容不是有效的 Base64' });
+  }
+
+  return deployZipBuffer({
+    userId,
+    buffer,
+    inputWebsiteId,
+    fileName,
+    inputProjectId
+  });
+}
+
+async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, inputProjectId }) {
   try {
     // 获取用户角色配置（从数据库读取）
     const roleConfig = await getUserLimits(userId);
     console.log(`用户 ${userId} 的角色配置:`, roleConfig);
 
     // 解析 ZIP
-    const buffer = Buffer.from(String(fileContentBase64), 'base64');
     const zip = new AdmZip(buffer);
     const zipEntries = zip.getEntries();
 

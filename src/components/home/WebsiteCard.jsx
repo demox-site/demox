@@ -28,7 +28,8 @@ import {
   LockKeyhole,
   BarChart3,
   Settings2,
-  Search
+  Search,
+  EyeOff
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import {
@@ -47,6 +48,7 @@ export default function WebsiteCard({
   t,
   user,
   deploying,
+  watermarkSaving = {},
   // 名称编辑
   editingId,
   editingName,
@@ -69,6 +71,7 @@ export default function WebsiteCard({
   projects = [],
   moveWebsiteToProject,
   setWebsiteVisibility,
+  setWebsiteWatermark,
   openRedeployDialog,
   openDomainDialog,
   openSeoDialog,
@@ -82,6 +85,8 @@ export default function WebsiteCard({
   const canViewAnalyticsByProject = !!website.projectRole;
   const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
   const canViewAnalytics = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
+  const canConfigureWatermark = Array.isArray(user?.roles) &&
+    user.roles.some((role) => ["pro", "admin"].includes(String(role).toLowerCase()));
   const canMoveProject =
     canManageSite &&
     Array.isArray(projects) &&
@@ -402,6 +407,28 @@ export default function WebsiteCard({
                       onCheckedChange={(checked) => {
                         if (setWebsiteVisibility) {
                           setWebsiteVisibility(website, checked ? "public" : "private");
+                        }
+                      }}
+                      className="scale-75"
+                    />
+                  </div>
+                )}
+
+                {canManageSite && canConfigureWatermark && (
+                  <div
+                    className="flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground"
+                    title={t.watermarkToggleTitle}
+                  >
+                    <span className="flex items-center gap-2">
+                      <EyeOff className="h-4 w-4" />
+                      {t.watermarkHidden}
+                    </span>
+                    <Switch
+                      checked={website.hideWatermark === true}
+                      disabled={isProcessing || watermarkSaving[website._id]}
+                      onCheckedChange={(checked) => {
+                        if (setWebsiteWatermark) {
+                          setWebsiteWatermark(website, checked);
                         }
                       }}
                       className="scale-75"

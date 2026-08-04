@@ -87,6 +87,47 @@ async function request<T>(baseUrl: string, path: string, options: RequestInit = 
   return data;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  const stride = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += stride) {
+    parts.push(String.fromCharCode(...bytes.subarray(offset, offset + stride)));
+  }
+  return btoa(parts.join(""));
+}
+
+async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function retryUploadRequest<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
+type DeployUploadResult = {
+  success: boolean;
+  url?: string;
+  websiteId?: string;
+  projectId?: string | number | null;
+  path?: string;
+  message?: string;
+  code?: string;
+  retryable?: boolean;
+  retryAfterMs?: number;
+};
+
 // 认证API
 export const authApi = {
   // 注册
@@ -407,6 +448,89 @@ export const websiteApi = {
     );
   },
 
+  uploadFileAndDeploy: async (
+    file: File,
+    params: { fileName: string; websiteId?: string; projectId?: string | number | null },
+    onProgress?: (percent: number, uploadedBytes: number) => void
+  ): Promise<DeployUploadResult> => {
+    const wholeFileSha256 = await sha256Hex(await file.arrayBuffer());
+    const requestId = crypto.randomUUID();
+    const init = await retryUploadRequest(() => request<{
+      success: boolean;
+      uploadId?: string;
+      websiteId?: string;
+      chunkSize?: number;
+      totalChunks?: number;
+      message?: string;
+      code?: string;
+    }>(WEBSITE_API_URL, "/deploy-upload/init", {
+      method: "POST",
+      body: {
+        action: "init_deploy_upload",
+        requestId,
+        fileName: params.fileName,
+        websiteId: params.websiteId,
+        projectId: params.projectId,
+        totalSize: file.size,
+        sha256: wholeFileSha256
+      }
+    }));
+    if (!init.success || !init.uploadId || !init.chunkSize || !init.totalChunks) {
+      throw new Error(init.message || "初始化上传失败");
+    }
+
+    let completionStarted = false;
+    try {
+      onProgress?.(0, 0);
+      for (let index = 0; index < init.totalChunks; index++) {
+        const start = index * init.chunkSize;
+        const end = Math.min(start + init.chunkSize, file.size);
+        const chunkBuffer = await file.slice(start, end).arrayBuffer();
+        const chunkBytes = new Uint8Array(chunkBuffer);
+        const chunkSha256 = await sha256Hex(chunkBuffer);
+        const chunkResult = await retryUploadRequest(() =>
+          request<{ success: boolean; message?: string }>(WEBSITE_API_URL, "/deploy-upload/chunk", {
+            method: "POST",
+            body: {
+              action: "upload_deploy_chunk",
+              uploadId: init.uploadId,
+              chunkIndex: index,
+              chunkSha256,
+              chunkBase64: bytesToBase64(chunkBytes)
+            }
+          })
+        );
+        if (!chunkResult.success) throw new Error(chunkResult.message || `上传分块 ${index + 1} 失败`);
+        onProgress?.(Math.round((end * 100) / file.size), end);
+      }
+
+      completionStarted = true;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const result = await retryUploadRequest(
+          () => request<DeployUploadResult>(WEBSITE_API_URL, "/deploy-upload/complete", {
+            method: "POST",
+            body: { action: "complete_deploy_upload", uploadId: init.uploadId }
+          }),
+          3
+        );
+        if (result.success) return result;
+        if (result.code !== "UPLOAD_COMPLETING") {
+          throw new Error(result.message || "部署失败");
+        }
+        await new Promise((resolve) => setTimeout(resolve, result.retryAfterMs || 1500));
+      }
+      throw new Error("部署完成等待超时，可重新提交以查询最终结果");
+    } catch (error) {
+      if (!completionStarted) {
+        await request(WEBSITE_API_URL, "/deploy-upload/abort", {
+          method: "POST",
+          body: { action: "abort_deploy_upload", uploadId: init.uploadId }
+        }).catch(() => {});
+      }
+      throw error;
+    }
+  },
+
   // 获取网站列表
   list: async () => {
     return request<{ success: boolean; websites: any[]; count: number }>(
@@ -485,6 +609,15 @@ export const websiteApi = {
       WEBSITE_API_URL,
       "/website/update-visibility",
       { method: "POST", body: { action: "update_visibility", ...data } }
+    );
+  },
+
+  // Pro/admin site watermark preference
+  updateWatermark: async (data: { docId?: string; websiteId?: string; hideWatermark: boolean }) => {
+    return request<{ success: boolean; hideWatermark?: boolean; code?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-watermark",
+      { method: "POST", body: { action: "update_watermark", ...data } }
     );
   },
 
@@ -964,6 +1097,7 @@ export function mapWebsiteRow(row: any): any {
     subdomain: row.subdomain || null,
     subdomainDomain: normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain),
     visibility: row.visibility === "private" ? "private" : "public",
+    hideWatermark: row.hideWatermark === true || row.hide_watermark === true || Number(row.hide_watermark) === 1,
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
   };

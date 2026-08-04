@@ -562,7 +562,9 @@ async function withDemoxBadge(req, event, resp, meta) {
   }
 
   let finalHtml = injectSeoMeta(html, meta);
-  finalHtml = injectDemoxBadge(finalHtml, meta);
+  if (!(meta && meta.hideWatermark)) {
+    finalHtml = injectDemoxBadge(finalHtml, meta);
+  }
 
   return new Response(finalHtml, {
     status: resp.status,
@@ -862,6 +864,7 @@ async function resolveSite(label, domain) {
           websiteId: (j && j.websiteId) || null,
           origin: (j && j.origin) || null,
           visibility: (j && j.visibility) || 'public',
+          hideWatermark: !!(j && j.hideWatermark),
           seo: (j && j.seo) || null
         };
       }
@@ -873,6 +876,7 @@ async function resolveSite(label, domain) {
   let origin = null;
   let websiteId = null;
   let visibility = 'public';
+  let hideWatermark = false;
   let seo = null;
   try {
     const resp = await fetch(backendUrl('/resolve-subdomain'), {
@@ -887,6 +891,7 @@ async function resolveSite(label, domain) {
         websiteId = data.websiteId || null;
         origin = data.origin || null;
         visibility = data.visibility || 'public';
+        hideWatermark = !!data.hideWatermark;
         seo = data.seo || null;
       }
     }
@@ -897,7 +902,14 @@ async function resolveSite(label, domain) {
   // 写缓存（命中和未命中都缓存，未命中缓存空对象以挡住穿透）
   if (cache) {
     try {
-      const body = JSON.stringify({ path: path, websiteId: websiteId, origin: origin, visibility: visibility, seo: seo });
+      const body = JSON.stringify({
+        path: path,
+        websiteId: websiteId,
+        origin: origin,
+        visibility: visibility,
+        hideWatermark: hideWatermark,
+        seo: seo
+      });
       const cacheResp = new Response(body, {
         headers: {
           'Content-Type': 'application/json',
@@ -908,7 +920,14 @@ async function resolveSite(label, domain) {
     } catch (e) {}
   }
 
-  return { path: path, websiteId: websiteId, origin: origin, visibility: visibility, seo: seo };
+  return {
+    path: path,
+    websiteId: websiteId,
+    origin: origin,
+    visibility: visibility,
+    hideWatermark: hideWatermark,
+    seo: seo
+  };
 }
 
 async function handle(req, event) {
@@ -942,7 +961,7 @@ async function handle(req, event) {
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
   // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, websiteId, origin, visibility } = await resolveSite(label, domain);
+  let { path, websiteId, origin, visibility, hideWatermark } = await resolveSite(label, domain);
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
@@ -981,7 +1000,12 @@ async function handle(req, event) {
       }
     }
     // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
-    return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, { websiteId: websiteId, label: label, domain: domain });
+    return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, {
+      websiteId: websiteId,
+      label: label,
+      domain: domain,
+      hideWatermark: hideWatermark
+    });
   }
 
   // 未知子域名：放行回源（由 COS 返回 404）

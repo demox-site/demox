@@ -57,32 +57,6 @@ jobs:
           ( cd dist && zip -qr /tmp/deploy.zip . )
           echo "zip size: $(du -h /tmp/deploy.zip | cut -f1)"
 
-          # 2) 组装 JSON：fileContentBase64 + fileName + websiteId（原地更新）
-          #    用 node 生成，避免 base64 换行与 shell 转义问题
-          node -e '
-            const fs = require("fs");
-            const b = fs.readFileSync("/tmp/deploy.zip").toString("base64");
-            const payload = {
-              fileContentBase64: b,
-              fileName: process.env.WEBSITE_NAME,
-              websiteId: process.env.WEBSITE_ID,
-            };
-            fs.writeFileSync("/tmp/deploy.json", JSON.stringify(payload));
-          '
-
-          # 3) 调 /deploy。-f 让 HTTP 错误码非零退出；响应里再校验 success
+          # 2) 通过固定 2MiB 分块上传；单个请求不再随 ZIP 总体积增长。
           : "${DEPLOY_URL:?请在 GitHub Actions Variables 中配置 DEMOX_DEPLOY_URL}"
-          resp=$(curl -fsS -m 120 -X POST "$DEPLOY_URL" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $DEMOX_TOKEN" \
-            --data-binary @/tmp/deploy.json)
-          echo "API 响应: $resp"
-
-          echo "$resp" | node -e '
-            let s = ""; process.stdin.on("data", d => s += d);
-            process.stdin.on("end", () => {
-              let j; try { j = JSON.parse(s); } catch (e) { console.error("响应非 JSON"); process.exit(1); }
-              if (!j.success) { console.error("部署失败:", j.message || j.error || s); process.exit(1); }
-              console.log("✅ 部署成功:", j.url);
-            });
-          '
+          node scripts/deploy-chunked.mjs

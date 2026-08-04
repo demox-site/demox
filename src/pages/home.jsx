@@ -343,6 +343,7 @@ export default function Home(props) {
                         t={t}
                         user={user}
                         deploying={deploying}
+                        watermarkSaving={sites.watermarkSaving}
                         editingId={sites.editingId}
                         editingName={sites.editingName}
                         setEditingName={sites.setEditingName}
@@ -362,6 +363,7 @@ export default function Home(props) {
                         projects={projects.activeProjects}
                         moveWebsiteToProject={sites.moveWebsiteToProject}
                         setWebsiteVisibility={sites.setWebsiteVisibility}
+                        setWebsiteWatermark={sites.setWebsiteWatermark}
                         openRedeployDialog={redeploy.openRedeployDialog}
                         openDomainDialog={domain.openDomainDialog}
                         openSeoDialog={openSeoDialog}

@@ -19,6 +19,7 @@ export function useWebsites({ t, handleAuthError }) {
   const [allUsers, setAllUsers] = useState([]);
   // 部署中状态：{ [websiteId]: boolean }，上传/重新部署/卡片三处共用
   const [deploying, setDeploying] = useState({});
+  const [watermarkSaving, setWatermarkSaving] = useState({});
 
   // 名称编辑
   const [editingId, setEditingId] = useState(null);
@@ -229,6 +230,51 @@ export function useWebsites({ t, handleAuthError }) {
     }
   };
 
+  // 页面水印 ---------------------------------------------------------------
+  const setWebsiteWatermark = async (website, hideWatermark) => {
+    if (!website || watermarkSaving[website._id]) return;
+    const nextHidden = hideWatermark === true;
+    const previousHidden = website.hideWatermark === true;
+    setWatermarkSaving((prev) => ({ ...prev, [website._id]: true }));
+
+    setWebsites((prev) =>
+      prev.map((w) =>
+        w._id === website._id
+          ? { ...w, hideWatermark: nextHidden, updatedAt: Date.now() }
+          : w
+      )
+    );
+
+    try {
+      const res = await websiteApi.updateWatermark({
+        docId: website._id,
+        hideWatermark: nextHidden
+      });
+      if (!res || !res.success) {
+        throw new Error(res?.message || t.watermarkSaveFailedTitle);
+      }
+      toast({
+        title: nextHidden ? t.watermarkHiddenTitle : t.watermarkShownTitle,
+        description: nextHidden ? t.watermarkHiddenDesc : t.watermarkShownDesc
+      });
+    } catch (error) {
+      setWebsites((prev) =>
+        prev.map((w) =>
+          w._id === website._id
+            ? { ...w, hideWatermark: previousHidden, updatedAt: Date.now() }
+            : w
+        )
+      );
+      toast({
+        title: t.watermarkSaveFailedTitle,
+        description: error.message || t.watermarkSaveFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setWatermarkSaving((prev) => ({ ...prev, [website._id]: false }));
+    }
+  };
+
   // 删除 -------------------------------------------------------------------
   const confirmDeleteWebsite = (websiteId) => {
     const website = websites.find((w) => w._id === websiteId);
@@ -280,6 +326,7 @@ export function useWebsites({ t, handleAuthError }) {
     setWebsites,
     deploying,
     setDeploying,
+    watermarkSaving,
     allUsers,
     loadWebsites,
     // 名称编辑
@@ -300,6 +347,8 @@ export function useWebsites({ t, handleAuthError }) {
     moveWebsiteToProject,
     // 访问级别
     setWebsiteVisibility,
+    // 页面水印
+    setWebsiteWatermark,
     // 删除
     deleteConfirmOpen,
     setDeleteConfirmOpen,

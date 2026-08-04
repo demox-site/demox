@@ -17,28 +17,6 @@ import { track } from "@/lib/track";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
- * fileToBase64
- * 将文件读为 base64（去掉 dataURL 前缀），可选地上报读取进度
- */
-const fileToBase64 = (file, onProgress) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    if (onProgress) {
-      reader.onprogress = (e) => {
-        if (e.lengthComputable) {
-          onProgress(Math.round((e.loaded * 100) / e.total), e.loaded);
-        }
-      };
-    }
-    reader.onload = () => {
-      const res = String(reader.result || "");
-      resolve(res.includes(",") ? res.split(",")[1] : res);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
-/**
  * useUpload
  * 首页上传区的状态机：校验、读文件、调用部署、进度与趣味文案。
  * @param {{
@@ -209,28 +187,27 @@ export function useUpload({
       });
       setDeploying((prev) => ({ ...prev, [websiteId]: true }));
 
-      // Phase 1: 读文件为 base64
+      // 分块上传原始 ZIP，避免单个请求体随文件体积增长。
       const totalSizeMB = (file.size / 1024 / 1024).toFixed(2);
       setUploadStatusText(`${t.statusUploading} (0MB / ${totalSizeMB}MB)`);
       setUploadStage(2);
-
-      const fileContentBase64 = await fileToBase64(file, (percent, loaded) => {
-        const loadedMB = (loaded / 1024 / 1024).toFixed(2);
-        setUploadProgress(percent);
-        setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalSizeMB}MB)`);
-      });
-
-      // Phase 2: 上传并部署(SCF)
-      setUploadStage(3);
-      setUploadProgress(100);
-      setUploadStatusText(t.statusDeploying);
-
-      const deployResult = await websiteApi.uploadAndDeploy({
-        fileContentBase64,
-        fileName: safeFileName,
-        websiteId,
-        projectId: project?.id || undefined
-      });
+      const deployResult = await websiteApi.uploadFileAndDeploy(
+        file,
+        {
+          fileName: safeFileName,
+          websiteId,
+          projectId: project?.id || undefined
+        },
+        (percent, loaded) => {
+          const loadedMB = (loaded / 1024 / 1024).toFixed(2);
+          setUploadProgress(percent);
+          setUploadStatusText(`${t.statusUploading} (${loadedMB}MB / ${totalSizeMB}MB)`);
+          if (percent === 100) {
+            setUploadStage(3);
+            setUploadStatusText(t.statusDeploying);
+          }
+        }
+      );
 
       setDeploying((prev) => ({ ...prev, [websiteId]: false }));
       if (deployResult && deployResult.success) {

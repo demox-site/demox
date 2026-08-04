@@ -3,7 +3,7 @@
  * 从具体厂商（腾讯云 COS / S3 兼容）里抽出来。
  *
  * 设计：
- *   - StorageProvider 是统一接口：put(key, body, opts) + get(key) + list(prefix)。
+ *   - StorageProvider 是统一接口：put/get/getBuffer/delete/list。
  *   - createProvider(bucket) 按 bucket.provider 造对应适配器。bucket 形如：
  *       { provider, bucket, region, endpoint, secretId, secretKey }
  *     （secretId/secretKey 已由 buckets.js 解密/回退 env 处理好，这里只管用。）
@@ -46,16 +46,29 @@ class CosProvider {
     });
   }
 
-  get(key) {
+  getBuffer(key) {
     return new Promise((resolve, reject) => {
       this.cos.getObject(
         { Bucket: this.bucket, Region: this.region, Key: key },
         (err, data) => {
           if (err) return reject(err);
           const body = data.Body;
-          if (Buffer.isBuffer(body)) return resolve(body.toString('utf8'));
-          return resolve(String(body || ''));
+          if (Buffer.isBuffer(body)) return resolve(body);
+          return resolve(Buffer.from(body || ''));
         }
+      );
+    });
+  }
+
+  async get(key) {
+    return (await this.getBuffer(key)).toString('utf8');
+  }
+
+  delete(key) {
+    return new Promise((resolve, reject) => {
+      this.cos.deleteObject(
+        { Bucket: this.bucket, Region: this.region, Key: key },
+        (err, data) => (err ? reject(err) : resolve(data))
       );
     });
   }
@@ -110,11 +123,19 @@ class S3Provider {
     return this.client.send(new this._S3.PutObjectCommand(params));
   }
 
-  async get(key) {
+  async getBuffer(key) {
     const resp = await this.client.send(new this._S3.GetObjectCommand({ Bucket: this.bucket, Key: key }));
     const chunks = [];
     for await (const chunk of resp.Body) chunks.push(Buffer.from(chunk));
-    return Buffer.concat(chunks).toString('utf8');
+    return Buffer.concat(chunks);
+  }
+
+  async get(key) {
+    return (await this.getBuffer(key)).toString('utf8');
+  }
+
+  async delete(key) {
+    return this.client.send(new this._S3.DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
   async list(prefix) {
