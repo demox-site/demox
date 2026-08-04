@@ -1,0 +1,13 @@
+{
+  "name": "demox-mcp-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demox MCP API proxy for SCF",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test index.test.cjs"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  }
+}
