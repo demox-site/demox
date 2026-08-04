@@ -15,10 +15,15 @@ CREATE TABLE IF NOT EXISTS deploy_upload_sessions (
   status        VARCHAR(16) NOT NULL DEFAULT 'UPLOADING',
   result_json   LONGTEXT DEFAULT NULL,
   error_message VARCHAR(500) DEFAULT NULL,
-  expires_at    TIMESTAMP NOT NULL,
+  expires_at    DATETIME NOT NULL,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (upload_id),
   INDEX idx_deploy_upload_user_status (user_id, status, updated_at),
   INDEX idx_deploy_upload_expires (expires_at, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署分块上传会话';
+
+-- Older MySQL modes implicitly add ON UPDATE to the first TIMESTAMP column.
+-- DATETIME keeps chunk writes from resetting the session expiry to NOW().
+ALTER TABLE deploy_upload_sessions
+  MODIFY COLUMN expires_at DATETIME NOT NULL;

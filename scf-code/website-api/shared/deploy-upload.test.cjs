@@ -6,6 +6,7 @@ const {
   decodeBase64Chunk,
   expectedChunkSize,
   isDeployUploadExpired,
+  needsDeployUploadExpiryMigration,
   normalizeSha256,
   sha256Hex,
   uploadObjectKey
@@ -48,4 +49,10 @@ test('database expiration result wins over a timezone-shifted JavaScript date', 
   const apparentlyExpired = new Date(Date.now() - 60_000);
   assert.equal(isDeployUploadExpired({ expires_at: apparentlyExpired, is_expired: 0 }), false);
   assert.equal(isDeployUploadExpired({ expires_at: apparentlyExpired, is_expired: 1 }), true);
+});
+
+test('legacy implicit timestamp updates require an expiry-column migration', () => {
+  assert.equal(needsDeployUploadExpiryMigration({ DATA_TYPE: 'timestamp', EXTRA: 'on update CURRENT_TIMESTAMP' }), true);
+  assert.equal(needsDeployUploadExpiryMigration({ DATA_TYPE: 'timestamp', EXTRA: '' }), true);
+  assert.equal(needsDeployUploadExpiryMigration({ DATA_TYPE: 'datetime', EXTRA: '' }), false);
 });

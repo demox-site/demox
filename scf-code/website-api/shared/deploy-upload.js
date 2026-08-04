@@ -63,6 +63,13 @@ function isDeployUploadExpired(session, now = Date.now()) {
   return new Date(session.expires_at).getTime() <= now;
 }
 
+function needsDeployUploadExpiryMigration(column) {
+  if (!column) return false;
+  const dataType = String(column.DATA_TYPE || column.data_type || '').toLowerCase();
+  const extra = String(column.EXTRA || column.extra || '').toLowerCase();
+  return dataType !== 'datetime' || extra.includes('on update');
+}
+
 module.exports = {
   DEPLOY_UPLOAD_CHUNK_SIZE,
   DEPLOY_UPLOAD_TTL_SECONDS,
@@ -74,5 +81,6 @@ module.exports = {
   uploadObjectPrefix,
   uploadObjectKey,
   parseResultJson,
-  isDeployUploadExpired
+  isDeployUploadExpired,
+  needsDeployUploadExpiryMigration
 };
