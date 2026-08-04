@@ -101,11 +101,7 @@ Deploy directly from Claude Code, Cursor, or other AI tools:
   "mcpServers": {
     "demox": {
       "command": "npx",
-      "args": ["-y", "@demox-site/mcp-server@latest"],
-      "env": {
-        "DEMOX_SITE_URL": "https://demox.site",
-        "DEMOX_API_URL": "https://your-api-url"
-      }
+      "args": ["-y", "@demox-site/mcp-server@latest"]
     }
   }
 }
