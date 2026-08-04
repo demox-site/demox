@@ -5721,11 +5721,34 @@ function deployUploadError(statusCode, code, message, extra = {}) {
 
 async function getDeployUploadSession(uploadId, userId) {
   const rows = await query(
-    `SELECT *, expires_at <= NOW() AS is_expired
+    `SELECT *, expires_at <= NOW() AS is_expired,
+            NOW() AS database_now, UTC_TIMESTAMP() AS database_utc,
+            @@session.time_zone AS database_time_zone,
+            TIMESTAMPDIFF(SECOND, NOW(), expires_at) AS remaining_seconds
      FROM deploy_upload_sessions WHERE upload_id = ? AND user_id = ? LIMIT 1`,
     [String(uploadId || ''), String(userId || '')]
   );
   return rows[0] || null;
+}
+
+function logExpiredDeployUpload(session) {
+  const formatDate = (value) => {
+    if (!value) return null;
+    if (value instanceof Date) return value.toISOString();
+    return String(value);
+  };
+  console.warn('部署上传会话过期诊断:', {
+    uploadId: session.upload_id,
+    status: session.status,
+    expiresAt: formatDate(session.expires_at),
+    databaseNow: formatDate(session.database_now),
+    databaseUtc: formatDate(session.database_utc),
+    databaseTimeZone: session.database_time_zone,
+    remainingSeconds: session.remaining_seconds,
+    isExpired: session.is_expired,
+    isExpiredType: typeof session.is_expired,
+    runtimeNow: new Date().toISOString()
+  });
 }
 
 async function cleanupDeployUploadChunks(session) {
@@ -5888,6 +5911,7 @@ async function handleUploadDeployChunk(event) {
     const session = await getDeployUploadSession(body.uploadId, userId);
     if (!session) return deployUploadError(404, 'UPLOAD_NOT_FOUND', '上传会话不存在');
     if (isDeployUploadExpired(session) || session.status === 'EXPIRED') {
+      logExpiredDeployUpload(session);
       return deployUploadError(410, 'UPLOAD_EXPIRED', '上传会话已过期');
     }
     if (session.status !== 'UPLOADING') {
@@ -5946,6 +5970,7 @@ async function handleCompleteDeployUpload(event) {
       return result ? ok(result) : deployUploadError(500, 'UPLOAD_RESULT_MISSING', '部署已完成但结果记录缺失');
     }
     if (isDeployUploadExpired(session) || session.status === 'EXPIRED') {
+      logExpiredDeployUpload(session);
       return deployUploadError(410, 'UPLOAD_EXPIRED', '上传会话已过期');
     }
     if (!['UPLOADING', 'COMPLETING'].includes(session.status)) {
