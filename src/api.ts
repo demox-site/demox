@@ -10,6 +10,7 @@ import {
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
+const DEPLOY_API_PATH = "/deploy";
 
 // Token管理
 const TOKEN_KEY = "demox_token";
@@ -463,7 +464,7 @@ export const websiteApi = {
       totalChunks?: number;
       message?: string;
       code?: string;
-    }>(WEBSITE_API_URL, "/deploy-upload/init", {
+    }>(WEBSITE_API_URL, DEPLOY_API_PATH, {
       method: "POST",
       body: {
         action: "init_deploy_upload",
@@ -489,7 +490,7 @@ export const websiteApi = {
         const chunkBytes = new Uint8Array(chunkBuffer);
         const chunkSha256 = await sha256Hex(chunkBuffer);
         const chunkResult = await retryUploadRequest(() =>
-          request<{ success: boolean; message?: string }>(WEBSITE_API_URL, "/deploy-upload/chunk", {
+          request<{ success: boolean; message?: string }>(WEBSITE_API_URL, DEPLOY_API_PATH, {
             method: "POST",
             body: {
               action: "upload_deploy_chunk",
@@ -507,7 +508,7 @@ export const websiteApi = {
       completionStarted = true;
       for (let attempt = 0; attempt < 40; attempt++) {
         const result = await retryUploadRequest(
-          () => request<DeployUploadResult>(WEBSITE_API_URL, "/deploy-upload/complete", {
+          () => request<DeployUploadResult>(WEBSITE_API_URL, DEPLOY_API_PATH, {
             method: "POST",
             body: { action: "complete_deploy_upload", uploadId: init.uploadId }
           }),
@@ -522,7 +523,7 @@ export const websiteApi = {
       throw new Error("部署完成等待超时，可重新提交以查询最终结果");
     } catch (error) {
       if (!completionStarted) {
-        await request(WEBSITE_API_URL, "/deploy-upload/abort", {
+        await request(WEBSITE_API_URL, DEPLOY_API_PATH, {
           method: "POST",
           body: { action: "abort_deploy_upload", uploadId: init.uploadId }
         }).catch(() => {});
