@@ -10,6 +10,7 @@
     "test:oauth": "node --test src/lib/feishu-oauth.test.mjs && node --test scf-deploy-packages/auth-api/index.test.cjs",
     "test:project-feishu": "node --test scf-code/website-api/index.test.cjs scf-code/website-api/shared/feishu-directory.test.cjs",
     "test:watermark": "node --test scf-code/website-api/index.test.cjs edge-functions/subdomain-router.test.cjs",
+    "test:html-upload": "node --test src/lib/html-to-site.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\""

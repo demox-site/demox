@@ -396,12 +396,6 @@ export function useUpload({
 
     let zipFile;
     try {
-      setUploading(true);
-      setUploadProgress(0);
-      setUploadStage(1);
-      setUploadFileSize(file.size);
-      setUploadStatusText(t.statusPackagingHtml);
-
       const built = await buildHtmlSiteZipFile({ file });
       zipFile = built.zipFile;
     } catch (error) {

@@ -19,10 +19,11 @@ import { docTemplates, defaultTemplateId } from "@/lib/doc-templates";
 import { isSupportedDoc, SUPPORTED_DOC_EXTENSIONS } from "@/lib/doc-to-site";
 import { isSupportedPdf, SUPPORTED_PDF_EXTENSIONS } from "@/lib/pdf-to-site";
 import { isSupportedSpreadsheet, SUPPORTED_SPREADSHEET_EXTENSIONS } from "@/lib/spreadsheet-to-site";
+import { isSupportedHtml, SUPPORTED_HTML_EXTENSIONS } from "@/lib/html-to-site";
 
 /**
  * UploadSection
- * 首页顶部的「部署新项目」上传区。一个入口自动识别 zip / doc / pdf。
+ * 首页顶部的「部署新项目」上传区。一个入口自动识别 zip / html / doc / pdf。
  * 纯文档格式会先弹出模板选择，再生成站点并复用既有部署流程。
  * @param {{
  *   t:Record<string,any>, lang:string, roleLimits:any,
@@ -30,6 +31,8 @@ import { isSupportedSpreadsheet, SUPPORTED_SPREADSHEET_EXTENSIONS } from "@/lib/
  *   uploadZipFile:(file:File|null)=>Promise<void>,
  *   uploadDocFile:(file:File|null, templateId:string)=>Promise<void>,
  *   uploadPdfFile:(file:File|null)=>Promise<void>,
+ *   uploadSpreadsheetFile:(file:File|null)=>Promise<void>,
+ *   uploadHtmlFile:(file:File|null)=>Promise<void>,
  *   fileInputRef:React.RefObject<any>,
  *   uploading:boolean, uploadStatusText:string,
  *   uploadProgress:number, uploadStage:number, funnyMessage:string
@@ -45,6 +48,7 @@ export default function UploadSection({
   uploadDocFile,
   uploadPdfFile,
   uploadSpreadsheetFile,
+  uploadHtmlFile,
   fileInputRef,
   uploading,
   uploadStatusText,
@@ -56,7 +60,13 @@ export default function UploadSection({
   const [pendingDocFile, setPendingDocFile] = React.useState(null);
   const [templateDialogOpen, setTemplateDialogOpen] = React.useState(false);
   const L = lang === "en" ? "en" : "zh";
-  const allAccept = [".zip", ...SUPPORTED_DOC_EXTENSIONS, ...SUPPORTED_PDF_EXTENSIONS, ...SUPPORTED_SPREADSHEET_EXTENSIONS].join(",");
+  const allAccept = [
+    ".zip",
+    ...SUPPORTED_HTML_EXTENSIONS,
+    ...SUPPORTED_DOC_EXTENSIONS,
+    ...SUPPORTED_PDF_EXTENSIONS,
+    ...SUPPORTED_SPREADSHEET_EXTENSIONS
+  ].join(",");
 
   const isZipFile = (file) =>
     !!file && String(file.name || "").toLowerCase().endsWith(".zip");
@@ -92,6 +102,11 @@ export default function UploadSection({
 
     if (isSupportedSpreadsheet(file)) {
       await uploadSpreadsheetFile(file);
+      return;
+    }
+
+    if (isSupportedHtml(file)) {
+      await uploadHtmlFile(file);
       return;
     }
 

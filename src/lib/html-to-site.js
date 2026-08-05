@@ -37,7 +37,8 @@ export async function buildHtmlSiteZipFile({ file }) {
   const slug = asciiSlug(file.name);
 
   const zip = new JSZip();
-  zip.file("index.html", file);
+  const html = await file.arrayBuffer();
+  zip.file("index.html", html);
 
   const blob = await zip.generateAsync({ type: "blob" });
   const zipFile = new File([blob], `${slug}.zip`, { type: "application/zip" });
