@@ -8,6 +8,11 @@ import {
   consumeSiteAuthNext,
   submitSiteAuthCompletion
 } from "@/lib/site-auth";
+import {
+  clearOAuthCallbackSearch,
+  consumeGithubOAuthFlow,
+  describeGithubLoginError
+} from "@/lib/github-oauth";
 
 // 解析 OAuth 回调参数。browser history 下走 ?code=...&state=...；
 // 兼容旧的 hash 形式(#/github-callback?code=...)，避免历史链接失效。
@@ -26,6 +31,7 @@ export function GithubCallback() {
     "logging"
   );
   const [message, setMessage] = useState("正在使用 GitHub 登录...");
+  const [retryMode, setRetryMode] = useState<"login" | "bind">("login");
   // StrictMode 下 effect 会跑两次，code 只能用一次，用 ref 守卫
   const handled = useRef(false);
 
@@ -37,32 +43,35 @@ export function GithubCallback() {
     const code = params.get("code");
     const returnedState = params.get("state");
     const oauthError = params.get("error");
-    const savedState = sessionStorage.getItem("github_oauth_state");
-    sessionStorage.removeItem("github_oauth_state");
+    // 尽早清掉 URL 上的 code，避免浏览器缓存/刷新重复消耗授权码
+    clearOAuthCallbackSearch();
+
+    const flow = returnedState ? consumeGithubOAuthFlow(returnedState) : null;
+    const mode = flow?.mode || (returnedState?.startsWith("bind.") ? "bind" : "login");
+    setRetryMode(mode);
 
     const fail = (msg: string) => {
       setStatus("error");
       setMessage(msg);
     };
 
+    if (!returnedState || !flow) {
+      fail("授权状态校验失败，请重新发起 GitHub 登录");
+      return;
+    }
     if (oauthError) {
       fail(`GitHub 授权被拒绝: ${oauthError}`);
       return;
     }
     if (!code) {
-      fail("缺少授权码 code");
-      return;
-    }
-    // 校验 state，防 CSRF
-    if (!returnedState || returnedState !== savedState) {
-      fail("授权状态校验失败，请重试");
+      fail("缺少授权码 code，请重新发起 GitHub 登录");
       return;
     }
 
-    const isBind = returnedState.startsWith("bind.");
+    const isBind = mode === "bind";
 
     authApi
-      .githubLogin(code)
+      .githubLogin(code, mode)
       .then((res) => {
         if (!res.success) throw new Error("登录失败");
 
@@ -107,7 +116,7 @@ export function GithubCallback() {
           });
         }, 1200);
       })
-      .catch((e) => fail(e.message || "GitHub 登录失败"));
+      .catch((e) => fail(describeGithubLoginError(e)));
   }, [navigate]);
 
   return (
@@ -124,9 +133,24 @@ export function GithubCallback() {
         <p className="text-sm text-muted-foreground">{message}</p>
 
         {status === "error" && (
-          <Button onClick={() => navigate("/index", { replace: true })}>
-            返回首页
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button
+              onClick={() => {
+                try {
+                  authApi.startGithubLogin(retryMode);
+                } catch (error: unknown) {
+                  setMessage(
+                    error instanceof Error ? error.message : "无法重新发起 GitHub 登录"
+                  );
+                }
+              }}
+            >
+              {retryMode === "bind" ? "重新绑定 GitHub" : "重新 GitHub 登录"}
+            </Button>
+            <Button variant="outline" onClick={() => navigate("/index", { replace: true })}>
+              返回首页
+            </Button>
+          </div>
         )}
       </div>
     </div>

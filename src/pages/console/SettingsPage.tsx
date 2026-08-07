@@ -439,11 +439,22 @@ const SettingsPage: React.FC = () => {
                 </div>
                 <Button
                   variant="outline"
-                  onClick={() =>
-                    githubBound
-                      ? handleUnbindGithub()
-                      : authApi.startGithubLogin("bind")
-                  }
+                  onClick={() => {
+                    if (githubBound) {
+                      handleUnbindGithub();
+                      return;
+                    }
+                    try {
+                      authApi.startGithubLogin("bind");
+                    } catch (error: unknown) {
+                      toast({
+                        title: "无法发起 GitHub 绑定",
+                        description:
+                          error instanceof Error ? error.message : "请稍后重试",
+                        variant: "destructive"
+                      });
+                    }
+                  }}
                   disabled={unbindingGithub}
                   className="stitch-action rounded-full"
                 >

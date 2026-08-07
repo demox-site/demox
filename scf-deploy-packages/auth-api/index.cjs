@@ -433,8 +433,9 @@ async function handleGithubLogin(event) {
     }, { client_id: clientId, client_secret: clientSecret, code });
 
     if (tokenResp.error || !tokenResp.access_token) {
+      // 用 400 而不是 401，避免前端把 OAuth 换票失败误判成「登录态失效」
       return {
-        statusCode: 401,
+        statusCode: 400,
         headers: getCORSHeaders(),
         body: JSON.stringify({ error: 'GitHub 授权失败: ' + (tokenResp.error_description || tokenResp.error || '未知错误') })
       };

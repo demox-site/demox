@@ -7,6 +7,8 @@ import {
   assertFeishuPkceSupport,
   beginFeishuOAuthFlow
 } from "./lib/feishu-oauth";
+import { beginGithubOAuthFlow } from "./lib/github-oauth";
+import { getTopAwareSessionStorage } from "./lib/top-aware-session-storage";
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
@@ -65,18 +67,24 @@ export const userManager = {
   remove: () => localStorage.removeItem(USER_KEY)
 };
 
+type RequestOptions = RequestInit & {
+  /** login 场景忽略本地残留 token，避免误走绑定逻辑 */
+  skipAuth?: boolean;
+};
+
 // API请求封装
-async function request<T>(baseUrl: string, path: string, options: RequestInit = {}): Promise<T> {
-  const token = tokenManager.get();
+async function request<T>(baseUrl: string, path: string, options: RequestOptions = {}): Promise<T> {
+  const { skipAuth, headers: optionHeaders, body, ...rest } = options;
+  const token = skipAuth ? null : tokenManager.get();
 
   const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
+    ...rest,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers
+      ...optionHeaders
     },
-    body: options.body ? JSON.stringify(options.body) : undefined
+    body: body ? JSON.stringify(body) : undefined
   });
 
   const data = await response.json();
@@ -195,14 +203,17 @@ export const authApi = {
 
   // 发起 GitHub 授权：跳转到 GitHub 授权页
   // mode='bind' 时用于已登录用户绑定（回调页据此决定后续跳转）
+  // 每次按 state 隔离写入 sessionStorage（含 iframe→_top 场景），避免旧缓存串线。
   startGithubLogin: (
     mode: "login" | "bind" = "login",
     navigationTarget: "_self" | "_top" = "_self"
   ) => {
     const { clientId, redirectUri, scope } = config.github;
-    // 随机 state 防 CSRF，存 sessionStorage 供回调校验
-    const state = `${mode}.${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-    sessionStorage.setItem("github_oauth_state", state);
+    const storage = getTopAwareSessionStorage();
+    if (!storage) {
+      throw new Error("无法保存 GitHub 登录状态，请检查浏览器隐私设置后重试");
+    }
+    const { state } = beginGithubOAuthFlow(mode, storage);
     const url =
       "https://github.com/login/oauth/authorize" +
       `?client_id=${encodeURIComponent(clientId)}` +
@@ -219,7 +230,8 @@ export const authApi = {
   // GitHub 回调：用 code 换取结果。
   // 三种返回：①回头客/绑定 → 带 token，存登录态；②needsChoice → 不存 token，
   // 透传 ticket/matchedAccount 给前端引导用户选择。
-  githubLogin: async (code: string) => {
+  // mode='login' 时不带本地残留 Authorization，避免旧缓存 token 误走绑定。
+  githubLogin: async (code: string, mode: "login" | "bind" = "login") => {
     const data = await request<{
       success: boolean;
       token?: string;
@@ -232,7 +244,11 @@ export const authApi = {
       githubTicket?: string;
       githubEmail?: string | null;
       matchedAccount?: { exists: boolean; emailMasked: string | null };
-    }>(AUTH_API_URL, "/auth/github", { method: "POST", body: { code } });
+    }>(AUTH_API_URL, "/auth/github", {
+      method: "POST",
+      body: { code },
+      skipAuth: mode === "login"
+    });
 
     // 需要用户选择时不写登录态，原样透传
     if (data.success && data.token && !data.needsChoice) {
@@ -291,9 +307,13 @@ export const authApi = {
     if (!clientId) {
       throw new Error("飞书登录尚未配置");
     }
+    const storage = getTopAwareSessionStorage();
+    if (!storage) {
+      throw new Error("无法保存飞书登录状态，请检查浏览器隐私设置后重试");
+    }
     const { state, challenge } = await beginFeishuOAuthFlow(
       mode,
-      sessionStorage,
+      storage,
       globalThis.crypto,
       Date.now(),
       config.feishu.usePkce

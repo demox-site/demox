@@ -1,8 +1,13 @@
 import { OFFICIAL_DOMAINS } from "./official-domains";
+import { getTopAwareSessionStorage } from "./top-aware-session-storage";
 
 export const SITE_AUTH_NEXT_KEY = "demox_site_auth_next";
 export const SITE_AUTH_HANDOFF_KEY = "demox_site_auth_handoff";
 export const SITE_AUTH_COMPLETE_PATH = "/.demox/auth-complete";
+
+function siteAuthStorage(): Storage | null {
+  return getTopAwareSessionStorage() as Storage | null;
+}
 
 export function isAllowedSiteReturnUrl(value: string | null | undefined): value is string {
   if (!value) return false;
@@ -20,32 +25,36 @@ export function isAllowedSiteReturnUrl(value: string | null | undefined): value 
 }
 
 export function rememberSiteAuthNext(next: string) {
-  if (typeof sessionStorage === "undefined") return;
+  const storage = siteAuthStorage();
+  if (!storage) return;
   if (isAllowedSiteReturnUrl(next)) {
-    sessionStorage.setItem(SITE_AUTH_NEXT_KEY, next);
+    storage.setItem(SITE_AUTH_NEXT_KEY, next);
   }
 }
 
 export function rememberSiteAuthHandoff(enabled: boolean) {
-  if (typeof sessionStorage === "undefined") return;
+  const storage = siteAuthStorage();
+  if (!storage) return;
   if (enabled) {
-    sessionStorage.setItem(SITE_AUTH_HANDOFF_KEY, "1");
+    storage.setItem(SITE_AUTH_HANDOFF_KEY, "1");
   } else {
-    sessionStorage.removeItem(SITE_AUTH_HANDOFF_KEY);
+    storage.removeItem(SITE_AUTH_HANDOFF_KEY);
   }
 }
 
 export function consumeSiteAuthNext(): string | null {
-  if (typeof sessionStorage === "undefined") return null;
-  const next = sessionStorage.getItem(SITE_AUTH_NEXT_KEY);
-  if (next) sessionStorage.removeItem(SITE_AUTH_NEXT_KEY);
+  const storage = siteAuthStorage();
+  if (!storage) return null;
+  const next = storage.getItem(SITE_AUTH_NEXT_KEY);
+  if (next) storage.removeItem(SITE_AUTH_NEXT_KEY);
   return isAllowedSiteReturnUrl(next) ? next : null;
 }
 
 export function consumeSiteAuthHandoff(): boolean {
-  if (typeof sessionStorage === "undefined") return false;
-  const enabled = sessionStorage.getItem(SITE_AUTH_HANDOFF_KEY) === "1";
-  sessionStorage.removeItem(SITE_AUTH_HANDOFF_KEY);
+  const storage = siteAuthStorage();
+  if (!storage) return false;
+  const enabled = storage.getItem(SITE_AUTH_HANDOFF_KEY) === "1";
+  storage.removeItem(SITE_AUTH_HANDOFF_KEY);
   return enabled;
 }
 

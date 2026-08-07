@@ -299,7 +299,15 @@ export function AuthDialog({
                 });
                 return;
               }
-              authApi.startGithubLogin("login", isSiteGate ? "_top" : "_self");
+              try {
+                authApi.startGithubLogin("login", isSiteGate ? "_top" : "_self");
+              } catch (error: unknown) {
+                toast({
+                  title: "无法发起 GitHub 登录",
+                  description: error instanceof Error ? error.message : "请稍后重试",
+                  variant: "destructive"
+                });
+              }
             }}
             className="w-full"
           >
