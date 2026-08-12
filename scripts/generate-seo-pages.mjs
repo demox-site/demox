@@ -8,17 +8,30 @@ const NOINDEX_ROBOTS = "noindex, nofollow";
 
 const homeFallback = `
 <main data-crawlable-fallback>
-  <h1>Deploy a static site and get a link people can open</h1>
-  <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
-  <nav aria-label="Main pages">
-    <a href="/doc">CLI and MCP documentation</a>
-    <a href="/pricing">Pricing</a>
-    <a href="/log">Changelog</a>
-    <a href="https://github.com/demox-site/demox">GitHub</a>
-  </nav>
-  <section lang="zh-CN">
-    <h2>Demox 是什么？</h2>
-    <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+  <header class="fallback-header">
+    <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
+    <nav class="fallback-nav" aria-label="Main pages">
+      <a href="/pricing">Pricing</a>
+      <a href="/log">Changelog</a>
+      <a href="/doc">Docs</a>
+    </nav>
+  </header>
+  <section class="fallback-hero">
+    <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static publishing, simplified</div>
+    <h1>Upload your build.<br /><span>Get a link that opens.</span></h1>
+    <p class="fallback-summary">For frontend demos, AI-generated pages, client previews, and turning documents into web pages. No server, CDN, or HTTPS configuration.</p>
+    <div class="fallback-actions">
+      <a class="fallback-action fallback-action-primary" href="/console/projects">Upload now</a>
+      <a class="fallback-action" href="/doc">Read the docs</a>
+    </div>
+  </section>
+  <section class="fallback-details" aria-label="About Demox">
+    <h2>Static site deployment for frontend and AI workflows</h2>
+    <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
+    <section lang="zh-CN">
+      <h2>Demox 是什么？</h2>
+      <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+    </section>
   </section>
 </main>`;
 
@@ -37,27 +50,27 @@ export const PUBLIC_PAGES = {
   pricing: {
     title: "Demox Pricing - Static Site Deployment Plans",
     description: "See Demox plans for deploying static websites, frontend demos, AI-generated pages, and shareable documents with CDN and HTTPS included.",
-    fallback: `<main data-crawlable-fallback><h1>Demox pricing</h1><p>The current Demox pricing page lists Basic, Pro, and Enterprise plans. Each plan includes static site deployment, and the Basic plan includes CDN delivery. Open the interactive pricing page for the current plan details.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox pricing</h1><p>The current Demox pricing page lists Basic, Pro, and Enterprise plans. Each plan includes static site deployment, and the Basic plan includes CDN delivery. Open the interactive pricing page for the current plan details.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>.</p></main>`,
   },
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",
     description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, and examples.",
-    fallback: `<main data-crawlable-fallback><h1>Deploy with the Demox CLI or MCP</h1><p>Demox offers two automation paths backed by the same account and deployment capabilities. Use the CLI from a terminal or CI workflow, or use the MCP server from an AI assistant that supports MCP. Both paths upload static build artifacts and documents through the Demox deployment API.</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>Run <code>npx -y @demox-site/mcp-server@latest</code> as an MCP server. The first deployment opens browser-based OAuth authorization.</p><p>Supported inputs include directories, ZIP, HTML, PDF, Markdown, TXT, DOCX, and spreadsheets. <a href="https://github.com/demox-site/skill">View the Demox agent skill</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Deploy with the Demox CLI or MCP</h1><p>Demox offers two automation paths backed by the same account and deployment capabilities. Use the CLI from a terminal or CI workflow, or use the MCP server from an AI assistant that supports MCP. Both paths upload static build artifacts and documents through the Demox deployment API.</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>Run <code>npx -y @demox-site/mcp-server@latest</code> as an MCP server. The first deployment opens browser-based OAuth authorization.</p><p>Supported inputs include directories, ZIP, HTML, PDF, Markdown, TXT, DOCX, and spreadsheets. <a href="https://github.com/demox-site/skill">View the Demox agent skill</a>.</p></main>`,
   },
   terms: {
     title: "Demox Terms of Service",
     description: "Read the Demox terms of service, acceptable-use requirements, account responsibilities, and service limitations.",
-    fallback: `<main data-crawlable-fallback><h1>Demox Terms of Service</h1><p>These terms explain acceptable use of Demox, user responsibility for uploaded content and account security, service availability, intellectual property, and prohibited activities. Open this page in a browser to read the complete terms.</p><p><a href="/">Return to Demox</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Terms of Service</h1><p>These terms explain acceptable use of Demox, user responsibility for uploaded content and account security, service availability, intellectual property, and prohibited activities. Open this page in a browser to read the complete terms.</p><p><a href="/">Return to Demox</a>.</p></main>`,
   },
   privacy: {
     title: "Demox Privacy Policy",
     description: "Read how Demox handles account data, uploaded website files, access logs, cookies, security, and data retention.",
-    fallback: `<main data-crawlable-fallback><h1>Demox Privacy Policy</h1><p>This policy explains how Demox handles account information, uploaded website files, access logs, cookies, security controls, and data retention. Open this page in a browser to read the complete privacy policy.</p><p><a href="/">Return to Demox</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Privacy Policy</h1><p>This policy explains how Demox handles account information, uploaded website files, access logs, cookies, security controls, and data retention. Open this page in a browser to read the complete privacy policy.</p><p><a href="/">Return to Demox</a>.</p></main>`,
   },
   log: {
     title: "Demox Changelog - Product and Infrastructure Updates",
     description: "Follow Demox updates across static deployment, CLI and MCP workflows, site security, analytics, domains, and platform infrastructure.",
-    fallback: `<main data-crawlable-fallback><h1>Demox changelog</h1><p>The Demox changelog records product and infrastructure updates across static deployment, CLI and MCP workflows, private-site access, analytics, official subdomains, authentication, and platform operations.</p><p><a href="/doc">Read the deployment documentation</a> or <a href="/">open Demox</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox changelog</h1><p>The Demox changelog records product and infrastructure updates across static deployment, CLI and MCP workflows, private-site access, analytics, official subdomains, authentication, and platform operations.</p><p><a href="/doc">Read the deployment documentation</a> or <a href="/">open Demox</a>.</p></main>`,
   },
 };
 
@@ -181,7 +194,7 @@ export async function generateSeoPages(distDir) {
       title: "Continue securely | Demox",
       description: "Complete the Demox sign-in or authorization flow in a JavaScript-enabled browser.",
       index: false,
-      fallback: `<main data-crawlable-fallback><h1>Continue securely in your browser</h1><p>This Demox sign-in or authorization route requires JavaScript and is intentionally excluded from search indexing.</p><p><a href="/">Return to Demox</a>.</p></main>`,
+      fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Continue securely in your browser</h1><p>This Demox sign-in or authorization route requires JavaScript and is intentionally excluded from search indexing.</p><p><a href="/">Return to Demox</a>.</p></main>`,
     };
     await mkdir(routeDir, { recursive: true });
     await writeFile(path.join(routeDir, "index.html"), renderSeoPage(baseHtml, route, config));
@@ -191,7 +204,7 @@ export async function generateSeoPages(distDir) {
     title: "Page not found | Demox",
     description: "The requested Demox page could not be found.",
     index: false,
-    fallback: `<main data-crawlable-fallback><h1>Page not found</h1><p>The requested Demox page could not be found. <a href="/">Return to the homepage</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Page not found</h1><p>The requested Demox page could not be found. <a href="/">Return to the homepage</a>.</p></main>`,
   });
   await writeFile(path.join(distDir, "404.html"), notFound);
 }

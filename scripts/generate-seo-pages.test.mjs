@@ -16,11 +16,23 @@ test("generates indexable static shells and noindex auth shells", async () => {
 
     const home = await readFile(path.join(distDir, "index.html"), "utf8");
     assert.match(home, /<link data-seo="canonical" data-rh="true" rel="canonical" href="https:\/\/www\.demox\.site\/" \/>/);
-    assert.match(home, /<h1>Deploy a static site and get a link people can open<\/h1>/);
+    assert.match(home, /<h1>Upload your build\.<br \/><span>Get a link that opens\.<\/span><\/h1>/);
+    assert.match(home, /Demox is a static website deployment platform for frontend developers and AI-assisted workflows\./);
+    assert.match(home, /<h2>Demox 是什么？<\/h2>/);
+    assert.match(home, /href="\/doc">Read the docs<\/a>/);
     assert.match(home, /"@type":"SoftwareApplication"/);
+
+    const fallbackStyle = home.match(/<style data-seo="fallback-style">([\s\S]*?)<\/style>/)?.[1];
+    const fallbackMarkup = home.match(/<main data-crawlable-fallback>([\s\S]*?)<\/main>/)?.[0];
+    assert.ok(fallbackStyle, "crawlable fallback styles should be present");
+    assert.ok(fallbackMarkup, "crawlable fallback markup should be present");
+    assert.doesNotMatch(fallbackStyle, /#09090b/i);
+    assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i);
+    assert.doesNotMatch(fallbackMarkup, /\s(?:hidden|aria-hidden)(?:\s|=|>)/i);
 
     const docs = await readFile(path.join(distDir, "doc", "index.html"), "utf8");
     assert.match(docs, /href="https:\/\/www\.demox\.site\/doc"/);
+    assert.match(docs, /<main data-crawlable-fallback class="fallback-simple">/);
     assert.match(docs, /<h1>Deploy with the Demox CLI or MCP<\/h1>/);
     assert.doesNotMatch(docs, /noindex/);
 

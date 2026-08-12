@@ -25,7 +25,7 @@
     <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - Static Site Deployment for Frontend and AI Workflows" />
     <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included." />
     <meta data-rh="true" name="twitter:image" content="https://www.demox.site/og-image.png" />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#f7f7f5" />
     <script data-seo="schema" type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -69,10 +69,31 @@
       }
     </script>
     <style data-seo="fallback-style">
-      [data-crawlable-fallback] { max-width: 760px; margin: 0 auto; padding: 64px 24px; color: #e4e4e7; background: #09090b; font: 16px/1.65 ui-sans-serif, sans-serif; }
-      [data-crawlable-fallback] h1, [data-crawlable-fallback] h2 { color: #fafafa; line-height: 1.2; }
-      [data-crawlable-fallback] a { color: #93c5fd; }
-      [data-crawlable-fallback] nav { display: flex; flex-wrap: wrap; gap: 16px; margin: 28px 0; }
+      html, body { margin: 0; min-height: 100%; background: #f7f7f5; }
+      [data-crawlable-fallback] { min-height: 100vh; overflow: hidden; color: #111111; background: radial-gradient(circle at 18% 8%, rgba(17,17,17,.08), transparent 25rem), radial-gradient(circle at 84% 0%, rgba(17,17,17,.04), transparent 24rem), linear-gradient(180deg, #f7f7f5, #ffffff 48%, #f7f7f5); font: 16px/1.65 "Google Sans Text", "Avenir Next", ui-sans-serif, system-ui, sans-serif; }
+      [data-crawlable-fallback] * { box-sizing: border-box; }
+      [data-crawlable-fallback] a { color: inherit; text-decoration: none; }
+      [data-crawlable-fallback] .fallback-header { display: flex; align-items: center; justify-content: space-between; min-height: 65px; padding: 0 24px; border-bottom: 1px solid rgba(17,17,17,.14); background: rgba(255,255,255,.78); }
+      [data-crawlable-fallback] .fallback-brand { font-size: 21px; font-weight: 750; letter-spacing: -.04em; }
+      [data-crawlable-fallback] .fallback-nav { display: flex; flex-wrap: wrap; gap: 24px; color: #696969; font-size: 14px; }
+      [data-crawlable-fallback] .fallback-hero { max-width: 940px; margin: 0 auto; padding: 112px 24px 96px; text-align: center; }
+      [data-crawlable-fallback] .fallback-eyebrow { display: inline-flex; align-items: center; gap: 9px; margin-bottom: 28px; padding: 5px 12px; border: 1px solid rgba(17,17,17,.14); border-radius: 999px; background: rgba(255,255,255,.84); color: #696969; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      [data-crawlable-fallback] .fallback-dot { width: 8px; height: 8px; border-radius: 50%; background: #71717a; }
+      [data-crawlable-fallback] .fallback-hero h1 { max-width: 850px; margin: 0 auto 24px; color: #18181b; font-size: clamp(48px, 7vw, 76px); line-height: 1.02; letter-spacing: -.055em; }
+      [data-crawlable-fallback] .fallback-hero h1 span { color: #71717a; }
+      [data-crawlable-fallback] .fallback-summary { max-width: 700px; margin: 0 auto 34px; color: #52525b; font-size: 20px; line-height: 1.55; }
+      [data-crawlable-fallback] .fallback-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+      [data-crawlable-fallback] .fallback-action { min-width: 150px; padding: 12px 24px; border: 1px solid rgba(17,17,17,.16); border-radius: 12px; background: rgba(255,255,255,.86); font-weight: 650; }
+      [data-crawlable-fallback] .fallback-action-primary { border-color: #111111; background: #111111; color: #ffffff; }
+      [data-crawlable-fallback] .fallback-details { max-width: 850px; margin: 0 auto 72px; padding: 34px; border: 1px solid rgba(17,17,17,.12); border-radius: 24px; background: rgba(255,255,255,.86); box-shadow: 0 24px 70px rgba(0,0,0,.08); }
+      [data-crawlable-fallback] .fallback-details h2 { margin: 0 0 12px; color: #18181b; font-size: 25px; line-height: 1.25; letter-spacing: -.025em; }
+      [data-crawlable-fallback] .fallback-details p { margin: 0; color: #52525b; }
+      [data-crawlable-fallback] .fallback-details section { margin-top: 28px; padding-top: 28px; border-top: 1px solid rgba(17,17,17,.12); }
+      [data-crawlable-fallback].fallback-simple { min-height: auto; max-width: 760px; margin: 64px auto; padding: 40px; border: 1px solid rgba(17,17,17,.12); border-radius: 24px; background: rgba(255,255,255,.88); box-shadow: 0 24px 70px rgba(0,0,0,.08); }
+      [data-crawlable-fallback].fallback-simple h1, [data-crawlable-fallback].fallback-simple h2 { color: #18181b; line-height: 1.2; letter-spacing: -.025em; }
+      [data-crawlable-fallback].fallback-simple a { color: #166534; text-decoration: underline; text-underline-offset: 3px; }
+      [data-crawlable-fallback].fallback-simple pre { overflow-x: auto; padding: 18px; border-radius: 12px; background: #f4f4f5; }
+      @media (max-width: 640px) { [data-crawlable-fallback] .fallback-header { padding: 0 18px; } [data-crawlable-fallback] .fallback-nav { gap: 14px; } [data-crawlable-fallback] .fallback-hero { padding: 72px 20px 70px; } [data-crawlable-fallback] .fallback-hero h1 { font-size: 43px; } [data-crawlable-fallback] .fallback-summary { font-size: 18px; } [data-crawlable-fallback] .fallback-action { width: 100%; } [data-crawlable-fallback] .fallback-details { margin: 0 16px 48px; padding: 24px; } [data-crawlable-fallback].fallback-simple { margin: 24px 16px; padding: 24px; } }
     </style>
     <script>
       // Apply the persisted/system theme before first paint to avoid a flash.
@@ -106,17 +127,30 @@
   <body>
     <div id="root">
       <main data-crawlable-fallback>
-        <h1>Deploy a static site and get a link people can open</h1>
-        <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
-        <nav aria-label="Main pages">
-          <a href="/doc">CLI and MCP documentation</a>
-          <a href="/pricing">Pricing</a>
-          <a href="/log">Changelog</a>
-          <a href="https://github.com/demox-site/demox">GitHub</a>
-        </nav>
-        <section lang="zh-CN">
-          <h2>Demox 是什么？</h2>
-          <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+        <header class="fallback-header">
+          <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
+          <nav class="fallback-nav" aria-label="Main pages">
+            <a href="/pricing">Pricing</a>
+            <a href="/log">Changelog</a>
+            <a href="/doc">Docs</a>
+          </nav>
+        </header>
+        <section class="fallback-hero">
+          <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static publishing, simplified</div>
+          <h1>Upload your build.<br /><span>Get a link that opens.</span></h1>
+          <p class="fallback-summary">For frontend demos, AI-generated pages, client previews, and turning documents into web pages. No server, CDN, or HTTPS configuration.</p>
+          <div class="fallback-actions">
+            <a class="fallback-action fallback-action-primary" href="/console/projects">Upload now</a>
+            <a class="fallback-action" href="/doc">Read the docs</a>
+          </div>
+        </section>
+        <section class="fallback-details" aria-label="About Demox">
+          <h2>Static site deployment for frontend and AI workflows</h2>
+          <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
+          <section lang="zh-CN">
+            <h2>Demox 是什么？</h2>
+            <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+          </section>
         </section>
       </main>
     </div>
