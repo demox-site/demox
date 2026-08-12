@@ -1,16 +1,26 @@
-User-agent: Googlebot
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ClaudeBot
+User-agent: PerplexityBot
 Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
+Disallow: /console/
+Disallow: /github-callback
+Disallow: /github-link
+Disallow: /feishu-callback
+Disallow: /feishu-link
+Disallow: /mcp-login
+Disallow: /mcp-authorize
+Disallow: /site-auth
 
 User-agent: *
 Allow: /
+Disallow: /console/
+Disallow: /github-callback
+Disallow: /github-link
+Disallow: /feishu-callback
+Disallow: /feishu-link
+Disallow: /mcp-login
+Disallow: /mcp-authorize
+Disallow: /site-auth
 
-Sitemap: https://ai-builder.aigc.sx.cn/sitemap.xml
+Sitemap: https://www.demox.site/sitemap.xml

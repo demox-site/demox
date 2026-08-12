@@ -22,7 +22,7 @@ export function PageWrapper({
       case 'index':
       case 'home':
         return {
-          title: isZh ? '首页' : 'Home',
+          title: undefined,
           description: undefined // Use default
         };
       case 'pricing':
@@ -33,14 +33,17 @@ export function PageWrapper({
       case 'terms':
         return {
           title: isZh ? '服务条款' : 'Terms of Service',
+          description: isZh ? 'Demox 服务条款与用户责任说明' : 'Demox terms of service and user responsibilities',
         };
       case 'privacy':
         return {
           title: isZh ? '隐私政策' : 'Privacy Policy',
+          description: isZh ? 'Demox 隐私政策与数据处理说明' : 'Demox privacy policy and data handling practices',
         };
       case 'log':
         return {
           title: isZh ? '更新日志' : 'Changelog',
+          description: isZh ? 'Demox 产品功能与基础设施更新记录' : 'Demox product and infrastructure updates',
         };
       case 'site-auth':
         return {

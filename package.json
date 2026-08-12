@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp dist/index.html dist/404.html && for route in pricing github-callback github-link feishu-callback feishu-link; do mkdir -p \"dist/$route\" && cp dist/index.html \"dist/$route/index.html\"; done",
+    "build": "npm run test:seo && vite build && node scripts/generate-seo-pages.mjs",
     "build:dev": "vite build --mode development",
     "test:oauth": "node --test src/lib/feishu-oauth.test.mjs src/lib/github-oauth.test.mjs && node --test scf-deploy-packages/auth-api/index.test.cjs",
     "test:project-feishu": "node --test scf-code/website-api/index.test.cjs scf-code/website-api/shared/feishu-directory.test.cjs",
@@ -13,7 +13,8 @@
     "test:html-upload": "node --test src/lib/html-to-site.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
-    "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\""
+    "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
+    "test:seo": "node --test scripts/generate-seo-pages.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

@@ -1,0 +1,25 @@
+# Demox
+> Demox is a static website deployment platform for frontend builds, AI-generated pages, and documents. It provides public links through web, CLI, MCP, and API workflows without requiring users to configure servers, CDN, HTTPS, or cache policies.
+
+## Primary pages
+- [Demox homepage](https://www.demox.site/): Product overview and web deployment entry point.
+- [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, supported inputs, and FAQ.
+- [Pricing](https://www.demox.site/pricing): Current Demox plans.
+- [Changelog](https://www.demox.site/log): Product and infrastructure updates.
+
+## Developer resources
+- [Demox repository](https://github.com/demox-site/demox): Main web application and platform source.
+- [Demox agent skill](https://github.com/demox-site/skill): Instructions for deploying with an AI coding agent.
+- CLI package: `@demox-site/cli`
+- MCP package: `@demox-site/mcp-server`
+
+## Supported deployment inputs
+- Static build directories and ZIP archives with `index.html` at the root
+- Standalone HTML pages
+- PDF, Markdown, TXT, and DOCX documents
+- Spreadsheet files supported by the web upload workflow
+
+## Key distinction
+Demox is for fast static delivery when someone needs a link they can open. It does not claim to replace a full CI/CD platform such as Vercel or Netlify.
+
+This optional file helps documentation-oriented AI tools navigate Demox resources. Google Search states that `llms.txt` does not affect Google Search or its generative AI features.

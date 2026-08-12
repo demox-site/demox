@@ -3,7 +3,77 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Demox</title>
+    <title data-seo="title">Demox - Static Site Deployment for Frontend and AI Workflows</title>
+    <meta
+      data-seo="description"
+      data-rh="true"
+      name="description"
+      content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included."
+    />
+    <meta data-seo="robots" data-rh="true" name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <link data-seo="canonical" data-rh="true" rel="canonical" href="https://www.demox.site/" />
+    <meta data-seo="og-title" data-rh="true" property="og:title" content="Demox - Static Site Deployment for Frontend and AI Workflows" />
+    <meta data-seo="og-description" data-rh="true" property="og:description" content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included." />
+    <meta data-seo="og-url" data-rh="true" property="og:url" content="https://www.demox.site/" />
+    <meta data-rh="true" property="og:type" content="website" />
+    <meta data-rh="true" property="og:site_name" content="Demox" />
+    <meta data-rh="true" property="og:image" content="https://www.demox.site/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta data-rh="true" property="og:image:alt" content="Demox static site deployment platform" />
+    <meta data-rh="true" name="twitter:card" content="summary_large_image" />
+    <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - Static Site Deployment for Frontend and AI Workflows" />
+    <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included." />
+    <meta data-rh="true" name="twitter:image" content="https://www.demox.site/og-image.png" />
+    <meta name="theme-color" content="#09090b" />
+    <script data-seo="schema" type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://www.demox.site/#organization",
+            "name": "Demox",
+            "url": "https://www.demox.site/",
+            "logo": "https://www.demox.site/demox-logo.png",
+            "sameAs": ["https://github.com/demox-site/demox"]
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://www.demox.site/#website",
+            "name": "Demox",
+            "url": "https://www.demox.site/",
+            "publisher": { "@id": "https://www.demox.site/#organization" },
+            "inLanguage": ["en", "zh-CN"]
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://www.demox.site/#software",
+            "name": "Demox",
+            "url": "https://www.demox.site/",
+            "applicationCategory": "DeveloperApplication",
+            "description": "A static website deployment platform for frontend builds, AI-generated pages, and documents, available through web, CLI, MCP, and API workflows.",
+            "publisher": { "@id": "https://www.demox.site/#organization" }
+          },
+          {
+            "@type": "WebPage",
+            "@id": "https://www.demox.site/#webpage",
+            "name": "Demox - Static Site Deployment for Frontend and AI Workflows",
+            "url": "https://www.demox.site/",
+            "description": "Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included.",
+            "isPartOf": { "@id": "https://www.demox.site/#website" },
+            "about": { "@id": "https://www.demox.site/#software" },
+            "inLanguage": ["en", "zh-CN"]
+          }
+        ]
+      }
+    </script>
+    <style data-seo="fallback-style">
+      [data-crawlable-fallback] { max-width: 760px; margin: 0 auto; padding: 64px 24px; color: #e4e4e7; background: #09090b; font: 16px/1.65 ui-sans-serif, sans-serif; }
+      [data-crawlable-fallback] h1, [data-crawlable-fallback] h2 { color: #fafafa; line-height: 1.2; }
+      [data-crawlable-fallback] a { color: #93c5fd; }
+      [data-crawlable-fallback] nav { display: flex; flex-wrap: wrap; gap: 16px; margin: 28px 0; }
+    </style>
     <script>
       // Apply the persisted/system theme before first paint to avoid a flash.
       (function () {
@@ -34,7 +104,22 @@
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main data-crawlable-fallback>
+        <h1>Deploy a static site and get a link people can open</h1>
+        <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
+        <nav aria-label="Main pages">
+          <a href="/doc">CLI and MCP documentation</a>
+          <a href="/pricing">Pricing</a>
+          <a href="/log">Changelog</a>
+          <a href="https://github.com/demox-site/demox">GitHub</a>
+        </nav>
+        <section lang="zh-CN">
+          <h2>Demox 是什么？</h2>
+          <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+        </section>
+      </main>
+    </div>
     <!-- IMPORTANT: DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
     <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
     <script type="module" src="/src/main.tsx"></script>

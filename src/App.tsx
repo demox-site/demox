@@ -113,15 +113,14 @@ const App: React.FC = () => {
                   <Route
                     path="/"
                     element={
-                      <Navigate
-                        to={`/${
-                          routers.find((item) => item.isHome)?.id ||
-                          routers[0].id
-                        }`}
-                        replace
+                      <PageWrapper
+                        id={routers.find((item) => item.isHome)?.id || routers[0].id}
+                        Page={routers.find((item) => item.isHome)?.component || routers[0].component}
                       />
                     }
                   />
+
+                  <Route path="/index" element={<Navigate to="/" replace />} />
 
                   {/* 控制台：共享侧栏布局的嵌套路由 */}
                   <Route path="/console" element={<ConsoleLayout />}>
@@ -176,7 +175,7 @@ const App: React.FC = () => {
 
                   {routers
                     .filter(
-                      (item) => item.id !== "home" && item.id !== "admin"
+                      (item) => !item.isHome && item.id !== "home" && item.id !== "admin"
                     )
                     .map((item) => {
                       return (
