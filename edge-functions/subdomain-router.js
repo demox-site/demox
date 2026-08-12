@@ -115,7 +115,15 @@ function shouldFallbackToIndex(req, originPath) {
 
 function isWwwSpaRoute(pathname) {
   const normalized = String(pathname || '/').replace(/\/+$/, '') || '/';
-  if (normalized === '/console' || normalized.startsWith('/console/')) return true;
+  if (
+    normalized === '/console' || normalized === '/console/projects' ||
+    normalized === '/console/deploy' || normalized === '/console/sites' ||
+    normalized === '/console/usage' || normalized === '/console/tokens' ||
+    normalized === '/console/settings' || normalized === '/console/admin'
+  ) return true;
+  if (/^\/console\/admin\/[^/]+$/.test(normalized)) return true;
+  if (/^\/console\/projects\/[^/]+\/(deploy|sites|members)$/.test(normalized)) return true;
+  if (/^\/console\/projects\/[^/]+\/sites\/[^/]+\/analytics$/.test(normalized)) return true;
   return WWW_SPA_ROUTES.includes(normalized);
 }
 

@@ -55,6 +55,9 @@ test('the EdgeOne allowlist covers every current Demox client route', () => {
   const missing = [...routes].filter((route) => !context.__testHooks.isWwwSpaRoute(route));
   assert.deepEqual(missing, []);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/sites'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/sites/SITE1/analytics'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/admin/dashboard'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/not-real'), false);
   assert.equal(context.__testHooks.isWwwSpaRoute('/definitely-missing'), false);
 });
 
