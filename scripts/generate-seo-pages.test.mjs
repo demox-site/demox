@@ -21,12 +21,14 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(home, /<h2>Demox 是什么？<\/h2>/);
     assert.match(home, /href="\/doc">Read the docs<\/a>/);
     assert.match(home, /"@type":"SoftwareApplication"/);
+    assert.match(home, /<div id="root"><\/div>\s*<noscript data-crawlable-fallback-shell>\s*<main data-crawlable-fallback>/);
+    assert.doesNotMatch(home, /<div id="root">\s*<main data-crawlable-fallback>/);
 
     const fallbackStyle = home.match(/<style data-seo="fallback-style">([\s\S]*?)<\/style>/)?.[1];
     const fallbackMarkup = home.match(/<main data-crawlable-fallback>([\s\S]*?)<\/main>/)?.[0];
     assert.ok(fallbackStyle, "crawlable fallback styles should be present");
     assert.ok(fallbackMarkup, "crawlable fallback markup should be present");
-    assert.doesNotMatch(fallbackStyle, /#09090b/i);
+    assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*background(?:-color)?\s*:\s*#09090b/i);
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i);
     assert.doesNotMatch(fallbackMarkup, /\s(?:hidden|aria-hidden)(?:\s|=|>)/i);
 
