@@ -28,6 +28,11 @@ var WWW_HOST = 'www.demox.site';     // 主站承载域名
 var DEFAULT_OFFICIAL_DOMAIN = 'demox.site';
 var OFFICIAL_DOMAINS = ['demox.site', 'vibeme.cn'];
 var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底 path（改绑主站时同步改 DB 与此）
+var WWW_SPA_ROUTES = [
+  '/', '/index', '/pricing', '/doc', '/layout-demo', '/terms', '/privacy', '/log',
+  '/mcp-login', '/mcp-authorize', '/github-callback', '/github-link',
+  '/feishu-callback', '/feishu-link', '/site-auth', '/home', '/admin', '/mcp', '/docs'
+];
 var DEMOX_BADGE_MARKER = 'data-demox-site-badge';
 var DEMOX_AUTH_COOKIE = 'demox_access';
 var DEMOX_SITE_AUTH_COMPLETE_PATH = '/.demox/auth-complete';
@@ -106,6 +111,12 @@ function shouldFallbackToIndex(req, originPath) {
   // 资源/接口请求(Accept: */*、image/*、application/json 等)不回退。
   const accept = (req.headers.get('accept') || '').toLowerCase();
   return accept.includes('text/html');
+}
+
+function isWwwSpaRoute(pathname) {
+  const normalized = String(pathname || '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/console' || normalized.startsWith('/console/')) return true;
+  return WWW_SPA_ROUTES.includes(normalized);
 }
 
 function getRequestCountry(req) {
@@ -196,6 +207,11 @@ async function trackSiteEvent(req, event, meta, type) {
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
   const resp = await fetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
+    // The Demox main site has a finite client-route surface. Unknown document
+    // paths must remain real 404s instead of becoming indexable soft 404s.
+    if (u.hostname.toLowerCase() === WWW_HOST && !isWwwSpaRoute(u.pathname)) {
+      return serveCustom404(req, event, u, sitePath, originHost, meta);
+    }
     const idxResp = await fetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
     if (idxResp.ok) {
       // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
@@ -216,7 +232,7 @@ async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, me
  */
 async function serveCustom404(req, event, u, sitePath, originHost, meta) {
   // 1) 尝试站点的 404.html
-  if (sitePath && originHost) {
+  if (sitePath) {
     try {
       const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
       if (custom404.ok) {

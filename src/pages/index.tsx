@@ -499,7 +499,7 @@ const CloudHostLanding: React.FC = () => {
               return (
                 <div
                   key={i}
-                  className="group relative rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-6 hover:border-[var(--stitch-muted)] transition-colors flex flex-col"
+                  className="group relative min-w-0 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-6 hover:border-[var(--stitch-muted)] transition-colors flex flex-col"
                 >
                   <div className="flex items-center gap-2 mb-4">
                     <div className="w-9 h-9 rounded-lg bg-[var(--stitch-surface-strong)] border border-[var(--stitch-line)] flex items-center justify-center text-[var(--stitch-muted)] group-hover:text-white transition-colors">

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run test:seo && vite build && node scripts/generate-seo-pages.mjs",
+    "build": "npm run test:seo && npm run test:edge-router && vite build && node scripts/generate-seo-pages.mjs",
     "build:dev": "vite build --mode development",
     "test:oauth": "node --test src/lib/feishu-oauth.test.mjs src/lib/github-oauth.test.mjs && node --test scf-deploy-packages/auth-api/index.test.cjs",
     "test:project-feishu": "node --test scf-code/website-api/index.test.cjs scf-code/website-api/shared/feishu-directory.test.cjs",
@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
-    "test:seo": "node --test scripts/generate-seo-pages.test.mjs"
+    "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
+    "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
