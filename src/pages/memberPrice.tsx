@@ -2,15 +2,12 @@ import React, { useState, useEffect } from "react";
 import { FeatureIcon } from "@/components/ui/feature-icon";
 import { Star, X, Megaphone, Check } from "lucide-react";
 import { MainLayout } from "@/layouts/MainLayout";
-import { useToast } from "@/components/ui";
 import { useLanguage } from "@/hooks/use-language";
 
 const pricingTexts = {
   zh: {
     quote:
       "“我们甚至没有雇佣设计师来设计这个‘价格’页面。因为它是免费的。我们把设计支付页面的时间，都用来优化你的 CDN 速度了。别找了，去部署吧。”",
-    accountPendingTitle: "暂未创建账号",
-    accountPendingDescription: "Demox 的 X 账号还在路上，先去部署点什么吧。",
     perMonth: "/月",
     recommended: "推荐",
     plans: {
@@ -46,8 +43,6 @@ const pricingTexts = {
   en: {
     quote:
       "“We didn't even hire a designer for this pricing page. Because it's free. We spent the time we could have used on a checkout page making your CDN faster instead. Stop looking. Go deploy something.”",
-    accountPendingTitle: "Account not ready yet",
-    accountPendingDescription: "Demox's X account is still on its way. Go deploy something in the meantime.",
     perMonth: "/month",
     recommended: "Recommended",
     plans: {
@@ -83,17 +78,9 @@ const pricingTexts = {
 } as const;
 
 const MemberPrice = () => {
-  const { toast } = useToast();
   const { language } = useLanguage();
   const t = pricingTexts[language];
   const [displayedText, setDisplayedText] = useState("");
-
-  const showAccountPendingToast = () => {
-    toast({
-      title: t.accountPendingTitle,
-      description: t.accountPendingDescription,
-    });
-  };
 
   useEffect(() => {
     setDisplayedText("");
@@ -198,15 +185,16 @@ const MemberPrice = () => {
                 </div>
               </a>
 
-              <button
-                type="button"
-                onClick={showAccountPendingToast}
+              <a
+                href="https://x.com/a_phos"
+                target="_blank"
+                rel="noreferrer"
                 className="flex flex-col items-center group"
               >
                 <FeatureIcon icon={X} className="mb-4 group-hover:scale-105 transition-transform" />
                 <div className="font-bold mb-2">{t.xTitle}</div>
                 <div className="text-[var(--stitch-muted)] text-sm">{t.xDescription}</div>
-              </button>
+              </a>
 
               <a
                 href="https://demox-promo.demox.site/"
