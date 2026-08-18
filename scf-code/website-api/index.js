@@ -6543,7 +6543,10 @@ function getContentType(key) {
 function getCacheHeaders(key) {
   const ext = (path.extname(key) || '').toLowerCase();
   if (ext === '.html') {
-    return { 'Cache-Control': 'no-cache, no-store, must-revalidate' };
+    // Public HTML is purged on deploy. no-store forced every overseas
+    // request through Chengdu COS (multi-second TTFB). Private sites
+    // stay no-store in the edge function.
+    return { 'Cache-Control': 'public, max-age=60' };
   }
   return { 'Cache-Control': 'public, max-age=31536000, immutable' };
 }
