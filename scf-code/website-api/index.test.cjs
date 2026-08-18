@@ -656,3 +656,27 @@ test('public site resolution exposes the persisted watermark preference to the e
   assert.equal(body.websiteId, 'WATERMARK1');
   assert.equal(body.hideWatermark, true);
 });
+
+
+const { buildOriginPurgeTargets } = require('./index.js');
+
+test('buildOriginPurgeTargets includes origin prefix for edge fetch', () => {
+  const targets = buildOriginPurgeTargets({
+    originHost: 'sites.demox.site',
+    originPath: 'sites/42/EPX2UU43/dist',
+    ownerId: 42,
+    websiteId: 'EPX2UU43'
+  });
+  assert.ok(targets.includes('https://sites.demox.site/sites/42/EPX2UU43/'));
+  assert.ok(targets.includes('https://sites.demox.site/sites/42/EPX2UU43/dist/'));
+});
+
+test('buildOriginPurgeTargets rejects unsafe origin paths', () => {
+  const targets = buildOriginPurgeTargets({
+    originHost: 'sites.demox.site',
+    originPath: 'sites/42/../etc',
+    ownerId: '',
+    websiteId: ''
+  });
+  assert.deepEqual(targets, []);
+});

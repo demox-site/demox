@@ -296,13 +296,53 @@ async function createEdgeOnePurgeTask({ type, targets, method }) {
 }
 
 /**
+ * 组装边缘函数回源路径的 purge_prefix。
+ * 边缘 fetch 的是 originHost + websites.path（默认 sites.demox.site/sites/{user}/{id}/...），
+ * 只清公开域名不够，回源 HTML 仍会 HIT。
+ */
+function buildOriginPurgeTargets({ originHost, originPath, ownerId, websiteId }) {
+  const host = String(originHost || LEGACY_BUCKET.originHost || '').trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,63}(?:\.[a-z0-9.-]+)+$/.test(host)) return [];
+  const targets = new Set();
+  const addPrefix = (raw) => {
+    const clean = String(raw || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!clean || clean.includes('..') || clean.includes('\\')) return;
+    if (/[^A-Za-z0-9._/@-]|\/\//.test(clean)) return;
+    targets.add(`https://${host}/${clean}/`);
+  };
+  addPrefix(originPath);
+  const owner = String(ownerId == null ? '' : ownerId).trim();
+  const id = String(websiteId || '').trim();
+  if (owner && id) addPrefix(`sites/${owner}/${id}`);
+  const parts = String(originPath || '').trim().replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+  if (parts[0] === 'sites' && parts.length >= 3) addPrefix(`sites/${parts[1]}/${parts[2]}`);
+  return Array.from(targets);
+}
+
+async function originArgsFromSite(site) {
+  if (!site) return {};
+  let originHost = LEGACY_BUCKET.originHost;
+  try {
+    const cfg = await resolveBucketConfig(site.bucket_id);
+    if (cfg && cfg.originHost) originHost = cfg.originHost;
+  } catch (_) {
+    // 读桶失败时仍按默认回源域清理，避免漏 purge
+  }
+  return {
+    originHost,
+    originPath: site.path,
+    ownerId: site.user_id
+  };
+}
+
+/**
  * 部署完成后主动清理 EdgeOne 缓存，替代 URL 上拼 ?v=timestamp 的缓存绕过方案。
- * - purge_prefix: 清理默认域名和自定义前缀域名下的页面/资源缓存。
+ * - purge_prefix: 公开域名、自定义前缀，以及边缘函数回源 origin prefix。
  * - purge_url: 清理边缘函数 resolveSite 使用的 label->path 解析缓存 key（best effort）。
  *
  * 缓存清理失败不阻断部署，但会写入日志并返回给调用方，便于 CI 里排查。
  */
-async function purgeSiteCache({ websiteId, subdomain, subdomainDomain }) {
+async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHost, originPath, ownerId }) {
   const hosts = new Set();
   const resolveKeys = new Set();
   const defaultLabel = String(websiteId || '').trim().toLowerCase();
@@ -318,11 +358,13 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain }) {
   }
 
   const safeHosts = Array.from(hosts).filter(host => /^[a-z0-9-]{1,63}\.[a-z0-9.-]+$/.test(host));
-  if (safeHosts.length === 0) {
+  const originTargets = buildOriginPurgeTargets({ originHost, originPath, ownerId, websiteId });
+  if (safeHosts.length === 0 && originTargets.length === 0) {
     return { success: true, skipped: true, reason: 'no_valid_hosts' };
   }
 
   const publicTargets = safeHosts.map(host => `https://${host}/`);
+  const prefixTargets = [...publicTargets, ...originTargets];
   const resolveTargets = Array.from(resolveKeys).map(key => {
     const [domain, label] = key.split('|');
     return `https://resolve.${defaultDomain}/host/${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
@@ -330,9 +372,10 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain }) {
   const tasks = [];
 
   for (const task of [
-    { type: 'purge_prefix', method: 'delete', targets: publicTargets },
+    { type: 'purge_prefix', method: 'delete', targets: prefixTargets },
     { type: 'purge_url', targets: resolveTargets }
   ]) {
+    if (!task.targets.length) continue;
     try {
       const result = await createEdgeOnePurgeTask(task);
       tasks.push({ ...result, success: true });
@@ -346,6 +389,7 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain }) {
     success: tasks.every(t => t.success),
     skipped: false,
     hosts: safeHosts,
+    originTargets,
     tasks
   };
 }
@@ -1504,7 +1548,8 @@ async function handleUpdateWebsiteVisibility(event) {
     const cachePurge = await purgeSiteCache({
       websiteId: site.website_id,
       subdomain: site.subdomain,
-      subdomainDomain: site.subdomain_domain
+      subdomainDomain: site.subdomain_domain,
+      ...(await originArgsFromSite(site))
     });
     return ok({
       success: true,
@@ -1565,7 +1610,8 @@ async function handleUpdateWebsiteWatermark(event) {
     const cachePurge = await purgeSiteCache({
       websiteId: site.website_id,
       subdomain: site.subdomain,
-      subdomainDomain: site.subdomain_domain
+      subdomainDomain: site.subdomain_domain,
+      ...(await originArgsFromSite(site))
     });
     return ok({
       success: true,
@@ -1620,7 +1666,8 @@ async function handleUpdateSeo(event) {
     const cachePurge = await purgeSiteCache({
       websiteId: site.website_id,
       subdomain: site.subdomain,
-      subdomainDomain: site.subdomain_domain
+      subdomainDomain: site.subdomain_domain,
+      ...(await originArgsFromSite(site))
     });
     return ok({
       success: true,
@@ -6373,7 +6420,10 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
     const cachePurge = await purgeSiteCache({
       websiteId,
       subdomain: existing.length > 0 ? existing[0].subdomain : null,
-      subdomainDomain: existing.length > 0 ? getRowSubdomainDomain(existing[0]) : null
+      subdomainDomain: existing.length > 0 ? getRowSubdomainDomain(existing[0]) : null,
+      originHost: bucketCfg.originHost || LEGACY_BUCKET.originHost,
+      originPath: targetPrefix,
+      ownerId: deploymentOwnerId
     });
     const existingSubdomainDomain = existing.length > 0 ? getRowSubdomainDomain(existing[0]) : defaultDomain;
     const customUrl = existing.length > 0
@@ -6592,3 +6642,5 @@ function getCORSHeaders() {
     'Access-Control-Max-Age': '86400'
   };
 }
+
+exports.buildOriginPurgeTargets = buildOriginPurgeTargets;
