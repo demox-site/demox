@@ -212,6 +212,22 @@ async function trackSiteEvent(req, event, meta, type) {
   } catch (e) {}
 }
 
+
+function applySiteCacheHeaders(headers, meta) {
+  const h = headers instanceof Headers ? headers : new Headers(headers);
+  if (meta && meta.visibility === VISIBILITY_PRIVATE) {
+    h.set('Cache-Control', 'no-store');
+    h.delete('Age');
+    h.delete('Expires');
+    return h;
+  }
+  const cc = (h.get('Cache-Control') || '').toLowerCase();
+  if (!cc || cc.includes('no-store') || (cc.includes('no-cache') && cc.indexOf('max-age=') === -1)) {
+    h.set('Cache-Control', 'public, max-age=60');
+  }
+  return h;
+}
+
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
   const resp = await fetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
@@ -225,7 +241,7 @@ async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, me
       // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
       return withDemoxBadge(req, event, new Response(idxResp.body, {
         status: 200,
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
+        headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta)
       }), meta);
     }
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
@@ -247,7 +263,7 @@ async function serveCustom404(req, event, u, sitePath, originHost, meta) {
         const html = await custom404.text();
         const headers = new Headers(custom404.headers);
         headers.set('Content-Type', 'text/html; charset=utf-8');
-        headers.set('Cache-Control', 'no-cache');
+        applySiteCacheHeaders(headers, meta);
         return new Response(html, { status: 404, headers });
       }
     } catch (e) {}
@@ -256,7 +272,7 @@ async function serveCustom404(req, event, u, sitePath, originHost, meta) {
   const html = getDefault404Html(meta, u);
   return new Response(html, {
     status: 404,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }
+    headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta)
   });
 }
 
@@ -575,9 +591,20 @@ async function withDemoxBadge(req, event, resp, meta) {
   if (shouldTrackSiteView(req, resp)) {
     trackSiteEvent(req, event, meta, 'view');
   }
-  if (!shouldInjectDemoxBadge(req, resp)) return resp;
+  if (!shouldInjectDemoxBadge(req, resp)) {
+    const current = (resp.headers.get('Cache-Control') || '').toLowerCase();
+    const mustRewrite = (meta && meta.visibility === VISIBILITY_PRIVATE) ||
+      !current || current.includes('no-store') ||
+      (current.includes('no-cache') && current.indexOf('max-age=') === -1);
+    if (!mustRewrite) return resp;
+    return new Response(resp.body, {
+      status: resp.status,
+      statusText: resp.statusText,
+      headers: applySiteCacheHeaders(new Headers(resp.headers), meta)
+    });
+  }
   const html = await resp.text();
-  const headers = new Headers(resp.headers);
+  const headers = applySiteCacheHeaders(new Headers(resp.headers), meta);
   headers.delete('content-length');
   headers.delete('content-encoding');
   headers.delete('etag');
@@ -1028,7 +1055,8 @@ async function handle(req, event) {
       websiteId: websiteId,
       label: label,
       domain: domain,
-      hideWatermark: hideWatermark
+      hideWatermark: hideWatermark,
+      visibility: visibility
     });
   }
 
