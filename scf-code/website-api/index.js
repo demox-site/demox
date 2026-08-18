@@ -2952,13 +2952,39 @@ async function handleSetUserRole(event) {
   const { uid, role } = event.body || event;
   const targetUid = String(uid || '').trim();
   if (!targetUid) return ok({ success: false, message: '缺少用户 UID' });
-  const rolesArr = Array.isArray(role) ? role.map((x) => String(x).trim()).filter(Boolean) : [];
+  if (!Array.isArray(role)) return ok({ success: false, message: '角色必须是数组' });
+
+  const requestedRoles = [...new Set([
+    'user',
+    ...role.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
+  ])];
+  const enabledRoles = await query('SELECT id, priority FROM roles WHERE enabled = 1 ORDER BY priority ASC');
+  const enabledRoleIds = new Set(enabledRoles.map((item) => String(item.id || '').trim().toLowerCase()).filter(Boolean));
+  const invalidRoles = requestedRoles.filter((roleId) => !enabledRoleIds.has(roleId));
+  if (invalidRoles.length > 0) {
+    return ok({ success: false, code: 'INVALID_USER_ROLE', message: `角色不存在或已停用：${invalidRoles.join(', ')}` });
+  }
+
+  const rolesArr = enabledRoles
+    .map((item) => String(item.id || '').trim().toLowerCase())
+    .filter((roleId) => requestedRoles.includes(roleId));
+  if (String(a.userId) === targetUid && !rolesArr.includes('admin')) {
+    return ok({ success: false, code: 'SELF_ADMIN_ROLE_REQUIRED', message: '不能移除自己的管理员角色' });
+  }
+
+  const users = await query('SELECT id FROM users WHERE id = ? LIMIT 1', [targetUid]);
+  if (users.length === 0) {
+    // 兼容早期没有 users 记录、但已经存在角色配置的数字 UID。
+    const existingRoles = await query('SELECT user_id FROM user_roles WHERE user_id = ? LIMIT 1', [targetUid]);
+    if (existingRoles.length === 0) return ok({ success: false, code: 'USER_NOT_FOUND', message: '用户不存在，请检查 UID' });
+  }
+
   await query(
     `INSERT INTO user_roles (user_id, roles, updated_at) VALUES (?, ?, NOW())
      ON DUPLICATE KEY UPDATE roles = VALUES(roles), updated_at = NOW()`,
     [targetUid, JSON.stringify(rolesArr)]
   );
-  return ok({ success: true });
+  return ok({ success: true, uid: targetUid, role: rolesArr });
 }
 
 /** 删除某用户的角色文档 */
@@ -2968,6 +2994,9 @@ async function handleDeleteUserRole(event) {
   const { uid } = event.body || event;
   const targetUid = String(uid || '').trim();
   if (!targetUid) return ok({ success: false, message: '缺少用户 UID' });
+  if (String(a.userId) === targetUid) {
+    return ok({ success: false, code: 'SELF_ADMIN_ROLE_REQUIRED', message: '不能重置自己的管理员角色' });
+  }
   await query('DELETE FROM user_roles WHERE user_id = ?', [targetUid]);
   return ok({ success: true });
 }

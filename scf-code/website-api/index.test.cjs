@@ -98,6 +98,103 @@ test('project deletion requires authentication', async () => {
   assert.equal(queried, false);
 });
 
+test('platform role updates normalize roles and keep the baseline user role', async () => {
+  let savedRoles = null;
+  queryImpl = async (sql, params) => {
+    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [
+        { id: 'user', priority: 10 },
+        { id: 'pro', priority: 50 },
+        { id: 'admin', priority: 100 }
+      ];
+    }
+    if (sql.includes('SELECT id FROM users WHERE id = ?')) return [{ id: params[0] }];
+    if (sql.includes('INSERT INTO user_roles')) {
+      savedRoles = JSON.parse(params[1]);
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('set_user_role', {
+    uid: 'target-user',
+    role: ['PRO', 'pro']
+  }, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.deepEqual(body.role, ['user', 'pro']);
+  assert.deepEqual(savedRoles, ['user', 'pro']);
+});
+
+test('platform role updates reject unknown or disabled roles before writing', async () => {
+  let wrote = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', priority: 10 }, { id: 'admin', priority: 100 }];
+    }
+    if (sql.includes('INSERT INTO user_roles')) wrote = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('set_user_role', {
+    uid: 'target-user',
+    role: ['pro']
+  }, 'platform-admin')).body);
+  assert.equal(body.success, false);
+  assert.equal(body.code, 'INVALID_USER_ROLE');
+  assert.match(body.message, /pro/);
+  assert.equal(wrote, false);
+});
+
+test('platform role updates reject a UID that has no user or legacy role record', async () => {
+  let wrote = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', priority: 10 }, { id: 'pro', priority: 50 }, { id: 'admin', priority: 100 }];
+    }
+    if (sql.includes('SELECT id FROM users WHERE id = ?')) return [];
+    if (sql.includes('SELECT user_id FROM user_roles WHERE user_id = ?')) return [];
+    if (sql.includes('INSERT INTO user_roles')) wrote = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('set_user_role', {
+    uid: 'missing-user',
+    role: ['pro']
+  }, 'platform-admin')).body);
+  assert.equal(body.success, false);
+  assert.equal(body.code, 'USER_NOT_FOUND');
+  assert.equal(wrote, false);
+});
+
+test('a platform admin cannot remove or reset their own admin role', async () => {
+  let wrote = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', priority: 10 }, { id: 'admin', priority: 100 }];
+    }
+    if (sql.includes('INSERT INTO user_roles') || sql.includes('DELETE FROM user_roles')) wrote = true;
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const demotion = JSON.parse((await request('set_user_role', {
+    uid: 'platform-admin',
+    role: ['user']
+  }, 'platform-admin')).body);
+  assert.equal(demotion.success, false);
+  assert.equal(demotion.code, 'SELF_ADMIN_ROLE_REQUIRED');
+
+  const reset = JSON.parse((await request('delete_user_role', {
+    uid: 'platform-admin'
+  }, 'platform-admin')).body);
+  assert.equal(reset.success, false);
+  assert.equal(reset.code, 'SELF_ADMIN_ROLE_REQUIRED');
+  assert.equal(wrote, false);
+});
+
 test('project admins cannot delete a project they do not own', async () => {
   let deleteAttempted = false;
   queryImpl = async (sql) => {
