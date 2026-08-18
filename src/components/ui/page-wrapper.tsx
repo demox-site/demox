@@ -30,6 +30,13 @@ export function PageWrapper({
           title: isZh ? '会员价格' : 'Pricing',
           description: isZh ? 'Demox 会员订阅方案' : 'Demox Membership Pricing'
         };
+      case 'ai-static-site-deployment':
+        return {
+          title: isZh ? 'AI 生成网页如何快速发布成静态网站' : 'How to publish an AI-generated static website',
+          description: isZh
+            ? '从单个 HTML、ZIP 或前端构建产物出发，用网页、CLI、MCP 或 AI 助手发布静态网站并获得 HTTPS 链接。'
+            : 'Publish an AI-generated HTML page, ZIP, or frontend build as a static website through the web, CLI, MCP, or an AI assistant.',
+        };
       case 'terms':
         return {
           title: isZh ? '服务条款' : 'Terms of Service',

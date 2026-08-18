@@ -21,6 +21,7 @@ import {
   Menu,
   X,
   CreditCard,
+  BookOpen,
   FileText,
   Terminal
 } from "lucide-react";
@@ -28,21 +29,27 @@ import {
 const navbarTexts = {
   zh: {
     pricing: "价格",
+    guide: "指南",
     log: "日志",
     mcp: "文档",
     login: "登录",
     console: "控制台",
     logout: "退出登录",
-    settings: "账号设置"
+    settings: "账号设置",
+    openMenu: "打开导航菜单",
+    closeMenu: "关闭导航菜单"
   },
   en: {
     pricing: "Pricing",
+    guide: "Guide",
     log: "Log",
     mcp: "Docs",
     login: "Login",
     console: "Console",
     logout: "Log out",
-    settings: "Settings"
+    settings: "Settings",
+    openMenu: "Open navigation menu",
+    closeMenu: "Close navigation menu"
   }
 } as const;
 
@@ -151,6 +158,12 @@ export const MainHeader: React.FC = () => {
               >
                 {t.pricing}
               </button>
+              <a
+                href="/ai-static-site-deployment"
+                className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
+              >
+                {t.guide}
+              </a>
               <button
                 type="button"
                 onClick={() => navigate("/log")}
@@ -262,6 +275,7 @@ export const MainHeader: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                aria-label={isMobileMenuOpen ? t.closeMenu : t.openMenu}
                 className="text-zinc-400 hover:text-zinc-100"
               >
                 {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
@@ -290,11 +304,19 @@ export const MainHeader: React.FC = () => {
                 <FileText size={16} />
                 {t.log}
               </button>
+              <a
+                href="/ai-static-site-deployment"
+                className="flex items-center gap-3 text-sm text-zinc-400 hover:text-zinc-100 w-full text-left p-2 rounded-md hover:bg-zinc-900"
+              >
+                <BookOpen size={16} />
+                {t.guide}
+              </a>
               <button
                 type="button"
                 onClick={() => navigate("/doc")}
                 className="flex items-center gap-3 text-sm text-zinc-400 hover:text-zinc-100 w-full text-left p-2 rounded-md hover:bg-zinc-900"
               >
+                <Terminal size={16} />
                 {t.mcp}
               </button>
 

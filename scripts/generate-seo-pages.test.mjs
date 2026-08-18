@@ -20,6 +20,7 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(home, /Demox is a static website deployment platform for frontend developers and AI-assisted workflows\./);
     assert.match(home, /<h2>Demox 是什么？<\/h2>/);
     assert.match(home, /href="\/doc">Read the docs<\/a>/);
+    assert.match(home, /href="\/ai-static-site-deployment">Guide<\/a>/);
     assert.match(home, /"@type":"SoftwareApplication"/);
     assert.match(home, /<div id="root"><\/div>\s*<noscript data-crawlable-fallback-shell>\s*<main data-crawlable-fallback>/);
     assert.doesNotMatch(home, /<div id="root">\s*<main data-crawlable-fallback>/);
@@ -37,6 +38,15 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(docs, /<main data-crawlable-fallback class="fallback-simple">/);
     assert.match(docs, /<h1>Deploy with the Demox CLI or MCP<\/h1>/);
     assert.doesNotMatch(docs, /noindex/);
+
+    const guide = await readFile(path.join(distDir, "ai-static-site-deployment", "index.html"), "utf8");
+    assert.match(guide, /<title data-seo="title">AI 生成网页如何快速发布成静态网站 \| Demox<\/title>/);
+    assert.match(guide, /href="https:\/\/www\.demox\.site\/ai-static-site-deployment"/);
+    assert.match(guide, /<strong>直接答案：<\/strong>AI 生成网页后/);
+    assert.match(guide, /哪些项目不适合直接静态发布？/);
+    assert.match(guide, /"@type":"TechArticle"/);
+    assert.match(guide, /"dateModified":"2026-08-18"/);
+    assert.doesNotMatch(guide, /content="noindex/);
 
     const callback = await readFile(path.join(distDir, NOINDEX_ROUTES[0], "index.html"), "utf8");
     assert.match(callback, /content="noindex, nofollow"/);
@@ -56,6 +66,7 @@ test("sitemap contains only generated public routes on the canonical host", asyn
 
   const paths = [...sitemap.matchAll(/<loc>https:\/\/www\.demox\.site(\/[^<]*)<\/loc>/g)].map((match) => match[1]);
   assert.ok(paths.length > 0);
+  assert.ok(paths.includes("/ai-static-site-deployment"));
   for (const pathname of paths) {
     const route = pathname.replace(/^\//, "").replace(/\/$/, "");
     assert.ok(Object.hasOwn(PUBLIC_PAGES, route), `Sitemap route is not generated: ${pathname}`);

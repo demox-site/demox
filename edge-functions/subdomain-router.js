@@ -29,7 +29,7 @@ var DEFAULT_OFFICIAL_DOMAIN = 'demox.site';
 var OFFICIAL_DOMAINS = ['demox.site', 'vibeme.cn'];
 var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底 path（改绑主站时同步改 DB 与此）
 var WWW_SPA_ROUTES = [
-  '/', '/index', '/pricing', '/doc', '/layout-demo', '/terms', '/privacy', '/log',
+  '/', '/index', '/pricing', '/doc', '/ai-static-site-deployment', '/layout-demo', '/terms', '/privacy', '/log',
   '/mcp-login', '/mcp-authorize', '/github-callback', '/github-link',
   '/feishu-callback', '/feishu-link', '/site-auth', '/home', '/admin', '/mcp', '/docs'
 ];

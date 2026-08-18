@@ -12,7 +12,16 @@ interface SeoProps {
 
 const SITE_NAME = siteConfig.name;
 const DEFAULT_IMAGE = `${siteConfig.url}og-image.png`;
-const INDEXABLE_PATHS = new Set(["/", "/index", "/pricing", "/doc", "/terms", "/privacy", "/log"]);
+const INDEXABLE_PATHS = new Set([
+  "/",
+  "/index",
+  "/pricing",
+  "/doc",
+  "/ai-static-site-deployment",
+  "/terms",
+  "/privacy",
+  "/log"
+]);
 
 export const Seo: React.FC<SeoProps> = ({
   title,

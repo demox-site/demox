@@ -12,6 +12,7 @@ const homeFallback = `
     <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
     <nav class="fallback-nav" aria-label="Main pages">
       <a href="/pricing">Pricing</a>
+      <a href="/ai-static-site-deployment">Guide</a>
       <a href="/log">Changelog</a>
       <a href="/doc">Docs</a>
     </nav>
@@ -56,6 +57,16 @@ export const PUBLIC_PAGES = {
     title: "Demox Docs - Deploy with CLI or MCP",
     description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, and examples.",
     fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Deploy with the Demox CLI or MCP</h1><p>Demox offers two automation paths backed by the same account and deployment capabilities. Use the CLI from a terminal or CI workflow, or use the MCP server from an AI assistant that supports MCP. Both paths upload static build artifacts and documents through the Demox deployment API.</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>Run <code>npx -y @demox-site/mcp-server@latest</code> as an MCP server. The first deployment opens browser-based OAuth authorization.</p><p>Supported inputs include directories, ZIP, HTML, PDF, Markdown, TXT, DOCX, and spreadsheets. <a href="https://github.com/demox-site/skill">View the Demox agent skill</a>.</p></main>`,
+  },
+  "ai-static-site-deployment": {
+    title: "AI 生成网页如何快速发布成静态网站 | Demox",
+    description: "从单个 HTML、ZIP 或前端构建产物出发，用网页、CLI、MCP 或 AI 助手发布静态网站并获得 HTTPS 链接。",
+    article: {
+      datePublished: "2026-08-18",
+      dateModified: "2026-08-18",
+      inLanguage: "zh-CN",
+    },
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 网页发布指南 · 更新于 2026-08-18 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>AI 生成网页后，先确认产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；然后上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。整个过程不需要配置服务器，适合演示、评审和分享。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。发布后应检查样式、图片和页面内跳转是否正常。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>上传构建目录或 ZIP，并确保根目录能找到 <code>index.html</code>。React、Vue、Vite 等项目需要先执行生产构建命令；CSS、JavaScript、图片和字体应使用相对路径或正确的站点根路径。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它按文档构建和发布。也可以使用 Demox CLI、MCP 或 Agent Skill。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及只在浏览器运行或调用已有远程 API 的前端，都适合静态发布。</p><h2>哪些项目不适合直接静态发布？</h2><p>必须运行 Node.js、Python、PHP 或 Java 服务，直接连接数据库，执行服务端任务，或依赖服务器端渲染且没有静态导出结果的应用，需要先改造或选择能运行后端的平台。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但取决于 AI 助手是否能访问网页、读取本地文件，并拥有可执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，但不能把私密凭据放在前端代码中。需要保密的业务逻辑仍应放在独立后端。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
   },
   terms: {
     title: "Demox Terms of Service",
@@ -105,47 +116,63 @@ function pageUrl(route, canonicalPath) {
   return route ? `${SITE_URL}/${route}` : `${SITE_URL}/`;
 }
 
-function schemaForPage({ title, description, url }) {
-  return {
-    "@context": "https://schema.org",
-    "@graph": [
-      {
-        "@type": "Organization",
-        "@id": `${SITE_URL}/#organization`,
-        name: "Demox",
-        url: `${SITE_URL}/`,
-        logo: `${SITE_URL}/demox-logo.png`,
-        sameAs: ["https://github.com/demox-site/demox"],
-      },
-      {
-        "@type": "WebSite",
-        "@id": `${SITE_URL}/#website`,
-        name: "Demox",
-        url: `${SITE_URL}/`,
-        publisher: { "@id": `${SITE_URL}/#organization` },
-        inLanguage: ["en", "zh-CN"],
-      },
-      {
-        "@type": "SoftwareApplication",
-        "@id": `${SITE_URL}/#software`,
-        name: "Demox",
-        url: `${SITE_URL}/`,
-        applicationCategory: "DeveloperApplication",
-        description: "A static website deployment platform for frontend builds, AI-generated pages, and documents, available through web, CLI, MCP, and API workflows.",
-        publisher: { "@id": `${SITE_URL}/#organization` },
-      },
-      {
-        "@type": "WebPage",
-        "@id": `${url}#webpage`,
-        name: title,
-        url,
-        description,
-        isPartOf: { "@id": `${SITE_URL}/#website` },
-        about: { "@id": `${SITE_URL}/#software` },
-        inLanguage: ["en", "zh-CN"],
-      },
-    ],
-  };
+function schemaForPage({ title, description, url, article }) {
+  const graph = [
+    {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#organization`,
+      name: "Demox",
+      url: `${SITE_URL}/`,
+      logo: `${SITE_URL}/demox-logo.png`,
+      sameAs: ["https://github.com/demox-site/demox"],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE_URL}/#website`,
+      name: "Demox",
+      url: `${SITE_URL}/`,
+      publisher: { "@id": `${SITE_URL}/#organization` },
+      inLanguage: ["en", "zh-CN"],
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${SITE_URL}/#software`,
+      name: "Demox",
+      url: `${SITE_URL}/`,
+      applicationCategory: "DeveloperApplication",
+      description: "A static website deployment platform for frontend builds, AI-generated pages, and documents, available through web, CLI, MCP, and API workflows.",
+      publisher: { "@id": `${SITE_URL}/#organization` },
+    },
+    {
+      "@type": "WebPage",
+      "@id": `${url}#webpage`,
+      name: title,
+      url,
+      description,
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+      about: { "@id": `${SITE_URL}/#software` },
+      inLanguage: ["en", "zh-CN"],
+    },
+  ];
+
+  if (article) {
+    graph.push({
+      "@type": "TechArticle",
+      "@id": `${url}#article`,
+      headline: title,
+      description,
+      url,
+      mainEntityOfPage: { "@id": `${url}#webpage` },
+      datePublished: article.datePublished,
+      dateModified: article.dateModified,
+      inLanguage: article.inLanguage,
+      author: { "@id": `${SITE_URL}/#organization` },
+      publisher: { "@id": `${SITE_URL}/#organization` },
+      about: { "@id": `${SITE_URL}/#software` },
+    });
+  }
+
+  return { "@context": "https://schema.org", "@graph": graph };
 }
 
 export function renderSeoPage(baseHtml, route, config) {
@@ -169,7 +196,7 @@ export function renderSeoPage(baseHtml, route, config) {
   html = replaceRequired(html, /<main data-crawlable-fallback>[\s\S]*?<\/main>/, config.fallback, "crawlable fallback");
 
   const schema = shouldIndex
-    ? `<script data-seo="schema" type="application/ld+json">${JSON.stringify(schemaForPage({ title, description, url }))}</script>`
+    ? `<script data-seo="schema" type="application/ld+json">${JSON.stringify(schemaForPage({ title, description, url, article: config.article }))}</script>`
     : "";
   html = replaceRequired(html, /<script data-seo="schema" type="application\/ld\+json">[\s\S]*?<\/script>/, schema, "schema");
   return html;

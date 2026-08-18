@@ -13,6 +13,7 @@ import { GithubLink } from "../pages/GithubLink";
 import { FeishuCallback } from "../pages/FeishuCallback";
 import { FeishuLink } from "../pages/FeishuLink";
 import { SiteAuth } from "../pages/SiteAuth";
+import AiStaticSiteGuide from "../pages/AiStaticSiteGuide";
 
 export const routers = [
   {
@@ -27,6 +28,10 @@ export const routers = [
   {
     id: "doc",
     component: Docs
+  },
+  {
+    id: "ai-static-site-deployment",
+    component: AiStaticSiteGuide
   },
   {
     id: "layout-demo",
