@@ -43,6 +43,96 @@ test('hosted HTML omits the Demox watermark when the site setting hides it', asy
   assert.match(html, /<main>Site<\/main>/);
 });
 
+async function renderWithSeo(html, seo) {
+  return context.__testHooks.withDemoxBadge(
+    new Request('https://sample.demox.site/about'),
+    { waitUntil: () => {} },
+    new Response(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' }
+    }),
+    { websiteId: 'SITE1', hideWatermark: true, seo }
+  );
+}
+
+test('hosted HTML injects configured SEO tags and replaces the original title', async () => {
+  const html = await (await renderWithSeo(
+    '<!doctype html><html><head><title>Old Title</title><meta name="description" content="old desc"></head><body><main>Site</main></body></html>',
+    {
+      title: 'Custom Title',
+      description: 'Custom desc',
+      ogImage: 'https://cdn.example/og.png'
+    }
+  )).text();
+  assert.match(html, /<title data-demox-seo>Custom Title<\/title>/);
+  assert.doesNotMatch(html, /Old Title/);
+  assert.doesNotMatch(html, /old desc/);
+  assert.match(html, /property="og:title" content="Custom Title"/);
+  assert.match(html, /name="description" content="Custom desc"/);
+  assert.match(html, /property="og:image" content="https:\/\/cdn.example\/og.png"/);
+  assert.match(html, /property="og:url" content="https:\/\/sample.demox.site\/about"/);
+  assert.match(html, /<main>Site<\/main>/);
+});
+
+test('hosted HTML leaves the original title alone when only description is configured', async () => {
+  const html = await (await renderWithSeo(
+    '<!doctype html><html><head><title>Keep Me</title></head><body>ok</body></html>',
+    { title: null, description: 'Only desc', ogImage: null }
+  )).text();
+  assert.match(html, /<title>Keep Me<\/title>/);
+  assert.match(html, /name="description" content="Only desc"/);
+});
+
+test('router passes resolved SEO into the hosted HTML response', async () => {
+  const routerContext = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    console,
+    env: { DEMOX_API_URL: 'https://api.test' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input) => {
+      const url = String(input && input.url ? input.url : input);
+      if (url.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify({
+          success: true,
+          path: 'sites/demo/ABC',
+          websiteId: 'SEO1',
+          origin: 'sites.demox.site',
+          visibility: 'public',
+          hideWatermark: true,
+          seo: {
+            title: 'Resolved Title',
+            description: 'Resolved desc',
+            ogImage: 'https://cdn.example/share.png'
+          }
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('sites.demox.site')) {
+        return new Response(
+          '<!doctype html><html><head><title>Origin Title</title></head><body><main>Live</main></body></html>',
+          { status: 200, headers: { 'Content-Type': 'text/html' } }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  const response = await routerContext.__testHooks.handle(
+    new Request('https://sample.demox.site/', { headers: { Accept: 'text/html' } }),
+    { waitUntil: () => {}, passThroughOnException: () => {} }
+  );
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /<title data-demox-seo>Resolved Title<\/title>/);
+  assert.doesNotMatch(html, /Origin Title/);
+  assert.match(html, /name="description" content="Resolved desc"/);
+  assert.match(html, /property="og:image" content="https:\/\/cdn.example\/share.png"/);
+  assert.match(html, /<main>Live<\/main>/);
+});
+
 test('the EdgeOne allowlist covers every current Demox client route', () => {
   const routes = new Set(['/']);
   for (const match of appSource.matchAll(/path="(\/[^"*:]+)"/g)) {

@@ -407,7 +407,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID\n\n# 页面水印（仅 pro/admin）\ndemox watermark hide WEBSITE_ID\ndemox watermark show WEBSITE_ID`}
+                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID\n\n# 页面水印（仅专业用户及以上）\ndemox watermark hide WEBSITE_ID\ndemox watermark show WEBSITE_ID`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
@@ -421,8 +421,8 @@ export const Docs: React.FC = () => {
                         ["demox deploy <path>", isZh ? "部署目录、ZIP、PDF 或文档" : "Deploy folder, ZIP, PDF, or docs"],
                         ["demox domain set <id> <subdomain>", isZh ? "设置自定义子域名" : "Set custom subdomain"],
                         ["demox domain clear <id>", isZh ? "清除自定义子域名" : "Clear custom subdomain"],
-                        ["demox watermark hide <id>", isZh ? "隐藏页面水印（仅 pro/admin）" : "Hide page watermark (pro/admin only)"],
-                        ["demox watermark show <id>", isZh ? "重新显示页面水印（仅 pro/admin）" : "Show page watermark (pro/admin only)"],
+                        ["demox watermark hide <id>", isZh ? "隐藏页面水印（仅专业用户及以上）" : "Hide page watermark (professional and above)"],
+                        ["demox watermark show <id>", isZh ? "重新显示页面水印（仅专业用户及以上）" : "Show page watermark (professional and above)"],
                         ["demox list / ls", isZh ? "列出所有网站" : "List all sites"],
                         ["demox info <id>", isZh ? "查看网站详情" : "Show site details"],
                         ["demox delete <id> / rm", isZh ? "删除网站" : "Delete a site"],

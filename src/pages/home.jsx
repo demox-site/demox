@@ -13,7 +13,7 @@ import { Globe, RefreshCw, Tag, UploadCloud, CheckCircle2, Copy, X, MessageSquar
 import { Navigate, useParams } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "./home-translations";
-import { parseTags, joinTags } from "@/lib/website-utils";
+import { parseTags, joinTags, hasProOrAboveRole } from "@/lib/website-utils";
 import DeleteConfirmDialog from "@/components/home/DeleteConfirmDialog";
 import RedeployDialog from "@/components/home/RedeployDialog";
 import DomainDialog from "@/components/home/DomainDialog";
@@ -97,9 +97,10 @@ export default function Home(props) {
   const [seoDialogOpen, setSeoDialogOpen] = React.useState(false);
   const [seoWebsite, setSeoWebsite] = React.useState(null);
   const openSeoDialog = React.useCallback((website) => {
+    if (!hasProOrAboveRole(user?.roles)) return;
     setSeoWebsite(website);
     setSeoDialogOpen(true);
-  }, []);
+  }, [user]);
   const handleSeoSaved = React.useCallback((seo) => {
     if (seoWebsite && seo) {
       setWebsites((prev) => prev.map((w) =>

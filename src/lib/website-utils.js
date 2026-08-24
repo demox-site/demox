@@ -5,6 +5,16 @@ import { normalizeOfficialDomain } from "./official-domains";
  * 站点相关的纯工具函数（无状态、无副作用），从 pages/home.jsx 抽离以便复用与测试。
  */
 
+const PRO_AND_ABOVE_ROLES = new Set(["pro", "admin"]);
+
+/**
+ * hasProOrAboveRole
+ * 专业用户及以上（pro / admin）才开放站点分析、隐藏水印、SEO 等能力。
+ */
+export const hasProOrAboveRole = (roles) =>
+  Array.isArray(roles) &&
+  roles.some((role) => PRO_AND_ABOVE_ROLES.has(String(role || "").trim().toLowerCase()));
+
 /**
  * isTokenExpiredError
  * 判断错误是否为凭证过期相关（ACCESS_TOKEN_EXPIRED / invalid_grant 4026）

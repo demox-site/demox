@@ -517,7 +517,7 @@ export const ConsoleLayout: React.FC = () => {
         </header>
 
         <main className="flex-1 min-h-[calc(100vh-4rem)]">
-          <Outlet />
+          <Outlet context={{ user }} />
         </main>
       </SidebarInset>
     </SidebarProvider>

@@ -25,6 +25,7 @@ import {
   Link2,
   FolderKanban,
   Globe2,
+  Lock,
   LockKeyhole,
   BarChart3,
   Settings2,
@@ -35,8 +36,18 @@ import StatusBadge from "./StatusBadge";
 import {
   getDisplayName,
   getSiteDomains,
-  formatTimestamp
+  formatTimestamp,
+  hasProOrAboveRole
 } from "@/lib/website-utils";
+
+function PremiumMark({ t }) {
+  return (
+    <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
+      <Lock className="h-3 w-3" />
+      {t.proFeatureBadge || "专业"}
+    </span>
+  );
+}
 
 /**
  * WebsiteCard
@@ -84,9 +95,10 @@ export default function WebsiteCard({
   const canManageByProject = ["owner", "admin"].includes(website.projectRole || "");
   const canViewAnalyticsByProject = !!website.projectRole;
   const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
-  const canViewAnalytics = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
-  const canConfigureWatermark = Array.isArray(user?.roles) &&
-    user.roles.some((role) => ["pro", "admin"].includes(String(role).toLowerCase()));
+  const canUseProFeatures = hasProOrAboveRole(user?.roles);
+  const canAccessAnalyticsEntry = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
+  const showSiteSettings = canManageSite || canAccessAnalyticsEntry;
+  const proHint = t.proFeatureUnavailable || "仅专业用户及以上可用";
   const canMoveProject =
     canManageSite &&
     Array.isArray(projects) &&
@@ -332,7 +344,7 @@ export default function WebsiteCard({
         )}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
-        {(canViewAnalytics || canManageSite) && (
+        {showSiteSettings && (
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm" className="stitch-action rounded-full">
@@ -352,18 +364,6 @@ export default function WebsiteCard({
               </div>
 
               <div className="space-y-2">
-                {canViewAnalytics && analyticsPath && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => navigate(analyticsPath)}
-                    className={`${settingsActionClass} w-full justify-start`}
-                  >
-                    <BarChart3 className="w-4 h-4 mr-2" />
-                    {t.analyticsButton || "分析"}
-                  </Button>
-                )}
-
                 {canMoveProject && (
                   <div className="rounded-xl border border-border bg-muted/50 p-3">
                     <label className="mb-2 flex items-center gap-2 text-xs font-bold text-muted-foreground">
@@ -414,28 +414,6 @@ export default function WebsiteCard({
                   </div>
                 )}
 
-                {canManageSite && canConfigureWatermark && (
-                  <div
-                    className="flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground"
-                    title={t.watermarkToggleTitle}
-                  >
-                    <span className="flex items-center gap-2">
-                      <EyeOff className="h-4 w-4" />
-                      {t.watermarkHidden}
-                    </span>
-                    <Switch
-                      checked={website.hideWatermark === true}
-                      disabled={isProcessing || watermarkSaving[website._id]}
-                      onCheckedChange={(checked) => {
-                        if (setWebsiteWatermark) {
-                          setWebsiteWatermark(website, checked);
-                        }
-                      }}
-                      className="scale-75"
-                    />
-                  </div>
-                )}
-
                 {canManageSite && (
                   <div className="grid grid-cols-2 gap-2">
                     <Button
@@ -462,17 +440,63 @@ export default function WebsiteCard({
                   </div>
                 )}
 
-                {canManageSite && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => openSeoDialog && openSeoDialog(website)}
-                    className={`${settingsActionClass} w-full justify-start`}
-                    title={t.seoSettings || "SEO"}
-                  >
-                    <Search className="w-4 h-4 mr-2" />
-                    {t.seoSettings || "SEO"}
-                  </Button>
+                {(canAccessAnalyticsEntry || canManageSite) && (
+                  <div className="space-y-2 border-t border-border/70 pt-2">
+                    {canAccessAnalyticsEntry && (
+                      <div title={canUseProFeatures ? undefined : proHint}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!canUseProFeatures || !analyticsPath}
+                          onClick={() => analyticsPath && navigate(analyticsPath)}
+                          className={`${settingsActionClass} w-full justify-start`}
+                        >
+                          <BarChart3 className="w-4 h-4 mr-2" />
+                          {t.analyticsButton || "分析"}
+                          {!canUseProFeatures && <PremiumMark t={t} />}
+                        </Button>
+                      </div>
+                    )}
+
+                    {canManageSite && (
+                      <div
+                        className={`flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground ${canUseProFeatures ? "" : "opacity-60"}`}
+                        title={canUseProFeatures ? t.watermarkToggleTitle : proHint}
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <EyeOff className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{t.watermarkHidden}</span>
+                          {!canUseProFeatures && <PremiumMark t={t} />}
+                        </span>
+                        <Switch
+                          checked={website.hideWatermark === true}
+                          disabled={!canUseProFeatures || isProcessing || watermarkSaving[website._id]}
+                          onCheckedChange={(checked) => {
+                            if (canUseProFeatures && setWebsiteWatermark) {
+                              setWebsiteWatermark(website, checked);
+                            }
+                          }}
+                          className="scale-75"
+                        />
+                      </div>
+                    )}
+
+                    {canManageSite && (
+                      <div title={canUseProFeatures ? (t.seoSettings || "SEO") : proHint}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!canUseProFeatures}
+                          onClick={() => openSeoDialog && openSeoDialog(website)}
+                          className={`${settingsActionClass} w-full justify-start`}
+                        >
+                          <Search className="w-4 h-4 mr-2" />
+                          {t.seoSettings || "SEO"}
+                          {!canUseProFeatures && <PremiumMark t={t} />}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {canManageSite && (

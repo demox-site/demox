@@ -534,19 +534,48 @@ function injectDemoxBadge(html, meta) {
   return html + badge;
 }
 
+function seoMetaKey(tag) {
+  const property = String(tag).match(/\bproperty\s*=\s*["']([^"']+)["']/i);
+  if (property) return property[1].toLowerCase();
+  const name = String(tag).match(/\bname\s*=\s*["']([^"']+)["']/i);
+  return name ? name[1].toLowerCase() : '';
+}
+
 /**
  * 向 <head> 注入 SEO meta 标签（title / description / og / twitter）。
  * 注入的标签带 data-demox-seo 属性，先移除旧注入再补新值，避免重复。
- * 不修改用户原始 HTML 中的 meta 标签，只追加补充。
+ * 用户配置了对应字段时，覆盖页面里已有的 title / description / og 标签，确保爬虫读到控制台设置。
  */
-function injectSeoMeta(html, meta) {
+function injectSeoMeta(html, meta, pageUrl) {
   if (!html || !meta || !meta.seo) return html;
   const seo = meta.seo;
   if (!seo.title && !seo.description && !seo.ogImage) return html;
 
-  // 移除上一次注入的 SEO 标签（边缘缓存命中时防止重复）
   html = html.replace(/<meta[^>]*data-demox-seo[^>]*>/gi, '');
   html = html.replace(/<title[^>]*data-demox-seo[^>]*>[\s\S]*?<\/title>/gi, '');
+  if (seo.title) {
+    html = html.replace(/<title\b[^>]*>[\s\S]*?<\/title>/gi, '');
+  }
+
+  const drop = { 'og:type': true, 'og:url': true };
+  if (seo.title) {
+    drop['og:title'] = true;
+    drop['twitter:title'] = true;
+  }
+  if (seo.description) {
+    drop.description = true;
+    drop['og:description'] = true;
+    drop['twitter:description'] = true;
+  }
+  if (seo.ogImage) {
+    drop['og:image'] = true;
+    drop['twitter:image'] = true;
+    drop['twitter:card'] = true;
+  }
+  html = html.replace(/<meta\b[^>]*>/gi, function (tag) {
+    const key = seoMetaKey(tag);
+    return key && drop[key] ? '' : tag;
+  });
 
   const tags = [];
   if (seo.title) {
@@ -564,6 +593,9 @@ function injectSeoMeta(html, meta) {
     tags.push('<meta data-demox-seo name="twitter:image" content="' + escapeHtml(seo.ogImage) + '">');
     tags.push('<meta data-demox-seo name="twitter:card" content="summary_large_image">');
   }
+  if (pageUrl) {
+    tags.push('<meta data-demox-seo property="og:url" content="' + escapeHtml(pageUrl) + '">');
+  }
   tags.push('<meta data-demox-seo property="og:type" content="website">');
 
   const block = tags.join('\n  ');
@@ -572,7 +604,6 @@ function injectSeoMeta(html, meta) {
       return '  ' + block + '\n' + match;
     });
   }
-  // 无 <head> 的极简 HTML，在 <html> 后或开头补
   if (/<html[^>]*>/i.test(html)) {
     return html.replace(/<html[^>]*>/i, function (match) {
       return match + '\n<head>\n  ' + block + '\n</head>';
@@ -612,7 +643,12 @@ async function withDemoxBadge(req, event, resp, meta) {
     headers.set('content-type', 'text/html; charset=utf-8');
   }
 
-  let finalHtml = injectSeoMeta(html, meta);
+  let pageUrl = '';
+  try {
+    const parsed = new URL(req.url);
+    pageUrl = parsed.origin + parsed.pathname;
+  } catch (e) {}
+  let finalHtml = injectSeoMeta(html, meta, pageUrl);
   if (!(meta && meta.hideWatermark)) {
     finalHtml = injectDemoxBadge(finalHtml, meta);
   }
@@ -1012,7 +1048,7 @@ async function handle(req, event) {
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
   // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, websiteId, origin, visibility, hideWatermark } = await resolveSite(label, domain);
+  let { path, websiteId, origin, visibility, hideWatermark, seo } = await resolveSite(label, domain);
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
@@ -1056,7 +1092,8 @@ async function handle(req, event) {
       label: label,
       domain: domain,
       hideWatermark: hideWatermark,
-      visibility: visibility
+      visibility: visibility,
+      seo: seo
     });
   }
 

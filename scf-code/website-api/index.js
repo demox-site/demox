@@ -33,6 +33,7 @@ const {
   isDeployUploadExpired,
   needsDeployUploadExpiryMigration
 } = require('./shared/deploy-upload.js');
+const { scanZipEntries, createImsModerator } = require('./shared/content-scan.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -868,9 +869,24 @@ async function checkAdmin(userId) {
   return (await getUserRoleIds(userId)).includes('admin');
 }
 
+const PRO_AND_ABOVE_ROLES = new Set(['pro', 'admin']);
+
+function hasProOrAboveRoleIds(roleIds) {
+  return (Array.isArray(roleIds) ? roleIds : []).some((role) =>
+    PRO_AND_ABOVE_ROLES.has(String(role).trim().toLowerCase())
+  );
+}
+
+async function hasProOrAboveRole(userId) {
+  return hasProOrAboveRoleIds(await getUserRoleIds(userId));
+}
+
 async function canHideWebsiteWatermark(userId) {
-  const roles = await getUserRoleIds(userId);
-  return roles.includes('pro') || roles.includes('admin');
+  return hasProOrAboveRole(userId);
+}
+
+function proFeatureDenied(code, message) {
+  return ok({ success: false, code, message });
 }
 
 /**
@@ -1595,11 +1611,7 @@ async function handleUpdateWebsiteWatermark(event) {
       return ok({ success: false, message: '站点不存在或无权限' });
     }
     if (!(await canHideWebsiteWatermark(userId))) {
-      return ok({
-        success: false,
-        code: 'WATERMARK_ROLE_REQUIRED',
-        message: '仅 pro 和 admin 角色可以配置页面水印'
-      });
+      return proFeatureDenied('WATERMARK_ROLE_REQUIRED', '仅专业用户及以上可以配置页面水印');
     }
 
     const hideWatermark = body.hideWatermark;
@@ -1657,6 +1669,9 @@ async function handleUpdateSeo(event) {
     const site = await getWebsiteByIdentity({ docId, websiteId });
     if (!site || !(await canUserManageSite(userId, site))) {
       return ok({ success: false, message: '站点不存在或无权限' });
+    }
+    if (!(await hasProOrAboveRole(userId))) {
+      return proFeatureDenied('SEO_ROLE_REQUIRED', '仅专业用户及以上可以配置 SEO');
     }
 
     await query(
@@ -3658,7 +3673,7 @@ async function handleResolveSubdomain(event) {
         visibility: normalizeVisibility(site.visibility),
         hideWatermark: normalizeBooleanFlag(site.hide_watermark),
         seo: {
-          title: site.seo_title || site.site_name || null,
+          title: site.seo_title || null,
           description: site.seo_description || null,
           ogImage: site.og_image || null
         }
@@ -4030,6 +4045,9 @@ async function handleGetSiteStats(event) {
   const site = await getWebsiteByIdentity({ websiteId });
   if (!site || !(await canUserReadSite(userId, site))) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限查看该站点统计' }) };
+  }
+  if (!(await hasProOrAboveRole(userId))) {
+    return proFeatureDenied('ANALYTICS_ROLE_REQUIRED', '仅专业用户及以上可以查看网站分析');
   }
 
   try {
@@ -4559,6 +4577,9 @@ async function handleGetSiteAccessLogs(event) {
   const site = await getWebsiteByIdentity({ websiteId });
   if (!site || !(await canUserReadSite(userId, site))) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限查看该站点访问日志' }) };
+  }
+  if (!(await hasProOrAboveRole(userId))) {
+    return proFeatureDenied('ANALYTICS_ROLE_REQUIRED', '仅专业用户及以上可以查看网站分析');
   }
 
   try {
@@ -6174,7 +6195,7 @@ async function handleCompleteDeployUpload(event) {
     });
     const payload = parseResultJson(deployResponse.body) || { success: false, message: '部署响应无效' };
     if (!payload.success) {
-      const terminal = payload.code === 'INVALID_STATIC_SITE';
+      const terminal = payload.code === 'INVALID_STATIC_SITE' || payload.code === 'CONTENT_BLOCKED';
       if (terminal) {
         await markDeployUploadFailed(session, payload.code, payload.message);
       } else {
@@ -6380,6 +6401,24 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
     const bucketCfg = await resolveBucketConfig(existingBucketId);
     // bucketCfg.id 可能不存在（迁移前回退 LEGACY_BUCKET）；此时 bucket_id 写 NULL（= 默认桶语义）
     const bucketIdToStore = bucketCfg.id || null;
+
+    const contentScan = await scanZipEntries(validEntries, {
+      moderateImage: createImsModerator(callTencentCloudApi)
+    });
+    if (contentScan.blocked) {
+      return {
+        statusCode: 200,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({
+          success: false,
+          code: contentScan.code || 'CONTENT_BLOCKED',
+          message: contentScan.message || '上传内容未通过安全审核'
+        })
+      };
+    }
+    if (contentScan.images) {
+      console.log(`内容审核通过：本地 ${contentScan.scanned} 个文件，IMS ${contentScan.images} 张图`);
+    }
 
     // 部署到目标桶（COS 或 S3 兼容，由 provider 决定）
     const uploadedCount = await deployZipToBucket(bucketCfg, zipEntries, targetPrefix);

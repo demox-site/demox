@@ -621,6 +621,98 @@ test('pro and admin roles can configure whether a site hides the watermark', asy
   }
 });
 
+test('roles other than pro and admin cannot view site analytics', async () => {
+  let statsQueried = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT * FROM websites WHERE website_id = ?')) {
+      return [{ id: 9, website_id: 'ANALYTICS1', user_id: 'analytics-basic' }];
+    }
+    if (sql.includes('FROM user_roles')) return [{ roles: ['user'] }];
+    if (sql.includes('FROM site_path_daily_stats') || sql.includes('FROM site_daily_stats') || sql.includes('FROM site_access_logs')) {
+      statsQueried = true;
+      return [];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const statsBody = JSON.parse((await request(
+    'get_site_stats',
+    { websiteId: 'ANALYTICS1' },
+    'analytics-basic'
+  )).body);
+  assert.equal(statsBody.success, false, JSON.stringify(statsBody));
+  assert.equal(statsBody.code, 'ANALYTICS_ROLE_REQUIRED');
+
+  const logsBody = JSON.parse((await request(
+    'get_site_access_logs',
+    { websiteId: 'ANALYTICS1' },
+    'analytics-basic'
+  )).body);
+  assert.equal(logsBody.success, false, JSON.stringify(logsBody));
+  assert.equal(logsBody.code, 'ANALYTICS_ROLE_REQUIRED');
+  assert.equal(statsQueried, false);
+});
+
+test('pro and admin roles can request site analytics', async () => {
+  for (const role of ['pro', 'admin']) {
+    queryImpl = async (sql) => {
+      if (sql.includes('SELECT * FROM websites WHERE website_id = ?')) {
+        return [{ id: 10, website_id: 'ANALYTICS2', user_id: `analytics-${role}` }];
+      }
+      if (sql.includes('FROM user_roles')) return [{ roles: [role, 'user'] }];
+      if (
+        sql.includes('FROM site_path_daily_stats') ||
+        sql.includes('FROM site_daily_stats') ||
+        sql.includes('FROM site_referrer_daily_stats') ||
+        sql.includes('FROM site_country_daily_stats') ||
+        sql.includes('FROM site_province_daily_stats')
+      ) {
+        return [];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+
+    const body = JSON.parse((await request(
+      'get_site_stats',
+      { websiteId: 'ANALYTICS2' },
+      `analytics-${role}`
+    )).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.websiteId, 'ANALYTICS2');
+  }
+});
+
+test('roles other than pro and admin cannot update SEO', async () => {
+  let updateAttempted = false;
+  queryImpl = async (sql) => {
+    if (sql.includes('information_schema.COLUMNS') && sql.includes("COLUMN_NAME IN ('seo_title'")) {
+      return [
+        { COLUMN_NAME: 'seo_title' },
+        { COLUMN_NAME: 'seo_description' },
+        { COLUMN_NAME: 'og_image' }
+      ];
+    }
+    if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+      return [{ id: 11, user_id: 'seo-basic', website_id: 'SEO1' }];
+    }
+    if (sql.includes('FROM user_roles')) return [{ roles: ['user'] }];
+    if (sql.includes('UPDATE websites SET seo_title')) {
+      updateAttempted = true;
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request(
+    'update_seo',
+    { docId: 11, seoTitle: 'New title' },
+    'seo-basic'
+  )).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'SEO_ROLE_REQUIRED');
+  assert.equal(updateAttempted, false);
+});
+
 test('roles other than pro and admin cannot configure the watermark', async () => {
   let updateAttempted = false;
   queryImpl = async (sql) => {
@@ -666,6 +758,9 @@ test('public site resolution exposes the persisted watermark preference to the e
         project_id: null,
         website_id: 'WATERMARK1',
         site_name: 'Watermark site',
+        seo_title: 'Share title',
+        seo_description: 'Share desc',
+        og_image: 'https://cdn.example/og.png',
         visibility: 'public',
         hide_watermark: 1,
         origin_host: 'sites.demox.site'
@@ -681,6 +776,11 @@ test('public site resolution exposes the persisted watermark preference to the e
   assert.equal(body.success, true, JSON.stringify(body));
   assert.equal(body.websiteId, 'WATERMARK1');
   assert.equal(body.hideWatermark, true);
+  assert.deepEqual(body.seo, {
+    title: 'Share title',
+    description: 'Share desc',
+    ogImage: 'https://cdn.example/og.png'
+  });
 });
 
 

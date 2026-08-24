@@ -1,5 +1,5 @@
 import React from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 import {
   Area,
   AreaChart,
@@ -12,10 +12,12 @@ import {
   YAxis
 } from "recharts";
 import { ComposableMap, Geographies, Geography } from "react-simple-maps";
-import { ArrowLeft, BarChart3, Clock3, Globe2, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
-import { websiteApi, mapWebsiteRow } from "@/api";
+import { ArrowLeft, BarChart3, Clock3, Globe2, Lock, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
+import { userManager, websiteApi, mapWebsiteRow } from "@/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
-import { formatTimestamp, getDisplayName, getSiteDomains } from "@/lib/website-utils";
+import { useLanguage } from "@/hooks/use-language";
+import { formatTimestamp, getDisplayName, getSiteDomains, hasProOrAboveRole } from "@/lib/website-utils";
+import { translations } from "../home-translations";
 
 type StatsResponse = {
   success: boolean;
@@ -28,6 +30,7 @@ type StatsResponse = {
   countries?: { country: string; views: number }[];
   provinces?: { country: string; province: string; views: number }[];
   message?: string;
+  code?: string;
 };
 
 type AccessLog = {
@@ -282,21 +285,36 @@ function EmptyChart({ text }: { text: string }) {
   return <div className="grid h-[260px] place-items-center text-sm text-[var(--stitch-muted)]">{text}</div>;
 }
 
+type ConsoleOutletContext = {
+  user?: { roles?: string[] } | null;
+};
+
 export default function SiteAnalyticsPage() {
   const { projectId = "", websiteId = "" } = useParams();
   const navigate = useNavigate();
+  const { language } = useLanguage();
+  const t = translations[language] || translations.zh;
+  const outlet = useOutletContext<ConsoleOutletContext | undefined>();
+  const canViewAnalytics = hasProOrAboveRole(outlet?.user?.roles || userManager.get()?.roles);
   const [days, setDays] = React.useState(30);
   const [website, setWebsite] = React.useState<any>(null);
   const [stats, setStats] = React.useState<StatsResponse | null>(null);
   const [logs, setLogs] = React.useState<AccessLog[]>([]);
   const [logsMeta, setLogsMeta] = React.useState<AccessLogMeta>({ page: 1, pageSize: 10, total: 0, totalPages: 1 });
-  const [logsLoading, setLogsLoading] = React.useState(true);
-  const [loading, setLoading] = React.useState(true);
+  const [logsLoading, setLogsLoading] = React.useState(canViewAnalytics);
+  const [loading, setLoading] = React.useState(canViewAnalytics);
   const [error, setError] = React.useState("");
+  const [roleDenied, setRoleDenied] = React.useState(false);
   const logPage = logsMeta.page;
   const logPageSize = logsMeta.pageSize;
+  const analyticsLocked = !canViewAnalytics || roleDenied;
 
   React.useEffect(() => {
+    if (analyticsLocked) {
+      setLoading(false);
+      setStats(null);
+      return;
+    }
     let alive = true;
     setLoading(true);
     setError("");
@@ -311,6 +329,10 @@ export default function SiteAnalyticsPage() {
           .find((item: any) => item.websiteId === websiteId || item._id === websiteId);
         setWebsite(site || null);
         setStats(statsRes);
+        if (statsRes?.code === "ANALYTICS_ROLE_REQUIRED") {
+          setRoleDenied(true);
+          return;
+        }
         if (!site) setError("未找到这个站点，或你没有权限查看它。");
         if (!statsRes?.success) setError(statsRes?.message || "统计数据加载失败");
       })
@@ -322,14 +344,24 @@ export default function SiteAnalyticsPage() {
     return () => {
       alive = false;
     };
-  }, [websiteId, days]);
+  }, [websiteId, days, analyticsLocked]);
 
   React.useEffect(() => {
+    if (analyticsLocked) {
+      setLogsLoading(false);
+      setLogs([]);
+      return;
+    }
     let alive = true;
     setLogsLoading(true);
     websiteApi.getSiteAccessLogs({ websiteId, days: Math.min(days, 30), page: logPage, pageSize: logPageSize })
       .then((logsRes) => {
         if (!alive) return;
+        if (logsRes?.code === "ANALYTICS_ROLE_REQUIRED") {
+          setRoleDenied(true);
+          setLogs([]);
+          return;
+        }
         if (logsRes?.success) {
           setLogs(logsRes.logs || []);
           setLogsMeta({
@@ -352,7 +384,7 @@ export default function SiteAnalyticsPage() {
     return () => {
       alive = false;
     };
-  }, [websiteId, days, logPage, logPageSize]);
+  }, [websiteId, days, logPage, logPageSize, analyticsLocked]);
 
   const daily = fillDaily(stats?.daily, days);
   const totalViews = stats?.totals?.views || 0;
@@ -364,6 +396,34 @@ export default function SiteAnalyticsPage() {
   const topReferrer = stats?.referrers?.find((r) => r.host !== "direct") || stats?.referrers?.[0];
   const avgViews = days > 0 ? totalViews / days : 0;
   const domains = website ? getSiteDomains(website) : [];
+
+  if (analyticsLocked) {
+    return (
+      <div className="min-h-full p-4 sm:p-6 lg:p-8">
+        <div className="mx-auto max-w-3xl space-y-6">
+          <button
+            type="button"
+            onClick={() => navigate(`/console/projects/${projectId}/sites`)}
+            className="inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {language === "en" ? "Back to sites" : "返回站点列表"}
+          </button>
+          <div className="rounded-[2rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-6 py-16 text-center shadow-[0_24px_70px_rgba(0,0,0,.10)] sm:px-10">
+            <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
+              <Lock className="h-7 w-7" />
+            </div>
+            <h1 className="text-2xl font-black tracking-[-0.04em] text-[var(--stitch-ink)] sm:text-3xl">
+              {t.analyticsProRequiredTitle}
+            </h1>
+            <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--stitch-muted)]">
+              {t.analyticsProRequiredDesc}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full p-4 sm:p-6 lg:p-8">
