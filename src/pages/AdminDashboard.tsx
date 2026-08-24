@@ -178,6 +178,7 @@ const AdminDashboard: React.FC = () => {
   interface UserRoleDoc {
     _id: string;
     email?: string;
+    nickname?: string;
     authProviders?: Array<"github" | "feishu">;
     role?: string[];
     updatedAt?: number;
@@ -185,6 +186,7 @@ const AdminDashboard: React.FC = () => {
   type RawRoleDoc = {
     _id: string;
     email?: string;
+    nickname?: string;
     authProviders?: string[];
     role?: string[];
     updatedAt?: number;
@@ -213,6 +215,7 @@ const AdminDashboard: React.FC = () => {
       const list: UserRoleDoc[] = raw.map((d) => ({
         _id: d._id || "",
         email: d.email || "",
+        nickname: d.nickname || "",
         authProviders: (Array.isArray(d.authProviders) ? d.authProviders : []).filter(
           (provider): provider is "github" | "feishu" => provider === "github" || provider === "feishu"
         ),
@@ -870,7 +873,7 @@ const AdminDashboard: React.FC = () => {
     const providers = (item.authProviders || []).flatMap((provider) =>
       provider === "github" ? ["github"] : ["feishu", "飞书"]
     );
-    return [item.email || "", item._id, ...providers, ...(item.role || []).flatMap((roleId) => [roleId, getRoleMeta(roleId).name])]
+    return [item.nickname || "", item.email || "", item._id, ...providers, ...(item.role || []).flatMap((roleId) => [roleId, getRoleMeta(roleId).name])]
       .some((value) => value.toLowerCase().includes(normalizedRoleSearch));
   });
   const roleCounts = roleOptions.reduce<Record<string, number>>((counts, option) => {
@@ -1178,7 +1181,7 @@ const AdminDashboard: React.FC = () => {
                         <Input
                           value={roleSearch}
                           onChange={(event) => setRoleSearch(event.target.value)}
-                          placeholder="搜索邮箱、UID、登录方式或角色"
+                          placeholder="搜索昵称、邮箱、UID、登录方式或角色"
                           aria-label="搜索用户角色"
                           className="border-zinc-700 bg-zinc-950 pl-9 text-zinc-100 placeholder:text-zinc-600"
                         />
@@ -1229,9 +1232,12 @@ const AdminDashboard: React.FC = () => {
                                 <tr key={item._id} className="border-t border-zinc-800 align-middle">
                                   <td className="py-4 pr-6">
                                     <div className="flex items-center gap-2 text-sm font-medium text-zinc-200">
-                                      {item.email || "未关联邮箱"}
+                                      {item.nickname || item.email || "未关联账户"}
                                       {isCurrentUser ? <Badge variant="outline" className="border-zinc-700 text-zinc-400">当前账户</Badge> : null}
                                     </div>
+                                    {item.nickname && item.email ? (
+                                      <div className="mt-1 max-w-[280px] truncate text-xs text-zinc-500" title={item.email}>{item.email}</div>
+                                    ) : null}
                                     <div className="mt-1 max-w-[280px] truncate font-mono text-xs text-zinc-600" title={item._id}>{item._id}</div>
                                   </td>
                                   <td className="py-4 pr-6">

@@ -101,12 +101,12 @@ test('project deletion requires authentication', async () => {
 test('platform role list reports linked login providers without exposing provider ids', async () => {
   queryImpl = async (sql) => {
     if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
-    if (sql.includes('SELECT ur.user_id') && sql.includes('u.github_id') && sql.includes('u.feishu_open_id')) {
+    if (sql.includes('SELECT ur.user_id') && sql.includes('u.nickname') && sql.includes('u.github_id') && sql.includes('u.feishu_open_id')) {
       return [
-        { user_id: 'github-user', email: 'github@example.com', roles: ['user'], github_id: '1', feishu_open_id: null },
-        { user_id: 'feishu-user', email: 'feishu@example.com', roles: ['user'], github_id: null, feishu_open_id: 'ou_1' },
-        { user_id: 'linked-user', email: 'linked@example.com', roles: ['user'], github_id: '2', feishu_open_id: 'ou_2' },
-        { user_id: 'email-user', email: 'email@example.com', roles: ['user'], github_id: null, feishu_open_id: null }
+        { user_id: 'github-user', email: 'github@example.com', nickname: 'GitHub User', roles: ['user'], github_id: '1', feishu_open_id: null },
+        { user_id: 'feishu-user', email: 'feishu@example.com', nickname: '飞书用户', roles: ['user'], github_id: null, feishu_open_id: 'ou_1' },
+        { user_id: 'linked-user', email: 'linked@example.com', nickname: 'Linked User', roles: ['user'], github_id: '2', feishu_open_id: 'ou_2' },
+        { user_id: 'email-user', email: 'email@example.com', nickname: '', roles: ['user'], github_id: null, feishu_open_id: null }
       ];
     }
     throw new Error(`Unexpected query: ${sql}`);
@@ -116,6 +116,9 @@ test('platform role list reports linked login providers without exposing provide
   assert.equal(body.success, true, JSON.stringify(body));
   assert.deepEqual(body.data.map((item) => item.authProviders), [
     ['github'], ['feishu'], ['github', 'feishu'], []
+  ]);
+  assert.deepEqual(body.data.map((item) => item.nickname), [
+    'GitHub User', '飞书用户', 'Linked User', ''
   ]);
   assert.equal('github_id' in body.data[0], false);
   assert.equal('feishu_open_id' in body.data[0], false);
