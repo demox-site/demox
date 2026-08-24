@@ -98,6 +98,29 @@ test('project deletion requires authentication', async () => {
   assert.equal(queried, false);
 });
 
+test('platform role list reports linked login providers without exposing provider ids', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT ur.user_id') && sql.includes('u.github_id') && sql.includes('u.feishu_open_id')) {
+      return [
+        { user_id: 'github-user', email: 'github@example.com', roles: ['user'], github_id: '1', feishu_open_id: null },
+        { user_id: 'feishu-user', email: 'feishu@example.com', roles: ['user'], github_id: null, feishu_open_id: 'ou_1' },
+        { user_id: 'linked-user', email: 'linked@example.com', roles: ['user'], github_id: '2', feishu_open_id: 'ou_2' },
+        { user_id: 'email-user', email: 'email@example.com', roles: ['user'], github_id: null, feishu_open_id: null }
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('list_user_roles', {}, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.deepEqual(body.data.map((item) => item.authProviders), [
+    ['github'], ['feishu'], ['github', 'feishu'], []
+  ]);
+  assert.equal('github_id' in body.data[0], false);
+  assert.equal('feishu_open_id' in body.data[0], false);
+});
+
 test('platform role updates normalize roles and keep the baseline user role', async () => {
   let savedRoles = null;
   queryImpl = async (sql, params) => {

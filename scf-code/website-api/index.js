@@ -2972,13 +2972,13 @@ async function handleRemoveProjectMember(event) {
   }
 }
 
-/** 列出所有用户角色(user_roles 表),带 email(LEFT JOIN users) */
+/** 列出所有用户角色(user_roles 表),带账户与第三方登录信息(LEFT JOIN users) */
 async function handleListUserRoles(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
   // users 表主键是 id(形如 user_xxx);老站点的纯数字 user_id 不在 users 表中,email 为 null
   const rows = await query(
-    `SELECT ur.user_id, ur.roles, ur.updated_at, u.email
+    `SELECT ur.user_id, ur.roles, ur.updated_at, u.email, u.github_id, u.feishu_open_id
      FROM user_roles ur
      LEFT JOIN users u ON u.id = ur.user_id
      ORDER BY ur.updated_at DESC`
@@ -2986,6 +2986,10 @@ async function handleListUserRoles(event) {
   const list = rows.map((r) => ({
     _id: r.user_id,
     email: r.email || '',
+    authProviders: [
+      ...(r.github_id ? ['github'] : []),
+      ...(r.feishu_open_id ? ['feishu'] : [])
+    ],
     role: typeof r.roles === 'string' ? JSON.parse(r.roles || '[]') : (r.roles || []),
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined
   }));

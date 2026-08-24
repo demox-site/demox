@@ -28,9 +28,10 @@ import {
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useToast } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
+import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, UserPlus } from "lucide-react";
+import { Github, Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, UserPlus } from "lucide-react";
 
 const DEFAULT_ROLE_META = [
   { id: "admin", name: "管理员", priority: 100, enabled: true },
@@ -177,12 +178,14 @@ const AdminDashboard: React.FC = () => {
   interface UserRoleDoc {
     _id: string;
     email?: string;
+    authProviders?: Array<"github" | "feishu">;
     role?: string[];
     updatedAt?: number;
   }
   type RawRoleDoc = {
     _id: string;
     email?: string;
+    authProviders?: string[];
     role?: string[];
     updatedAt?: number;
     updateTime?: number;
@@ -210,6 +213,9 @@ const AdminDashboard: React.FC = () => {
       const list: UserRoleDoc[] = raw.map((d) => ({
         _id: d._id || "",
         email: d.email || "",
+        authProviders: (Array.isArray(d.authProviders) ? d.authProviders : []).filter(
+          (provider): provider is "github" | "feishu" => provider === "github" || provider === "feishu"
+        ),
         role: Array.isArray(d.role) ? d.role : [],
         updatedAt: d.updatedAt || d.updateTime
       }));
@@ -861,7 +867,10 @@ const AdminDashboard: React.FC = () => {
   const normalizedRoleSearch = roleSearch.trim().toLowerCase();
   const filteredRolesList = rolesList.filter((item) => {
     if (!normalizedRoleSearch) return true;
-    return [item.email || "", item._id, ...(item.role || []).flatMap((roleId) => [roleId, getRoleMeta(roleId).name])]
+    const providers = (item.authProviders || []).flatMap((provider) =>
+      provider === "github" ? ["github"] : ["feishu", "飞书"]
+    );
+    return [item.email || "", item._id, ...providers, ...(item.role || []).flatMap((roleId) => [roleId, getRoleMeta(roleId).name])]
       .some((value) => value.toLowerCase().includes(normalizedRoleSearch));
   });
   const roleCounts = roleOptions.reduce<Record<string, number>>((counts, option) => {
@@ -1169,7 +1178,7 @@ const AdminDashboard: React.FC = () => {
                         <Input
                           value={roleSearch}
                           onChange={(event) => setRoleSearch(event.target.value)}
-                          placeholder="搜索邮箱、UID 或角色"
+                          placeholder="搜索邮箱、UID、登录方式或角色"
                           aria-label="搜索用户角色"
                           className="border-zinc-700 bg-zinc-950 pl-9 text-zinc-100 placeholder:text-zinc-600"
                         />
@@ -1198,6 +1207,7 @@ const AdminDashboard: React.FC = () => {
                         <thead>
                           <tr className="text-left text-zinc-400">
                             <th className="py-3 pr-6 font-medium">账户</th>
+                            <th className="py-3 pr-6 font-medium">第三方登录</th>
                             <th className="py-3 pr-6 font-medium">生效角色</th>
                             <th className="py-3 pr-6 font-medium">拥有角色</th>
                             <th className="py-3 pr-6 font-medium">更新时间</th>
@@ -1207,7 +1217,7 @@ const AdminDashboard: React.FC = () => {
                         <tbody>
                           {filteredRolesList.length === 0 ? (
                             <tr>
-                              <td className="py-10 text-center text-zinc-500" colSpan={5}>
+                              <td className="py-10 text-center text-zinc-500" colSpan={6}>
                                 {rolesLoading ? "正在加载角色配置..." : roleSearch ? "没有匹配的用户" : "暂无显式角色配置"}
                               </td>
                             </tr>
@@ -1223,6 +1233,24 @@ const AdminDashboard: React.FC = () => {
                                       {isCurrentUser ? <Badge variant="outline" className="border-zinc-700 text-zinc-400">当前账户</Badge> : null}
                                     </div>
                                     <div className="mt-1 max-w-[280px] truncate font-mono text-xs text-zinc-600" title={item._id}>{item._id}</div>
+                                  </td>
+                                  <td className="py-4 pr-6">
+                                    {(item.authProviders || []).length > 0 ? (
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {(item.authProviders || []).map((provider) => (
+                                          <Badge key={provider} variant="outline" className="gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300">
+                                            {provider === "github" ? (
+                                              <Github className="h-3.5 w-3.5" aria-hidden="true" />
+                                            ) : (
+                                              <FeishuIcon className="h-3.5 w-3.5" />
+                                            )}
+                                            {provider === "github" ? "GitHub" : "飞书"}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <span className="text-sm text-zinc-500">未绑定</span>
+                                    )}
                                   </td>
                                   <td className="py-4 pr-6">
                                     <Badge variant="outline" className={roleBadgeClass(effectiveRole.id)}>{effectiveRole.name}</Badge>
