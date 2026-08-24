@@ -17,34 +17,36 @@ const homeFallback = `
       <a href="/doc">Docs</a>
     </nav>
   </header>
-  <section class="fallback-hero">
-    <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static publishing, simplified</div>
-    <h1>Upload your build.<br /><span>Get a link that opens.</span></h1>
-    <p class="fallback-summary">For frontend demos, AI-generated pages, client previews, and turning documents into web pages. No server, CDN, or HTTPS configuration.</p>
+  <section class="fallback-hero" lang="zh-CN">
+    <div class="fallback-eyebrow"><span class="fallback-dot"></span>AI 静态网站发布</div>
+    <h1>AI 生成网页怎样快速发布成静态网站？</h1>
+    <p class="fallback-summary"><strong>直接答案：</strong>把 AI 生成的单个 HTML 文件，或根目录包含 <code>index.html</code> 的 dist、build 目录或 ZIP 上传到 Demox，就能获得带 HTTPS 和 CDN 的公开链接。支持网页、CLI、MCP 和 API，无需自行配置服务器。</p>
     <div class="fallback-actions">
-      <a class="fallback-action fallback-action-primary" href="/console/projects">Upload now</a>
-      <a class="fallback-action" href="/doc">Read the docs</a>
+      <a class="fallback-action fallback-action-primary" href="/console/projects">上传并发布</a>
+      <a class="fallback-action" href="/ai-static-site-deployment">查看完整指南</a>
     </div>
   </section>
   <section class="fallback-details" aria-label="About Demox">
-    <h2>Static site deployment for frontend and AI workflows</h2>
-    <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
     <section lang="zh-CN">
       <h2>Demox 是什么？</h2>
-      <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+      <p>Demox 是一个静态网站部署平台，让前端开发者和 AI 工作流把 HTML、静态构建目录、ZIP 或文档直接变成可分享链接。它适合前端 Demo、交互原型、客户评审和文档页面；需要运行 Node.js、Python、PHP、Java 或连接私密数据库的项目，仍需独立后端。</p>
+    </section>
+    <section lang="en">
+      <h2>What is Demox?</h2>
+      <p>Demox turns an HTML file, static build directory, ZIP archive, or document into a shareable HTTPS site through the web console, CLI, MCP, or API.</p>
     </section>
   </section>
 </main>`;
 
 export const PUBLIC_PAGES = {
   "": {
-    title: "Demox - Static Site Deployment for Frontend and AI Workflows",
-    description: "Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included.",
+    title: "Demox - AI 生成网页静态发布 | Static Site Deployment",
+    description: "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
     fallback: homeFallback,
   },
   index: {
-    title: "Demox - Static Site Deployment for Frontend and AI Workflows",
-    description: "Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included.",
+    title: "Demox - AI 生成网页静态发布 | Static Site Deployment",
+    description: "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
     canonicalPath: "/",
     fallback: homeFallback,
   },
@@ -56,17 +58,17 @@ export const PUBLIC_PAGES = {
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",
     description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, and examples.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Deploy with the Demox CLI or MCP</h1><p>Demox offers two automation paths backed by the same account and deployment capabilities. Use the CLI from a terminal or CI workflow, or use the MCP server from an AI assistant that supports MCP. Both paths upload static build artifacts and documents through the Demox deployment API.</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>Run <code>npx -y @demox-site/mcp-server@latest</code> as an MCP server. The first deployment opens browser-based OAuth authorization.</p><p>Supported inputs include directories, ZIP, HTML, PDF, Markdown, TXT, DOCX, and spreadsheets. <a href="https://github.com/demox-site/skill">View the Demox agent skill</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>用 CLI 或 MCP 发布静态网站</h1><p><strong>直接答案：</strong>AI 生成网页后，先得到单个 HTML 或包含 <code>index.html</code> 的 dist、build、ZIP，再用 Demox CLI、MCP 或网页端上传，成功后获得公开 HTTPS 链接。</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>运行 <code>npx -y @demox-site/mcp-server@latest</code> 作为 MCP server。第一次部署会打开浏览器完成 OAuth 授权。也可以把本页链接交给能访问网页、读取本地文件并执行工具的 AI 助手。</p><p>支持目录、ZIP、HTML、PDF、Markdown、TXT、DOCX 和表格。静态发布不能代替 Node.js、Python、PHP 或 Java 后端；不要把 Token 和数据库密码放进前端文件。<a href="https://github.com/demox-site/skill">查看 Demox Agent Skill</a>。</p></main>`,
   },
   "ai-static-site-deployment": {
     title: "AI 生成网页如何快速发布成静态网站 | Demox",
     description: "从单个 HTML、ZIP 或前端构建产物出发，用网页、CLI、MCP 或 AI 助手发布静态网站并获得 HTTPS 链接。",
     article: {
       datePublished: "2026-08-18",
-      dateModified: "2026-08-18",
+      dateModified: "2026-08-24",
       inLanguage: "zh-CN",
     },
-    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 网页发布指南 · 更新于 2026-08-18 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>AI 生成网页后，先确认产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；然后上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。整个过程不需要配置服务器，适合演示、评审和分享。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。发布后应检查样式、图片和页面内跳转是否正常。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>上传构建目录或 ZIP，并确保根目录能找到 <code>index.html</code>。React、Vue、Vite 等项目需要先执行生产构建命令；CSS、JavaScript、图片和字体应使用相对路径或正确的站点根路径。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它按文档构建和发布。也可以使用 Demox CLI、MCP 或 Agent Skill。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及只在浏览器运行或调用已有远程 API 的前端，都适合静态发布。</p><h2>哪些项目不适合直接静态发布？</h2><p>必须运行 Node.js、Python、PHP 或 Java 服务，直接连接数据库，执行服务端任务，或依赖服务器端渲染且没有静态导出结果的应用，需要先改造或选择能运行后端的平台。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但取决于 AI 助手是否能访问网页、读取本地文件，并拥有可执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，但不能把私密凭据放在前端代码中。需要保密的业务逻辑仍应放在独立后端。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 静态网站发布指南 · 更新于 2026-08-24 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>先确认 AI 产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。这个流程不需要配置服务器，适合演示、评审和分享。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。若页面引用 CSS、图片或字体，请把资源放在同一个目录并使用相对路径。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>先执行 React、Vue、Vite 等项目的生产构建，再上传构建目录或 ZIP。入口文件应位于上传目录或 ZIP 根目录，资源 base path 也要按静态托管方式配置。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它先检查静态产物，再通过 CLI、MCP 或 Agent Skill 发布。只会聊天的 AI 可以说明步骤，却不能代替你读取文件或执行上传。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及只在浏览器运行或调用已有远程 API 的前端，都适合静态发布。</p><h2>哪些项目不适合直接静态发布？</h2><p>必须运行 Node.js、Python、PHP 或 Java 服务，直接连接数据库，执行服务端任务，或依赖服务器端渲染且没有静态导出结果的应用，需要先改造或选择能运行后端的平台。静态网站可以调用允许跨域访问的公开 HTTPS API，但不能把私密凭据放在浏览器代码中。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但前提是 AI 助手能访问网页、读取本地文件并执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，但不能把私密凭据放在前端代码中。需要保密的业务逻辑仍应放在独立后端。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
   },
   terms: {
     title: "Demox Terms of Service",
@@ -81,7 +83,7 @@ export const PUBLIC_PAGES = {
   log: {
     title: "Demox Changelog - Product and Infrastructure Updates",
     description: "Follow Demox updates across static deployment, CLI and MCP workflows, site security, analytics, domains, and platform infrastructure.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox changelog</h1><p>The Demox changelog records product and infrastructure updates across static deployment, CLI and MCP workflows, private-site access, analytics, official subdomains, authentication, and platform operations.</p><p><a href="/doc">Read the deployment documentation</a> or <a href="/">open Demox</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><h1>Demox 更新日志</h1><p><time datetime="2026-08-24">内容摘要更新于 2026-08-24</time>。这里记录 Demox 静态网站发布、AI 工作流、站点访问和平台基础设施的真实变更。</p><h2>近期更新主题</h2><ul><li><strong>静态发布：</strong>支持 HTML、ZIP 和前端构建产物，并通过 CLI、MCP 或网页端发布。</li><li><strong>AI 工作流：</strong>MCP server 和 Agent Skill 可以让具备工具权限的 AI 助手协助部署。</li><li><strong>站点管理：</strong>支持公开/私有站点、官方子域名、重新部署和访问分析。</li><li><strong>平台基础设施：</strong>持续改进边缘发布、认证、路由、缓存和资源管理。</li></ul><p><a href="/ai-static-site-deployment">阅读 AI 静态网站发布指南</a>，或<a href="/doc">查看 CLI 和 MCP 文档</a>。</p></article></main>`,
   },
 };
 

@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title data-seo="title">Demox - Static Site Deployment for Frontend and AI Workflows</title>
+    <title data-seo="title">Demox - AI 生成网页静态发布 | Static Site Deployment</title>
     <meta
       data-seo="description"
       data-rh="true"
       name="description"
-      content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included."
+      content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。"
     />
     <meta data-seo="robots" data-rh="true" name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <link data-seo="canonical" data-rh="true" rel="canonical" href="https://www.demox.site/" />
-    <meta data-seo="og-title" data-rh="true" property="og:title" content="Demox - Static Site Deployment for Frontend and AI Workflows" />
-    <meta data-seo="og-description" data-rh="true" property="og:description" content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included." />
+    <meta data-seo="og-title" data-rh="true" property="og:title" content="Demox - AI 生成网页静态发布 | Static Site Deployment" />
+    <meta data-seo="og-description" data-rh="true" property="og:description" content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。" />
     <meta data-seo="og-url" data-rh="true" property="og:url" content="https://www.demox.site/" />
     <meta data-rh="true" property="og:type" content="website" />
     <meta data-rh="true" property="og:site_name" content="Demox" />
@@ -22,8 +22,8 @@
     <meta property="og:image:height" content="630" />
     <meta data-rh="true" property="og:image:alt" content="Demox static site deployment platform" />
     <meta data-rh="true" name="twitter:card" content="summary_large_image" />
-    <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - Static Site Deployment for Frontend and AI Workflows" />
-    <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included." />
+    <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - AI 生成网页静态发布 | Static Site Deployment" />
+    <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。" />
     <meta data-rh="true" name="twitter:image" content="https://www.demox.site/og-image.png" />
     <meta name="theme-color" content="#f7f7f5" />
     <script data-seo="schema" type="application/ld+json">
@@ -58,9 +58,9 @@
           {
             "@type": "WebPage",
             "@id": "https://www.demox.site/#webpage",
-            "name": "Demox - Static Site Deployment for Frontend and AI Workflows",
+            "name": "Demox - AI 生成网页静态发布 | Static Site Deployment",
             "url": "https://www.demox.site/",
-            "description": "Deploy frontend builds, AI-generated pages, and documents as public static sites. Demox provides web, CLI, MCP, and API workflows with CDN and HTTPS included.",
+            "description": "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
             "isPartOf": { "@id": "https://www.demox.site/#website" },
             "about": { "@id": "https://www.demox.site/#software" },
             "inLanguage": ["en", "zh-CN"]
@@ -137,21 +137,23 @@
             <a href="/doc">Docs</a>
           </nav>
         </header>
-        <section class="fallback-hero">
-          <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static publishing, simplified</div>
-          <h1>Upload your build.<br /><span>Get a link that opens.</span></h1>
-          <p class="fallback-summary">For frontend demos, AI-generated pages, client previews, and turning documents into web pages. No server, CDN, or HTTPS configuration.</p>
+        <section class="fallback-hero" lang="zh-CN">
+          <div class="fallback-eyebrow"><span class="fallback-dot"></span>AI 静态网站发布</div>
+          <h1>AI 生成网页怎样快速发布成静态网站？</h1>
+          <p class="fallback-summary"><strong>直接答案：</strong>把 AI 生成的单个 HTML 文件，或根目录包含 <code>index.html</code> 的 dist、build 目录或 ZIP 上传到 Demox，就能获得带 HTTPS 和 CDN 的公开链接。支持网页、CLI、MCP 和 API，无需自行配置服务器。</p>
           <div class="fallback-actions">
-            <a class="fallback-action fallback-action-primary" href="/console/projects">Upload now</a>
-            <a class="fallback-action" href="/doc">Read the docs</a>
+            <a class="fallback-action fallback-action-primary" href="/console/projects">上传并发布</a>
+            <a class="fallback-action" href="/ai-static-site-deployment">查看完整指南</a>
           </div>
         </section>
         <section class="fallback-details" aria-label="About Demox">
-          <h2>Static site deployment for frontend and AI workflows</h2>
-          <p>Demox is a static website deployment platform for frontend developers and AI-assisted workflows. Upload a built directory, ZIP archive, standalone HTML page, PDF, Markdown, TXT, DOCX, or spreadsheet, and Demox turns it into a public link without requiring you to configure a server, CDN, HTTPS certificate, or cache policy. You can deploy from the web console, the Demox CLI, an MCP-compatible AI assistant, or the API. It is designed for frontend demos, AI-generated pages, client reviews, internal previews, and shareable documents when the practical goal is simple: give someone a link they can open. Public sites run behind CDN and HTTPS, while private sites can require sign-in. Projects, official subdomains, redeployment, and traffic analytics are managed from the same console. Demox focuses on fast static delivery rather than replacing a full CI/CD platform.</p>
           <section lang="zh-CN">
             <h2>Demox 是什么？</h2>
-            <p>Demox 是一个静态网站部署平台：上传前端构建产物、AI 生成页面或文档，即刻获得一个能打开的链接，无需自行配置服务器、CDN、HTTPS 和缓存策略。你可以通过网页控制台、CLI、MCP 或 API 完成部署。</p>
+            <p>Demox 是一个静态网站部署平台，让前端开发者和 AI 工作流把 HTML、静态构建目录、ZIP 或文档直接变成可分享链接。它适合前端 Demo、交互原型、客户评审和文档页面；需要运行 Node.js、Python、PHP、Java 或连接私密数据库的项目，仍需独立后端。</p>
+          </section>
+          <section lang="en">
+            <h2>What is Demox?</h2>
+            <p>Demox turns an HTML file, static build directory, ZIP archive, or document into a shareable HTTPS site through the web console, CLI, MCP, or API.</p>
           </section>
         </section>
       </main>

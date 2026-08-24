@@ -34,12 +34,12 @@ export const Seo: React.FC<SeoProps> = ({
   const isZh = language === "zh";
 
   const defaultTitle = isZh
-    ? "Demox - 前端静态网站托管部署平台"
-    : "Demox - Frontend Static Website Hosting & Deployment Platform";
+    ? "Demox - AI 生成网页静态发布与前端部署"
+    : "Demox - AI-Generated Static Site Deployment";
 
   const defaultDescription = isZh
-    ? "Demox 是一个极简的静态网站托管平台。无需配置服务器，只需上传构建产物，即可获得公网访问链接。支持 CDN 加速、HTTPS、自动缓存策略。"
-    : "Demox is a minimalist static website hosting platform. No server configuration required. Just upload your build artifacts and get a public link instantly. Supports CDN, HTTPS, and automatic caching strategies.";
+    ? "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。"
+    : "Demox publishes AI-generated HTML, ZIP archives, and frontend builds as shareable static websites through the web, CLI, MCP, or API.";
 
   const siteTitle = title ? `${title} | ${SITE_NAME}` : defaultTitle;
   const siteDescription = description || defaultDescription;

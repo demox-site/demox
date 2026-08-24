@@ -16,10 +16,11 @@ test("generates indexable static shells and noindex auth shells", async () => {
 
     const home = await readFile(path.join(distDir, "index.html"), "utf8");
     assert.match(home, /<link data-seo="canonical" data-rh="true" rel="canonical" href="https:\/\/www\.demox\.site\/" \/>/);
-    assert.match(home, /<h1>Upload your build\.<br \/><span>Get a link that opens\.<\/span><\/h1>/);
-    assert.match(home, /Demox is a static website deployment platform for frontend developers and AI-assisted workflows\./);
+    assert.match(home, /<title data-seo="title">Demox - AI 生成网页静态发布 \| Static Site Deployment<\/title>/);
+    assert.match(home, /<h1>AI 生成网页怎样快速发布成静态网站？<\/h1>/);
+    assert.match(home, /<strong>直接答案：<\/strong>把 AI 生成的单个 HTML 文件/);
     assert.match(home, /<h2>Demox 是什么？<\/h2>/);
-    assert.match(home, /href="\/doc">Read the docs<\/a>/);
+    assert.match(home, /href="\/ai-static-site-deployment">查看完整指南<\/a>/);
     assert.match(home, /href="\/ai-static-site-deployment">Guide<\/a>/);
     assert.match(home, /"@type":"SoftwareApplication"/);
     assert.match(home, /<div id="root"><\/div>\s*<noscript data-crawlable-fallback-shell>\s*<main data-crawlable-fallback>/);
@@ -32,21 +33,28 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*background(?:-color)?\s*:\s*#09090b/i);
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i);
     assert.doesNotMatch(fallbackMarkup, /\s(?:hidden|aria-hidden)(?:\s|=|>)/i);
+    const schema = home.match(/<script data-seo="schema" type="application\/ld\+json">([\s\S]*?)<\/script>/)?.[1];
+    assert.doesNotThrow(() => JSON.parse(schema), "homepage JSON-LD should be valid JSON");
 
     const docs = await readFile(path.join(distDir, "doc", "index.html"), "utf8");
     assert.match(docs, /href="https:\/\/www\.demox\.site\/doc"/);
-    assert.match(docs, /<main data-crawlable-fallback class="fallback-simple">/);
-    assert.match(docs, /<h1>Deploy with the Demox CLI or MCP<\/h1>/);
+    assert.match(docs, /<main data-crawlable-fallback class="fallback-simple" lang="zh-CN">/);
+    assert.match(docs, /<h1>用 CLI 或 MCP 发布静态网站<\/h1>/);
     assert.doesNotMatch(docs, /noindex/);
 
     const guide = await readFile(path.join(distDir, "ai-static-site-deployment", "index.html"), "utf8");
     assert.match(guide, /<title data-seo="title">AI 生成网页如何快速发布成静态网站 \| Demox<\/title>/);
     assert.match(guide, /href="https:\/\/www\.demox\.site\/ai-static-site-deployment"/);
-    assert.match(guide, /<strong>直接答案：<\/strong>AI 生成网页后/);
+    assert.match(guide, /<strong>直接答案：<\/strong>先确认 AI 产物是单个 HTML 文件/);
     assert.match(guide, /哪些项目不适合直接静态发布？/);
     assert.match(guide, /"@type":"TechArticle"/);
-    assert.match(guide, /"dateModified":"2026-08-18"/);
+    assert.match(guide, /"dateModified":"2026-08-24"/);
     assert.doesNotMatch(guide, /content="noindex/);
+
+    const log = await readFile(path.join(distDir, "log", "index.html"), "utf8");
+    assert.match(log, /<h1>Demox 更新日志<\/h1>/);
+    assert.match(log, /2026-08-24/);
+    assert.match(log, /AI 静态网站发布指南/);
 
     const callback = await readFile(path.join(distDir, NOINDEX_ROUTES[0], "index.html"), "utf8");
     assert.match(callback, /content="noindex, nofollow"/);

@@ -4,6 +4,7 @@
 ## Primary pages
 - [Demox homepage](https://www.demox.site/): Product overview and web deployment entry point.
 - [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, supported inputs, and FAQ.
+- [AI static-site publishing guide](https://www.demox.site/ai-static-site-deployment): How to publish an AI-generated HTML page, ZIP, or frontend build and what static hosting can and cannot run.
 - [Pricing](https://www.demox.site/pricing): Current Demox plans.
 - [Changelog](https://www.demox.site/log): Product and infrastructure updates.
 

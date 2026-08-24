@@ -16,15 +16,16 @@ import { MainLayout } from "@/layouts/MainLayout";
 
 const PAGE_URL = "https://www.demox.site/ai-static-site-deployment";
 const PUBLISHED_AT = "2026-08-18";
+const UPDATED_AT = "2026-08-24";
 
 const guideTexts = {
   zh: {
     eyebrow: "AI 网页发布指南",
     title: "AI 生成网页后，怎样快速发布成静态网站？",
     answer:
-      "AI 生成网页后，先确认产物是单个 HTML 文件，或根目录含 index.html 的静态目录/ZIP；然后上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。整个过程不需要配置服务器，适合演示、评审和分享。",
+      "AI 生成网页后，先确认产物是单个 HTML 文件，或根目录含 index.html 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。",
     published: "发布于 2026-08-18",
-    updated: "更新于 2026-08-18",
+    updated: "更新于 2026-08-24",
     author: "Demox 团队",
     primaryCta: "现在上传",
     secondaryCta: "查看完整文档",
@@ -142,7 +143,7 @@ const guideTexts = {
     answer:
       "After generating a page with AI, make sure you have either one HTML file or a static directory or ZIP with index.html at its root. Upload it to Demox to receive a public HTTPS link delivered through CDN, without configuring a server.",
     published: "Published Aug 18, 2026",
-    updated: "Updated Aug 18, 2026",
+    updated: "Updated Aug 24, 2026",
     author: "Demox team",
     primaryCta: "Upload now",
     secondaryCta: "Read the full docs",
@@ -268,7 +269,7 @@ export const AiStaticSiteGuide: React.FC = () => {
     headline: t.title,
     description: t.answer,
     datePublished: PUBLISHED_AT,
-    dateModified: PUBLISHED_AT,
+    dateModified: UPDATED_AT,
     inLanguage: language === "zh" ? "zh-CN" : "en",
     mainEntityOfPage: PAGE_URL,
     author: { "@type": "Organization", name: "Demox", url: "https://www.demox.site/" },
