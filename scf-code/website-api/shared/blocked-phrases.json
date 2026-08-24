@@ -1,0 +1,75 @@
+{
+  "updatedAt": "2026-08-24",
+  "method": "phrase_match",
+  "groups": [
+    {
+      "category": "politics",
+      "label": "违法政治 / 邪教",
+      "labelEn": "Illegal politics / cults",
+      "phrases": [
+        "法轮功",
+        "法轮大法",
+        "六四事件",
+        "64惨案",
+        "八九学潮",
+        "台独万岁",
+        "藏独",
+        "疆独",
+        "港独",
+        "分裂国家",
+        "真主党",
+        "东突厥"
+      ]
+    },
+    {
+      "category": "porn",
+      "label": "色情传播",
+      "labelEn": "Pornography",
+      "phrases": [
+        "色情网站",
+        "色情视频",
+        "免费色情",
+        "成人影片",
+        "成人视频",
+        "裸聊",
+        "约炮平台",
+        "援交",
+        "迷奸",
+        "恋童",
+        "儿童色情",
+        "幼女",
+        "嫖娼",
+        "卖淫"
+      ]
+    },
+    {
+      "category": "gambling",
+      "label": "赌博",
+      "labelEn": "Gambling",
+      "phrases": [
+        "网上赌场",
+        "博彩平台",
+        "威尼斯人娱乐",
+        "澳门赌场",
+        "六合彩",
+        "时时彩",
+        "赌球网站"
+      ]
+    },
+    {
+      "category": "contraband",
+      "label": "毒品 / 违禁交易",
+      "labelEn": "Drugs / illegal trade",
+      "phrases": [
+        "冰毒出售",
+        "大麻批发",
+        "海洛因",
+        "K粉出售",
+        "枪支出售",
+        "出售假币",
+        "办假证",
+        "信用卡套现"
+      ]
+    }
+  ]
+}

@@ -33,7 +33,7 @@ const {
   isDeployUploadExpired,
   needsDeployUploadExpiryMigration
 } = require('./shared/deploy-upload.js');
-const { scanZipEntries, createImsModerator } = require('./shared/content-scan.js');
+const { scanZipEntries, createImsModerator, listBlockedPhrasesCatalog } = require('./shared/content-scan.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -468,6 +468,7 @@ exports.main = async (event, context) => {
       update_watermark: handleUpdateWebsiteWatermark,
       update_seo: handleUpdateSeo,
       resolve_subdomain: handleResolveSubdomain,
+      list_blocked_phrases: handleListBlockedPhrases,
       check_site_access: handleCheckSiteAccess,
       track_site_event: handleTrackSiteEvent,
       get_site_stats: handleGetSiteStats,
@@ -597,6 +598,8 @@ exports.main = async (event, context) => {
       return await handleUpdateWebsiteWatermark(event);
     } else if (pathUrl.includes('/update-seo')) {
       return await handleUpdateSeo(event);
+    } else if (pathUrl.includes('/content-scan/phrases')) {
+      return await handleListBlockedPhrases();
     } else if (pathUrl.includes('/resolve-subdomain')) {
       return await handleResolveSubdomain(event);
     } else if (pathUrl.includes('/check-site-access')) {
@@ -3618,6 +3621,21 @@ async function resolveSiteMetadataByLabel(label, domain = defaultDomain) {
 }
 
 /**
+ * 公开屏蔽词表。无需鉴权，供文档页、Agent Skill 和第三方查询。
+ * GET/POST /website/content-scan/phrases 或 action=list_blocked_phrases
+ */
+async function handleListBlockedPhrases() {
+  return {
+    statusCode: 200,
+    headers: {
+      ...getCORSHeaders(),
+      'Cache-Control': 'public, max-age=60'
+    },
+    body: JSON.stringify(listBlockedPhrasesCatalog())
+  };
+}
+
+/**
  * 公开解析接口：label -> COS path。供 subdomain-router 边缘函数查表。
  * 无需鉴权：只返回站点路由必要信息，供边缘函数判断 public/private 与回源。
  */
@@ -6412,7 +6430,10 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
         body: JSON.stringify({
           success: false,
           code: contentScan.code || 'CONTENT_BLOCKED',
-          message: contentScan.message || '上传内容未通过安全审核'
+          message: contentScan.message || '上传内容未通过安全审核',
+          fileName: contentScan.fileName || '',
+          phrase: contentScan.phrase || '',
+          via: contentScan.via || ''
         })
       };
     }

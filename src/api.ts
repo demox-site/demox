@@ -705,6 +705,23 @@ export const websiteApi = {
     );
   },
 
+  listBlockedPhrases: async () => {
+    return request<{
+      success: boolean;
+      docs?: string;
+      skill?: string;
+      method?: string;
+      updatedAt?: string;
+      count?: number;
+      phrases?: string[];
+      groups?: Array<{ category: string; label: string; labelEn?: string; phrases: string[] }>;
+      imageReview?: { provider?: string; billed?: boolean; note?: string };
+    }>(WEBSITE_API_URL, "/website/content-scan/phrases", {
+      method: "GET",
+      skipAuth: true
+    });
+  },
+
   // 按角色 id/name 列表获取限额(home.jsx 计算有效限额用)
   getRoleLimits: async (roles: string[]) => {
     return request<{ code: number; data: any[]; message?: string }>(

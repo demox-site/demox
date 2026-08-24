@@ -57,8 +57,13 @@ export const PUBLIC_PAGES = {
   },
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",
-    description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, and examples.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>用 CLI 或 MCP 发布静态网站</h1><p><strong>直接答案：</strong>AI 生成网页后，先得到单个 HTML 或包含 <code>index.html</code> 的 dist、build、ZIP，再用 Demox CLI、MCP 或网页端上传，成功后获得公开 HTTPS 链接。</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>运行 <code>npx -y @demox-site/mcp-server@latest</code> 作为 MCP server。第一次部署会打开浏览器完成 OAuth 授权。也可以把本页链接交给能访问网页、读取本地文件并执行工具的 AI 助手。</p><p>支持目录、ZIP、HTML、PDF、Markdown、TXT、DOCX 和表格。静态发布不能代替 Node.js、Python、PHP 或 Java 后端；不要把 Token 和数据库密码放进前端文件。<a href="https://github.com/demox-site/skill">查看 Demox Agent Skill</a>。</p></main>`,
+    description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, content scan, and examples.",
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>用 CLI 或 MCP 发布静态网站</h1><p><strong>直接答案：</strong>AI 生成网页后，先得到单个 HTML 或包含 <code>index.html</code> 的 dist、build、ZIP，再用 Demox CLI、MCP 或网页端上传，成功后获得公开 HTTPS 链接。</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>运行 <code>npx -y @demox-site/mcp-server@latest</code> 作为 MCP server。第一次部署会打开浏览器完成 OAuth 授权。也可以把本页链接交给能访问网页、读取本地文件并执行工具的 AI 助手。</p><p>支持目录、ZIP、HTML、PDF、Markdown、TXT、DOCX 和表格。静态发布不能代替 Node.js、Python、PHP 或 Java 后端；不要把 Token 和数据库密码放进前端文件。<a href="https://github.com/demox-site/skill">查看 Demox Agent Skill</a>。完整屏蔽词见 <a href="/content-scan">内容审核屏蔽词</a>，接口 <code>GET https://api.demox.site/website/content-scan/phrases</code>。</p></main>`,
+  },
+  "content-scan": {
+    title: "Demox 屏蔽词表 - 内容审核公开接口",
+    description: "查看 Demox 部署前本地规则使用的全部屏蔽词，以及无需登录的公开查询接口。",
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>Demox 内容审核屏蔽词</h1><p><strong>直接答案：</strong>部署前会用短语匹配扫描上传包。完整词表在本页，也可通过公开接口查询。</p><h2>公开接口</h2><p>无需登录。AI 助手应先读取 <a href="https://github.com/demox-site/skill">Demox Agent Skill</a>，再调用：</p><pre><code>curl -s https://api.demox.site/website/content-scan/phrases</code></pre><p>也可 POST <code>{"action":"list_blocked_phrases"}</code>。静态副本：<a href="/content-scan.json">/content-scan.json</a>。</p><p>图片审核走腾讯云 IMS，不在屏蔽词表里。发布被拦时，失败信息会写明命中的具体词。</p></main>`,
   },
   "ai-static-site-deployment": {
     title: "AI 生成网页如何快速发布成静态网站 | Demox",

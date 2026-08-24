@@ -3,14 +3,16 @@
 
 ## Primary pages
 - [Demox homepage](https://www.demox.site/): Product overview and web deployment entry point.
-- [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, supported inputs, and FAQ.
+- [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, supported inputs, content scan, and FAQ.
+- [Blocked phrases](https://www.demox.site/content-scan): Full local content-scan blocklist and the public list API.
 - [AI static-site publishing guide](https://www.demox.site/ai-static-site-deployment): How to publish an AI-generated HTML page, ZIP, or frontend build and what static hosting can and cannot run.
 - [Pricing](https://www.demox.site/pricing): Current Demox plans.
 - [Changelog](https://www.demox.site/log): Product and infrastructure updates.
 
 ## Developer resources
 - [Demox repository](https://github.com/demox-site/demox): Main web application and platform source.
-- [Demox agent skill](https://github.com/demox-site/skill): Instructions for deploying with an AI coding agent.
+- [Demox agent skill](https://github.com/demox-site/skill): Instructions for deploying with an AI coding agent, including how to list blocked phrases.
+- Blocked phrases API (no auth): `GET https://api.demox.site/website/content-scan/phrases` or `POST {"action":"list_blocked_phrases"}`. Static copy: https://www.demox.site/content-scan.json
 - CLI package: `@demox-site/cli`
 - MCP package: `@demox-site/mcp-server`
 

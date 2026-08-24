@@ -195,7 +195,7 @@ Demox 不是玩具项目，而是**工程化的平台实现**：
 - 所有限额与权限校验不依赖前端
 - 站点按用户与项目完全隔离
 - 防目录穿越、防非法文件结构
-- 上传内容经过 COS 内容安全审核
+- 上传内容经过全文件安全审核（本地规则 + 可选腾讯云 IMS 图片审核）。屏蔽词表：https://www.demox.site/content-scan ，接口 `GET https://api.demox.site/website/content-scan/phrases`
 - 支持随时下线与清理站点
 - 站点私有访问控制（登录后可见）
 - 独立子域名路由与 SPA 回退

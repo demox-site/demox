@@ -14,6 +14,7 @@ import { FeishuCallback } from "../pages/FeishuCallback";
 import { FeishuLink } from "../pages/FeishuLink";
 import { SiteAuth } from "../pages/SiteAuth";
 import AiStaticSiteGuide from "../pages/AiStaticSiteGuide";
+import ContentScanPage from "../pages/ContentScanPage";
 
 export const routers = [
   {
@@ -28,6 +29,10 @@ export const routers = [
   {
     id: "doc",
     component: Docs
+  },
+  {
+    id: "content-scan",
+    component: ContentScanPage
   },
   {
     id: "ai-static-site-deployment",

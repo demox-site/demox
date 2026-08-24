@@ -38,6 +38,11 @@ test("generates indexable static shells and noindex auth shells", async () => {
 
     const docs = await readFile(path.join(distDir, "doc", "index.html"), "utf8");
     assert.match(docs, /href="https:\/\/www\.demox\.site\/doc"/);
+    assert.match(docs, /content-scan/);
+
+    const contentScan = await readFile(path.join(distDir, "content-scan", "index.html"), "utf8");
+    assert.match(contentScan, /href="https:\/\/www\.demox\.site\/content-scan"/);
+    assert.match(contentScan, /list_blocked_phrases|content-scan\/phrases/);
     assert.match(docs, /<main data-crawlable-fallback class="fallback-simple" lang="zh-CN">/);
     assert.match(docs, /<h1>用 CLI 或 MCP 发布静态网站<\/h1>/);
     assert.doesNotMatch(docs, /noindex/);
@@ -75,6 +80,7 @@ test("sitemap contains only generated public routes on the canonical host", asyn
   const paths = [...sitemap.matchAll(/<loc>https:\/\/www\.demox\.site(\/[^<]*)<\/loc>/g)].map((match) => match[1]);
   assert.ok(paths.length > 0);
   assert.ok(paths.includes("/ai-static-site-deployment"));
+  assert.ok(paths.includes("/content-scan"));
   for (const pathname of paths) {
     const route = pathname.replace(/^\//, "").replace(/\/$/, "");
     assert.ok(Object.hasOwn(PUBLIC_PAGES, route), `Sitemap route is not generated: ${pathname}`);

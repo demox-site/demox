@@ -17,6 +17,7 @@ const INDEXABLE_PATHS = new Set([
   "/index",
   "/pricing",
   "/doc",
+  "/content-scan",
   "/ai-static-site-deployment",
   "/terms",
   "/privacy",

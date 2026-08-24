@@ -78,7 +78,11 @@ const TermsPage: React.FC = () => {
           </p>
           <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             审核方式可能包括但不限于：图像识别、文本 OCR 识别、LOGO
-            检测、二维码/条形码 识别、关键词检测等自动化手段。
+            检测、二维码/条形码 识别、关键词检测等自动化手段。当前本地规则使用的完整屏蔽词表见
+            <a href="/content-scan" className="underline underline-offset-4 text-foreground">
+              内容审核屏蔽词
+            </a>
+            ，也可通过公开接口查询。
           </p>
           <p className="text-sm text-[var(--stitch-muted)] leading-relaxed">
             您在此明确知悉并同意：

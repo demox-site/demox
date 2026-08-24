@@ -16,6 +16,12 @@ export const MainFooter: React.FC = () => {
 
           <div className="flex flex-col md:flex-row items-center gap-4 md:gap-8 text-sm text-[var(--stitch-muted)]">
             <a
+              href="/content-scan"
+              className="hover:text-[var(--stitch-ink)] transition-colors"
+            >
+              屏蔽词表
+            </a>
+            <a
               href="mailto:phosa@qq.com"
               className="hover:text-[var(--stitch-ink)] transition-colors flex items-center gap-2"
             >

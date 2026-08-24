@@ -14,6 +14,7 @@ import {
   Rocket,
   ChevronRight,
   Sparkles,
+  Shield,
 } from "lucide-react";
 
 /** 文档章节 id（用于侧边栏锚点与滚动高亮）。 */
@@ -23,6 +24,7 @@ type SectionId =
   | "cli"
   | "auth"
   | "files"
+  | "moderation"
   | "faq";
 
 const t = {
@@ -44,6 +46,7 @@ const t = {
       cli: "通过 CLI 使用",
       auth: "认证与凭证",
       files: "文件与限制",
+      moderation: "内容审核",
       faq: "常见问题",
     },
   },
@@ -66,6 +69,7 @@ const t = {
       cli: "Via CLI",
       auth: "Auth & Credentials",
       files: "Files & Limits",
+      moderation: "Content scan",
       faq: "FAQ",
     },
   },
@@ -77,6 +81,7 @@ const SECTIONS: { id: SectionId; icon: React.ComponentType<{ size?: number; clas
   { id: "cli", icon: Terminal },
   { id: "auth", icon: KeyRound },
   { id: "files", icon: FileArchive },
+  { id: "moderation", icon: Shield },
   { id: "faq", icon: HelpCircle },
 ];
 
@@ -515,6 +520,33 @@ export const Docs: React.FC = () => {
                     </p>
                   </Section>
 
+                  <Section id="moderation" title={tr.nav.moderation} icon={Shield} refCb={reg("moderation")}>
+                    <p className="text-[var(--stitch-muted)] leading-relaxed mb-4">
+                      {isZh
+                        ? "部署前会扫描上传包：文本走本地屏蔽词，图片可走腾讯云 IMS。完整词表对用户和 AI 公开。"
+                        : "Uploads are scanned before deploy: text uses a local blocklist, images can use Tencent IMS. The full phrase list is public for users and agents."}
+                    </p>
+                    <p className="text-sm text-[var(--stitch-muted)] mb-4">
+                      {isZh ? "专门页面：" : "Dedicated page: "}
+                      <a href="/content-scan" className="text-[var(--stitch-ink)] underline underline-offset-4">
+                        https://www.demox.site/content-scan
+                      </a>
+                    </p>
+                    <h3 className="font-semibold text-zinc-200 mb-3">
+                      {isZh ? "查询全部屏蔽词" : "List every blocked phrase"}
+                    </h3>
+                    <CodeBlock
+                      lang="bash"
+                      code={`# 无需登录\ncurl -s https://api.demox.site/website/content-scan/phrases\n\n# 或 POST\ncurl -s -X POST https://api.demox.site/website/content-scan/phrases \\\n  -H 'Content-Type: application/json' \\\n  -d '{"action":"list_blocked_phrases"}'`}
+                      {...copyProps}
+                    />
+                    <p className="text-sm text-[var(--stitch-muted)] mt-4">
+                      {isZh
+                        ? "AI 助手：先读取 https://github.com/demox-site/skill，其中写明了上述接口。部署被拦时，失败信息会带上命中的具体词。"
+                        : "AI assistants: read https://github.com/demox-site/skill for this endpoint. A blocked deploy names the exact phrase in the error."}
+                    </p>
+                  </Section>
+
                   {/* 常见问题（共享） */}
                   <Section id="faq" title={tr.nav.faq} icon={HelpCircle} refCb={reg("faq")}>
                     <div className="space-y-6">
@@ -542,6 +574,12 @@ export const Docs: React.FC = () => {
                           isZh
                             ? "删除 ~/.demox/token.json，下次使用时会重新登录。"
                             : "Delete ~/.demox/token.json; you'll be prompted to log in again next time.",
+                        ],
+                        [
+                          isZh ? "怎样查看全部屏蔽词？" : "How do I see every blocked phrase?",
+                          isZh
+                            ? "打开 /content-scan，或 GET https://api.demox.site/website/content-scan/phrases。AI 可先读 github.com/demox-site/skill。"
+                            : "Open /content-scan, or GET https://api.demox.site/website/content-scan/phrases. Agents should read github.com/demox-site/skill first.",
                         ],
                       ].map(([q, a]) => (
                         <div key={q}>
