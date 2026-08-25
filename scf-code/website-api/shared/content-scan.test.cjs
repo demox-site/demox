@@ -21,6 +21,24 @@ function entry(name, body) {
   };
 }
 
+test('official phrase catalog files are not scanned against themselves', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const catalog = fs.readFileSync(path.join(__dirname, '../../../public/content-scan.json'));
+  const result = await scanZipEntries(
+    [entry('content-scan.json', catalog), entry('assets/blocked-phrases.json', catalog)],
+    { config: { enabled: true, imsEnabled: false } }
+  );
+  assert.equal(result.blocked, false, JSON.stringify(result));
+  assert.equal(result.code, 'CONTENT_PASSED');
+
+  const disguised = await scanZipEntries(
+    [entry('notes.txt', catalog)],
+    { config: { enabled: true, imsEnabled: false } }
+  );
+  assert.equal(disguised.blocked, true);
+});
+
 test('public catalog lists every phrase used by the scanner', () => {
   const catalog = listBlockedPhrasesCatalog();
   assert.equal(catalog.success, true);

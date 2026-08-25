@@ -149,6 +149,11 @@ function entryFileName(entry) {
   return String(entry.entryName || entry.name || '').replace(/\\/g, '/');
 }
 
+function isOfficialPhraseCatalogFile(fileName) {
+  const base = String(fileName || '').split('/').pop().toLowerCase();
+  return base === 'content-scan.json' || base === 'blocked-phrases.json';
+}
+
 function scanLocalFile(fileName, buffer, config) {
   const nameHit = findBlockedPhrase(fileName);
   if (nameHit) {
@@ -258,6 +263,7 @@ async function scanZipEntries(entries, options = {}) {
   }
 
   for (const file of files) {
+    if (isOfficialPhraseCatalogFile(file.fileName)) continue;
     const hit = scanLocalFile(file.fileName, file.buffer, config);
     if (hit) return blockedResponse(hit);
   }
@@ -328,5 +334,6 @@ module.exports = {
   pickImages,
   scanLocalFile,
   scanZipEntries,
+  isOfficialPhraseCatalogFile,
   createImsModerator
 };
