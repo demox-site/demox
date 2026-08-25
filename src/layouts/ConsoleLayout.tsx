@@ -59,7 +59,7 @@ const navTexts = {
     groupAccount: "账户",
     groupGlobal: "全局",
     projects: "项目",
-    deploy: "部署新项目",
+    deploy: "部署新站点",
     sites: "我的站点",
     members: "成员",
     usage: "用量套餐",
@@ -83,7 +83,7 @@ const navTexts = {
     groupAccount: "Account",
     groupGlobal: "Global",
     projects: "Projects",
-    deploy: "Deploy New Project",
+    deploy: "Deploy New Site",
     sites: "My Sites",
     members: "Members",
     usage: "Usage & Plan",
@@ -126,6 +126,8 @@ interface ConsoleUser {
   nickname?: string;
   githubId?: string | null;
   githubLogin?: string | null;
+  feishuOpenId?: string | null;
+  feishuName?: string | null;
   avatarUrl?: string | null;
   roles?: string[];
   membership?: {
@@ -186,6 +188,8 @@ export const ConsoleLayout: React.FC = () => {
           nickname: res.user.nickname || "",
           githubId: res.user.githubId || null,
           githubLogin: res.user.githubLogin || null,
+          feishuOpenId: res.user.feishuOpenId || null,
+          feishuName: res.user.feishuName || null,
           avatarUrl: res.user.avatarUrl || null,
           roles: res.user.roles || local.roles || ["user"],
           membership: res.user.membership || local.membership

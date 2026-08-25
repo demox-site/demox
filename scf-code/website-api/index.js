@@ -19,6 +19,28 @@ const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
 const { createFeishuDirectoryClient, FeishuDirectoryError } = require('./shared/feishu-directory.js');
+let createGithubDirectoryClient;
+let GithubDirectoryError;
+try {
+  ({ createGithubDirectoryClient, GithubDirectoryError } = require('./shared/github-directory.js'));
+} catch (error) {
+  console.warn('github-directory module missing, GitHub invite disabled:', error.message);
+  GithubDirectoryError = class GithubDirectoryError extends Error {
+    constructor(message, code = null, details = null) {
+      super(message);
+      this.name = 'GithubDirectoryError';
+      this.code = code;
+      this.details = details;
+    }
+  };
+  createGithubDirectoryClient = () => ({
+    searchUsers: async () => {
+      throw new GithubDirectoryError('GitHub 目录模块未部署', 'MODULE_MISSING');
+    },
+    getUserById: async () => null,
+    getUserByLogin: async () => null
+  });
+}
 const {
   DEPLOY_UPLOAD_CHUNK_SIZE,
   DEPLOY_UPLOAD_TTL_SECONDS,
@@ -62,6 +84,7 @@ const feishuDirectory = createFeishuDirectoryClient({
   appId: process.env.FEISHU_APP_ID,
   appSecret: process.env.FEISHU_APP_SECRET
 });
+const githubDirectory = createGithubDirectoryClient();
 
 function normalizeDomainValue(input) {
   return String(input || '')
@@ -123,6 +146,9 @@ function formatWebsiteForClient(row) {
     visibility,
     hide_watermark: normalizeBooleanFlag(row.hide_watermark),
     hideWatermark: normalizeBooleanFlag(row.hide_watermark),
+    deployedSize: row.deployed_size != null || row.deployedSize != null
+      ? Number(row.deployed_size ?? row.deployedSize ?? 0)
+      : (row.storage_size != null ? Number(row.storage_size) : null),
     project_id: projectPublicId == null ? null : String(projectPublicId),
     projectId: projectPublicId == null ? null : String(projectPublicId),
     projectInternalId: row.project_id == null ? null : String(row.project_id),
@@ -493,10 +519,15 @@ exports.main = async (event, context) => {
       search_feishu_project_principals: handleSearchFeishuProjectPrincipals,
       grant_project_to_feishu: handleGrantProjectToFeishu,
       remove_project_feishu_grant: handleRemoveProjectFeishuGrant,
+      search_github_project_principals: handleSearchGithubProjectPrincipals,
+      grant_project_to_github: handleGrantProjectToGithub,
+      remove_project_github_grant: handleRemoveProjectGithubGrant,
       update_project_member_role: handleUpdateProjectMemberRole,
       remove_project_member: handleRemoveProjectMember,
       bucket_stats: handleBucketStats,
       list_user_roles: handleListUserRoles,
+      get_user_overview: handleGetUserOverview,
+      get_platform_overview: handleGetPlatformOverview,
       set_user_role: handleSetUserRole,
       delete_user_role: handleDeleteUserRole,
       list_role_limits: handleListRoleLimits,
@@ -539,6 +570,10 @@ exports.main = async (event, context) => {
       return await handleUploadAndDeploy(event);
     } else if (pathUrl.includes('/list-user-roles')) {
       return await handleListUserRoles(event);
+    } else if (pathUrl.includes('/get-user-overview')) {
+      return await handleGetUserOverview(event);
+    } else if (pathUrl.includes('/get-platform-overview')) {
+      return await handleGetPlatformOverview(event);
     } else if (pathUrl.includes('/list-role-limits')) {
       return await handleListRoleLimits(event);
     } else if (pathUrl.includes('/get-usage')) {
@@ -569,6 +604,12 @@ exports.main = async (event, context) => {
       return await handleListProjectMembers(event);
     } else if (pathUrl.includes('/invite-project-member')) {
       return await handleInviteProjectMember(event);
+    } else if (pathUrl.includes('/search-github-project-principals')) {
+      return await handleSearchGithubProjectPrincipals(event);
+    } else if (pathUrl.includes('/grant-project-to-github')) {
+      return await handleGrantProjectToGithub(event);
+    } else if (pathUrl.includes('/remove-project-github-grant')) {
+      return await handleRemoveProjectGithubGrant(event);
     } else if (pathUrl.includes('/update-project-member-role')) {
       return await handleUpdateProjectMemberRole(event);
     } else if (pathUrl.includes('/remove-project-member')) {
@@ -694,7 +735,7 @@ async function getUserLimits(userId) {
 }
 
 /**
- * 幂等确保 websites 表存在 file_count / storage_size 列（用量统计用）。
+ * 幂等确保 websites 表存在用量列。
  * 冷启动后只检查一次；列已存在时仅一次轻量 information_schema 查询。
  * 未执行 008 迁移的历史库也能自动补列，避免部署写入失败。
  */
@@ -705,7 +746,7 @@ async function ensureUsageColumns() {
     const cols = await query(
       `SELECT COLUMN_NAME FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
-         AND COLUMN_NAME IN ('file_count','storage_size')`
+         AND COLUMN_NAME IN ('file_count','storage_size','deployed_size')`
     );
     const have = new Set((cols || []).map((r) => r.COLUMN_NAME));
     if (!have.has('file_count')) {
@@ -713,6 +754,9 @@ async function ensureUsageColumns() {
     }
     if (!have.has('storage_size')) {
       await query(`ALTER TABLE websites ADD COLUMN storage_size BIGINT DEFAULT NULL COMMENT '本次部署的上传包体积(字节)'`);
+    }
+    if (!have.has('deployed_size')) {
+      await query(`ALTER TABLE websites ADD COLUMN deployed_size BIGINT DEFAULT NULL COMMENT '当前部署解压后文件体积(字节)'`);
     }
   } catch (e) {
     // 列可能已存在（并发）或库不可用；写入时若仍缺列会再兜底。
@@ -770,6 +814,37 @@ async function ensureWatermarkColumn() {
     console.warn('ensureWatermarkColumn skipped:', e.message);
   }
   _watermarkColumnEnsured = true;
+}
+
+/** Ensure GitHub project grants can be stored before reads or writes. */
+let _githubGrantsTableEnsured = false;
+async function ensureGithubGrantsTable() {
+  if (_githubGrantsTableEnsured) return;
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS project_github_grants (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        principal_type VARCHAR(16) NOT NULL DEFAULT 'user',
+        key_type VARCHAR(32) NOT NULL DEFAULT 'github_id',
+        principal_key VARCHAR(255) NOT NULL,
+        github_login VARCHAR(255) DEFAULT NULL,
+        display_name VARCHAR(120) DEFAULT NULL,
+        avatar_url VARCHAR(512) DEFAULT NULL,
+        role VARCHAR(16) NOT NULL DEFAULT 'member',
+        created_by VARCHAR(64) NOT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_project_github_principal (project_id, principal_type, key_type, principal_key),
+        INDEX idx_project_github_principal (principal_type, key_type, principal_key, active),
+        INDEX idx_project_github_project (project_id, active, role)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+    );
+  } catch (e) {
+    console.warn('ensureGithubGrantsTable skipped:', e.message);
+  }
+  _githubGrantsTableEnsured = true;
 }
 
 /**
@@ -880,7 +955,7 @@ async function queryWebsitesWithProjects({ userId = null, includeAll = false, pr
   const normalizedProjectId = await resolveProjectId(projectId);
 
   try {
-    const grantRoles = includeAll ? new Map() : await getFeishuGrantedProjectRoles(userId);
+    const grantRoles = includeAll ? new Map() : await getGrantedProjectRoles(userId);
     const grantedProjectIds = Array.from(grantRoles.keys());
     const params = [];
     const where = [];
@@ -1060,6 +1135,19 @@ async function handleDeleteWebsite(event) {
       headers: getCORSHeaders(),
       body: JSON.stringify({ error: '无权限删除该记录' })
     };
+  }
+
+  try {
+    const bucketCfg = await resolveBucketConfig(site.bucket_id || null);
+    const prefix = websiteStoragePrefix(site.user_id, site.website_id)
+      || websitePrefixFromTarget(site.path);
+    if (prefix) {
+      const provider = providerFor(bucketCfg);
+      const objects = await provider.list(prefix);
+      await Promise.all(objects.map((object) => provider.delete(object.key)));
+    }
+  } catch (e) {
+    console.warn('删除站点存储失败:', e.message);
   }
 
   // 路由表在 websites.subdomain 列里，删除行即清理；边缘缓存 60s 内自然失效。
@@ -1953,6 +2041,89 @@ async function getFeishuGrantedProjectRoles(userId) {
   return roles;
 }
 
+async function getGithubGrantedProjectRoles(userId) {
+  const uid = String(userId || '').trim();
+  const roles = new Map();
+  if (!uid) return roles;
+  try {
+    await ensureGithubGrantsTable();
+    const identityRows = await query(
+      'SELECT github_id, github_login FROM users WHERE id = ? LIMIT 1',
+      [uid]
+    );
+    const githubId = String(identityRows[0]?.github_id || '').trim();
+    if (!githubId) return roles;
+    const grantRows = await query(
+      `SELECT project_id, role
+       FROM project_github_grants
+       WHERE active = 1 AND principal_type = 'user'
+         AND key_type = 'github_id' AND principal_key = ?`,
+      [githubId]
+    );
+    grantRows.forEach((grant) => mergeGrantedRole(roles, grant));
+  } catch (e) {
+    if (!/project_github_grants|github_id/i.test(e.message || '')) {
+      console.warn('读取 GitHub 项目授权失败:', e.message);
+    }
+  }
+  return roles;
+}
+
+async function getGrantedProjectRoles(userId) {
+  const merged = new Map();
+  const [feishu, github] = await Promise.all([
+    getFeishuGrantedProjectRoles(userId),
+    getGithubGrantedProjectRoles(userId)
+  ]);
+  feishu.forEach((role, key) => merged.set(key, role));
+  github.forEach((role, key) => mergeGrantedRole(merged, { project_id: key, role }));
+  return merged;
+}
+
+function normalizeGithubGrantInput(body) {
+  const principalKey = String(body.principalKey || body.githubId || '').trim();
+  return {
+    principalType: 'user',
+    keyType: 'github_id',
+    principalKey,
+    githubLogin: String(body.githubLogin || body.login || '').trim(),
+    valid: /^\d{1,16}$/.test(principalKey)
+  };
+}
+
+function formatGithubProjectGrant(row) {
+  const name = row.display_name || row.github_login || '';
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    principalType: row.principal_type || 'user',
+    keyType: row.key_type || 'github_id',
+    principalKey: row.principal_key,
+    githubLogin: row.github_login || '',
+    name,
+    displayName: name,
+    secondaryText: row.github_login ? `@${row.github_login}` : '',
+    avatarUrl: row.avatar_url || null,
+    role: normalizeProjectRole(row.role),
+    createdBy: row.created_by || null,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined
+  };
+}
+
+function githubDirectoryFailure(error) {
+  if (error instanceof GithubDirectoryError) {
+    return {
+      success: false,
+      message: error.code === 'RATE_LIMITED'
+        ? 'GitHub 搜索次数过多，请稍后再试'
+        : error.message,
+      errorCode: error.code || null
+    };
+  }
+  return { success: false, message: 'GitHub 搜索失败：' + error.message };
+}
+
 function formatProjectMemberForClient(row) {
   const role = normalizeProjectRole(row.role);
   const email = String(row.email || '').trim();
@@ -2008,6 +2179,23 @@ async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
+async function getGithubIdentityForUser(userId) {
+  try {
+    const rows = await query(
+      'SELECT github_id, github_login FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+    const row = rows[0];
+    if (!row?.github_id) return null;
+    return {
+      githubId: String(row.github_id),
+      githubLogin: row.github_login || null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function getFeishuIdentityForUser(userId) {
   try {
     const rows = await query(
@@ -2060,7 +2248,7 @@ async function getProjectWithUserRole(userId, projectId, { includeArchived = tru
 
   const archivedSql = includeArchived ? '' : 'AND p.archived = 0';
   try {
-    const grantRoles = await getFeishuGrantedProjectRoles(uid);
+    const grantRoles = await getGrantedProjectRoles(uid);
     const grantRole = grantRoles.get(String(pid)) || null;
     const rows = await query(
       `SELECT p.*,
@@ -2242,7 +2430,7 @@ async function handleListProjects(event) {
       await ensureDefaultProjectForUser(userId);
       await acceptPendingProjectInvitationsForUser(userId);
     }
-    const grantRoles = includeAll ? new Map() : await getFeishuGrantedProjectRoles(userId);
+    const grantRoles = includeAll ? new Map() : await getGrantedProjectRoles(userId);
     const grantedProjectIds = Array.from(grantRoles.keys());
     const params = [userId, userId];
     const where = [];
@@ -2444,6 +2632,11 @@ async function handleDeleteProject(event) {
       }
 
       await conn.query('DELETE FROM project_feishu_grants WHERE project_id = ?', [id]);
+      try {
+        await conn.query('DELETE FROM project_github_grants WHERE project_id = ?', [id]);
+      } catch (e) {
+        if (!/project_github_grants/i.test(e.message || '')) throw e;
+      }
       await conn.query('DELETE FROM project_invitations WHERE project_id = ?', [id]);
       await conn.query('DELETE FROM project_members WHERE project_id = ?', [id]);
       const [deleted] = await conn.query(
@@ -2563,7 +2756,20 @@ async function handleListProjectMembers(event) {
        ORDER BY created_at DESC`,
       [projectId]
     );
+    let githubGrants = [];
+    try {
+      await ensureGithubGrantsTable();
+      githubGrants = await query(
+        `SELECT * FROM project_github_grants
+         WHERE project_id = ? AND active = 1
+         ORDER BY created_at DESC`,
+        [projectId]
+      );
+    } catch (e) {
+      if (!/project_github_grants/i.test(e.message || '')) throw e;
+    }
     const currentFeishuIdentity = await getFeishuIdentityForUser(userId);
+    const currentGithubIdentity = await getGithubIdentityForUser(userId);
     const invitations = await query(
       `SELECT *
        FROM project_invitations
@@ -2579,7 +2785,9 @@ async function handleListProjectMembers(event) {
       members: members.map(formatProjectMemberForClient),
       invitations: invitations.map(formatProjectInvitationForClient),
       feishuGrants: feishuGrants.map(formatFeishuProjectGrant),
-      currentFeishuIdentity
+      githubGrants: githubGrants.map(formatGithubProjectGrant),
+      currentFeishuIdentity,
+      currentGithubIdentity
     });
   } catch (e) {
     return ok({ success: false, message: '协作表未初始化', error: e.message });
@@ -2798,6 +3006,218 @@ async function handleRemoveProjectFeishuGrant(event) {
   }
 }
 
+function formatGithubSearchPrincipal(user, { alreadyOnDemox = false } = {}) {
+  return {
+    principalType: 'user',
+    keyType: 'github_id',
+    principalKey: String(user.id || user.principalKey || user.github_id),
+    githubLogin: user.login || user.github_login || '',
+    name: user.name || user.nickname || user.login || user.github_login || String(user.id || ''),
+    displayName: user.name || user.nickname || user.login || user.github_login || String(user.id || ''),
+    secondaryText: user.login || user.github_login
+      ? `@${user.login || user.github_login}${alreadyOnDemox ? ' · Demox 用户' : ''}`
+      : '',
+    avatarUrl: user.avatarUrl || user.avatar_url || null,
+    alreadyOnDemox
+  };
+}
+
+async function handleSearchGithubProjectPrincipals(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const keyword = String(body.query || body.keyword || '').trim();
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!keyword) return ok({ success: true, principals: [] });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    const identity = await getGithubIdentityForUser(userId);
+    if (!identity?.githubId) {
+      return ok({ success: false, message: '请先在账号设置中关联 GitHub，再搜索 GitHub 用户' });
+    }
+    await ensureGithubGrantsTable();
+
+    const normalizedKeyword = keyword.toLocaleLowerCase();
+    const localUsers = await query(
+      `SELECT u.id, u.email, u.nickname, u.github_id, u.github_login, u.avatar_url
+       FROM users u
+       WHERE u.github_id IS NOT NULL AND u.github_id <> ''
+         AND (INSTR(LOWER(COALESCE(u.github_login, '')), ?) > 0
+              OR INSTR(LOWER(COALESCE(u.nickname, '')), ?) > 0
+              OR u.github_id = ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM project_members pm
+           WHERE pm.project_id = ? AND pm.user_id = u.id
+         )
+       ORDER BY
+         CASE WHEN LOWER(COALESCE(u.github_login, '')) = ? THEN 0 ELSE 1 END,
+         u.github_login ASC
+       LIMIT 20`,
+      [normalizedKeyword, normalizedKeyword, keyword, projectId, normalizedKeyword]
+    );
+
+    const principals = [];
+    const seen = new Set();
+    for (const user of localUsers) {
+      const principal = formatGithubSearchPrincipal({
+        id: user.github_id,
+        login: user.github_login,
+        name: user.nickname || user.github_login,
+        avatar_url: user.avatar_url
+      }, { alreadyOnDemox: true });
+      seen.add(principal.principalKey);
+      principals.push(principal);
+    }
+
+    const remoteUsers = await githubDirectory.searchUsers(keyword);
+    for (const user of remoteUsers) {
+      if (seen.has(user.id)) continue;
+      seen.add(user.id);
+      principals.push(formatGithubSearchPrincipal(user));
+    }
+
+    return ok({ success: true, principals: principals.slice(0, 20) });
+  } catch (error) {
+    return ok(githubDirectoryFailure(error));
+  }
+}
+
+async function handleGrantProjectToGithub(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const role = normalizeProjectRole(body.role);
+  const principal = normalizeGithubGrantInput(body);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!principal.valid) {
+    return ok({ success: false, message: '请先搜索并选择一个有效的 GitHub 用户' });
+  }
+  if (role === PROJECT_ROLE_OWNER) return ok({ success: false, message: 'owner 只能由项目创建者担任' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && role === PROJECT_ROLE_ADMIN) {
+      return ok({ success: false, message: 'admin 只能授予 member' });
+    }
+    const identity = await getGithubIdentityForUser(userId);
+    if (!identity?.githubId) {
+      return ok({ success: false, message: '请先在账号设置中关联 GitHub，再授权 GitHub 用户' });
+    }
+    await ensureGithubGrantsTable();
+
+    const target = await githubDirectory.getUserById(principal.principalKey);
+    if (!target) return ok({ success: false, message: 'GitHub 用户不存在' });
+
+    const existingUsers = await query(
+      'SELECT id, email, nickname FROM users WHERE github_id = ? LIMIT 1',
+      [target.id]
+    );
+    if (existingUsers[0]) {
+      const targetUser = existingUsers[0];
+      if (String(targetUser.id) === String(access.project.user_id)) {
+        return ok({
+          success: true,
+          member: formatProjectMemberForClient({
+            user_id: targetUser.id,
+            email: targetUser.email,
+            nickname: targetUser.nickname,
+            role: PROJECT_ROLE_OWNER
+          }),
+          message: '该用户已经是项目 owner'
+        });
+      }
+      const currentRows = await query(
+        'SELECT role FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1',
+        [projectId, targetUser.id]
+      );
+      if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && currentRows.length > 0) {
+        const currentRole = normalizeProjectRole(currentRows[0].role);
+        if (currentRole !== PROJECT_ROLE_MEMBER) {
+          return ok({ success: false, message: 'admin 只能管理 member' });
+        }
+      }
+      await query(
+        `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
+         VALUES (?, ?, ?, ?, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE
+           role = IF(role = '${PROJECT_ROLE_OWNER}', role, VALUES(role)),
+           invited_by = VALUES(invited_by),
+           updated_at = NOW()`,
+        [projectId, targetUser.id, role, userId]
+      );
+      return ok({
+        success: true,
+        member: formatProjectMemberForClient({
+          user_id: targetUser.id,
+          email: targetUser.email,
+          nickname: targetUser.nickname,
+          role
+        }),
+        message: '成员已加入项目'
+      });
+    }
+
+    await query(
+      `INSERT INTO project_github_grants
+       (project_id, principal_type, key_type, principal_key, github_login, display_name, avatar_url, role, created_by, active)
+       VALUES (?, 'user', 'github_id', ?, ?, ?, ?, ?, ?, 1)
+       ON DUPLICATE KEY UPDATE
+         github_login = VALUES(github_login), display_name = VALUES(display_name),
+         avatar_url = VALUES(avatar_url), role = VALUES(role), created_by = VALUES(created_by),
+         active = 1, updated_at = NOW()`,
+      [projectId, target.id, target.login, target.name || target.login, target.avatarUrl || null, role, userId]
+    );
+    const rows = await query(
+      `SELECT * FROM project_github_grants
+       WHERE project_id = ? AND principal_type = 'user' AND key_type = 'github_id' AND principal_key = ? LIMIT 1`,
+      [projectId, target.id]
+    );
+    return ok({
+      success: true,
+      grant: rows[0] ? formatGithubProjectGrant(rows[0]) : null,
+      message: '已授权给 GitHub 用户，对方使用 GitHub 登录后即可访问'
+    });
+  } catch (e) {
+    return ok(githubDirectoryFailure(e));
+  }
+}
+
+async function handleRemoveProjectGithubGrant(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  const grantId = normalizePositiveId(body.grantId);
+  if (!projectId || !grantId) return ok({ success: false, message: '缺少 projectId 或 grantId' });
+
+  try {
+    const access = await requireProjectMembershipManager(userId, projectId);
+    if (access.error) return ok({ success: false, message: access.error });
+    await ensureGithubGrantsTable();
+    const rows = await query(
+      'SELECT role FROM project_github_grants WHERE id = ? AND project_id = ? AND active = 1 LIMIT 1',
+      [grantId, projectId]
+    );
+    if (!rows[0]) return ok({ success: false, message: 'GitHub 授权不存在' });
+    if (!access.isPlatformAdmin && access.role === PROJECT_ROLE_ADMIN && normalizeProjectRole(rows[0].role) !== PROJECT_ROLE_MEMBER) {
+      return ok({ success: false, message: 'admin 只能移除 member 授权' });
+    }
+    await query(
+      'UPDATE project_github_grants SET active = 0, updated_at = NOW() WHERE id = ? AND project_id = ?',
+      [grantId, projectId]
+    );
+    return ok({ success: true, removedGrantId: String(grantId), message: 'GitHub 授权已移除' });
+  } catch (e) {
+    return ok({ success: false, message: '移除 GitHub 授权失败：' + e.message });
+  }
+}
+
 async function handleInviteProjectMember(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
@@ -2976,9 +3396,13 @@ async function handleListUserRoles(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
   await ensureProExpiresColumn();
+  await ensureUsageColumns();
+  await backfillDeployedSizesOnce();
   // users 表主键是 id(形如 user_xxx);老站点的纯数字 user_id 不在 users 表中,email 为 null
   const rows = await query(
-    `SELECT ur.user_id, ur.roles, ur.pro_expires_at, ur.updated_at, u.email, u.nickname, u.github_id, u.feishu_open_id
+    `SELECT ur.user_id, ur.roles, ur.pro_expires_at, ur.updated_at, u.email, u.nickname, u.github_id, u.feishu_open_id,
+            (SELECT COUNT(*) FROM websites w WHERE w.user_id = ur.user_id) AS sites_count,
+            (SELECT COALESCE(SUM(COALESCE(w.deployed_size, w.storage_size)), 0) FROM websites w WHERE w.user_id = ur.user_id) AS storage_bytes
      FROM user_roles ur
      LEFT JOIN users u ON u.id = ur.user_id
      ORDER BY ur.updated_at DESC`
@@ -2999,10 +3423,410 @@ async function handleListUserRoles(event) {
       proLifetime: membership.proLifetime,
       proExpired: membership.proExpired,
       remainingDays: membership.remainingDays,
+      siteCount: Number(r.sites_count || 0),
+      storageBytes: Number(r.storage_bytes || 0),
       updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined
     };
   });
   return ok({ success: true, data: list });
+}
+
+function toDayKey(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value || '').slice(0, 10);
+}
+
+/** 管理员查看某用户的项目、站点与访问看板 */
+async function handleGetUserOverview(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  await ensureProExpiresColumn();
+  await ensureUsageColumns();
+  await backfillDeployedSizesOnce();
+  const uid = String((event.body || event).uid || '').trim();
+  if (!uid) return ok({ success: false, message: '缺少用户 UID' });
+
+  const users = await query(
+    `SELECT id, email, nickname, github_id, feishu_open_id, created_at
+     FROM users WHERE id = ? LIMIT 1`,
+    [uid]
+  );
+  const roleRows = await query(
+    'SELECT roles, pro_expires_at FROM user_roles WHERE user_id = ? LIMIT 1',
+    [uid]
+  );
+  if (users.length === 0 && roleRows.length === 0) {
+    const ownedSites = await query('SELECT id FROM websites WHERE user_id = ? LIMIT 1', [uid]);
+    if (ownedSites.length === 0) {
+      return ok({ success: false, code: 'USER_NOT_FOUND', message: '用户不存在' });
+    }
+  }
+
+  const userRow = users[0] || {
+    id: uid,
+    email: '',
+    nickname: '',
+    github_id: null,
+    feishu_open_id: null,
+    created_at: null
+  };
+  const membership = membershipSummary(roleRows[0]?.roles || ['user'], roleRows[0]?.pro_expires_at);
+  const limits = await getUserLimits(uid);
+
+  let projectCounts = { projects: 0, archivedProjects: 0 };
+  try {
+    const rows = await query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END), 0) AS projects,
+         COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archivedProjects
+       FROM projects WHERE user_id = ?`,
+      [uid]
+    );
+    projectCounts = {
+      projects: Number(rows[0]?.projects || 0),
+      archivedProjects: Number(rows[0]?.archivedProjects || 0)
+    };
+  } catch (e) {
+    console.warn('用户项目统计失败:', e.message);
+  }
+
+  const usageRows = await query(
+    `SELECT COUNT(*) AS sites,
+            COALESCE(SUM(file_count), 0) AS files,
+            COALESCE(SUM(COALESCE(deployed_size, storage_size)), 0) AS storage
+     FROM websites WHERE user_id = ?`,
+    [uid]
+  );
+  const sitesCount = Number(usageRows[0]?.sites || 0);
+
+  const rangeDays = 30;
+  let viewsAll = 0;
+  let daily = [];
+  try {
+    const all = await query(
+      `SELECT COALESCE(SUM(s.views), 0) AS views
+       FROM site_path_daily_stats s
+       INNER JOIN websites w ON w.website_id = s.website_id
+       WHERE w.user_id = ? AND ${scannerPathSqlPredicate('s.path')}`,
+      [uid]
+    );
+    viewsAll = Number(all[0]?.views || 0);
+    const dayRows = await query(
+      `SELECT s.stat_date, SUM(s.views) AS views
+       FROM site_path_daily_stats s
+       INNER JOIN websites w ON w.website_id = s.website_id
+       WHERE w.user_id = ? AND s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND ${scannerPathSqlPredicate('s.path')}
+       GROUP BY s.stat_date
+       ORDER BY s.stat_date ASC`,
+      [uid, rangeDays - 1]
+    );
+    daily = (dayRows || []).map((r) => ({
+      date: toDayKey(r.stat_date),
+      views: Number(r.views || 0)
+    }));
+  } catch (e) {
+    console.warn('用户访问统计失败:', e.message);
+  }
+
+  const views30d = daily.reduce((sum, item) => sum + item.views, 0);
+  const cutoff7 = new Date();
+  cutoff7.setUTCDate(cutoff7.getUTCDate() - 6);
+  const cutoff7Key = cutoff7.toISOString().slice(0, 10);
+  const views7d = daily.filter((item) => item.date >= cutoff7Key).reduce((sum, item) => sum + item.views, 0);
+
+  const formatOverviewSite = (row) => {
+    const formatted = formatWebsiteForClient(row);
+    return {
+      websiteId: row.website_id,
+      name: row.name || row.website_id,
+      url: formatted.preferredUrl || formatted.url || '',
+      projectId: row.project_key || (row.project_id != null ? String(row.project_id) : ''),
+      projectName: row.project_name || '',
+      views30d: Number(row.views30d || 0),
+      storage: Number(row.storage || 0),
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined
+    };
+  };
+
+  let projectRows = [];
+  try {
+    projectRows = await query(
+      `SELECT p.id, p.project_key, p.name, p.slug, p.archived, p.updated_at
+       FROM projects p
+       WHERE p.user_id = ?
+       ORDER BY p.archived ASC, p.updated_at DESC, p.id ASC`,
+      [uid]
+    );
+  } catch (e) {
+    console.warn('用户项目列表失败:', e.message);
+  }
+
+  let siteRows = [];
+  try {
+    siteRows = await query(
+      `SELECT w.website_id, w.name, w.subdomain, w.subdomain_domain, w.url, w.created_at, w.updated_at,
+              w.project_id,
+              p.project_key, p.name AS project_name,
+              COALESCE(w.deployed_size, w.storage_size, 0) AS storage,
+              COALESCE(v.views30d, 0) AS views30d
+       FROM websites w
+       LEFT JOIN projects p ON p.id = w.project_id
+       LEFT JOIN (
+         SELECT s.website_id, SUM(s.views) AS views30d
+         FROM site_path_daily_stats s
+         WHERE s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+           AND ${scannerPathSqlPredicate('s.path')}
+         GROUP BY s.website_id
+       ) v ON v.website_id = w.website_id
+       WHERE w.user_id = ?
+       ORDER BY views30d DESC, w.updated_at DESC`,
+      [rangeDays - 1, uid]
+    );
+  } catch (e) {
+    console.warn('用户站点列表失败:', e.message);
+  }
+
+  const sites = siteRows.map(formatOverviewSite);
+  const sitesByProjectId = new Map();
+  for (const row of siteRows) {
+    const key = row.project_id != null && row.project_id !== '' ? String(row.project_id) : '';
+    if (!sitesByProjectId.has(key)) sitesByProjectId.set(key, []);
+    sitesByProjectId.get(key).push(formatOverviewSite(row));
+  }
+
+  const knownProjectIds = new Set(projectRows.map((row) => String(row.id)));
+  const projects = projectRows.map((row) => {
+    const nested = sitesByProjectId.get(String(row.id)) || [];
+    return {
+      id: String(row.project_key || row.id),
+      name: row.name || 'default',
+      slug: row.slug || 'default',
+      archived: !!row.archived,
+      websitesCount: nested.length,
+      updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : undefined,
+      sites: nested
+    };
+  });
+
+  const ungroupedSites = [
+    ...(sitesByProjectId.get('') || []),
+    ...[...sitesByProjectId.entries()]
+      .filter(([projectId]) => projectId && !knownProjectIds.has(projectId))
+      .flatMap(([, list]) => list)
+  ];
+
+  const storageBytes = Number(usageRows[0]?.storage || 0);
+
+  return ok({
+    success: true,
+    user: {
+      id: userRow.id || uid,
+      email: userRow.email || '',
+      nickname: userRow.nickname || '',
+      createdAt: userRow.created_at ? new Date(userRow.created_at).getTime() : undefined,
+      authProviders: [
+        ...(userRow.github_id ? ['github'] : []),
+        ...(userRow.feishu_open_id ? ['feishu'] : [])
+      ],
+      role: membership.storedRoles,
+      effectiveRole: membership.effectiveRoles,
+      proExpiresAt: membership.proExpiresAt,
+      proLifetime: membership.proLifetime,
+      proExpired: membership.proExpired,
+      remainingDays: membership.remainingDays
+    },
+    counts: {
+      projects: projectCounts.projects,
+      archivedProjects: projectCounts.archivedProjects,
+      sites: sitesCount
+    },
+    usage: {
+      deployments: sitesCount,
+      files: Number(usageRows[0]?.files || 0),
+      storage: storageBytes,
+      role: { name: limits.name, priority: limits.priority },
+      limits: {
+        deployment_limit: limits.deployment_limit ?? null,
+        max_file_count: limits.max_file_count ?? null,
+        max_file_size: limits.max_file_size ?? null
+      }
+    },
+    traffic: {
+      rangeDays,
+      views7d,
+      views30d,
+      viewsAll,
+      daily
+    },
+    projects,
+    sites,
+    ungroupedSites
+  });
+}
+
+function countSafe(rows, key = 'c') {
+  return Number((rows && rows[0] && rows[0][key]) || 0);
+}
+
+/** 管理员平台数据概览 */
+async function handleGetPlatformOverview(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  await ensureProExpiresColumn();
+  await ensureUsageColumns();
+  await backfillDeployedSizesOnce();
+
+  const rangeDays = 30;
+  const counts = {
+    users: 0,
+    usersWithSites: 0,
+    users7d: 0,
+    sites: 0,
+    sites7d: 0,
+    projects: 0,
+    archivedProjects: 0,
+    storage: 0,
+    admins: 0,
+    proActive: 0,
+    proExpired: 0
+  };
+
+  try {
+    counts.users = countSafe(await query('SELECT COUNT(*) AS c FROM users'));
+  } catch (e) {
+    console.warn('概览用户数失败:', e.message);
+  }
+  try {
+    counts.users7d = countSafe(await query(
+      'SELECT COUNT(*) AS c FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)'
+    ));
+  } catch (e) {
+    console.warn('概览新增用户失败:', e.message);
+  }
+  try {
+    const usage = await query(
+      `SELECT COUNT(*) AS sites,
+              COUNT(DISTINCT user_id) AS usersWithSites,
+              COALESCE(SUM(COALESCE(deployed_size, storage_size)), 0) AS storage
+       FROM websites`
+    );
+    counts.sites = countSafe(usage, 'sites');
+    counts.usersWithSites = countSafe(usage, 'usersWithSites');
+    counts.storage = countSafe(usage, 'storage');
+  } catch (e) {
+    console.warn('概览站点统计失败:', e.message);
+  }
+  try {
+    counts.sites7d = countSafe(await query(
+      'SELECT COUNT(*) AS c FROM websites WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)'
+    ));
+  } catch (e) {
+    console.warn('概览新增站点失败:', e.message);
+  }
+  try {
+    const projectRows = await query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END), 0) AS projects,
+         COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archivedProjects
+       FROM projects`
+    );
+    counts.projects = countSafe(projectRows, 'projects');
+    counts.archivedProjects = countSafe(projectRows, 'archivedProjects');
+  } catch (e) {
+    console.warn('概览项目统计失败:', e.message);
+  }
+
+  try {
+    const roleRows = await query('SELECT roles, pro_expires_at FROM user_roles');
+    for (const row of roleRows) {
+      const membership = membershipSummary(row.roles, row.pro_expires_at);
+      if (membership.effectiveRoles.includes('admin')) counts.admins += 1;
+      if (membership.hasPro) counts.proActive += 1;
+      if (membership.proExpired) counts.proExpired += 1;
+    }
+  } catch (e) {
+    console.warn('概览会员统计失败:', e.message);
+  }
+
+  let viewsAll = 0;
+  let daily = [];
+  try {
+    const all = await query(
+      `SELECT COALESCE(SUM(views), 0) AS views
+       FROM site_path_daily_stats
+       WHERE ${scannerPathSqlPredicate('path')}`
+    );
+    viewsAll = countSafe(all, 'views');
+    const dayRows = await query(
+      `SELECT stat_date, SUM(views) AS views
+       FROM site_path_daily_stats
+       WHERE stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND ${scannerPathSqlPredicate('path')}
+       GROUP BY stat_date
+       ORDER BY stat_date ASC`,
+      [rangeDays - 1]
+    );
+    daily = (dayRows || []).map((r) => ({
+      date: toDayKey(r.stat_date),
+      views: Number(r.views || 0)
+    }));
+  } catch (e) {
+    console.warn('概览访问统计失败:', e.message);
+  }
+
+  const views30d = daily.reduce((sum, item) => sum + item.views, 0);
+  const cutoff7 = new Date();
+  cutoff7.setUTCDate(cutoff7.getUTCDate() - 6);
+  const cutoff7Key = cutoff7.toISOString().slice(0, 10);
+  const views7d = daily.filter((item) => item.date >= cutoff7Key).reduce((sum, item) => sum + item.views, 0);
+
+  let topSites = [];
+  try {
+    const rows = await query(
+      `SELECT w.website_id, w.name, w.subdomain, w.subdomain_domain, w.url, w.user_id,
+              u.nickname, u.email,
+              COALESCE(SUM(s.views), 0) AS views30d,
+              MAX(COALESCE(w.deployed_size, w.storage_size, 0)) AS storage,
+              MAX(w.updated_at) AS updated_at
+       FROM websites w
+       LEFT JOIN users u ON u.id = w.user_id
+       LEFT JOIN site_path_daily_stats s
+         ON s.website_id = w.website_id
+        AND s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+        AND ${scannerPathSqlPredicate('s.path')}
+       GROUP BY w.website_id, w.name, w.subdomain, w.subdomain_domain, w.url, w.user_id, u.nickname, u.email
+       ORDER BY views30d DESC, updated_at DESC
+       LIMIT 8`,
+      [rangeDays - 1]
+    );
+    topSites = rows.map((row) => {
+      const formatted = formatWebsiteForClient(row);
+      return {
+        websiteId: row.website_id,
+        name: row.name || row.website_id,
+        url: formatted.preferredUrl || formatted.url || '',
+        owner: row.nickname || row.email || row.user_id || '',
+        views30d: Number(row.views30d || 0),
+        storage: Number(row.storage || 0)
+      };
+    });
+  } catch (e) {
+    console.warn('概览热门站点失败:', e.message);
+  }
+
+  return ok({
+    success: true,
+    counts,
+    traffic: {
+      rangeDays,
+      views7d,
+      views30d,
+      viewsAll,
+      daily
+    },
+    topSites
+  });
 }
 
 /** 设置/新增某用户的角色 */
@@ -3138,6 +3962,48 @@ async function handleSetRoleLimit(event) {
     ]
   );
   return ok({ success: true });
+}
+
+async function listEnabledBucketConfigs() {
+  try {
+    const rows = await query('SELECT * FROM storage_buckets WHERE enabled = 1 ORDER BY is_default DESC, id ASC');
+    const cfgs = (rows || []).map(buckets.rowToConfig);
+    if (cfgs.length > 0) return cfgs;
+  } catch (e) {
+    console.warn('读取 storage_buckets 失败，回退旧默认桶统计:', e.message);
+  }
+  return [LEGACY_BUCKET];
+}
+
+let _deployedSizeBackfillStarted = false;
+/** 只在历史行还没有 deployed_size 时扫一次桶，写回冗余字段。之后只在创建/更新站点时维护。 */
+async function backfillDeployedSizesOnce() {
+  if (_deployedSizeBackfillStarted) return;
+  _deployedSizeBackfillStarted = true;
+  try {
+    const missing = await query('SELECT COUNT(*) AS c FROM websites WHERE deployed_size IS NULL');
+    if (!Number(missing[0]?.c || 0)) return;
+    const bySite = new Map();
+    const cfgs = await listEnabledBucketConfigs();
+    for (const cfg of cfgs) {
+      const objs = await providerFor(cfg).list('sites/');
+      for (const item of objs) {
+        const websiteId = String(item.key || '').split('/')[2] || '';
+        if (!websiteId) continue;
+        bySite.set(websiteId, (bySite.get(websiteId) || 0) + Number(item.size || 0));
+      }
+    }
+    const rows = await query('SELECT website_id FROM websites WHERE deployed_size IS NULL');
+    for (const row of rows) {
+      await query(
+        'UPDATE websites SET deployed_size = ? WHERE website_id = ? AND deployed_size IS NULL',
+        [bySite.get(row.website_id) || 0, row.website_id]
+      );
+    }
+    console.log(`已回填 ${rows.length} 个站点的 deployed_size`);
+  } catch (e) {
+    console.warn('回填 deployed_size 跳过:', e.message);
+  }
 }
 
 /**
@@ -4735,6 +5601,20 @@ function isSafeZipEntry(entry) {
   return true;
 }
 
+function zipEntryDeployedBytes(entry) {
+  const headerSize = Number(entry && entry.header && entry.header.size);
+  if (Number.isFinite(headerSize) && headerSize >= 0) return headerSize;
+  try {
+    return entry.getData().length;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function sumZipDeployedBytes(zipEntries) {
+  return getDeployEntryRecords(zipEntries).reduce((sum, rec) => sum + zipEntryDeployedBytes(rec.entry), 0);
+}
+
 function getDeployEntryRecords(zipEntries) {
   const validEntries = zipEntries.filter(isSafeZipEntry);
   let commonPrefix = '';
@@ -5739,8 +6619,12 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
     }
 
     // 部署到目标桶（COS 或 S3 兼容，由 provider 决定）
-    const uploadedCount = await deployZipToBucket(bucketCfg, zipEntries, targetPrefix);
-    console.log(`部署完成，上传了 ${uploadedCount} 个文件 → 桶 ${bucketCfg.name || bucketCfg.bucket}`);
+    const uploadedCount = await deployZipToBucket(bucketCfg, zipEntries, targetPrefix, {
+      ownerId: deploymentOwnerId,
+      websiteId
+    });
+    const deployedSize = sumZipDeployedBytes(zipEntries);
+    console.log(`部署完成，上传了 ${uploadedCount} 个文件 / ${deployedSize} 字节 → 桶 ${bucketCfg.name || bucketCfg.bucket}`);
 
     // 默认访问域名 = <websiteId 小写>.demox.site(由边缘函数 resolve 路由到桶 path)
     // 缓存刷新由部署流程主动提交 EdgeOne 清理任务，不再通过 ?v=timestamp 绕过。
@@ -5761,15 +6645,15 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
       const userCustomized = prevName && prevName !== (prev.file_name || '').trim();
       const nextName = userCustomized ? prevName : defaultName;
       await query(
-        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, file_count = ?, storage_size = ?, updated_at = NOW() WHERE id = ?`,
-        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, validEntries.length, totalSize, prev.id]
+        `UPDATE websites SET file_name = ?, name = ?, path = ?, url = ?, bucket_id = ?, file_count = ?, storage_size = ?, deployed_size = ?, updated_at = NOW() WHERE id = ?`,
+        [fileName, nextName, targetPrefix, finalUrl, bucketIdToStore, validEntries.length, totalSize, deployedSize, prev.id]
       );
       // 自定义前缀路由实时读 websites.path 列，重部署后 path 已更新，无需额外操作
       // （边缘缓存最长 60s 后自然刷新）
     } else {
       await query(
-        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags, bucket_id, file_count, storage_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([]), bucketIdToStore, validEntries.length, totalSize]
+        `INSERT INTO websites (user_id, website_id, file_name, name, path, url, tags, bucket_id, file_count, storage_size, deployed_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, websiteId, fileName, defaultName, targetPrefix, finalUrl, JSON.stringify([]), bucketIdToStore, validEntries.length, totalSize, deployedSize]
       );
     }
 
@@ -5825,48 +6709,80 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
   }
 }
 
+function websiteStoragePrefix(ownerId, websiteId) {
+  const owner = String(ownerId || '').trim();
+  const id = String(websiteId || '').trim();
+  if (!owner || !id) return '';
+  if (/[\\/]/.test(owner) || /[\\/]/.test(id) || owner.includes('..') || id.includes('..')) return '';
+  return `sites/${owner}/${id}/`;
+}
+
+function websitePrefixFromTarget(targetPrefix) {
+  const parts = String(targetPrefix || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length < 3 || parts[0] !== 'sites') return '';
+  return websiteStoragePrefix(parts[1], parts[2]);
+}
+
+function isWebsiteStoragePrefix(prefix) {
+  const value = String(prefix || '');
+  if (!value.startsWith('sites/') || !value.endsWith('/')) return false;
+  const parts = value.slice(0, -1).split('/');
+  if (parts.length !== 3 || parts[0] !== 'sites' || !parts[1] || !parts[2]) return false;
+  if (parts[1].includes('..') || parts[2].includes('..')) return false;
+  return true;
+}
+
+function staleObjectKeys(existingKeys, keepKeys, websitePrefix) {
+  if (!isWebsiteStoragePrefix(websitePrefix)) return [];
+  const keep = new Set(keepKeys);
+  return (existingKeys || []).filter((key) => {
+    const value = String(key || '');
+    return value.startsWith(websitePrefix) && !keep.has(value);
+  });
+}
+
+async function pruneWebsiteStorage(provider, websitePrefix, keepKeys) {
+  if (!isWebsiteStoragePrefix(websitePrefix) || !keepKeys || keepKeys.length === 0) return 0;
+  const existing = await provider.list(websitePrefix);
+  const stale = staleObjectKeys(existing.map((item) => item.key), keepKeys, websitePrefix);
+  const chunkSize = 50;
+  for (let i = 0; i < stale.length; i += chunkSize) {
+    await Promise.all(stale.slice(i, i + chunkSize).map((key) => provider.delete(key)));
+  }
+  return stale.length;
+}
+
 /**
  * 部署 ZIP 到指定桶（COS / S3 兼容，由 provider 抽象屏蔽差异）。
  * getCacheHeaders 返回的 Cache-Control 透传给 provider，由各适配器映射到自家字段。
+ * 上传成功后清理同一站点前缀下不在本次 key 集合中的旧对象，避免 hashed 资源和改名目录残留。
  */
-async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix) {
+async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix, opts = {}) {
   const provider = providerFor(bucketCfg);
+  const records = getDeployEntryRecords(zipEntries);
+  const normalizedPrefix = String(targetPrefix || '').replace(/\/+$/, '');
+  const keys = records.map((rec) => `${normalizedPrefix}/${rec.name}`);
 
-  const validEntries = zipEntries.filter(entry => {
-    if (entry.isDirectory) return false;
-    const name = entry.entryName;
-    if (name.includes('..') || name.includes('__MACOSX') || name.includes('.DS_Store')) return false;
-    return true;
-  });
-
-  let commonPrefix = '';
-  if (validEntries.length > 0) {
-    const firstEntry = validEntries[0];
-    const parts = firstEntry.entryName.split('/');
-    if (parts.length > 1) {
-      const potentialPrefix = parts[0] + '/';
-      const allMatch = validEntries.every(e => e.entryName.startsWith(potentialPrefix));
-      if (allMatch) {
-        commonPrefix = potentialPrefix;
-      }
-    }
-  }
-
-  const uploadTasks = validEntries.map(entry => {
-    let entryName = entry.entryName;
-    if (commonPrefix && entryName.startsWith(commonPrefix)) {
-      entryName = entryName.slice(commonPrefix.length);
-    }
-    const key = `${targetPrefix}/${entryName}`;
+  await Promise.all(records.map((rec, index) => {
+    const key = keys[index];
     const cacheHeaders = getCacheHeaders(key);
-    return provider.put(key, entry.getData(), {
+    return provider.put(key, rec.entry.getData(), {
       contentType: getContentType(key),
       cacheControl: cacheHeaders && cacheHeaders['Cache-Control']
     });
-  });
+  }));
 
-  await Promise.all(uploadTasks);
-  return validEntries.length;
+  const websitePrefix = websiteStoragePrefix(opts.ownerId, opts.websiteId) || websitePrefixFromTarget(targetPrefix);
+  if (websitePrefix) {
+    try {
+      const removed = await pruneWebsiteStorage(provider, websitePrefix, keys);
+      if (removed) console.log(`已清理 ${removed} 个旧部署文件 @ ${websitePrefix}`);
+    } catch (e) {
+      console.warn('清理旧部署文件失败:', e.message);
+    }
+  }
+
+  return keys.length;
 }
 
 /**
@@ -6006,3 +6922,6 @@ function getCORSHeaders() {
 }
 
 exports.buildOriginPurgeTargets = buildOriginPurgeTargets;
+exports.websiteStoragePrefix = websiteStoragePrefix;
+exports.websitePrefixFromTarget = websitePrefixFromTarget;
+exports.staleObjectKeys = staleObjectKeys;

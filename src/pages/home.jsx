@@ -332,6 +332,15 @@ export default function Home(props) {
                       <>
                         <p className="text-[var(--stitch-ink)] font-medium">{t.emptyTitle}</p>
                         <p className="text-[var(--stitch-muted)] text-sm mt-2">{t.emptyDesc}</p>
+                        <Button
+                          className="stitch-primary mt-6 rounded-full px-6"
+                          onClick={() => {
+                            if (!currentProjectId) return;
+                            navigate(`/console/projects/${currentProjectId}/deploy`);
+                          }}
+                        >
+                          {t.startDeploy}
+                        </Button>
                       </>
                     )}
                   </div>

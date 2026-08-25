@@ -958,7 +958,7 @@ export const websiteApi = {
 
   // 项目成员列表
   listProjectMembers: async (projectId: string | number) => {
-    return request<{ success: boolean; project?: any; role?: string; members: any[]; invitations: any[]; feishuGrants?: any[]; currentFeishuIdentity?: any; message?: string }>(
+    return request<{ success: boolean; project?: any; role?: string; members: any[]; invitations: any[]; feishuGrants?: any[]; githubGrants?: any[]; currentFeishuIdentity?: any; currentGithubIdentity?: any; message?: string }>(
       WEBSITE_API_URL,
       "/website/list-project-members",
       { method: "POST", body: { action: "list_project_members", projectId } }
@@ -1015,6 +1015,35 @@ export const websiteApi = {
     );
   },
 
+  searchGithubProjectPrincipals: async (data: { projectId: string | number; query: string }) => {
+    return request<{ success: boolean; principals?: any[]; message?: string; errorCode?: string | number }>(
+      WEBSITE_API_URL,
+      "/website/search-github-project-principals",
+      { method: "POST", body: { action: "search_github_project_principals", ...data } }
+    );
+  },
+
+  grantProjectToGithub: async (data: {
+    projectId: string | number;
+    principalKey: string;
+    githubLogin?: string;
+    role: "admin" | "member";
+  }) => {
+    return request<{ success: boolean; grant?: any; member?: any; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/grant-project-to-github",
+      { method: "POST", body: { action: "grant_project_to_github", ...data } }
+    );
+  },
+
+  removeProjectGithubGrant: async (data: { projectId: string | number; grantId: string | number }) => {
+    return request<{ success: boolean; removedGrantId?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/remove-project-github-grant",
+      { method: "POST", body: { action: "remove_project_github_grant", ...data } }
+    );
+  },
+
   // 更新项目成员角色
   updateProjectMemberRole: async (data: { projectId: string | number; userId: string; role: "admin" | "member" }) => {
     return request<{ success: boolean; member?: any; message?: string }>(
@@ -1041,6 +1070,49 @@ export const adminApi = {
       WEBSITE_API_URL,
       "/website/list-user-roles",
       { method: "POST", body: { action: "list_user_roles" } }
+    );
+  },
+  getPlatformOverview: async () => {
+    return request<{
+      success: boolean;
+      message?: string;
+      counts?: {
+        users?: number;
+        usersWithSites?: number;
+        users7d?: number;
+        sites?: number;
+        sites7d?: number;
+        projects?: number;
+        archivedProjects?: number;
+        storage?: number;
+        storageObjects?: number;
+        admins?: number;
+        proActive?: number;
+        proExpired?: number;
+      };
+      traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
+      topSites?: Array<{ websiteId: string; name: string; url?: string; owner?: string; views30d?: number; storage?: number }>;
+    }>(
+      WEBSITE_API_URL,
+      "/website/get-platform-overview",
+      { method: "POST", body: { action: "get_platform_overview" } }
+    );
+  },
+  getUserOverview: async (uid: string) => {
+    return request<{
+      success: boolean;
+      message?: string;
+      user?: any;
+      counts?: any;
+      usage?: any;
+      traffic?: any;
+      projects?: any[];
+      sites?: any[];
+      ungroupedSites?: any[];
+    }>(
+      WEBSITE_API_URL,
+      "/website/get-user-overview",
+      { method: "POST", body: { action: "get_user_overview", uid } }
     );
   },
   setUserRole: async (
@@ -1158,6 +1230,7 @@ export function mapWebsiteRow(row: any): any {
     subdomainDomain: normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain),
     visibility: row.visibility === "private" ? "private" : "public",
     hideWatermark: row.hideWatermark === true || row.hide_watermark === true || Number(row.hide_watermark) === 1,
+    deployedSize: Number(row.deployedSize ?? row.deployed_size ?? row.storage_size ?? 0),
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
   };

@@ -46,6 +46,23 @@ require.cache[directoryModulePath] = {
   }
 };
 
+let githubImpl = {};
+const githubModulePath = require.resolve('./shared/github-directory.js');
+const ActualGithubError = require(githubModulePath).GithubDirectoryError;
+require.cache[githubModulePath] = {
+  id: githubModulePath,
+  filename: githubModulePath,
+  loaded: true,
+  exports: {
+    GithubDirectoryError: ActualGithubError,
+    createGithubDirectoryClient: () => ({
+      searchUsers: (...args) => githubImpl.searchUsers(...args),
+      getUserById: (...args) => githubImpl.getUserById(...args),
+      getUserByLogin: (...args) => githubImpl.getUserByLogin(...args)
+    })
+  }
+};
+
 const { main } = require('./index.js');
 const { sign } = require('./shared/jwt.js');
 
@@ -77,6 +94,11 @@ test.beforeEach(() => {
     listUsers: async () => [],
     getUserDepartmentClosure: async () => ({ departmentIds: [] })
   };
+  githubImpl = {
+    searchUsers: async () => [],
+    getUserById: async (id) => ({ id: String(id), login: 'octocat', name: 'The Octocat', avatarUrl: 'https://example/a.png' }),
+    getUserByLogin: async (login) => ({ id: '1', login, name: login, avatarUrl: null })
+  };
 });
 
 test('project deletion requires authentication', async () => {
@@ -101,13 +123,17 @@ test('project deletion requires authentication', async () => {
 test('platform role list reports linked login providers without exposing provider ids', async () => {
   queryImpl = async (sql) => {
     if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
-    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('information_schema.COLUMNS')) {
+      if (sql.includes('COUNT(*)')) return [{ c: 1 }];
+      return [{ COLUMN_NAME: 'file_count' }, { COLUMN_NAME: 'storage_size' }, { COLUMN_NAME: 'deployed_size' }, { COLUMN_NAME: 'pro_expires_at' }];
+    }
+    if (sql.includes('deployed_size IS NULL')) return [{ c: 0 }];
     if (sql.includes('SELECT ur.user_id') && sql.includes('u.nickname') && sql.includes('u.github_id') && sql.includes('u.feishu_open_id')) {
       return [
-        { user_id: 'github-user', email: 'github@example.com', nickname: 'GitHub User', roles: ['user'], github_id: '1', feishu_open_id: null },
-        { user_id: 'feishu-user', email: 'feishu@example.com', nickname: '飞书用户', roles: ['user'], github_id: null, feishu_open_id: 'ou_1' },
-        { user_id: 'linked-user', email: 'linked@example.com', nickname: 'Linked User', roles: ['user'], github_id: '2', feishu_open_id: 'ou_2' },
-        { user_id: 'email-user', email: 'email@example.com', nickname: '', roles: ['user'], github_id: null, feishu_open_id: null }
+        { user_id: 'github-user', email: 'github@example.com', nickname: 'GitHub User', roles: ['user'], github_id: '1', feishu_open_id: null, sites_count: 3, storage_bytes: 4096 },
+        { user_id: 'feishu-user', email: 'feishu@example.com', nickname: '飞书用户', roles: ['user'], github_id: null, feishu_open_id: 'ou_1', sites_count: 0, storage_bytes: 0 },
+        { user_id: 'linked-user', email: 'linked@example.com', nickname: 'Linked User', roles: ['user'], github_id: '2', feishu_open_id: 'ou_2', sites_count: 1, storage_bytes: 1024 },
+        { user_id: 'email-user', email: 'email@example.com', nickname: '', roles: ['user'], github_id: null, feishu_open_id: null, sites_count: 0, storage_bytes: 0 }
       ];
     }
     throw new Error(`Unexpected query: ${sql}`);
@@ -123,6 +149,174 @@ test('platform role list reports linked login providers without exposing provide
   ]);
   assert.equal('github_id' in body.data[0], false);
   assert.equal('feishu_open_id' in body.data[0], false);
+  assert.deepEqual(body.data.map((item) => item.siteCount), [3, 0, 1, 0]);
+  assert.deepEqual(body.data.map((item) => item.storageBytes), [4096, 0, 1024, 0]);
+});
+
+test('admin user overview returns project, site, and traffic board', async () => {
+  queryImpl = async (sql, params) => {
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }, { COLUMN_NAME: 'file_count' }, { COLUMN_NAME: 'storage_size' }, { COLUMN_NAME: 'deployed_size' }];
+    if (sql.includes('deployed_size IS NULL')) return [{ c: 0 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) {
+      return params && params[0] === 'board-user'
+        ? [{ roles: ['user', 'pro'], pro_expires_at: null }]
+        : [{ roles: ['admin', 'user'] }];
+    }
+    if (sql.includes('FROM users WHERE id')) {
+      return [{
+        id: 'board-user',
+        email: 'board@example.com',
+        nickname: '看板用户',
+        github_id: '1',
+        feishu_open_id: null,
+        created_at: '2026-01-01T00:00:00Z'
+      }];
+    }
+    if (sql.includes('SELECT * FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', name: '普通用户', priority: 10, deployment_limit: 10, max_file_size: 1, max_file_count: 10 }];
+    }
+    if (sql.includes('FROM projects WHERE user_id') && sql.includes('archived')) {
+      return [{ projects: 2, archivedProjects: 1 }];
+    }
+    if (sql.includes('COUNT(*) AS sites') && sql.includes('FROM websites WHERE user_id')) {
+      return [{ sites: 3, files: 12, storage: 4096 }];
+    }
+    if (sql.includes('FROM site_path_daily_stats') && sql.includes('GROUP BY s.stat_date')) {
+      return [
+        { stat_date: '2026-08-20', views: 10 },
+        { stat_date: '2026-08-25', views: 4 }
+      ];
+    }
+    if (sql.includes('FROM site_path_daily_stats') && sql.includes('COALESCE(SUM(s.views)')) {
+      return [{ views: 99 }];
+    }
+    if (sql.includes('FROM projects p') && sql.includes('WHERE p.user_id')) {
+      return [{
+        id: 8,
+        project_key: 'proj_demo',
+        name: 'Demo',
+        slug: 'demo',
+        archived: 0,
+        updated_at: '2026-08-20T00:00:00Z'
+      }];
+    }
+    if (sql.includes('FROM websites w') && sql.includes('views30d')) {
+      return [
+        {
+          website_id: 'SITE1',
+          name: 'Landing',
+          subdomain: 'hello',
+          subdomain_domain: 'demox.site',
+          url: null,
+          created_at: '2026-08-01T00:00:00Z',
+          updated_at: '2026-08-20T00:00:00Z',
+          project_id: 8,
+          project_key: 'proj_demo',
+          project_name: 'Demo',
+          storage: 2048,
+          views30d: 14
+        },
+        {
+          website_id: 'SITE2',
+          name: 'Orphan',
+          subdomain: null,
+          subdomain_domain: null,
+          url: 'https://orphan.example',
+          created_at: '2026-08-02T00:00:00Z',
+          updated_at: '2026-08-21T00:00:00Z',
+          project_id: null,
+          project_key: null,
+          project_name: null,
+          storage: 512,
+          views30d: 2
+        }
+      ];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('get_user_overview', { uid: 'board-user' }, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.user.email, 'board@example.com');
+  assert.equal(body.counts.projects, 2);
+  assert.equal(body.counts.sites, 3);
+  assert.equal(body.traffic.viewsAll, 99);
+  assert.equal(body.traffic.views30d, 14);
+  assert.equal(body.projects[0].name, 'Demo');
+  assert.equal(body.projects[0].websitesCount, 1);
+  assert.equal(body.projects[0].sites[0].websiteId, 'SITE1');
+  assert.equal(body.sites[0].websiteId, 'SITE1');
+  assert.equal(body.sites[0].views30d, 14);
+  assert.equal(body.sites[0].storage, 2048);
+  assert.equal(body.ungroupedSites[0].websiteId, 'SITE2');
+});
+
+test('admin platform overview returns live product counts and traffic', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }, { COLUMN_NAME: 'file_count' }, { COLUMN_NAME: 'storage_size' }, { COLUMN_NAME: 'deployed_size' }];
+    if (sql.includes('deployed_size IS NULL')) return [{ c: 0 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT COUNT(*) AS c FROM users WHERE created_at')) return [{ c: 2 }];
+    if (sql.includes('SELECT COUNT(*) AS c FROM users')) return [{ c: 12 }];
+    if (sql.includes('COUNT(*) AS sites') && sql.includes('FROM websites')) {
+      return [{ sites: 9, usersWithSites: 6, storage: 2048 }];
+    }
+    if (sql.includes('FROM websites WHERE created_at')) return [{ c: 1 }];
+    if (sql.includes('FROM projects') && sql.includes('archived')) {
+      return [{ projects: 5, archivedProjects: 1 }];
+    }
+    if (sql.includes('SELECT roles, pro_expires_at FROM user_roles')) {
+      return [
+        { roles: ['admin', 'user'], pro_expires_at: null },
+        { roles: ['user', 'pro'], pro_expires_at: null },
+        { roles: ['user', 'pro'], pro_expires_at: '2020-01-01T00:00:00Z' }
+      ];
+    }
+    if (sql.includes('FROM site_path_daily_stats') && sql.includes('GROUP BY stat_date')) {
+      return [{ stat_date: '2026-08-24', views: 20 }, { stat_date: '2026-08-25', views: 5 }];
+    }
+    if (sql.includes('FROM site_path_daily_stats') && sql.includes('COALESCE(SUM(views)')) {
+      return [{ views: 80 }];
+    }
+    if (sql.includes('FROM websites w') && sql.includes('views30d')) {
+      return [{
+        website_id: 'HOT1',
+        name: 'Hot Site',
+        subdomain: 'hot',
+        subdomain_domain: 'demox.site',
+        url: null,
+        user_id: 'board-user',
+        nickname: '看板用户',
+        email: 'board@example.com',
+        views30d: 25,
+        storage: 8192
+      }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('get_platform_overview', {}, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.counts.users, 12);
+  assert.equal(body.counts.sites, 9);
+  assert.equal(body.counts.proActive, 1);
+  assert.equal(body.counts.proExpired, 1);
+  assert.equal(body.counts.admins, 1);
+  assert.equal(body.traffic.viewsAll, 80);
+  assert.equal(body.traffic.views30d, 25);
+  assert.equal(body.topSites[0].websiteId, 'HOT1');
+  assert.equal(body.topSites[0].storage, 8192);
+});
+
+test('admin user overview rejects a missing uid', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const body = JSON.parse((await request('get_user_overview', {}, 'platform-admin')).body);
+  assert.equal(body.success, false);
+  assert.match(body.message, /UID/);
 });
 
 test('platform role updates normalize roles and keep the baseline user role', async () => {
@@ -665,6 +859,139 @@ test('removing a grant changes active to zero immediately', async () => {
   assert.equal(revoked, true);
 });
 
+test('GitHub people search is denied when the caller has not bound GitHub', async () => {
+  queryImpl = async (sql) => {
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    if (sql.includes('SELECT github_id, github_login FROM users WHERE id')) return [];
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const body = JSON.parse((await request('search_github_project_principals', {
+    projectId: 42,
+    query: 'alice'
+  }, 'project-owner')).body);
+  assert.equal(body.success, false);
+  assert.match(body.message, /关联 GitHub/);
+});
+
+test('GitHub people search returns local Demox users first and remote GitHub users after', async () => {
+  githubImpl.searchUsers = async () => [
+    { id: '1', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://example/a.png' },
+    { id: '99', login: 'alice-gh', name: 'Alice GH', avatarUrl: null }
+  ];
+  queryImpl = async (sql) => {
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    if (sql.includes('SELECT github_id, github_login FROM users WHERE id')) {
+      return [{ github_id: '42', github_login: 'owner-gh' }];
+    }
+    if (sql.includes('CREATE TABLE IF NOT EXISTS project_github_grants')) return { affectedRows: 0 };
+    if (sql.includes('FROM users u') && sql.includes('github_id')) {
+      return [{ id: 'local-alice', email: 'alice@example.com', nickname: 'Alice Chen', github_id: '99', github_login: 'alice-gh', avatar_url: null }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('search_github_project_principals', {
+    projectId: 42,
+    query: 'alice'
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.principals.length, 2);
+  assert.equal(body.principals[0].principalKey, '99');
+  assert.equal(body.principals[0].alreadyOnDemox, true);
+  assert.equal(body.principals[1].principalKey, '1');
+  assert.equal(body.principals[1].githubLogin, 'octocat');
+});
+
+test('granting a GitHub user who already has a Demox account adds them as a member', async () => {
+  let insertedMember;
+  githubImpl.getUserById = async () => ({ id: '99', login: 'alice-gh', name: 'Alice GH', avatarUrl: null });
+  queryImpl = async (sql, params) => {
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    if (sql.includes('SELECT github_id, github_login FROM users WHERE id')) {
+      return [{ github_id: '42', github_login: 'owner-gh' }];
+    }
+    if (sql.includes('CREATE TABLE IF NOT EXISTS project_github_grants')) return { affectedRows: 0 };
+    if (sql.includes('FROM users') && sql.includes('github_id')) {
+      return [{ id: 'local-alice', email: 'alice@example.com', nickname: 'Alice Chen' }];
+    }
+    if (sql.includes('SELECT role FROM project_members')) return [];
+    if (sql.includes('INSERT INTO project_members')) {
+      insertedMember = params;
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('grant_project_to_github', {
+    projectId: 42,
+    principalKey: '99',
+    role: 'member'
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.member.userId, 'local-alice');
+  assert.deepEqual(insertedMember.slice(0, 3), [42, 'local-alice', 'member']);
+});
+
+test('granting an unknown GitHub user stores a github_id grant', async () => {
+  let insertedParams;
+  githubImpl.getUserById = async () => ({ id: '1', login: 'octocat', name: 'The Octocat', avatarUrl: 'https://example/a.png' });
+  queryImpl = async (sql, params) => {
+    const access = ownerAccessQueries(sql);
+    if (access !== null) return access;
+    if (sql.includes('SELECT github_id, github_login FROM users WHERE id')) {
+      return [{ github_id: '42', github_login: 'owner-gh' }];
+    }
+    if (sql.includes('CREATE TABLE IF NOT EXISTS project_github_grants')) return { affectedRows: 0 };
+    if (sql.includes('FROM users') && sql.includes('github_id')) return [];
+    if (sql.includes('INSERT INTO project_github_grants')) {
+      insertedParams = params;
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('SELECT * FROM project_github_grants')) {
+      return [{ id: 8, project_id: 42, principal_type: 'user', key_type: 'github_id', principal_key: '1', github_login: 'octocat', display_name: 'The Octocat', role: 'admin', created_by: 'project-owner' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('grant_project_to_github', {
+    projectId: 42,
+    principalKey: '1',
+    role: 'admin'
+  }, 'project-owner')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.grant.principalKey, '1');
+  assert.equal(body.grant.githubLogin, 'octocat');
+  assert.equal(insertedParams[1], '1');
+  assert.equal(insertedParams[5], 'admin');
+});
+
+test('a GitHub grant lets the matching github_id access a private project site', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM websites w')) {
+      return [{ path: 'sites/private/index.html', user_id: 'project-owner', project_id: 42, website_id: 'PRIVATE1', visibility: 'private' }];
+    }
+    if (sql.includes('FROM user_roles')) return [];
+    if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) return [];
+    if (sql.includes('CREATE TABLE IF NOT EXISTS project_github_grants')) return { affectedRows: 0 };
+    if (sql.includes('SELECT github_id') && sql.includes('FROM users WHERE id')) {
+      return [{ github_id: '1', github_login: 'octocat' }];
+    }
+    if (sql.includes('FROM project_github_grants') && sql.includes("key_type = 'github_id'")) {
+      return [{ project_id: 42, role: 'member' }];
+    }
+    if (sql.includes('FROM projects p') && sql.includes('LEFT JOIN project_members')) {
+      return [{ id: 42, user_id: 'project-owner', project_role: null }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('check_site_access', { label: 'private1', domain: 'demox.site' }, 'github-user')).body);
+  assert.equal(body.allowed, true);
+});
+
 test('pro and admin roles can configure whether a site hides the watermark', async () => {
   for (const role of ['pro', 'admin']) {
     let updatedParams = null;
@@ -877,7 +1204,7 @@ test('public site resolution exposes the persisted watermark preference to the e
 });
 
 
-const { buildOriginPurgeTargets } = require('./index.js');
+const { buildOriginPurgeTargets, websiteStoragePrefix, websitePrefixFromTarget, staleObjectKeys } = require('./index.js');
 
 test('buildOriginPurgeTargets includes origin prefix for edge fetch', () => {
   const targets = buildOriginPurgeTargets({
@@ -898,4 +1225,40 @@ test('buildOriginPurgeTargets rejects unsafe origin paths', () => {
     websiteId: ''
   });
   assert.deepEqual(targets, []);
+});
+
+test('websiteStoragePrefix rejects empty or path-like ids', () => {
+  assert.equal(websiteStoragePrefix('42', 'EPX2UU43'), 'sites/42/EPX2UU43/');
+  assert.equal(websiteStoragePrefix('', 'EPX2UU43'), '');
+  assert.equal(websiteStoragePrefix('42', ''), '');
+  assert.equal(websiteStoragePrefix('42/../x', 'EPX2UU43'), '');
+  assert.equal(websiteStoragePrefix('42', 'EPX/2'), '');
+});
+
+test('websitePrefixFromTarget keeps only the website root', () => {
+  assert.equal(websitePrefixFromTarget('sites/42/EPX2UU43/dist'), 'sites/42/EPX2UU43/');
+  assert.equal(websitePrefixFromTarget('sites/42/EPX2UU43/build/'), 'sites/42/EPX2UU43/');
+  assert.equal(websitePrefixFromTarget('other/42/EPX2UU43/dist'), '');
+  assert.equal(websitePrefixFromTarget('sites/42'), '');
+});
+
+test('staleObjectKeys only removes leftovers under the same website prefix', () => {
+  const prefix = 'sites/u1/SITE1/';
+  const keep = [
+    'sites/u1/SITE1/dist/index.html',
+    'sites/u1/SITE1/dist/assets/a.js'
+  ];
+  const existing = [
+    ...keep,
+    'sites/u1/SITE1/dist/assets/old.js',
+    'sites/u1/SITE1/oldzip/index.html',
+    'sites/u1/SITE2/dist/index.html',
+    'sites/u2/SITE1/dist/index.html'
+  ];
+  assert.deepEqual(staleObjectKeys(existing, keep, prefix).sort(), [
+    'sites/u1/SITE1/dist/assets/old.js',
+    'sites/u1/SITE1/oldzip/index.html'
+  ]);
+  assert.deepEqual(staleObjectKeys(existing, keep, ''), []);
+  assert.deepEqual(staleObjectKeys(existing, keep, 'sites/'), []);
 });

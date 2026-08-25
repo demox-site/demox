@@ -40,6 +40,7 @@ import {
   formatTimestamp,
   hasProOrAboveRole
 } from "@/lib/website-utils";
+import { formatBytes } from "@/lib/utils";
 
 function PremiumMark({ t }) {
   return (
@@ -293,6 +294,12 @@ export default function WebsiteCard({
             <span>
               {t.creator}
               {creatorName || "—"}
+            </span>
+          )}
+          {(website.deployedSize > 0 || website.deployed_size > 0 || website.storage_size > 0) && (
+            <span>
+              {t.storage || "存储"}
+              {formatBytes(website.deployedSize || website.deployed_size || website.storage_size)}
             </span>
           )}
           <span>

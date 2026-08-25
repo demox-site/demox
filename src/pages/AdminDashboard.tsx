@@ -1,15 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
-import { userManager, websiteApi, adminApi } from "@/api";
+import { userManager, adminApi } from "@/api";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
   Badge,
   Button,
   Card,
@@ -25,7 +17,12 @@ import {
   Input,
   Label,
   RadioGroup,
-  RadioGroupItem
+  RadioGroupItem,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle
 } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useToast } from "@/components/ui";
@@ -33,7 +30,7 @@ import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { Github, Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, UserPlus } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
 
 const DEFAULT_ROLE_META = [
   { id: "admin", name: "管理员", priority: 100, enabled: true },
@@ -55,6 +52,80 @@ const PRO_DURATION_OPTIONS = [
 ] as const;
 
 type ProDuration = (typeof PRO_DURATION_OPTIONS)[number]["id"];
+
+const formatCount = (value?: number | null) =>
+  Number(value || 0).toLocaleString("zh-CN");
+
+const toLocalDayKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const fillDailySeries = (daily: Array<{ date: string; views: number }> | undefined, days = 30) => {
+  const map = new Map((daily || []).map((item) => [item.date, Number(item.views || 0)]));
+  const series: Array<{ date: string; views: number }> = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - offset);
+    const key = toLocalDayKey(date);
+    series.push({ date: key, views: map.get(key) || 0 });
+  }
+  return series;
+};
+
+type OverviewSite = {
+  websiteId: string;
+  name: string;
+  url?: string;
+  projectId?: string;
+  projectName?: string;
+  views30d?: number;
+  storage?: number;
+};
+
+type OverviewProject = {
+  id: string;
+  name: string;
+  slug: string;
+  archived?: boolean;
+  websitesCount?: number;
+  sites?: OverviewSite[];
+};
+
+const groupProjectsWithSites = (
+  projects: OverviewProject[] | undefined,
+  sites: OverviewSite[] | undefined,
+  ungroupedSites?: OverviewSite[]
+) => {
+  const projectList = projects || [];
+  const siteList = sites || [];
+  if (projectList.some((project) => Array.isArray(project.sites))) {
+    const assigned = new Set(projectList.flatMap((project) => (project.sites || []).map((site) => site.websiteId)));
+    return {
+      projects: projectList.map((project) => ({ ...project, sites: project.sites || [] })),
+      ungrouped: (ungroupedSites && ungroupedSites.length > 0)
+        ? ungroupedSites
+        : siteList.filter((site) => !assigned.has(site.websiteId))
+    };
+  }
+  const used = new Set<string>();
+  const grouped = projectList.map((project) => {
+    const nested = siteList.filter((site) => {
+      const match = site.projectId === project.id || (!!site.projectName && site.projectName === project.name);
+      if (match) used.add(site.websiteId);
+      return match;
+    });
+    return { ...project, sites: nested, websitesCount: project.websitesCount ?? nested.length };
+  });
+  return {
+    projects: grouped,
+    ungrouped: siteList.filter((site) => !used.has(site.websiteId))
+  };
+};
 
 const formatProExpiry = (item: {
   role?: string[];
@@ -81,20 +152,6 @@ const roleBadgeClass = (roleId: string) => {
   return "border-zinc-700 bg-zinc-800 text-zinc-300";
 };
 
-interface BucketStats {
-  success: boolean;
-  sitesBytes?: number;
-  sitesCount?: number;
-  usersCount?: number;
-  projectsCount?: number;
-  traffic?: {
-    timestamps: string[];
-    inbound: number[] | null;
-    outbound: number[] | null;
-  };
-  message?: string;
-}
-
 /**
  * AdminDashboard
  * 仅管理员可见的大盘页面，展示 COS 存储与流量信息
@@ -109,26 +166,27 @@ const AdminDashboard: React.FC = () => {
           : "dashboard";
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [statsDay, setStatsDay] = useState<BucketStats | null>(null);
-  const [statsHour, setStatsHour] = useState<BucketStats | null>(null);
   const [userName, setUserName] = useState<string>("");
   const [currentUserId, setCurrentUserId] = useState<string>("");
-  const [rangeDay, setRangeDay] = useState<{ start: string; end: string }>(() => {
-    const now = new Date();
-    const end = new Date(now.getTime());
-    const start = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
-    const fmt = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return { start: fmt(start), end: fmt(end) };
-  });
-  const [rangeHour, setRangeHour] = useState<{ start: string; end: string }>(() => {
-    const now = new Date();
-    const end = new Date(now.getTime());
-    const start = new Date(now.getTime() - 24 * 3600 * 1000);
-    const fmt = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return { start: fmt(start), end: fmt(end) };
-  });
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [platformOverview, setPlatformOverview] = useState<{
+    counts?: {
+      users?: number;
+      usersWithSites?: number;
+      users7d?: number;
+      sites?: number;
+      sites7d?: number;
+      projects?: number;
+      archivedProjects?: number;
+      storage?: number;
+      storageObjects?: number;
+      admins?: number;
+      proActive?: number;
+      proExpired?: number;
+    };
+    traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
+    topSites?: Array<{ websiteId: string; name: string; url?: string; owner?: string; views30d?: number; storage?: number }>;
+  } | null>(null);
 
   /**
    * 检查当前用户是否为管理员
@@ -146,51 +204,22 @@ const AdminDashboard: React.FC = () => {
     setIsAdmin(roles.includes("admin"));
   };
 
-  /**
-   * 拉取天级别统计（含 Sites 用量与在用用户/项目数量）
-   */
-  const fetchStatsDay = useCallback(async () => {
+  const fetchPlatformOverview = useCallback(async () => {
+    setOverviewLoading(true);
     try {
-      const result: BucketStats = await websiteApi.bucketStats({
-        granularity: "day",
-        startTime: rangeDay.start,
-        endTime: rangeDay.end
-      });
-      if (!result.success) {
-        throw new Error(result.message || "获取统计失败");
-      }
-      setStatsDay(result);
+      const result = await adminApi.getPlatformOverview();
+      if (!result.success) throw new Error(result.message || "概览加载失败");
+      setPlatformOverview(result);
     } catch (e: unknown) {
       toast({
-        title: "获取统计失败",
+        title: "获取概览失败",
         description: e instanceof Error ? e.message : "请稍后重试",
         variant: "destructive"
       });
+    } finally {
+      setOverviewLoading(false);
     }
-  }, [toast, rangeDay.start, rangeDay.end]);
-
-  /**
-   * 拉取小时级别统计（仅流量时间序列）
-   */
-  const fetchStatsHour = useCallback(async () => {
-    try {
-      const result: BucketStats = await websiteApi.bucketStats({
-        granularity: "hour",
-        startTime: rangeHour.start,
-        endTime: rangeHour.end
-      });
-      if (!result.success) {
-        throw new Error(result.message || "获取统计失败");
-      }
-      setStatsHour(result);
-    } catch (e: unknown) {
-      toast({
-        title: "获取统计失败",
-        description: e instanceof Error ? e.message : "请稍后重试",
-        variant: "destructive"
-      });
-    }
-  }, [toast, rangeHour.start, rangeHour.end]);
+  }, [toast]);
 
   useEffect(() => {
     (async () => {
@@ -200,11 +229,10 @@ const AdminDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (isAdmin) {
-      fetchStatsDay();
-      fetchStatsHour();
+    if (isAdmin && activeTab === "dashboard") {
+      fetchPlatformOverview();
     }
-  }, [isAdmin, fetchStatsDay, fetchStatsHour]);
+  }, [isAdmin, activeTab, fetchPlatformOverview]);
   // ===== 角色配置状态与方法 =====
   interface UserRoleDoc {
     _id: string;
@@ -217,8 +245,11 @@ const AdminDashboard: React.FC = () => {
     proLifetime?: boolean;
     proExpired?: boolean;
     remainingDays?: number | null;
+    siteCount?: number;
+    storageBytes?: number;
     updatedAt?: number;
   }
+  type RoleSortKey = "sites" | "storage" | "updatedAt" | "role";
   type RawRoleDoc = {
     _id: string;
     email?: string;
@@ -230,12 +261,19 @@ const AdminDashboard: React.FC = () => {
     proLifetime?: boolean;
     proExpired?: boolean;
     remainingDays?: number | null;
+    siteCount?: number;
+    sites_count?: number;
+    storageBytes?: number;
     updatedAt?: number;
     updateTime?: number;
   };
   const [rolesLoading, setRolesLoading] = useState(false);
   const [rolesList, setRolesList] = useState<UserRoleDoc[]>([]);
   const [roleSearch, setRoleSearch] = useState("");
+  const [roleSort, setRoleSort] = useState<{ key: RoleSortKey; dir: "asc" | "desc" }>({
+    key: "updatedAt",
+    dir: "desc"
+  });
   const [isUserRoleDialogOpen, setIsUserRoleDialogOpen] = useState(false);
   const [userRoleDialogMode, setUserRoleDialogMode] = useState<"create" | "edit">("create");
   const [userRoleDialogUid, setUserRoleDialogUid] = useState("");
@@ -243,7 +281,28 @@ const AdminDashboard: React.FC = () => {
   const [userRoleDialogRoles, setUserRoleDialogRoles] = useState<string[]>(["user"]);
   const [userRoleDialogProDuration, setUserRoleDialogProDuration] = useState<ProDuration>("30");
   const [roleSavingUid, setRoleSavingUid] = useState("");
-  const [resetRoleTarget, setResetRoleTarget] = useState<UserRoleDoc | null>(null);
+  const [detailUser, setDetailUser] = useState<UserRoleDoc | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [userOverview, setUserOverview] = useState<{
+    user?: {
+      id?: string;
+      email?: string;
+      nickname?: string;
+      createdAt?: number;
+      authProviders?: string[];
+      remainingDays?: number | null;
+      proLifetime?: boolean;
+      proExpired?: boolean;
+      proExpiresAt?: string | null;
+    };
+    counts?: { projects?: number; archivedProjects?: number; sites?: number };
+    usage?: { storage?: number; files?: number; deployments?: number; role?: { name?: string } };
+    traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
+    projects?: OverviewProject[];
+    sites?: OverviewSite[];
+    ungroupedSites?: OverviewSite[];
+  } | null>(null);
   /**
    * fetchRoles
    * 获取 ai_builder_user_roles 集合的全部文档
@@ -267,6 +326,8 @@ const AdminDashboard: React.FC = () => {
         proLifetime: Boolean(d.proLifetime),
         proExpired: Boolean(d.proExpired),
         remainingDays: d.remainingDays ?? null,
+        siteCount: Number(d.siteCount ?? d.sites_count ?? 0),
+        storageBytes: Number(d.storageBytes ?? 0),
         updatedAt: d.updatedAt || d.updateTime
       }));
       setRolesList(list);
@@ -280,6 +341,22 @@ const AdminDashboard: React.FC = () => {
       setRolesLoading(false);
     }
   }, [toast]);
+
+  const openUserDetail = async (item: UserRoleDoc) => {
+    setDetailUser(item);
+    setDetailLoading(true);
+    setDetailError("");
+    setUserOverview(null);
+    try {
+      const res = await adminApi.getUserOverview(item._id);
+      if (!res.success) throw new Error(res.message || "用户详情加载失败");
+      setUserOverview(res);
+    } catch (e: unknown) {
+      setDetailError(e instanceof Error ? e.message : "请稍后重试");
+    } finally {
+      setDetailLoading(false);
+    }
+  };
   /**
    * saveRoleDoc
    * 保存或更新指定用户的角色配置（docId 为 uid）
@@ -320,29 +397,6 @@ const AdminDashboard: React.FC = () => {
       return false;
     } finally {
       setRoleSavingUid("");
-    }
-  };
-  /**
-   * deleteRoleDoc
-   * 删除指定用户的角色文档
-   */
-  const deleteRoleDoc = async (uid: string) => {
-    if (!uid) return;
-    setRoleSavingUid(uid);
-    try {
-      const result = await adminApi.deleteUserRole(uid);
-      if (!result.success) throw new Error(result.message || "角色重置失败");
-      toast({ title: "已恢复普通用户", description: `用户 ${uid} 的自定义角色配置已移除` });
-      await fetchRoles();
-    } catch (e: unknown) {
-      toast({
-        title: "删除失败",
-        description: e instanceof Error ? e.message : "请稍后重试",
-        variant: "destructive"
-      });
-    } finally {
-      setRoleSavingUid("");
-      setResetRoleTarget(null);
     }
   };
 
@@ -898,10 +952,6 @@ const AdminDashboard: React.FC = () => {
     );
   }
 
-  const sitesBytes = statsDay?.sitesBytes ?? 0;
-  const sitesCount = statsDay?.sitesCount ?? 0;
-  const usersCount = statsDay?.usersCount ?? 0;
-  const projectsCount = statsDay?.projectsCount ?? 0;
   const roleOptions = (() => {
     const configured = roleLimitsList.map((role) => ({
       id: role._id || role.name,
@@ -923,7 +973,7 @@ const AdminDashboard: React.FC = () => {
     return selected.sort((a, b) => b.priority - a.priority)[0] || getRoleMeta("user");
   };
   const normalizedRoleSearch = roleSearch.trim().toLowerCase();
-  const filteredRolesList = rolesList.filter((item) => {
+  const filteredRoleMatches = rolesList.filter((item) => {
     if (!normalizedRoleSearch) return true;
     const providers = (item.authProviders || []).flatMap((provider) =>
       provider === "github" ? ["github"] : ["feishu", "飞书"]
@@ -931,84 +981,47 @@ const AdminDashboard: React.FC = () => {
     return [item.nickname || "", item.email || "", item._id, ...providers, ...(item.role || []).flatMap((roleId) => [roleId, getRoleMeta(roleId).name])]
       .some((value) => value.toLowerCase().includes(normalizedRoleSearch));
   });
+  const toggleRoleSort = (key: RoleSortKey) => {
+    setRoleSort((current) => (
+      current.key === key
+        ? { key, dir: current.dir === "desc" ? "asc" : "desc" }
+        : { key, dir: "desc" }
+    ));
+  };
+  const filteredRolesList = [...filteredRoleMatches].sort((a, b) => {
+    const dir = roleSort.dir === "asc" ? 1 : -1;
+    if (roleSort.key === "sites") return ((a.siteCount || 0) - (b.siteCount || 0)) * dir;
+    if (roleSort.key === "storage") return ((a.storageBytes || 0) - (b.storageBytes || 0)) * dir;
+    if (roleSort.key === "role") {
+      const pa = getEffectiveRole(a.effectiveRole || a.role || []).priority;
+      const pb = getEffectiveRole(b.effectiveRole || b.role || []).priority;
+      return (pa - pb) * dir;
+    }
+    return ((a.updatedAt || 0) - (b.updatedAt || 0)) * dir;
+  });
+  const roleSortIcon = (key: RoleSortKey) => {
+    if (roleSort.key !== key) return <ArrowUpDown className="h-3.5 w-3.5 text-zinc-600" />;
+    return roleSort.dir === "asc"
+      ? <ArrowUp className="h-3.5 w-3.5 text-zinc-200" />
+      : <ArrowDown className="h-3.5 w-3.5 text-zinc-200" />;
+  };
   const roleCounts = roleOptions.reduce<Record<string, number>>((counts, option) => {
     counts[option.id] = rolesList.filter((item) => getEffectiveRole(item.effectiveRole || item.role || []).id === option.id).length;
     return counts;
   }, {});
   const dialogEffectiveRole = getEffectiveRole(userRoleDialogRoles);
-  const trafficDay = statsDay?.traffic;
-  const trafficHour = statsHour?.traffic;
-  const chartDataDay = (() => {
-    if (trafficDay && trafficDay.timestamps.length > 0) {
-      return trafficDay.timestamps.map((ts, i) => ({
-        ts,
-        inbound: trafficDay.inbound ? trafficDay.inbound[i] || 0 : 0,
-        outbound: trafficDay.outbound ? trafficDay.outbound[i] || 0 : 0
-      }));
-    }
-    return [];
-  })();
-  const chartDataHour = (() => {
-    if (trafficHour && trafficHour.timestamps.length > 0) {
-      return trafficHour.timestamps.map((ts, i) => ({
-        ts,
-        inbound: trafficHour.inbound ? trafficHour.inbound[i] || 0 : 0,
-        outbound: trafficHour.outbound ? trafficHour.outbound[i] || 0 : 0
-      }));
-    }
-    return [];
-  })();
-  /**
-   * formatTsLabel
-   * 格式化时间坐标标签
-   */
-  const formatTsLabel = (ts: string | number, mode: "day" | "hour") => {
-    try {
-      let ms: number;
-      if (typeof ts === "number") {
-        ms = ts < 1000000000000 ? ts * 1000 : ts;
-      } else {
-        ms = new Date(ts).getTime();
-      }
-      const d = new Date(ms);
-      if (mode === "day") {
-        return `${d.getMonth() + 1}/${d.getDate()}`;
-      }
-      return `${String(d.getHours()).padStart(2, "0")}:00`;
-    } catch {
-      return ts;
-    }
-  };
-  /**
-   * bytesToGB
-   * 将字节转换为 GB（保留两位小数）
-   */
-  const bytesToGB = (bytes: number): number => {
-    const GB = 1024 * 1024 * 1024;
-    return Math.max(0, bytes) / GB;
-  };
-  /**
-   * calcDailyCost
-   * 计算日消费：存储(GB)*0.099 + 外网下行(GB)*0.5
-   * 使用当前 Sites 存储用量与天级流量的最新一天作为估算
-   */
-  const calcDailyCost = (): {
-    storageGB: number;
-    outboundGB: number;
-    storageCost: number;
-    outboundCost: number;
-    total: number;
-  } => {
-    const storageGB = bytesToGB(sitesBytes);
-    const lastOutboundBytes =
-      chartDataDay.length > 0 ? chartDataDay[chartDataDay.length - 1].outbound : 0;
-    const outboundGB = bytesToGB(lastOutboundBytes);
-    const storageCost = storageGB * 0.099;
-    const outboundCost = outboundGB * 0.5;
-    const total = storageCost + outboundCost;
-    return { storageGB, outboundGB, storageCost, outboundCost, total };
-  };
-  const dailyCost = calcDailyCost();
+  const overview = platformOverview;
+  const overviewDaily = fillDailySeries(overview?.traffic?.daily);
+  const overviewCards = [
+    { label: "注册用户", value: formatCount(overview?.counts?.users), hint: `管理员 ${formatCount(overview?.counts?.admins)} · 近 7 天 +${formatCount(overview?.counts?.users7d)}`, icon: Users },
+    { label: "站点", value: formatCount(overview?.counts?.sites), hint: `近 7 天 +${formatCount(overview?.counts?.sites7d)}`, icon: Globe },
+    { label: "项目", value: formatCount(overview?.counts?.projects), hint: overview?.counts?.archivedProjects ? `已归档 ${formatCount(overview.counts.archivedProjects)}` : "运行中", icon: FolderKanban },
+    { label: "近 30 天访问", value: formatCount(overview?.traffic?.views30d), hint: `近 7 天 ${formatCount(overview?.traffic?.views7d)}`, icon: Eye },
+    { label: "专业会员", value: formatCount(overview?.counts?.proActive), hint: overview?.counts?.proExpired ? `已过期 ${formatCount(overview.counts.proExpired)}` : "生效中", icon: Crown },
+    { label: "部署存储", value: formatBytes(overview?.counts?.storage || 0), hint: overview?.counts?.storageObjects != null
+      ? `${formatCount(overview.counts.storageObjects)} 个文件 · ${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`
+      : `${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`, icon: HardDrive }
+  ];
 
 
   return (
@@ -1027,104 +1040,63 @@ const AdminDashboard: React.FC = () => {
           {/* Content（导航已上移到控制台侧边栏二级菜单，由二级路由 section 驱动） */}
           <div>
             {activeTab === "dashboard" ? (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                  <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">存储用量</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="text-2xl text-zinc-100 mb-2">{formatBytes(sitesBytes)}</div>
-                      <div>对象数量：{sitesCount}</div>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">用户数量</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="text-2xl text-zinc-100 mb-2">{usersCount}</div>
-                      <div>统计范围：正在使用本平台的用户数量</div>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">项目数量</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="text-2xl text-zinc-100 mb-2">{projectsCount}</div>
-                      <div>统计范围：正在运行的项目数量</div>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">日消费（估算）</CardTitle>
-                    </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="text-2xl text-zinc-100 mb-2">￥{dailyCost.total.toFixed(2)}</div>
-                      <div className="space-y-1 text-sm">
-                        <div>
-                          存储：{dailyCost.storageGB.toFixed(2)} GB × 0.099 = ￥{dailyCost.storageCost.toFixed(2)}
-                        </div>
-                        <div>
-                          下行：{dailyCost.outboundGB.toFixed(2)} GB × 0.5 = ￥{dailyCost.outboundCost.toFixed(2)}
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+              <div className="space-y-6">
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">数据概览</h1>
+                    <p className="mt-2 text-sm text-zinc-400">平台用户、站点、会员和访问量，按真实业务数据汇总。</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                    onClick={fetchPlatformOverview}
+                    disabled={overviewLoading}
+                  >
+                    <RefreshCw className={`mr-2 h-4 w-4 ${overviewLoading ? "animate-spin" : ""}`} />
+                    刷新
+                  </Button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-                  <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">桶流量（天级，近7天）</CardTitle>
+                <div className="grid grid-cols-2 gap-3 xl:grid-cols-6">
+                  {overviewCards.map((card) => (
+                    <Card key={card.label} className="border-zinc-800 bg-zinc-900">
+                      <CardContent className="pt-5">
+                        <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                          <card.icon className="h-3.5 w-3.5" />
+                          {card.label}
+                        </div>
+                        <div className="mt-2 text-2xl font-semibold text-zinc-100">
+                          {overviewLoading && !overview ? "—" : card.value}
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">{card.hint}</div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+                  <Card className="border-zinc-800 bg-zinc-900">
+                    <CardHeader className="flex flex-row items-center justify-between">
+                      <CardTitle className="text-zinc-100">近 30 天访问量</CardTitle>
+                      <span className="text-xs text-zinc-500">累计 {formatCount(overview?.traffic?.viewsAll)}</span>
                     </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="flex items-center gap-2 mb-4">
-                        <input
-                          type="datetime-local"
-                          value={rangeDay.start}
-                          onChange={(e) => setRangeDay((r) => ({ ...r, start: e.target.value }))}
-                          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-200"
-                        />
-                        <span>至</span>
-                        <input
-                          type="datetime-local"
-                          value={rangeDay.end}
-                          onChange={(e) => setRangeDay((r) => ({ ...r, end: e.target.value }))}
-                          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-200"
-                        />
-                        <Button variant="outline" className="bg-zinc-900 border-zinc-700 text-zinc-300" onClick={fetchStatsDay}>
-                          应用
-                        </Button>
-                      </div>
-                      {chartDataDay.length === 0 ? (
-                        <div>暂无数据</div>
+                    <CardContent>
+                      {!overview && overviewLoading ? (
+                        <p className="text-sm text-zinc-500">正在加载...</p>
+                      ) : overviewDaily.every((item) => item.views === 0) ? (
+                        <p className="text-sm text-zinc-500">暂无访问数据</p>
                       ) : (
-                        <div style={{ width: "100%", height: 240 }}>
+                        <div style={{ width: "100%", height: 260 }}>
                           <ResponsiveContainer>
-                            <LineChart data={chartDataDay}>
+                            <LineChart data={overviewDaily}>
                               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-                              <XAxis dataKey="ts" tickFormatter={(v) => formatTsLabel(v, "day")} stroke="#71717a" />
-                              <YAxis
-                                tickFormatter={(v) => formatBytes(Number(v))}
-                                stroke="#71717a"
-                                domain={[0, (max: number) => max * 1.2]}
-                                allowDataOverflow
-                              />
+                              <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
+                              <YAxis stroke="#71717a" allowDecimals={false} />
                               <Tooltip
-                                formatter={(value: number | string, name: string, item: { dataKey?: string }) => [
-                                  formatBytes(typeof value === "number" ? value : Number(value)),
-                                  item?.dataKey === "inbound" ? "入站" : "出站"
-                                ]}
-                                labelFormatter={(label: string | number) => formatTsLabel(label, "day")}
+                                formatter={(value: number | string) => [formatCount(Number(value)), "访问"]}
                                 contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
                               />
-                              <Line type="monotone" dataKey="inbound" stroke="#22c55e" dot={false} name="入站" />
-                              <Line type="monotone" dataKey="outbound" stroke="#3b82f6" dot={false} name="出站" />
+                              <Line type="monotone" dataKey="views" stroke="#38bdf8" strokeWidth={2} dot={false} />
                             </LineChart>
                           </ResponsiveContainer>
                         </div>
@@ -1132,61 +1104,33 @@ const AdminDashboard: React.FC = () => {
                     </CardContent>
                   </Card>
 
-                  <Card className="bg-zinc-900 border-zinc-800">
+                  <Card className="border-zinc-800 bg-zinc-900">
                     <CardHeader>
-                      <CardTitle className="text-zinc-100">桶流量（小时级，近24小时）</CardTitle>
+                      <CardTitle className="text-zinc-100">热门站点</CardTitle>
                     </CardHeader>
-                    <CardContent className="text-zinc-400">
-                      <div className="flex items-center gap-2 mb-4">
-                        <input
-                          type="datetime-local"
-                          value={rangeHour.start}
-                          onChange={(e) => setRangeHour((r) => ({ ...r, start: e.target.value }))}
-                          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-200"
-                        />
-                        <span>至</span>
-                        <input
-                          type="datetime-local"
-                          value={rangeHour.end}
-                          onChange={(e) => setRangeHour((r) => ({ ...r, end: e.target.value }))}
-                          className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-200"
-                        />
-                        <Button variant="outline" className="bg-zinc-900 border-zinc-700 text-zinc-300" onClick={fetchStatsHour}>
-                          应用
-                        </Button>
-                      </div>
-                      {chartDataHour.length === 0 ? (
-                        <div>暂无数据</div>
+                    <CardContent className="space-y-2">
+                      {(overview?.topSites || []).length === 0 ? (
+                        <p className="text-sm text-zinc-500">{overviewLoading ? "正在加载..." : "暂无站点访问"}</p>
                       ) : (
-                        <div style={{ width: "100%", height: 240 }}>
-                          <ResponsiveContainer>
-                            <LineChart data={chartDataHour}>
-                              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-                              <XAxis dataKey="ts" tickFormatter={(v) => formatTsLabel(v, "hour")} stroke="#71717a" />
-                              <YAxis
-                                tickFormatter={(v) => formatBytes(Number(v))}
-                                stroke="#71717a"
-                                domain={[0, (max: number) => max * 1.2]}
-                                allowDataOverflow
-                              />
-                              <Tooltip
-                                formatter={(value: number | string, name: string, item: { dataKey?: string }) => [
-                                  formatBytes(typeof value === "number" ? value : Number(value)),
-                                  item?.dataKey === "inbound" ? "入站" : "出站"
-                                ]}
-                                labelFormatter={(label: string | number) => formatTsLabel(label, "hour")}
-                                contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
-                              />
-                              <Line type="monotone" dataKey="inbound" stroke="#22c55e" dot={false} name="入站" />
-                              <Line type="monotone" dataKey="outbound" stroke="#3b82f6" dot={false} name="出站" />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </div>
+                        (overview?.topSites || []).map((site) => (
+                          <div key={site.websiteId} className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-sm text-zinc-100">{site.name}</span>
+                              <span className="shrink-0 font-mono text-xs text-zinc-400">
+                                {formatBytes(site.storage || 0)} · {formatCount(site.views30d)}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate text-xs text-zinc-500">
+                              {site.owner ? `${site.owner} · ` : ""}
+                              {site.url || site.websiteId}
+                            </div>
+                          </div>
+                        ))
                       )}
                     </CardContent>
                   </Card>
                 </div>
-              </>
+              </div>
             ) : activeTab === "roles" ? (
               <div className="space-y-6">
                 <div>
@@ -1228,7 +1172,7 @@ const AdminDashboard: React.FC = () => {
                   <CardHeader className="gap-4 md:flex md:flex-row md:items-center md:justify-between">
                     <div>
                       <CardTitle className="text-zinc-100">已配置用户</CardTitle>
-                      <p className="mt-1 text-sm text-zinc-500">仅展示有显式角色配置的账户，共 {rolesList.length} 个</p>
+                      <p className="mt-1 text-sm text-zinc-500">仅展示有显式角色配置的账户，共 {rolesList.length} 个。点击一行可查看项目、站点与访问看板。</p>
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <div className="relative min-w-0 sm:w-72">
@@ -1266,17 +1210,34 @@ const AdminDashboard: React.FC = () => {
                           <tr className="text-left text-zinc-400">
                             <th className="py-3 pr-6 font-medium">账户</th>
                             <th className="py-3 pr-6 font-medium">第三方登录</th>
-                            <th className="py-3 pr-6 font-medium">生效角色</th>
-                            <th className="py-3 pr-6 font-medium">拥有角色</th>
+                            <th className="py-3 pr-6 font-medium">
+                              <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-200" onClick={() => toggleRoleSort("role")}>
+                                生效角色 {roleSortIcon("role")}
+                              </button>
+                            </th>
                             <th className="py-3 pr-6 font-medium">会员时效</th>
-                            <th className="py-3 pr-6 font-medium">更新时间</th>
+                            <th className="py-3 pr-6 font-medium">
+                              <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-200" onClick={() => toggleRoleSort("sites")}>
+                                站点数量 {roleSortIcon("sites")}
+                              </button>
+                            </th>
+                            <th className="py-3 pr-6 font-medium">
+                              <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-200" onClick={() => toggleRoleSort("storage")}>
+                                存储 {roleSortIcon("storage")}
+                              </button>
+                            </th>
+                            <th className="py-3 pr-6 font-medium">
+                              <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-200" onClick={() => toggleRoleSort("updatedAt")}>
+                                更新时间 {roleSortIcon("updatedAt")}
+                              </button>
+                            </th>
                             <th className="py-3 text-right font-medium">操作</th>
                           </tr>
                         </thead>
                         <tbody>
                           {filteredRolesList.length === 0 ? (
                             <tr>
-                              <td className="py-10 text-center text-zinc-500" colSpan={7}>
+                              <td className="py-10 text-center text-zinc-500" colSpan={8}>
                                 {rolesLoading ? "正在加载角色配置..." : roleSearch ? "没有匹配的用户" : "暂无显式角色配置"}
                               </td>
                             </tr>
@@ -1286,7 +1247,11 @@ const AdminDashboard: React.FC = () => {
                               const isCurrentUser = item._id === currentUserId;
                               const proExpiryText = formatProExpiry(item);
                               return (
-                                <tr key={item._id} className="border-t border-zinc-800 align-middle">
+                                <tr
+                                  key={item._id}
+                                  className="border-t border-zinc-800 align-middle cursor-pointer hover:bg-zinc-900/80"
+                                  onClick={() => openUserDetail(item)}
+                                >
                                   <td className="py-4 pr-6">
                                     <div className="flex items-center gap-2 text-sm font-medium text-zinc-200">
                                       {item.nickname || item.email || "未关联账户"}
@@ -1318,14 +1283,6 @@ const AdminDashboard: React.FC = () => {
                                   <td className="py-4 pr-6">
                                     <Badge variant="outline" className={roleBadgeClass(effectiveRole.id)}>{effectiveRole.name}</Badge>
                                   </td>
-                                  <td className="py-4 pr-6">
-                                    <div className="flex max-w-[300px] flex-wrap gap-1.5">
-                                      {normalizeRoleIds(item.role || []).map((roleId) => {
-                                        const meta = getRoleMeta(roleId);
-                                        return <Badge key={roleId} variant="outline" className={roleBadgeClass(roleId)}>{meta.name}</Badge>;
-                                      })}
-                                    </div>
-                                  </td>
                                   <td className="whitespace-nowrap py-4 pr-6 text-sm">
                                     {proExpiryText ? (
                                       <span className={item.proExpired ? "text-red-300" : "text-zinc-300"}>{proExpiryText}</span>
@@ -1333,13 +1290,28 @@ const AdminDashboard: React.FC = () => {
                                       <span className="text-zinc-600">—</span>
                                     )}
                                   </td>
+                                  <td className="whitespace-nowrap py-4 pr-6 font-mono text-sm text-zinc-200">
+                                    {formatCount(item.siteCount)}
+                                  </td>
+                                  <td className="whitespace-nowrap py-4 pr-6 font-mono text-sm text-zinc-200">
+                                    {formatBytes(item.storageBytes || 0)}
+                                  </td>
                                   <td className="whitespace-nowrap py-4 pr-6 text-sm text-zinc-500">
                                     {item.updatedAt
                                       ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.updatedAt))
                                       : "—"}
                                   </td>
                                   <td className="py-4 text-right">
-                                    <div className="flex justify-end gap-2">
+                                    <div className="flex justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                                        onClick={() => openUserDetail(item)}
+                                      >
+                                        <Eye className="mr-1.5 h-3.5 w-3.5" />
+                                        详情
+                                      </Button>
                                       <Button
                                         size="sm"
                                         variant="outline"
@@ -1349,17 +1321,6 @@ const AdminDashboard: React.FC = () => {
                                       >
                                         <Pencil className="mr-1.5 h-3.5 w-3.5" />
                                         编辑
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="text-zinc-500 hover:bg-red-950/40 hover:text-red-300"
-                                        onClick={() => setResetRoleTarget(item)}
-                                        disabled={isCurrentUser || roleSavingUid === item._id}
-                                        title={isCurrentUser ? "不能重置当前管理员账户" : "恢复为普通用户"}
-                                      >
-                                        <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-                                        重置
                                       </Button>
                                     </div>
                                   </td>
@@ -1372,6 +1333,158 @@ const AdminDashboard: React.FC = () => {
                     </div>
                   </CardContent>
                 </Card>
+
+                <Sheet open={Boolean(detailUser)} onOpenChange={(open) => !open && setDetailUser(null)}>
+                  <SheetContent className="overflow-y-auto border-zinc-800 bg-zinc-950 sm:max-w-3xl">
+                    <SheetHeader>
+                      <SheetTitle className="text-zinc-100">
+                        {detailUser?.nickname || detailUser?.email || "用户详情"}
+                      </SheetTitle>
+                      <SheetDescription className="font-mono text-xs text-zinc-500">
+                        {detailUser?._id}
+                      </SheetDescription>
+                    </SheetHeader>
+                    <div className="mt-6 space-y-6">
+                      {detailLoading ? (
+                        <p className="text-sm text-zinc-500">正在加载看板...</p>
+                      ) : detailError ? (
+                        <p className="text-sm text-red-300">{detailError}</p>
+                      ) : userOverview ? (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+                            {userOverview.user?.email ? <span>{userOverview.user.email}</span> : null}
+                            {userOverview.usage?.role?.name ? (
+                              <Badge variant="outline" className="border-zinc-700 text-zinc-300">
+                                {userOverview.usage.role.name}
+                              </Badge>
+                            ) : null}
+                            {userOverview.user?.proLifetime ? (
+                              <span>永久会员</span>
+                            ) : userOverview.user?.proExpired ? (
+                              <span className="text-red-300">会员已过期</span>
+                            ) : userOverview.user?.remainingDays != null ? (
+                              <span>会员剩 {userOverview.user.remainingDays} 天</span>
+                            ) : null}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                            {[
+                              { label: "项目", value: formatCount(userOverview.counts?.projects), icon: FolderKanban },
+                              { label: "站点", value: formatCount(userOverview.counts?.sites), icon: Globe },
+                              { label: "近 30 天访问", value: formatCount(userOverview.traffic?.views30d), icon: Eye },
+                              { label: "占用存储", value: formatBytes(userOverview.usage?.storage || 0), icon: HardDrive }
+                            ].map((card) => (
+                              <div key={card.label} className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-3">
+                                <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                                  <card.icon className="h-3.5 w-3.5" />
+                                  {card.label}
+                                </div>
+                                <div className="mt-2 text-xl font-semibold text-zinc-100">{card.value}</div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-3 text-sm text-zinc-400">
+                            <div>近 7 天访问 <span className="text-zinc-200">{formatCount(userOverview.traffic?.views7d)}</span></div>
+                            <div>累计访问 <span className="text-zinc-200">{formatCount(userOverview.traffic?.viewsAll)}</span></div>
+                            <div>部署文件 <span className="text-zinc-200">{formatCount(userOverview.usage?.files)}</span></div>
+                          </div>
+
+                          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+                            <div className="mb-3 text-sm font-medium text-zinc-200">近 30 天访问量</div>
+                            {(userOverview.traffic?.daily || []).length === 0 ? (
+                              <p className="text-sm text-zinc-500">暂无访问数据</p>
+                            ) : (
+                              <div style={{ width: "100%", height: 220 }}>
+                                <ResponsiveContainer>
+                                  <LineChart data={userOverview.traffic?.daily || []}>
+                                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+                                    <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
+                                    <YAxis stroke="#71717a" allowDecimals={false} />
+                                    <Tooltip
+                                      formatter={(value: number | string) => [formatCount(Number(value)), "访问"]}
+                                      contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
+                                    />
+                                    <Line type="monotone" dataKey="views" stroke="#38bdf8" strokeWidth={2} dot={false} />
+                                  </LineChart>
+                                </ResponsiveContainer>
+                              </div>
+                            )}
+                          </div>
+
+                          {(() => {
+                            const grouped = groupProjectsWithSites(
+                              userOverview.projects,
+                              userOverview.sites,
+                              userOverview.ungroupedSites
+                            );
+                            const hasAnything = grouped.projects.length > 0 || grouped.ungrouped.length > 0;
+                            const renderSite = (site: OverviewSite) => (
+                              <div key={site.websiteId} className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-sm text-zinc-100">{site.name}</span>
+                                  <span className="shrink-0 font-mono text-xs text-zinc-400">
+                                    {formatBytes(site.storage || 0)} · {formatCount(site.views30d)} 次
+                                  </span>
+                                </div>
+                                <div className="mt-1 truncate text-xs text-zinc-500">{site.url || site.websiteId}</div>
+                              </div>
+                            );
+                            return (
+                              <div>
+                                <div className="mb-2 text-sm font-medium text-zinc-200">项目与站点</div>
+                                {!hasAnything ? (
+                                  <p className="text-sm text-zinc-500">还没有项目或站点</p>
+                                ) : (
+                                  <div className="space-y-3">
+                                    {grouped.projects.map((project) => {
+                                      const projectViews = (project.sites || []).reduce((sum, site) => sum + Number(site.views30d || 0), 0);
+                                      const projectStorage = (project.sites || []).reduce((sum, site) => sum + Number(site.storage || 0), 0);
+                                      return (
+                                        <div key={project.id} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                              <div className="flex items-center gap-2">
+                                                <FolderKanban className="h-3.5 w-3.5 text-zinc-500" />
+                                                <span className="text-sm text-zinc-100">{project.name}</span>
+                                                {project.archived ? <Badge variant="outline" className="border-zinc-700 text-zinc-500">已归档</Badge> : null}
+                                              </div>
+                                              <div className="mt-1 text-xs text-zinc-500">
+                                                {project.slug} · {formatCount(project.sites?.length ?? project.websitesCount)} 个站点
+                                                {projectStorage ? ` · ${formatBytes(projectStorage)}` : ""}
+                                                {projectViews ? ` · 近 30 天 ${formatCount(projectViews)} 次` : ""}
+                                              </div>
+                                            </div>
+                                          </div>
+                                          <div className="mt-3 space-y-2">
+                                            {(project.sites || []).length === 0 ? (
+                                              <p className="text-xs text-zinc-500">该项目还没有站点</p>
+                                            ) : (
+                                              (project.sites || []).map(renderSite)
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {grouped.ungrouped.length > 0 ? (
+                                      <div className="rounded-xl border border-dashed border-zinc-800 bg-zinc-900/40 p-3">
+                                        <div className="text-sm text-zinc-200">未关联项目</div>
+                                        <div className="mt-1 text-xs text-zinc-500">{formatCount(grouped.ungrouped.length)} 个站点没有项目</div>
+                                        <div className="mt-3 space-y-2">
+                                          {grouped.ungrouped.map(renderSite)}
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      ) : null}
+                    </div>
+                  </SheetContent>
+                </Sheet>
 
                 <Dialog open={isUserRoleDialogOpen} onOpenChange={setIsUserRoleDialogOpen}>
                   <DialogContent className="border-zinc-800 bg-zinc-900 sm:max-w-xl">
@@ -1495,26 +1608,6 @@ const AdminDashboard: React.FC = () => {
                     </div>
                   </DialogContent>
                 </Dialog>
-
-                <AlertDialog open={Boolean(resetRoleTarget)} onOpenChange={(open) => !open && setResetRoleTarget(null)}>
-                  <AlertDialogContent className="border-zinc-800 bg-zinc-900">
-                    <AlertDialogHeader>
-                      <AlertDialogTitle className="text-zinc-100">恢复为普通用户？</AlertDialogTitle>
-                      <AlertDialogDescription className="text-zinc-400">
-                        将移除 {resetRoleTarget?.email || resetRoleTarget?._id} 的显式角色配置。该用户会回到普通用户权限，不会删除用户账户或站点数据。
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800">取消</AlertDialogCancel>
-                      <AlertDialogAction
-                        className="bg-red-600 text-white hover:bg-red-500"
-                        onClick={() => resetRoleTarget && deleteRoleDoc(resetRoleTarget._id)}
-                      >
-                        确认重置
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
               </div>
             ) : activeTab === "roleLimits" ? (
               <div className="space-y-6">

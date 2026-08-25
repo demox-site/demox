@@ -56,6 +56,8 @@ export function useAuth(t) {
                 nickname: u.nickname,
                 githubId: me.user.githubId || null,
                 githubLogin: me.user.githubLogin || null,
+                feishuOpenId: me.user.feishuOpenId || null,
+                feishuName: me.user.feishuName || null,
                 avatarUrl: me.user.avatarUrl || null,
                 roles: u.roles,
                 membership: u.membership

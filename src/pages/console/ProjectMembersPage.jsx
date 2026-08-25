@@ -1,5 +1,5 @@
 import React from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Navigate, useNavigate, useOutletContext, useParams } from "react-router-dom";
 // @ts-ignore
 import { Card, CardContent } from "@/components/ui";
 // @ts-ignore
@@ -15,7 +15,8 @@ export default function ProjectMembersPage() {
   const { projectId } = useParams();
   const { language: lang } = useLanguage();
   const t = translations[lang];
-  const currentUser = React.useMemo(() => userManager.get(), []);
+  const outlet = useOutletContext() || {};
+  const currentUser = outlet.user || userManager.get();
   const projects = useProjects({
     t,
     handleAuthError: (error) => console.warn("Project members page auth error:", error)

@@ -17,7 +17,7 @@ import {
   useToast
 } from "@/components/ui";
 // @ts-ignore
-import { Building2, Check, Loader2, Mail, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
+import { Building2, Check, Github, Loader2, Mail, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import { websiteApi } from "@/api";
 
 const roleLabels = {
@@ -40,6 +40,9 @@ export function ProjectMembersPanel({
   const [members, setMembers] = React.useState([]);
   const [invitations, setInvitations] = React.useState([]);
   const [feishuGrants, setFeishuGrants] = React.useState([]);
+  const [githubGrants, setGithubGrants] = React.useState([]);
+  const [currentFeishuIdentity, setCurrentFeishuIdentity] = React.useState(null);
+  const [currentGithubIdentity, setCurrentGithubIdentity] = React.useState(null);
   const [serverProject, setServerProject] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
@@ -62,13 +65,34 @@ export function ProjectMembersPanel({
   const [feishuSearchError, setFeishuSearchError] = React.useState("");
   const [feishuActiveIndex, setFeishuActiveIndex] = React.useState(-1);
   const [feishuRole, setFeishuRole] = React.useState("member");
+  const [githubQuery, setGithubQuery] = React.useState("");
+  const [githubResults, setGithubResults] = React.useState([]);
+  const [selectedGithubUser, setSelectedGithubUser] = React.useState(null);
+  const [githubSearchOpen, setGithubSearchOpen] = React.useState(false);
+  const [githubSearchLoading, setGithubSearchLoading] = React.useState(false);
+  const [githubSearchError, setGithubSearchError] = React.useState("");
+  const [githubActiveIndex, setGithubActiveIndex] = React.useState(-1);
+  const [githubRole, setGithubRole] = React.useState("member");
   const inviteSearchRequest = React.useRef(0);
   const feishuSearchRequest = React.useRef(0);
+  const githubSearchRequest = React.useRef(0);
   const resolvedProjectId = project?.id || project?._id || projectId;
   const effectiveProject = serverProject ? { ...(project || {}), ...serverProject } : project;
   const myRole = normalizeRole(effectiveProject?.role);
   const canManage = ["owner", "admin"].includes(myRole);
   const canManageAdmins = myRole === "owner";
+  const githubBound = Boolean(
+    currentUser?.githubId ||
+    currentUser?.github_id ||
+    currentGithubIdentity?.githubId
+  );
+  const feishuBound = Boolean(
+    currentUser?.feishuOpenId ||
+    currentUser?.feishu_open_id ||
+    currentFeishuIdentity?.openId
+  );
+  const visibleInviteTabs = ["email", githubBound && "github", feishuBound && "feishu"].filter(Boolean);
+  const effectiveInviteTab = visibleInviteTabs.includes(inviteTab) ? inviteTab : "email";
 
   const roleText = (role) => {
     if (t?.projectRoleOwner && role === "owner") return t.projectRoleOwner;
@@ -87,6 +111,9 @@ export function ProjectMembersPanel({
       setMembers(res.members || []);
       setInvitations(res.invitations || []);
       setFeishuGrants(res.feishuGrants || []);
+      setGithubGrants(res.githubGrants || []);
+      setCurrentFeishuIdentity(res.currentFeishuIdentity || null);
+      setCurrentGithubIdentity(res.currentGithubIdentity || null);
     } catch (error) {
       toast({
         title: t.projectMembersLoadFailed,
@@ -118,6 +145,12 @@ export function ProjectMembersPanel({
     resetFeishuSelection();
     setFeishuPrincipalType("user");
     setFeishuRole("member");
+    setGithubQuery("");
+    setGithubResults([]);
+    setSelectedGithubUser(null);
+    setGithubSearchOpen(false);
+    setGithubSearchError("");
+    setGithubRole("member");
   }, [resetFeishuSelection]);
 
   React.useEffect(() => {
@@ -127,7 +160,7 @@ export function ProjectMembersPanel({
   React.useEffect(() => {
     const query = inviteQuery.trim();
     const requestId = ++inviteSearchRequest.current;
-    if (!inviteOpen || inviteTab !== "email" || !query || !resolvedProjectId) {
+    if (!inviteOpen || effectiveInviteTab !== "email" || !query || !resolvedProjectId) {
       setInviteSearchLoading(false);
       setInviteResults([]);
       return undefined;
@@ -149,12 +182,12 @@ export function ProjectMembersPanel({
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [inviteOpen, inviteQuery, inviteTab, resolvedProjectId, t]);
+  }, [effectiveInviteTab, inviteOpen, inviteQuery, resolvedProjectId, t]);
 
   React.useEffect(() => {
     const query = feishuQuery.trim();
     const requestId = ++feishuSearchRequest.current;
-    if (!inviteOpen || inviteTab !== "feishu" || !query || !resolvedProjectId) {
+    if (!inviteOpen || effectiveInviteTab !== "feishu" || !query || !resolvedProjectId) {
       setFeishuSearchLoading(false);
       setFeishuResults([]);
       return undefined;
@@ -180,7 +213,37 @@ export function ProjectMembersPanel({
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [feishuPrincipalType, feishuQuery, inviteOpen, inviteTab, resolvedProjectId, t]);
+  }, [effectiveInviteTab, feishuPrincipalType, feishuQuery, inviteOpen, resolvedProjectId, t]);
+
+  React.useEffect(() => {
+    const query = githubQuery.trim();
+    const requestId = ++githubSearchRequest.current;
+    if (!inviteOpen || effectiveInviteTab !== "github" || !query || !resolvedProjectId) {
+      setGithubSearchLoading(false);
+      setGithubResults([]);
+      return undefined;
+    }
+    setGithubSearchLoading(true);
+    setGithubSearchError("");
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await websiteApi.searchGithubProjectPrincipals({
+          projectId: resolvedProjectId,
+          query
+        });
+        if (!res?.success) throw new Error(res?.message || t.projectGithubSearchFailed);
+        if (githubSearchRequest.current === requestId) setGithubResults(res.principals || []);
+      } catch (error) {
+        if (githubSearchRequest.current === requestId) {
+          setGithubResults([]);
+          setGithubSearchError(error.message || t.projectGithubSearchFailedDesc);
+        }
+      } finally {
+        if (githubSearchRequest.current === requestId) setGithubSearchLoading(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [effectiveInviteTab, githubQuery, inviteOpen, resolvedProjectId, t]);
 
   const inviteMember = async (event) => {
     event.preventDefault();
@@ -225,6 +288,52 @@ export function ProjectMembersPanel({
       toast({
         title: t.projectFeishuGrantFailed,
         description: error.message || t.projectFeishuGrantFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const grantToGithub = async (event) => {
+    event.preventDefault();
+    if (!selectedGithubUser?.principalKey || !resolvedProjectId) return;
+    setBusyKey("github-grant");
+    try {
+      const res = await websiteApi.grantProjectToGithub({
+        projectId: resolvedProjectId,
+        principalKey: selectedGithubUser.principalKey,
+        githubLogin: selectedGithubUser.githubLogin,
+        role: githubRole
+      });
+      if (!res?.success) throw new Error(res?.message || t.projectGithubGrantFailed);
+      setInviteOpen(false);
+      resetInviteDialog();
+      toast({ title: t.projectGithubGrantSaved, description: res.message || t.projectGithubGrantSavedDesc });
+      await loadMembers();
+    } catch (error) {
+      toast({
+        title: t.projectGithubGrantFailed,
+        description: error.message || t.projectGithubGrantFailedDesc,
+        variant: "destructive"
+      });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const removeGithubGrant = async (grant) => {
+    if (!resolvedProjectId || !grant?.id) return;
+    setBusyKey(`github:${grant.id}`);
+    try {
+      const res = await websiteApi.removeProjectGithubGrant({ projectId: resolvedProjectId, grantId: grant.id });
+      if (!res?.success) throw new Error(res?.message || t.projectGithubGrantRemoveFailed);
+      setGithubGrants((prev) => prev.filter((item) => item.id !== grant.id));
+      toast({ title: t.projectGithubGrantRemoved, description: res.message || t.projectGithubGrantRemovedDesc });
+    } catch (error) {
+      toast({
+        title: t.projectGithubGrantRemoveFailed,
+        description: error.message || t.projectGithubGrantRemoveFailedDesc,
         variant: "destructive"
       });
     } finally {
@@ -319,25 +428,36 @@ export function ProjectMembersPanel({
                 <DialogDescription className="text-[var(--stitch-muted)]">{t.projectInviteDialogDesc}</DialogDescription>
               </DialogHeader>
               <Tabs
-                value={inviteTab}
+                value={effectiveInviteTab}
                 onValueChange={(value) => {
                   setInviteTab(value);
                   setInviteSearchOpen(false);
                   setFeishuSearchOpen(false);
+                  setGithubSearchOpen(false);
                 }}
               >
-                <TabsList className="grid w-full grid-cols-2 border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
-                  <TabsTrigger value="email" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
-                    <Mail className="h-4 w-4" />
-                    {t.projectInviteEmailTab}
-                  </TabsTrigger>
-                  <TabsTrigger value="feishu" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
-                    <Building2 className="h-4 w-4" />
-                    {t.projectInviteFeishuTab}
-                  </TabsTrigger>
-                </TabsList>
+                {visibleInviteTabs.length > 1 && (
+                  <TabsList className={`grid w-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] ${visibleInviteTabs.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+                    <TabsTrigger value="email" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
+                      <Mail className="h-4 w-4" />
+                      {t.projectInviteEmailTab}
+                    </TabsTrigger>
+                    {githubBound && (
+                      <TabsTrigger value="github" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
+                        <Github className="h-4 w-4" />
+                        {t.projectInviteGithubTab}
+                      </TabsTrigger>
+                    )}
+                    {feishuBound && (
+                      <TabsTrigger value="feishu" className="gap-2 data-[state=active]:bg-[var(--stitch-surface-strong)] data-[state=active]:text-[var(--stitch-ink)]">
+                        <Building2 className="h-4 w-4" />
+                        {t.projectInviteFeishuTab}
+                      </TabsTrigger>
+                    )}
+                  </TabsList>
+                )}
 
-                <TabsContent value="email" className="mt-5">
+                <TabsContent value="email" className={visibleInviteTabs.length > 1 ? "mt-5" : "mt-0"}>
                   <form onSubmit={inviteMember} className="space-y-4" autoComplete="off">
                     <div>
                       <label htmlFor="project-member-query" className="mb-2 block text-sm font-semibold text-[var(--stitch-ink)]">
@@ -444,6 +564,111 @@ export function ProjectMembersPanel({
                   </form>
                 </TabsContent>
 
+                {githubBound && (
+                <TabsContent value="github" className="mt-5">
+                  <form onSubmit={grantToGithub} className="space-y-4" autoComplete="off">
+                    <p className="text-sm text-[var(--stitch-muted)]">{t.projectGithubGrantDesc}</p>
+                    <div
+                      className="relative"
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget)) setGithubSearchOpen(false);
+                      }}
+                    >
+                      <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-[var(--stitch-muted)]" />
+                      <Input
+                        name="project-github-query"
+                        type="search"
+                        value={githubQuery}
+                        onChange={(event) => {
+                          setGithubQuery(event.target.value);
+                          setSelectedGithubUser(null);
+                          setGithubActiveIndex(-1);
+                          setGithubSearchOpen(Boolean(event.target.value.trim()));
+                        }}
+                        onFocus={() => setGithubSearchOpen(Boolean(githubQuery.trim()))}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape" && githubSearchOpen) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setGithubSearchOpen(false);
+                          } else if (event.key === "ArrowDown" && githubResults.length) {
+                            event.preventDefault();
+                            setGithubSearchOpen(true);
+                            setGithubActiveIndex((index) => (index + 1) % githubResults.length);
+                          } else if (event.key === "ArrowUp" && githubResults.length) {
+                            event.preventDefault();
+                            setGithubSearchOpen(true);
+                            setGithubActiveIndex((index) => (index <= 0 ? githubResults.length - 1 : index - 1));
+                          } else if (event.key === "Enter" && githubSearchOpen && githubActiveIndex >= 0) {
+                            event.preventDefault();
+                            setSelectedGithubUser(githubResults[githubActiveIndex]);
+                            setGithubSearchOpen(false);
+                          }
+                        }}
+                        placeholder={t.projectGithubPlaceholder}
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-1p-ignore="true"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={Boolean(githubQuery.trim() && githubSearchOpen)}
+                        aria-controls="project-github-results"
+                        aria-activedescendant={githubActiveIndex >= 0 ? `project-github-result-${githubActiveIndex}` : undefined}
+                        className="pl-9 border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)] placeholder:text-[var(--stitch-muted)]"
+                      />
+                      {githubQuery.trim() && githubSearchOpen && (
+                        <div id="project-github-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
+                          {githubSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
+                          {!githubSearchLoading && githubSearchError && <div className="px-3 py-3 text-sm text-red-400">{githubSearchError}</div>}
+                          {!githubSearchLoading && !githubSearchError && githubResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectGithubNoResults}</div>}
+                          {!githubSearchLoading && githubResults.map((user, index) => (
+                            <button
+                              id={`project-github-result-${index}`}
+                              key={user.principalKey}
+                              type="button"
+                              role="option"
+                              aria-selected={selectedGithubUser?.principalKey === user.principalKey}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => { setSelectedGithubUser(user); setGithubSearchOpen(false); }}
+                              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left ${githubActiveIndex === index ? "bg-[var(--stitch-blue-soft)]" : "hover:bg-[var(--stitch-blue-soft)]"}`}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-semibold">{user.name || user.githubLogin}</span>
+                                {user.secondaryText && <span className="block truncate text-xs text-[var(--stitch-muted)]">{user.secondaryText}</span>}
+                              </span>
+                              {selectedGithubUser?.principalKey === user.principalKey && <Check className="h-4 w-4 shrink-0 text-[var(--stitch-blue)]" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {selectedGithubUser && (
+                      <div className="flex items-center justify-between rounded-xl border border-[var(--stitch-blue)]/40 bg-[var(--stitch-blue-soft)] px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold">{selectedGithubUser.name || selectedGithubUser.githubLogin}</div>
+                          {selectedGithubUser.secondaryText && <div className="truncate text-xs text-[var(--stitch-muted)]">{selectedGithubUser.secondaryText}</div>}
+                        </div>
+                        <Badge variant="outline" className="ml-3 border-[var(--stitch-line)]">{t.projectGithubSource}</Badge>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-end gap-2">
+                      <select value={githubRole} onChange={(event) => setGithubRole(event.target.value)} disabled={busyKey === "github-grant"} className="h-10 rounded-md border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 text-sm text-[var(--stitch-ink)] outline-none">
+                        {canManageAdmins && <option value="admin">{roleText("admin")}</option>}
+                        <option value="member">{roleText("member")}</option>
+                      </select>
+                      <Button type="submit" className="stitch-primary" disabled={busyKey === "github-grant" || !selectedGithubUser}>
+                        {busyKey === "github-grant" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                        {t.projectGithubGrantButton}
+                      </Button>
+                    </div>
+                  </form>
+                </TabsContent>
+                )}
+
+                {feishuBound && (
                 <TabsContent value="feishu" className="mt-5">
                   <form onSubmit={grantToFeishu} className="space-y-4" autoComplete="off">
                     <div className="grid grid-cols-2 gap-2 rounded-xl bg-[var(--stitch-surface)] p-1">
@@ -538,9 +763,51 @@ export function ProjectMembersPanel({
                     </div>
                   </form>
                 </TabsContent>
+                )}
               </Tabs>
             </DialogContent>
           </Dialog>
+        </div>
+      )}
+
+      {githubGrants.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-mono uppercase tracking-[0.18em] text-[var(--stitch-muted)]">
+            {t.projectGithubGrantsSection}
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
+            {githubGrants.map((grant) => (
+              <div key={grant.id} className="flex items-center justify-between gap-3 border-b border-[var(--stitch-line)] p-3 text-sm last:border-b-0">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate font-semibold text-[var(--stitch-ink)]">{grant.name || grant.displayName || grant.githubLogin || grant.principalKey}</span>
+                    <Badge variant="outline" className="border-[var(--stitch-line)] text-[var(--stitch-muted)]">
+                      {t.projectGithubSource}
+                    </Badge>
+                    <Badge className="border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
+                      {roleText(grant.role)}
+                    </Badge>
+                  </div>
+                  {grant.secondaryText && (
+                    <div className="mt-1 truncate font-mono text-xs text-[var(--stitch-muted)]">{grant.secondaryText}</div>
+                  )}
+                </div>
+                {canManage && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={busyKey === `github:${grant.id}`}
+                    onClick={() => removeGithubGrant(grant)}
+                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-red-950/30 hover:text-red-400"
+                    aria-label={t.projectGithubGrantRemove}
+                  >
+                    {busyKey === `github:${grant.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-4 w-4" />}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
