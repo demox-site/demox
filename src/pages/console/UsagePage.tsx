@@ -29,7 +29,10 @@ const texts = {
     perUpload: "单次上限",
     loading: "加载中...",
     cumulativeHint: "文件数与体积为各站点单次部署的累计；对应上限为单次上传上限，进度按最大单站计算。",
-    loadFailed: "用量加载失败，请稍后重试。"
+    loadFailed: "用量加载失败，请稍后重试。",
+    membershipLifetime: "永久会员",
+    membershipRemaining: "剩余 {days} 天",
+    membershipExpired: "专业会员已过期"
   },
   en: {
     title: "Usage & Plan",
@@ -45,12 +48,22 @@ const texts = {
     perUpload: "per-upload",
     loading: "Loading...",
     cumulativeHint: "File count and size are cumulative single-deploy figures across sites; their limits are per-upload caps, with progress based on the largest single site.",
-    loadFailed: "Failed to load usage. Please retry later."
+    loadFailed: "Failed to load usage. Please retry later.",
+    membershipLifetime: "Lifetime membership",
+    membershipRemaining: "{days} days left",
+    membershipExpired: "Pro membership expired"
   }
 } as const;
 
 interface UsageData {
   role: { name: string; priority: number };
+  membership?: {
+    hasPro: boolean;
+    proExpired: boolean;
+    proLifetime: boolean;
+    proExpiresAt: string | null;
+    remainingDays: number | null;
+  };
   usage: { deployments: number; files: number; storage: number };
   maxSite: { fileCount: number; storageSize: number };
   limits: {
@@ -148,9 +161,20 @@ const UsagePage: React.FC = () => {
             <div className="w-10 h-10 rounded-xl bg-[var(--stitch-blue-soft)] border border-[var(--stitch-line)] flex items-center justify-center">
               <Crown className="w-5 h-5 text-[var(--stitch-muted)]" />
             </div>
-            <span className="text-lg font-bold capitalize">
-              {loading ? t.loading : data?.role?.name || "user"}
-            </span>
+            <div>
+              <span className="text-lg font-bold capitalize">
+                {loading ? t.loading : data?.role?.name || "user"}
+              </span>
+              {!loading && data?.membership?.proLifetime && data.membership.hasPro ? (
+                <p className="mt-1 text-xs text-[var(--stitch-muted)]">{t.membershipLifetime}</p>
+              ) : !loading && data?.membership?.hasPro && data.membership.remainingDays != null ? (
+                <p className="mt-1 text-xs text-[var(--stitch-muted)]">
+                  {t.membershipRemaining.replace("{days}", String(data.membership.remainingDays))}
+                </p>
+              ) : !loading && data?.membership?.proExpired ? (
+                <p className="mt-1 text-xs text-red-400">{t.membershipExpired}</p>
+              ) : null}
+            </div>
           </div>
           <Button onClick={() => navigate("/pricing")} className="stitch-action rounded-full">{t.upgrade}</Button>
         </CardContent>

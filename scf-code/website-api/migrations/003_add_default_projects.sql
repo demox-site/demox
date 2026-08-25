@@ -4,7 +4,7 @@
 -- 3) 为 users 表与 websites 表中出现过的每个 user_id 创建 slug=default 的默认项目。
 -- 4) 将现有未归属项目的站点回填到各自用户的 default 项目。
 --
--- 可重复执行；线上也可通过 website-api 的 migrate_default_projects action 执行同等逻辑。
+-- 可重复执行。线上迁移接口已移除，仅保留本 SQL 作为历史记录。
 
 CREATE TABLE IF NOT EXISTS projects (
   id          BIGINT AUTO_INCREMENT PRIMARY KEY,

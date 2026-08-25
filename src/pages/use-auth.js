@@ -48,6 +48,7 @@ export function useAuth(t) {
               u.nickname = me.user.nickname || "";
               u.nickName = u.nickname;
               u.roles = me.user.roles || u.roles;
+              u.membership = me.user.membership || u.membership;
               userManager.set({
                 ...storedUser,
                 userId: u.userId,
@@ -56,7 +57,8 @@ export function useAuth(t) {
                 githubId: me.user.githubId || null,
                 githubLogin: me.user.githubLogin || null,
                 avatarUrl: me.user.avatarUrl || null,
-                roles: u.roles
+                roles: u.roles,
+                membership: u.membership
               });
             }
           } catch (profileError) {

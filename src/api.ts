@@ -1043,11 +1043,24 @@ export const adminApi = {
       { method: "POST", body: { action: "list_user_roles" } }
     );
   },
-  setUserRole: async (uid: string, role: string[]) => {
+  setUserRole: async (
+    uid: string,
+    role: string[],
+    options: { proDays?: number; proLifetime?: boolean } = {}
+  ) => {
     return request<{ success: boolean; message?: string }>(
       WEBSITE_API_URL,
       "/website/set-user-role",
-      { method: "POST", body: { action: "set_user_role", uid, role } }
+      {
+        method: "POST",
+        body: {
+          action: "set_user_role",
+          uid,
+          role,
+          ...(options.proDays != null ? { proDays: options.proDays } : {}),
+          ...(options.proLifetime ? { proLifetime: true } : {})
+        }
+      }
     );
   },
   deleteUserRole: async (uid: string) => {

@@ -34,6 +34,11 @@ const {
   needsDeployUploadExpiryMigration
 } = require('./shared/deploy-upload.js');
 const { scanZipEntries, createImsModerator, listBlockedPhrasesCatalog } = require('./shared/content-scan.js');
+const {
+  effectiveRoleIds,
+  membershipSummary,
+  resolveGrantExpiry
+} = require('./shared/membership.js');
 
 const defaultDomain = 'demox.site';
 const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
@@ -146,7 +151,7 @@ const LEGACY_BUCKET = {
   region: 'ap-chengdu',
   endpoint: null,
   originHost: 'sites.demox.site',
-  hasOwnCreds: false // 用 SCF 环境变量凭证
+  hasOwnCreds: false // 用 SCF 运行角色临时凭证
 };
 
 /**
@@ -173,6 +178,7 @@ function providerFor(cfg) {
 
 /**
  * 腾讯云 TC3-HMAC-SHA256 请求。这里不用引入完整 SDK，避免拉大 SCF 包体积。
+ * 生产由 SCF 运行角色注入 TENCENTCLOUD_*；COS_SECRET_* 仅兼容本地/旧配置。
  * @param {{ service:string, host:string, version:string, action:string, payload:object, region?:string }} opts
  */
 async function callTencentCloudApi(opts) {
@@ -489,11 +495,6 @@ exports.main = async (event, context) => {
       remove_project_feishu_grant: handleRemoveProjectFeishuGrant,
       update_project_member_role: handleUpdateProjectMemberRole,
       remove_project_member: handleRemoveProjectMember,
-      migrate_subdomain: handleMigrateSubdomain,
-      migrate_default_projects: handleMigrateDefaultProjects,
-      migrate_site_visibility: handleMigrateSiteVisibility,
-      migrate_project_collaboration: handleMigrateProjectCollaboration,
-      migrate_site_analytics: handleMigrateSiteAnalytics,
       bucket_stats: handleBucketStats,
       list_user_roles: handleListUserRoles,
       set_user_role: handleSetUserRole,
@@ -504,21 +505,17 @@ exports.main = async (event, context) => {
       resolve_user_emails: handleResolveUserEmails,
       get_role_limits: handleGetRoleLimits,
       get_usage: handleGetUsage,
-      migrate_website_usage: handleMigrateWebsiteUsage,
       create_token: handleCreateToken,
       list_tokens: handleListTokens,
       revoke_token: handleRevokeToken,
-      migrate_access_tokens: handleMigrateAccessTokens,
       track_product_event: handleTrackProductEvent,
       get_product_funnel: handleGetProductFunnel,
-      migrate_product_events: handleMigrateProductEvents,
       // 多云存储桶注册制
       list_buckets: handleListBuckets,
       register_bucket: handleRegisterBucket,
       update_bucket: handleUpdateBucket,
       delete_bucket: handleDeleteBucket,
-      set_default_bucket: handleSetDefaultBucket,
-      migrate_buckets: handleMigrateBuckets
+      set_default_bucket: handleSetDefaultBucket
     };
 
     if (action && actionMap[action]) {
@@ -614,22 +611,6 @@ exports.main = async (event, context) => {
       return await handleRollupSiteAnalytics(event);
     } else if (pathUrl.includes('/analytics/backfill-geo')) {
       return await handleBackfillSiteAnalyticsGeo(event);
-    } else if (pathUrl.includes('/migrate-subdomain')) {
-      return await handleMigrateSubdomain(event);
-    } else if (pathUrl.includes('/migrate-default-projects')) {
-      return await handleMigrateDefaultProjects(event);
-    } else if (pathUrl.includes('/migrate-site-visibility')) {
-      return await handleMigrateSiteVisibility(event);
-    } else if (pathUrl.includes('/migrate-project-collaboration')) {
-      return await handleMigrateProjectCollaboration(event);
-    } else if (pathUrl.includes('/migrate-site-analytics')) {
-      return await handleMigrateSiteAnalytics(event);
-    } else if (pathUrl.includes('/migrate-website-usage')) {
-      return await handleMigrateWebsiteUsage(event);
-    } else if (pathUrl.includes('/migrate-access-tokens')) {
-      return await handleMigrateAccessTokens(event);
-    } else if (pathUrl.includes('/migrate-product-events')) {
-      return await handleMigrateProductEvents(event);
     } else {
       return {
         statusCode: 404,
@@ -653,7 +634,7 @@ exports.main = async (event, context) => {
 async function getUserLimits(userId) {
   try {
     // 1. 获取用户的角色
-    const userRolesResult = await query('SELECT roles FROM user_roles WHERE user_id = ?', [userId]);
+    const userRolesResult = await query('SELECT * FROM user_roles WHERE user_id = ?', [userId]);
 
     if (userRolesResult.length === 0) {
       // 没有角色配置，返回默认普通用户配置
@@ -666,13 +647,7 @@ async function getUserLimits(userId) {
       };
     }
 
-    // 处理 roles 字段（可能是字符串或已解析的对象）
-    let userRoles = userRolesResult[0].roles;
-    if (typeof userRoles === 'string') {
-      userRoles = JSON.parse(userRoles || '[]');
-    } else if (!Array.isArray(userRoles)) {
-      userRoles = [];
-    }
+    const userRoles = effectiveRoleIds(userRolesResult[0].roles, userRolesResult[0].pro_expires_at);
 
     // 2. 获取所有角色配置
     const rolesConfig = await query('SELECT * FROM roles WHERE enabled = 1 ORDER BY priority DESC');
@@ -854,18 +829,24 @@ async function ensureProductEventsTable() {
 /**
  * 检查管理员权限
  */
+let _proExpiresColumnEnsured = false;
+
+async function ensureProExpiresColumn() {
+  if (_proExpiresColumnEnsured) return;
+  await ensureColumn(
+    'user_roles',
+    'pro_expires_at',
+    "ALTER TABLE user_roles ADD COLUMN pro_expires_at DATETIME DEFAULT NULL COMMENT '专业会员到期时间，NULL=永久'"
+  );
+  _proExpiresColumnEnsured = true;
+}
+
 async function getUserRoleIds(userId) {
-  const roles = await query('SELECT roles FROM user_roles WHERE user_id = ?', [userId]);
+  const roles = await query('SELECT * FROM user_roles WHERE user_id = ?', [userId]);
   if (roles.length === 0) {
     return [];
   }
-  // mysql2 对 JSON 列会自动解析为数组;字符串时才需 JSON.parse
-  let userRoles = roles[0].roles;
-  if (typeof userRoles === 'string') {
-    try { userRoles = JSON.parse(userRoles || '[]'); } catch (e) { userRoles = []; }
-  }
-  if (!Array.isArray(userRoles)) userRoles = [];
-  return userRoles.map((role) => String(role).trim().toLowerCase()).filter(Boolean);
+  return effectiveRoleIds(roles[0].roles, roles[0].pro_expires_at);
 }
 
 async function checkAdmin(userId) {
@@ -2322,7 +2303,7 @@ async function handleListProjects(event) {
       );
       return ok({ success: true, projects: rows.map(formatProjectForClient), count: rows.length, collaborationReady: false });
     } catch (fallbackError) {
-      return ok({ success: false, message: '项目表未初始化，请先执行 migrate_default_projects', error: fallbackError.message });
+      return ok({ success: false, message: '项目表未初始化', error: fallbackError.message });
     }
   }
 }
@@ -2601,7 +2582,7 @@ async function handleListProjectMembers(event) {
       currentFeishuIdentity
     });
   } catch (e) {
-    return ok({ success: false, message: '协作表未初始化，请先执行 migrate_project_collaboration', error: e.message });
+    return ok({ success: false, message: '协作表未初始化', error: e.message });
   }
 }
 
@@ -2994,24 +2975,33 @@ async function handleRemoveProjectMember(event) {
 async function handleListUserRoles(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
+  await ensureProExpiresColumn();
   // users 表主键是 id(形如 user_xxx);老站点的纯数字 user_id 不在 users 表中,email 为 null
   const rows = await query(
-    `SELECT ur.user_id, ur.roles, ur.updated_at, u.email, u.nickname, u.github_id, u.feishu_open_id
+    `SELECT ur.user_id, ur.roles, ur.pro_expires_at, ur.updated_at, u.email, u.nickname, u.github_id, u.feishu_open_id
      FROM user_roles ur
      LEFT JOIN users u ON u.id = ur.user_id
      ORDER BY ur.updated_at DESC`
   );
-  const list = rows.map((r) => ({
-    _id: r.user_id,
-    email: r.email || '',
-    nickname: r.nickname || '',
-    authProviders: [
-      ...(r.github_id ? ['github'] : []),
-      ...(r.feishu_open_id ? ['feishu'] : [])
-    ],
-    role: typeof r.roles === 'string' ? JSON.parse(r.roles || '[]') : (r.roles || []),
-    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined
-  }));
+  const list = rows.map((r) => {
+    const membership = membershipSummary(r.roles, r.pro_expires_at);
+    return {
+      _id: r.user_id,
+      email: r.email || '',
+      nickname: r.nickname || '',
+      authProviders: [
+        ...(r.github_id ? ['github'] : []),
+        ...(r.feishu_open_id ? ['feishu'] : [])
+      ],
+      role: membership.storedRoles,
+      effectiveRole: membership.effectiveRoles,
+      proExpiresAt: membership.proExpiresAt,
+      proLifetime: membership.proLifetime,
+      proExpired: membership.proExpired,
+      remainingDays: membership.remainingDays,
+      updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined
+    };
+  });
   return ok({ success: true, data: list });
 }
 
@@ -3019,7 +3009,9 @@ async function handleListUserRoles(event) {
 async function handleSetUserRole(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
-  const { uid, role } = event.body || event;
+  await ensureProExpiresColumn();
+  const body = event.body || event;
+  const { uid, role, proDays, proLifetime } = body;
   const targetUid = String(uid || '').trim();
   if (!targetUid) return ok({ success: false, message: '缺少用户 UID' });
   if (!Array.isArray(role)) return ok({ success: false, message: '角色必须是数组' });
@@ -3049,12 +3041,34 @@ async function handleSetUserRole(event) {
     if (existingRoles.length === 0) return ok({ success: false, code: 'USER_NOT_FOUND', message: '用户不存在，请检查 UID' });
   }
 
+  const currentRows = await query('SELECT roles, pro_expires_at FROM user_roles WHERE user_id = ? LIMIT 1', [targetUid]);
+  const current = currentRows[0] || {};
+  const currentMembership = membershipSummary(current.roles, current.pro_expires_at);
+  let proExpiresAt = null;
+  if (rolesArr.includes('pro')) {
+    proExpiresAt = resolveGrantExpiry({
+      hasPro: currentMembership.hasPro,
+      currentExpiresAt: current.pro_expires_at,
+      proDays,
+      proLifetime: proLifetime === true || proLifetime === 'true'
+    });
+  }
+
   await query(
-    `INSERT INTO user_roles (user_id, roles, updated_at) VALUES (?, ?, NOW())
-     ON DUPLICATE KEY UPDATE roles = VALUES(roles), updated_at = NOW()`,
-    [targetUid, JSON.stringify(rolesArr)]
+    `INSERT INTO user_roles (user_id, roles, pro_expires_at, updated_at) VALUES (?, ?, ?, NOW())
+     ON DUPLICATE KEY UPDATE roles = VALUES(roles), pro_expires_at = VALUES(pro_expires_at), updated_at = NOW()`,
+    [targetUid, JSON.stringify(rolesArr), proExpiresAt]
   );
-  return ok({ success: true, uid: targetUid, role: rolesArr });
+  const membership = membershipSummary(rolesArr, proExpiresAt);
+  return ok({
+    success: true,
+    uid: targetUid,
+    role: rolesArr,
+    effectiveRole: membership.effectiveRoles,
+    proExpiresAt: membership.proExpiresAt,
+    proLifetime: membership.proLifetime,
+    remainingDays: membership.remainingDays
+  });
 }
 
 /** 删除某用户的角色文档 */
@@ -3255,7 +3269,10 @@ async function handleGetUsage(event) {
 
   try {
     await ensureUsageColumns();
+    await ensureProExpiresColumn();
     const limits = await getUserLimits(userId);
+    const roleRow = await query('SELECT roles, pro_expires_at FROM user_roles WHERE user_id = ? LIMIT 1', [userId]);
+    const membership = membershipSummary(roleRow[0]?.roles || ['user'], roleRow[0]?.pro_expires_at);
 
     // 仅统计用户归属站点（与 deployment_limit 的计数口径一致）。
     const rows = await query(
@@ -3282,6 +3299,13 @@ async function handleGetUsage(event) {
       code: 0,
       data: {
         role: { name: limits.name, priority: limits.priority },
+        membership: {
+          hasPro: membership.hasPro,
+          proExpired: membership.proExpired,
+          proLifetime: membership.proLifetime,
+          proExpiresAt: membership.proExpiresAt,
+          remainingDays: membership.remainingDays
+        },
         usage,
         maxSite,
         limits: {
@@ -3295,21 +3319,6 @@ async function handleGetUsage(event) {
     console.error('获取用量失败:', e);
     return ok({ code: 500, data: null, message: e.message });
   }
-}
-
-/**
- * 幂等迁移：补 websites.file_count / storage_size 列。可由管理员通过
- * migrate_website_usage action 触发（需 MIGRATION_KEY），与 008 SQL 等价。
- */
-async function handleMigrateWebsiteUsage(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
-  }
-  _usageColumnsEnsured = false;
-  await ensureUsageColumns();
-  return ok({ success: true, message: 'websites 用量列已就绪' });
 }
 
 // ── 个人访问令牌（PAT）─────────────────────────────────────────
@@ -3408,20 +3417,6 @@ async function handleRevokeToken(event) {
   return ok({ code: 0, data: { revoked: true } });
 }
 
-/**
- * 幂等迁移：建 access_tokens 表。
- */
-async function handleMigrateAccessTokens(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
-  }
-  _accessTokensTableEnsured = false;
-  await ensureAccessTokensTable();
-  return ok({ success: true, message: 'access_tokens 表已就绪' });
-}
-
 // ── 产品漏斗埋点 ────────────────────────────────────────────────
 // 匿名埋点：无需登录，visitor_id 由前端 localStorage 生成。
 
@@ -3500,20 +3495,6 @@ async function handleGetProductFunnel(event) {
       daily: rows.map((r) => ({ event: r.event_name, date: r.d, count: Number(r.cnt) }))
     }
   });
-}
-
-/**
- * 幂等迁移：建 product_events 表。
- */
-async function handleMigrateProductEvents(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
-  }
-  _productEventsTableEnsured = false;
-  await ensureProductEventsTable();
-  return ok({ success: true, message: 'product_events 表已就绪' });
 }
 
 /**
@@ -4250,8 +4231,8 @@ function analyticsRollupAllowed(event) {
   if (isAnalyticsRollupTimerEvent(event)) return true;
   const body = getRollupRequestBody(event);
   const headers = event.headers || {};
-  const expected = process.env.ANALYTICS_ROLLUP_KEY || process.env.MIGRATION_KEY || '';
-  const provided = body.rollupKey || body.migrationKey || headers['x-demox-rollup-key'] || headers['X-Demox-Rollup-Key'] || '';
+  const expected = process.env.ANALYTICS_ROLLUP_KEY || '';
+  const provided = body.rollupKey || headers['x-demox-rollup-key'] || headers['X-Demox-Rollup-Key'] || '';
   return !!expected && String(provided) === expected;
 }
 
@@ -4646,614 +4627,6 @@ async function handleGetSiteAccessLogs(event) {
   }
 }
 
-async function handleMigrateSiteAnalytics(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
-  }
-
-  const steps = [];
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_daily_stats (
-        website_id VARCHAR(32) NOT NULL,
-        stat_date DATE NOT NULL,
-        views BIGINT NOT NULL DEFAULT 0,
-        visitors BIGINT NOT NULL DEFAULT 0,
-        badge_clicks BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (website_id, stat_date),
-        INDEX idx_site_daily_date (stat_date)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日访问聚合'`
-    );
-    steps.push('ensured site_daily_stats');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_referrer_daily_stats (
-        website_id VARCHAR(32) NOT NULL,
-        stat_date DATE NOT NULL,
-        referrer_host VARCHAR(255) NOT NULL DEFAULT 'direct',
-        views BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (website_id, stat_date, referrer_host),
-        INDEX idx_referrer_daily_date (stat_date)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日来源聚合'`
-    );
-    steps.push('ensured site_referrer_daily_stats');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_path_daily_stats (
-        website_id VARCHAR(32) NOT NULL,
-        stat_date DATE NOT NULL,
-        path VARCHAR(512) NOT NULL,
-        views BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (website_id, stat_date, path),
-        INDEX idx_path_daily_date (stat_date)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日路径聚合'`
-    );
-    steps.push('ensured site_path_daily_stats');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_country_daily_stats (
-        website_id VARCHAR(32) NOT NULL,
-        stat_date DATE NOT NULL,
-        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
-        views BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (website_id, stat_date, country),
-        INDEX idx_country_daily_date (stat_date)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日地区聚合'`
-    );
-    steps.push('ensured site_country_daily_stats');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_province_daily_stats (
-        website_id VARCHAR(32) NOT NULL,
-        stat_date DATE NOT NULL,
-        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
-        province VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
-        views BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (website_id, stat_date, country, province),
-        INDEX idx_province_daily_date (stat_date)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点按日省级地区聚合'`
-    );
-    steps.push('ensured site_province_daily_stats');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_analytics_ingested_events (
-        object_key VARCHAR(512) NOT NULL,
-        website_id VARCHAR(32) NOT NULL,
-        event_ts DATETIME NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (object_key),
-        INDEX idx_ingested_site_ts (website_id, event_ts)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已聚合的原始访问日志对象，用于延迟统计去重'`
-    );
-    steps.push('ensured site_analytics_ingested_events');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS site_access_logs (
-        object_key VARCHAR(512) NOT NULL,
-        website_id VARCHAR(32) NOT NULL,
-        event_ts DATETIME NULL,
-        event_type VARCHAR(32) NOT NULL DEFAULT 'view',
-        host VARCHAR(255) DEFAULT '',
-        path VARCHAR(512) NOT NULL DEFAULT '/',
-        referrer VARCHAR(1024) DEFAULT '',
-        referrer_host VARCHAR(255) NOT NULL DEFAULT 'direct',
-        country VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
-        province VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
-        ip_masked VARCHAR(64) DEFAULT '',
-        ip_archived TINYINT(1) NOT NULL DEFAULT 0,
-        user_agent VARCHAR(512) DEFAULT '',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (object_key),
-        INDEX idx_access_site_ts (website_id, event_ts),
-        INDEX idx_access_site_path (website_id, path)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点访问日志展示索引，不存明文 IP'`
-    );
-    steps.push('ensured site_access_logs');
-
-    await ensureColumn('site_access_logs', 'ip_masked', "ALTER TABLE site_access_logs ADD COLUMN ip_masked VARCHAR(64) DEFAULT '' AFTER province", steps);
-    await ensureColumn('site_access_logs', 'ip_archived', 'ALTER TABLE site_access_logs ADD COLUMN ip_archived TINYINT(1) NOT NULL DEFAULT 0 AFTER ip_masked', steps);
-    await ensureColumn('site_access_logs', 'user_agent', "ALTER TABLE site_access_logs ADD COLUMN user_agent VARCHAR(512) DEFAULT '' AFTER ip_archived", steps);
-
-    return ok({ success: true, steps });
-  } catch (error) {
-    console.error('统计表迁移失败:', error);
-    return ok({ success: false, steps, message: error.message });
-  }
-}
-
-/**
- * 临时迁移：给 websites 表加 subdomain/subdomain_domain 列 + 官方域名唯一索引（幂等）。
- * 用一次性密钥授权（body.migrationKey === env.MIGRATION_KEY），不依赖 DB 角色，
- * 避免“查 admin 需先连库”的鸡生蛋问题。迁移完成后可删除本 handler、路由和环境变量。
- */
-async function handleMigrateSubdomain(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return {
-      statusCode: 403,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '迁移密钥无效' })
-    };
-  }
-
-  const steps = [];
-  try {
-    // 列是否已存在
-    const col = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'subdomain'`
-    );
-    if (col[0].c === 0) {
-      await query(
-        `ALTER TABLE websites ADD COLUMN subdomain VARCHAR(63) DEFAULT NULL COMMENT '自定义子域名前缀(label)'`
-      );
-      steps.push('added column subdomain');
-    } else {
-      steps.push('column subdomain already exists');
-    }
-
-    const domainCol = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'subdomain_domain'`
-    );
-    if (domainCol[0].c === 0) {
-      await query(
-        `ALTER TABLE websites
-         ADD COLUMN subdomain_domain VARCHAR(255) NOT NULL DEFAULT '${defaultDomain}'
-         COMMENT '官方域名后缀，如 demox.site / vibeme.cn'`
-      );
-      steps.push('added column subdomain_domain');
-    } else {
-      steps.push('column subdomain_domain already exists');
-    }
-
-    await query(
-      `UPDATE websites
-       SET subdomain_domain = '${defaultDomain}'
-       WHERE subdomain_domain IS NULL OR subdomain_domain = ''`
-    );
-    steps.push('normalized empty subdomain_domain');
-
-    // 旧索引全局唯一 subdomain；新模型改为同一官方域名下唯一。
-    const idx = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'uniq_subdomain'`
-    );
-    if (idx[0].c > 0) {
-      await query(`ALTER TABLE websites DROP INDEX uniq_subdomain`);
-      steps.push('dropped legacy unique index uniq_subdomain');
-    } else {
-      steps.push('legacy index uniq_subdomain not found');
-    }
-
-    const scopedIdx = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'uniq_official_subdomain'`
-    );
-    if (scopedIdx[0].c === 0) {
-      await query(`ALTER TABLE websites ADD UNIQUE KEY uniq_official_subdomain (subdomain_domain, subdomain)`);
-      steps.push('added unique index uniq_official_subdomain');
-    } else {
-      steps.push('index uniq_official_subdomain already exists');
-    }
-
-    return {
-      statusCode: 200,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ success: true, steps })
-    };
-  } catch (error) {
-    console.error('迁移失败:', error);
-    return {
-      statusCode: 200,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ success: false, steps, message: error.message })
-    };
-  }
-}
-
-/**
- * 项目维度迁移：创建 projects 表、给 websites 增加 project_id，
- * 为每个用户创建 default 项目，并把既有站点回填到各自 default。
- *
- * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
- */
-async function handleMigrateDefaultProjects(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return {
-      statusCode: 403,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '迁移密钥无效' })
-    };
-  }
-
-  const steps = [];
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS projects (
-        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-        project_key VARCHAR(20) DEFAULT NULL COMMENT '对外展示的随机项目ID',
-        user_id     VARCHAR(64) NOT NULL COMMENT '项目归属用户ID',
-        name        VARCHAR(255) NOT NULL DEFAULT 'default' COMMENT '项目显示名称',
-        slug        VARCHAR(64) NOT NULL DEFAULT 'default' COMMENT '用户内唯一项目标识',
-        description TEXT DEFAULT NULL,
-        color       VARCHAR(32) DEFAULT NULL,
-        icon        VARCHAR(64) DEFAULT NULL,
-        archived    TINYINT(1) NOT NULL DEFAULT 0,
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_project_key (project_key),
-        UNIQUE KEY uniq_user_project_slug (user_id, slug),
-        INDEX idx_projects_user_id (user_id),
-        INDEX idx_projects_archived (archived)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户项目表'`
-    );
-    steps.push('ensured projects table');
-
-    const projectKeyCol = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'project_key'`
-    );
-    if (projectKeyCol[0].c === 0) {
-      await query(`ALTER TABLE projects ADD COLUMN project_key VARCHAR(20) DEFAULT NULL COMMENT '对外展示的随机项目ID' AFTER id`);
-      steps.push('added projects.project_key column');
-    } else {
-      steps.push('projects.project_key already exists');
-    }
-
-    const projectsMissingKey = await query(`SELECT id FROM projects WHERE project_key IS NULL OR project_key = '' ORDER BY id ASC`);
-    for (const row of projectsMissingKey) {
-      await ensureProjectKeyForId(row.id);
-    }
-    steps.push(`backfilled ${projectsMissingKey.length} project random ids`);
-
-    const projectKeyIdx = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND INDEX_NAME = 'uniq_project_key'`
-    );
-    if (projectKeyIdx[0].c === 0) {
-      await query('ALTER TABLE projects ADD UNIQUE KEY uniq_project_key (project_key)');
-      steps.push('added projects unique index uniq_project_key');
-    } else {
-      steps.push('projects unique index uniq_project_key already exists');
-    }
-
-    const projectUniqueIdx = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND INDEX_NAME = 'uniq_user_project_slug'`
-    );
-    if (projectUniqueIdx[0].c === 0) {
-      await query('ALTER TABLE projects ADD UNIQUE KEY uniq_user_project_slug (user_id, slug)');
-      steps.push('added projects unique index uniq_user_project_slug');
-    } else {
-      steps.push('projects unique index already exists');
-    }
-
-    const col = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'project_id'`
-    );
-    if (col[0].c === 0) {
-      await query(`ALTER TABLE websites ADD COLUMN project_id BIGINT DEFAULT NULL COMMENT '所属项目(projects.id)'`);
-      steps.push('added websites.project_id column');
-    } else {
-      steps.push('websites.project_id already exists');
-    }
-
-    const addWebsiteIndexIfMissing = async (indexName, ddl) => {
-      const idx = await query(
-        `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = ?`,
-        [indexName]
-      );
-      if (idx[0].c === 0) {
-        await query(ddl);
-        steps.push(`added websites index ${indexName}`);
-      } else {
-        steps.push(`websites index ${indexName} already exists`);
-      }
-    };
-    await addWebsiteIndexIfMissing('idx_project_id', 'ALTER TABLE websites ADD INDEX idx_project_id (project_id)');
-    await addWebsiteIndexIfMissing(
-      'idx_user_project_updated',
-      'ALTER TABLE websites ADD INDEX idx_user_project_updated (user_id, project_id, updated_at)'
-    );
-
-    const beforeDefaultRows = await query(`SELECT COUNT(*) AS c FROM projects WHERE slug = 'default'`);
-    const usersTable = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
-    );
-    if (usersTable[0].c > 0) {
-      const userRows = await query(`SELECT DISTINCT id FROM users WHERE id IS NOT NULL AND id <> ''`);
-      for (const user of userRows) {
-        await ensureDefaultProjectForUser(user.id);
-      }
-      steps.push('ensured default projects for users table');
-    } else {
-      steps.push('users table not found, skipped users table defaults');
-    }
-
-    const websiteOwnerRows = await query(`SELECT DISTINCT user_id FROM websites WHERE user_id IS NOT NULL AND user_id <> ''`);
-    for (const owner of websiteOwnerRows) {
-      await ensureDefaultProjectForUser(owner.user_id);
-    }
-    steps.push('ensured default projects for website owners');
-
-    const afterDefaultRows = await query(`SELECT COUNT(*) AS c FROM projects WHERE slug = 'default'`);
-    const backfill = await query(
-      `UPDATE websites w
-       JOIN projects p ON p.user_id = w.user_id AND p.slug = 'default'
-       SET w.project_id = p.id
-       WHERE w.project_id IS NULL`
-    );
-    steps.push(`backfilled ${backfill.affectedRows || 0} websites to default projects`);
-
-    const totals = await query(
-      `SELECT
-         (SELECT COUNT(*) FROM projects WHERE slug = 'default') AS defaultProjects,
-         (SELECT COUNT(*) FROM websites WHERE project_id IS NULL) AS websitesWithoutProject,
-         (SELECT COUNT(*) FROM websites) AS websitesTotal`
-    );
-
-    return ok({
-      success: true,
-      steps,
-      createdDefaultProjects: (afterDefaultRows[0]?.c || 0) - (beforeDefaultRows[0]?.c || 0),
-      backfilledWebsites: backfill.affectedRows || 0,
-      defaultProjects: totals[0]?.defaultProjects || 0,
-      websitesWithoutProject: totals[0]?.websitesWithoutProject || 0,
-      websitesTotal: totals[0]?.websitesTotal || 0
-    });
-  } catch (error) {
-    console.error('默认项目迁移失败:', error);
-    return ok({ success: false, steps, message: error.message });
-  }
-}
-
-/**
- * 站点可见性迁移：websites.visibility = public/private。
- * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
- */
-async function handleMigrateSiteVisibility(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return {
-      statusCode: 403,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '迁移密钥无效' })
-    };
-  }
-
-  const steps = [];
-  try {
-    const col = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'visibility'`
-    );
-    if (col[0].c === 0) {
-      await query(
-        `ALTER TABLE websites
-         ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT '${VISIBILITY_PUBLIC}'
-         COMMENT '站点访问级别: public/private'`
-      );
-      steps.push('added websites.visibility column');
-    } else {
-      steps.push('websites.visibility already exists');
-    }
-
-    await query(
-      `UPDATE websites
-       SET visibility = '${VISIBILITY_PUBLIC}'
-       WHERE visibility IS NULL OR visibility NOT IN ('${VISIBILITY_PUBLIC}', '${VISIBILITY_PRIVATE}')`
-    );
-    steps.push('normalized invalid visibility values');
-
-    const idx = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND INDEX_NAME = 'idx_visibility'`
-    );
-    if (idx[0].c === 0) {
-      await query('ALTER TABLE websites ADD INDEX idx_visibility (visibility)');
-      steps.push('added websites idx_visibility');
-    } else {
-      steps.push('websites idx_visibility already exists');
-    }
-
-    const totals = await query(
-      `SELECT
-         SUM(visibility = '${VISIBILITY_PUBLIC}') AS publicCount,
-         SUM(visibility = '${VISIBILITY_PRIVATE}') AS privateCount,
-         COUNT(*) AS total
-       FROM websites`
-    );
-
-    return ok({
-      success: true,
-      steps,
-      publicCount: Number(totals[0]?.publicCount || 0),
-      privateCount: Number(totals[0]?.privateCount || 0),
-      total: Number(totals[0]?.total || 0)
-    });
-  } catch (error) {
-    console.error('站点可见性迁移失败:', error);
-    return ok({ success: false, steps, message: error.message });
-  }
-}
-
-/**
- * 项目协作迁移：项目成员 + 邀请。项目创建者会被回填为 owner。
- * 用 body.migrationKey === env.MIGRATION_KEY 授权；幂等，可重复执行。
- */
-async function handleMigrateProjectCollaboration(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return {
-      statusCode: 403,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '迁移密钥无效' })
-    };
-  }
-
-  const steps = [];
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS project_members (
-        project_id BIGINT NOT NULL COMMENT 'projects.id',
-        user_id    VARCHAR(64) NOT NULL COMMENT '成员用户ID',
-        role       VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'owner/admin/member',
-        invited_by VARCHAR(64) DEFAULT NULL,
-        joined_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (project_id, user_id),
-        INDEX idx_project_members_user (user_id, role),
-        INDEX idx_project_members_project_role (project_id, role)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目成员表'`
-    );
-    steps.push('ensured project_members table');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS project_invitations (
-        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-        project_id  BIGINT NOT NULL COMMENT 'projects.id',
-        email       VARCHAR(255) NOT NULL COMMENT '受邀邮箱，小写',
-        role        VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'admin/member',
-        token       VARCHAR(64) DEFAULT NULL,
-        invited_by  VARCHAR(64) NOT NULL,
-        status      VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/accepted/canceled/expired',
-        accepted_by VARCHAR(64) DEFAULT NULL,
-        accepted_at TIMESTAMP NULL DEFAULT NULL,
-        expires_at  TIMESTAMP NULL DEFAULT NULL,
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_project_invite_status (project_id, email, status),
-        INDEX idx_project_invitations_email_status (email, status),
-        INDEX idx_project_invitations_project_status (project_id, status)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目邀请表'`
-    );
-    steps.push('ensured project_invitations table');
-
-    await query(
-      `CREATE TABLE IF NOT EXISTS project_feishu_grants (
-        id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-        project_id     BIGINT NOT NULL COMMENT 'projects.id',
-        principal_type VARCHAR(16) NOT NULL COMMENT 'user/department',
-        key_type       VARCHAR(32) NOT NULL COMMENT 'open_id/open_department_id',
-        principal_key  VARCHAR(255) NOT NULL COMMENT '标准化后的飞书主体标识',
-        tenant_key     VARCHAR(128) DEFAULT NULL COMMENT '授权主体所属飞书租户',
-        display_name   VARCHAR(120) DEFAULT NULL,
-        role           VARCHAR(16) NOT NULL DEFAULT '${PROJECT_ROLE_MEMBER}' COMMENT 'admin/member',
-        created_by     VARCHAR(64) NOT NULL,
-        active         TINYINT(1) NOT NULL DEFAULT 1,
-        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_project_feishu_principal (project_id, principal_type, key_type, principal_key),
-        INDEX idx_project_feishu_principal (principal_type, key_type, principal_key, active),
-        INDEX idx_project_feishu_project (project_id, active, role)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目飞书主体授权表'`
-    );
-    steps.push('ensured project_feishu_grants table');
-
-    const grantColumns = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'project_feishu_grants'`
-    );
-    const grantColumnNames = new Set(grantColumns.map((row) => row.COLUMN_NAME));
-    if (!grantColumnNames.has('tenant_key')) {
-      await query("ALTER TABLE project_feishu_grants ADD COLUMN tenant_key VARCHAR(128) DEFAULT NULL COMMENT '授权主体所属飞书租户' AFTER principal_key");
-      steps.push('added project_feishu_grants.tenant_key');
-    } else {
-      steps.push('project_feishu_grants.tenant_key already exists');
-    }
-    await query("ALTER TABLE project_feishu_grants MODIFY COLUMN key_type VARCHAR(32) NOT NULL COMMENT 'open_id/open_department_id'");
-    steps.push('ensured project_feishu_grants.key_type capacity');
-
-    const userColumns = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
-    );
-    const userColumnNames = new Set(userColumns.map((row) => row.COLUMN_NAME));
-    if (!userColumnNames.has('feishu_department_ids')) {
-      await query("ALTER TABLE users ADD COLUMN feishu_department_ids TEXT DEFAULT NULL COMMENT '飞书直属部门及祖先部门 open_department_id JSON' AFTER feishu_email");
-      steps.push('added users.feishu_department_ids');
-    } else {
-      steps.push('users.feishu_department_ids already exists');
-    }
-    if (!userColumnNames.has('feishu_directory_synced_at')) {
-      await query("ALTER TABLE users ADD COLUMN feishu_directory_synced_at TIMESTAMP NULL DEFAULT NULL COMMENT '飞书部门身份同步时间' AFTER feishu_department_ids");
-      steps.push('added users.feishu_directory_synced_at');
-    } else {
-      steps.push('users.feishu_directory_synced_at already exists');
-    }
-
-    const legacyGrants = await query(
-      `UPDATE project_feishu_grants
-       SET active = 0, updated_at = NOW()
-       WHERE active = 1 AND (
-         tenant_key IS NULL
-         OR principal_type NOT IN ('${FEISHU_PRINCIPAL_USER}', '${FEISHU_PRINCIPAL_DEPARTMENT}')
-         OR key_type NOT IN ('open_id', 'open_department_id')
-       )`
-    );
-    steps.push(`deactivated legacy Feishu grants: ${legacyGrants.affectedRows || 0}`);
-
-    const ownerRowsBefore = await query(`SELECT COUNT(*) AS c FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}'`);
-    const backfill = await query(
-      `INSERT INTO project_members (project_id, user_id, role, invited_by, joined_at, updated_at)
-       SELECT id, user_id, '${PROJECT_ROLE_OWNER}', user_id, created_at, NOW()
-       FROM projects
-       WHERE user_id IS NOT NULL AND user_id <> ''
-       ON DUPLICATE KEY UPDATE role = '${PROJECT_ROLE_OWNER}', updated_at = NOW()`
-    );
-    steps.push(`backfilled owner memberships: ${backfill.affectedRows || 0}`);
-
-    await query(
-      `UPDATE project_members
-       SET role = '${PROJECT_ROLE_MEMBER}'
-       WHERE role NOT IN ('${PROJECT_ROLE_OWNER}', '${PROJECT_ROLE_ADMIN}', '${PROJECT_ROLE_MEMBER}')`
-    );
-    steps.push('normalized invalid member roles');
-
-    const totals = await query(
-      `SELECT
-         (SELECT COUNT(*) FROM project_members) AS membersTotal,
-         (SELECT COUNT(*) FROM project_members WHERE role = '${PROJECT_ROLE_OWNER}') AS ownersTotal,
-         (SELECT COUNT(*) FROM project_invitations WHERE status = 'pending') AS pendingInvitations,
-         (SELECT COUNT(*) FROM project_feishu_grants WHERE active = 1) AS activeFeishuGrants`
-    );
-
-    return ok({
-      success: true,
-      steps,
-      createdOwnerMemberships: Math.max(0, Number(totals[0]?.ownersTotal || 0) - Number(ownerRowsBefore[0]?.c || 0)),
-      membersTotal: Number(totals[0]?.membersTotal || 0),
-      ownersTotal: Number(totals[0]?.ownersTotal || 0),
-      pendingInvitations: Number(totals[0]?.pendingInvitations || 0),
-      activeFeishuGrants: Number(totals[0]?.activeFeishuGrants || 0)
-    });
-  } catch (error) {
-    console.error('项目协作迁移失败:', error);
-    return ok({ success: false, steps, message: error.message });
-  }
-}
-
 /**
  * 确保用户有 default 项目。项目表未迁移时静默降级，避免影响部署主流程。
  * @returns {Promise<number|null>} default project id
@@ -5632,7 +5005,7 @@ async function handleListBuckets(event) {
     return ok({ success: true, data: list });
   } catch (e) {
     // 表未建时给出明确提示，引导先跑迁移
-    return ok({ success: false, message: 'storage_buckets 表不存在，请先执行 migrate_buckets', error: e.message });
+    return ok({ success: false, message: 'storage_buckets 表不存在', error: e.message });
   }
 }
 
@@ -5800,82 +5173,6 @@ async function handleSetDefaultBucket(event) {
     return ok({ success: true, message: '已设为默认桶' });
   } catch (e) {
     return ok({ success: false, message: e.message });
-  }
-}
-
-/**
- * 数据迁移（一次性，密钥授权）：把现有 COS 桶注册为默认桶 + 回填存量站点 bucket_id。
- * 用 body.migrationKey === env.MIGRATION_KEY 授权（复用 001 迁移的模式，不依赖 DB 角色）。
- * 幂等：已存在默认桶则跳过注册，仅补回填。注册时密钥留空 → 该桶沿用 SCF env 凭证(密钥不入库)。
- */
-async function handleMigrateBuckets(event) {
-  const provided = (event.body && event.body.migrationKey) || event.migrationKey;
-  const expected = process.env.MIGRATION_KEY || '';
-  if (!expected || provided !== expected) {
-    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ error: '迁移密钥无效' }) };
-  }
-
-  const steps = [];
-  try {
-    // 0) DDL：建表 + 给 websites 加列（幂等）。自包含，无需直连 MySQL 跑 .sql。
-    await query(
-      `CREATE TABLE IF NOT EXISTS storage_buckets (
-        id            INT AUTO_INCREMENT PRIMARY KEY,
-        name          VARCHAR(64)  NOT NULL,
-        provider      VARCHAR(16)  NOT NULL DEFAULT 'cos',
-        bucket        VARCHAR(128) NOT NULL,
-        region        VARCHAR(64)  DEFAULT NULL,
-        endpoint      VARCHAR(255) DEFAULT NULL,
-        origin_host   VARCHAR(255) DEFAULT NULL,
-        force_path_style TINYINT(1) DEFAULT NULL,
-        secret_id_enc  TEXT DEFAULT NULL,
-        secret_key_enc TEXT DEFAULT NULL,
-        is_default    TINYINT(1) NOT NULL DEFAULT 0,
-        enabled       TINYINT(1) NOT NULL DEFAULT 1,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='多云存储桶注册表'`
-    );
-    steps.push('ensured storage_buckets table');
-
-    // websites.bucket_id（列已存在则跳过）
-    const col = await query(
-      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites' AND COLUMN_NAME = 'bucket_id'`
-    );
-    if (col[0].c === 0) {
-      await query(`ALTER TABLE websites ADD COLUMN bucket_id INT DEFAULT NULL COMMENT '所属存储桶(storage_buckets.id)'`);
-      await query(`ALTER TABLE websites ADD INDEX idx_bucket_id (bucket_id)`);
-      steps.push('added websites.bucket_id column + index');
-    } else {
-      steps.push('websites.bucket_id already exists');
-    }
-
-    // 1) 确保有默认桶；没有则把现有 COS 桶注册进去（密钥留空 → 用 env）
-    let def = await query('SELECT * FROM storage_buckets WHERE is_default = 1 LIMIT 1');
-    let defaultId;
-    if (def.length === 0) {
-      // query() 直接返回 mysql2 结果首元素：INSERT 时为含 insertId 的 ResultSetHeader
-      const res = await query(
-        `INSERT INTO storage_buckets (name, provider, bucket, region, origin_host, is_default, enabled)
-         VALUES (?, 'cos', ?, ?, ?, 1, 1)`,
-        ['腾讯云 COS（默认）', LEGACY_BUCKET.bucket, LEGACY_BUCKET.region, LEGACY_BUCKET.originHost]
-      );
-      defaultId = res.insertId;
-      steps.push(`registered default bucket id=${defaultId}`);
-    } else {
-      defaultId = def[0].id;
-      steps.push(`default bucket already exists id=${defaultId}`);
-    }
-
-    // 2) 回填存量站点：bucket_id 为 NULL 的全部指向默认桶
-    const upd = await query('UPDATE websites SET bucket_id = ? WHERE bucket_id IS NULL', [defaultId]);
-    steps.push(`backfilled ${upd.affectedRows} websites → bucket_id=${defaultId}`);
-
-    return ok({ success: true, steps });
-  } catch (error) {
-    console.error('存储桶迁移失败:', error);
-    return ok({ success: false, steps, message: error.message });
   }
 }
 

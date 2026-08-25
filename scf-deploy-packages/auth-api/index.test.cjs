@@ -366,3 +366,125 @@ test('direct SCF invoke applies and verifies the feishu schema migration', async
   assert.match(alterSql, /ADD COLUMN feishu_tenant_key/);
   assert.match(alterSql, /ADD UNIQUE KEY uniq_feishu_union_id/);
 });
+
+test('send-code fails closed when SES is not configured', async () => {
+  const writes = [];
+  queryImpl = async (sql, params = []) => {
+    writes.push({ sql, params });
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) {
+      return [];
+    }
+    return { affectedRows: 1 };
+  };
+
+  delete process.env.AUTH_EMAIL_DRY_RUN;
+  delete process.env.TENCENTCLOUD_SECRETID;
+  delete process.env.TENCENTCLOUD_SECRETKEY;
+  delete process.env.TENCENT_SECRET_ID;
+  delete process.env.TENCENT_SECRET_KEY;
+
+  const response = await request('/auth/send-code', {
+    email: 'user@example.com',
+    type: 'login'
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 502);
+  assert.match(body.error, /发送失败/);
+  assert.equal(writes.some((item) => item.sql.startsWith('INSERT INTO verification_codes')), true);
+  assert.equal(writes.some((item) => item.sql.startsWith('DELETE FROM verification_codes') && item.sql.includes('code = ?')), true);
+});
+
+test('send-code succeeds when email sending is dry-run', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) {
+      return [];
+    }
+    return { affectedRows: 1 };
+  };
+
+  process.env.AUTH_EMAIL_DRY_RUN = '1';
+  try {
+    const response = await request('/auth/send-code', {
+      email: 'user@example.com',
+      type: 'login'
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200);
+    assert.equal(body.success, true);
+  } finally {
+    delete process.env.AUTH_EMAIL_DRY_RUN;
+  }
+});
+
+test('current user drops expired pro from effective roles', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM users WHERE id = ?')) {
+      return [{
+        id: 'expired-pro',
+        email: 'expired@example.com',
+        email_verified: 1,
+        github_id: null,
+        github_login: null,
+        feishu_open_id: null,
+        feishu_name: null,
+        avatar_url: null,
+        nickname: 'Expired',
+        created_at: '2026-01-01T00:00:00Z'
+      }];
+    }
+    if (sql.includes('FROM user_roles WHERE user_id')) {
+      return [{ roles: ['user', 'pro'], pro_expires_at: '2020-01-01T00:00:00Z' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const token = sign({ userId: 'expired-pro' }, '1h');
+  const response = await main({
+    path: '/auth/me',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: {}
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200, JSON.stringify(body));
+  assert.deepEqual(body.user.roles, ['user']);
+  assert.equal(body.user.membership.hasPro, false);
+  assert.equal(body.user.membership.proExpired, true);
+});
+
+test('current user keeps lifetime pro in effective roles', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM users WHERE id = ?')) {
+      return [{
+        id: 'lifetime-pro',
+        email: 'pro@example.com',
+        email_verified: 1,
+        github_id: null,
+        github_login: null,
+        feishu_open_id: null,
+        feishu_name: null,
+        avatar_url: null,
+        nickname: 'Pro',
+        created_at: '2026-01-01T00:00:00Z'
+      }];
+    }
+    if (sql.includes('FROM user_roles WHERE user_id')) {
+      return [{ roles: ['user', 'pro'], pro_expires_at: null }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const token = sign({ userId: 'lifetime-pro' }, '1h');
+  const response = await main({
+    path: '/auth/me',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: {}
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200, JSON.stringify(body));
+  assert.deepEqual(body.user.roles, ['user', 'pro']);
+  assert.equal(body.user.membership.hasPro, true);
+  assert.equal(body.user.membership.proLifetime, true);
+});

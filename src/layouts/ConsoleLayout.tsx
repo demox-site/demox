@@ -128,6 +128,13 @@ interface ConsoleUser {
   githubLogin?: string | null;
   avatarUrl?: string | null;
   roles?: string[];
+  membership?: {
+    hasPro?: boolean;
+    proExpired?: boolean;
+    proLifetime?: boolean;
+    proExpiresAt?: string | null;
+    remainingDays?: number | null;
+  };
 }
 
 interface ConsoleProject {
@@ -180,7 +187,8 @@ export const ConsoleLayout: React.FC = () => {
           githubId: res.user.githubId || null,
           githubLogin: res.user.githubLogin || null,
           avatarUrl: res.user.avatarUrl || null,
-          roles: res.user.roles || local.roles || ["user"]
+          roles: res.user.roles || local.roles || ["user"],
+          membership: res.user.membership || local.membership
         };
         userManager.set(nextUser);
         setUser(nextUser);

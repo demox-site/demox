@@ -87,7 +87,8 @@ export const MainHeader: React.FC = () => {
               githubId: res.user.githubId || null,
               githubLogin: res.user.githubLogin || null,
               avatarUrl: res.user.avatarUrl || null,
-              roles: res.user.roles || currentUser.roles
+              roles: res.user.roles || currentUser.roles,
+              membership: res.user.membership || currentUser.membership
             };
             userManager.set(nextUser);
             setUser(nextUser);

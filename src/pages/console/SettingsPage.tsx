@@ -156,7 +156,8 @@ const SettingsPage: React.FC = () => {
           feishuName: u.feishuName || null,
           avatarUrl: u.avatarUrl || null,
           nickname: u.nickname || "",
-          roles: u.roles || local.roles
+          roles: u.roles || local.roles,
+          membership: u.membership || local.membership
         });
       })
       .catch(() => {

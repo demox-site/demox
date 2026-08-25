@@ -100,7 +100,8 @@ test('project deletion requires authentication', async () => {
 
 test('platform role list reports linked login providers without exposing provider ids', async () => {
   queryImpl = async (sql) => {
-    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
     if (sql.includes('SELECT ur.user_id') && sql.includes('u.nickname') && sql.includes('u.github_id') && sql.includes('u.feishu_open_id')) {
       return [
         { user_id: 'github-user', email: 'github@example.com', nickname: 'GitHub User', roles: ['user'], github_id: '1', feishu_open_id: null },
@@ -127,7 +128,8 @@ test('platform role list reports linked login providers without exposing provide
 test('platform role updates normalize roles and keep the baseline user role', async () => {
   let savedRoles = null;
   queryImpl = async (sql, params) => {
-    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
     if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
       return [
         { id: 'user', priority: 10 },
@@ -136,6 +138,7 @@ test('platform role updates normalize roles and keep the baseline user role', as
       ];
     }
     if (sql.includes('SELECT id FROM users WHERE id = ?')) return [{ id: params[0] }];
+    if (sql.includes('SELECT roles, pro_expires_at FROM user_roles')) return [];
     if (sql.includes('INSERT INTO user_roles')) {
       savedRoles = JSON.parse(params[1]);
       return { affectedRows: 1 };
@@ -150,12 +153,80 @@ test('platform role updates normalize roles and keep the baseline user role', as
   assert.equal(body.success, true, JSON.stringify(body));
   assert.deepEqual(body.role, ['user', 'pro']);
   assert.deepEqual(savedRoles, ['user', 'pro']);
+  assert.equal(body.proLifetime, false);
+  assert.equal(typeof body.proExpiresAt, 'string');
+});
+
+test('granting pro without duration defaults to 30 days and can be lifetime', async () => {
+  let savedExpiry = null;
+  queryImpl = async (sql, params) => {
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', priority: 10 }, { id: 'pro', priority: 50 }, { id: 'admin', priority: 100 }];
+    }
+    if (sql.includes('SELECT id FROM users WHERE id = ?')) return [{ id: params[0] }];
+    if (sql.includes('SELECT roles, pro_expires_at FROM user_roles')) return [];
+    if (sql.includes('INSERT INTO user_roles')) {
+      savedExpiry = params[2];
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const timed = JSON.parse((await request('set_user_role', {
+    uid: 'member-user',
+    role: ['pro']
+  }, 'platform-admin')).body);
+  assert.equal(timed.success, true, JSON.stringify(timed));
+  assert.ok(savedExpiry instanceof Date);
+  assert.equal(timed.remainingDays, 30);
+
+  const forever = JSON.parse((await request('set_user_role', {
+    uid: 'member-user',
+    role: ['pro'],
+    proLifetime: true
+  }, 'platform-admin')).body);
+  assert.equal(forever.success, true, JSON.stringify(forever));
+  assert.equal(forever.proLifetime, true);
+  assert.equal(forever.proExpiresAt, null);
+});
+
+test('re-granting expired pro without days starts a new 30-day period', async () => {
+  let savedExpiry = null;
+  queryImpl = async (sql, params) => {
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('SELECT roles, pro_expires_at FROM user_roles')) {
+      return [{ roles: ['user', 'pro'], pro_expires_at: '2020-01-01T00:00:00Z' }];
+    }
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
+      return [{ id: 'user', priority: 10 }, { id: 'pro', priority: 50 }, { id: 'admin', priority: 100 }];
+    }
+    if (sql.includes('SELECT id FROM users WHERE id = ?')) return [{ id: params[0] }];
+    if (sql.includes('INSERT INTO user_roles')) {
+      savedExpiry = params[2];
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request('set_user_role', {
+    uid: 'expired-member',
+    role: ['pro']
+  }, 'platform-admin')).body);
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.ok(savedExpiry instanceof Date);
+  assert.ok(savedExpiry.getTime() > Date.now());
+  assert.equal(body.remainingDays, 30);
+  assert.equal(body.proLifetime, false);
 });
 
 test('platform role updates reject unknown or disabled roles before writing', async () => {
   let wrote = false;
   queryImpl = async (sql) => {
-    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
     if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
       return [{ id: 'user', priority: 10 }, { id: 'admin', priority: 100 }];
     }
@@ -176,12 +247,13 @@ test('platform role updates reject unknown or disabled roles before writing', as
 test('platform role updates reject a UID that has no user or legacy role record', async () => {
   let wrote = false;
   queryImpl = async (sql) => {
-    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('SELECT user_id FROM user_roles')) return [];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
     if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
       return [{ id: 'user', priority: 10 }, { id: 'pro', priority: 50 }, { id: 'admin', priority: 100 }];
     }
     if (sql.includes('SELECT id FROM users WHERE id = ?')) return [];
-    if (sql.includes('SELECT user_id FROM user_roles WHERE user_id = ?')) return [];
     if (sql.includes('INSERT INTO user_roles')) wrote = true;
     throw new Error(`Unexpected query: ${sql}`);
   };
@@ -198,7 +270,8 @@ test('platform role updates reject a UID that has no user or legacy role record'
 test('a platform admin cannot remove or reset their own admin role', async () => {
   let wrote = false;
   queryImpl = async (sql) => {
-    if (sql.includes('SELECT roles FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
+    if (sql.includes('information_schema.COLUMNS')) return [{ c: 1 }];
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin', 'user'] }];
     if (sql.includes('SELECT id, priority FROM roles WHERE enabled = 1')) {
       return [{ id: 'user', priority: 10 }, { id: 'admin', priority: 100 }];
     }
@@ -680,6 +753,26 @@ test('pro and admin roles can request site analytics', async () => {
     assert.equal(body.success, true, JSON.stringify(body));
     assert.equal(body.websiteId, 'ANALYTICS2');
   }
+});
+
+test('expired pro cannot request site analytics', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('SELECT * FROM websites WHERE website_id = ?')) {
+      return [{ id: 11, website_id: 'ANALYTICS3', user_id: 'expired-pro' }];
+    }
+    if (sql.includes('FROM user_roles')) {
+      return [{ roles: ['pro', 'user'], pro_expires_at: '2020-01-01T00:00:00Z' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const body = JSON.parse((await request(
+    'get_site_stats',
+    { websiteId: 'ANALYTICS3' },
+    'expired-pro'
+  )).body);
+  assert.equal(body.success, false, JSON.stringify(body));
+  assert.equal(body.code, 'ANALYTICS_ROLE_REQUIRED');
 });
 
 test('roles other than pro and admin cannot update SEO', async () => {

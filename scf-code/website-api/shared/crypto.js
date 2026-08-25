@@ -7,8 +7,8 @@
  * 安全权衡（已与用户确认）：DB 里存的是密文，主密钥泄露 = 全部桶密钥失守。
  * 因此 ENCRYPTION_KEY 必须只配在 SCF 环境变量，不得进代码/仓库/迁移脚本。
  *
- * 兼容：旧的默认桶不走加密——它的密钥仍只在 SCF 环境变量(COS_SECRET_ID/KEY)，
- * 入库时 *_enc 列为 NULL，buckets.js 读到 NULL 时回退 env(见 getCreds)。
+ * 兼容：旧的默认桶不走加密——生产用 SCF 运行角色临时密钥，入库时 *_enc 为 NULL，
+ * buckets.js 读到 NULL 时回退 env(见 resolveCreds)。
  *
  * 密文格式：base64( salt(16) | iv(12) | authTag(16) | ciphertext )
  *   - 每条密文独立随机 salt，用 scrypt 从主密钥派生 32 字节 key，避免直接用主密钥。

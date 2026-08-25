@@ -3,7 +3,7 @@
 -- 1) 新建 storage_buckets 表：一行 = 一个可部署目标（COS / S3 兼容）。
 -- 2) websites 表新增 bucket_id：站点关联到具体桶。
 -- 3) 数据回填（把现有 COS 桶注册为默认桶 + 关联存量站点）由 website-api 的
---    migrate_buckets handler 用环境变量授权执行，不在本脚本里写死桶名/密钥。
+--    线上迁移接口已移除。历史默认桶密钥不入库，走 SCF 运行角色临时凭证。
 --
 -- 在 MySQL 执行一次即可；建表/加列均为幂等写法。
 

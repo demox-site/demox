@@ -9,8 +9,8 @@
  *
  * 凭证解析规则(getCreds)：
  *   - *_enc 非空 → 解密得到该桶专属密钥(自助注册的新桶)。
- *   - *_enc 为 NULL → 回退 SCF 环境变量(旧默认桶：COS_SECRET_ID/KEY，
- *     或临时密钥 TENCENTCLOUD_*)。这样旧桶密钥永不入库，沿用既有约定。
+ *   - *_enc 为 NULL → 回退 SCF 运行角色临时密钥(TENCENTCLOUD_*)。
+ *     兼容本地/旧环境里的 COS_SECRET_ID/KEY。旧默认桶密钥永不入库。
  */
 
 const { query } = require('./db.js');
@@ -82,10 +82,10 @@ function resolveCreds(cfg) {
     secretId = decrypt(cfg.secretIdEnc);
     secretKey = decrypt(cfg.secretKeyEnc);
   } else {
-    // 旧默认桶：用 SCF 环境变量。兼容永久密钥与 CAM 角色临时密钥。
-    secretId = process.env.COS_SECRET_ID || process.env.TENCENTCLOUD_SECRETID;
-    secretKey = process.env.COS_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY;
-    securityToken = process.env.COS_SECRET_KEY ? undefined : process.env.TENCENTCLOUD_SESSIONTOKEN;
+    // 生产走 SCF 运行角色注入的临时密钥；COS_SECRET_* 仅兼容本地/旧配置。
+    secretId = process.env.TENCENTCLOUD_SECRETID || process.env.COS_SECRET_ID;
+    secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.COS_SECRET_KEY;
+    securityToken = process.env.TENCENTCLOUD_SESSIONTOKEN || undefined;
   }
 
   return {

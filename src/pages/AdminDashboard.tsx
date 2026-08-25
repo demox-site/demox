@@ -23,7 +23,9 @@ import {
   DialogHeader,
   DialogTitle,
   Input,
-  Label
+  Label,
+  RadioGroup,
+  RadioGroupItem
 } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { useToast } from "@/components/ui";
@@ -42,6 +44,35 @@ const DEFAULT_ROLE_META = [
 const normalizeRoleIds = (roles: string[]) => {
   const normalized = roles.map((role) => String(role || "").trim().toLowerCase()).filter(Boolean);
   return ["user", ...new Set(normalized.filter((role) => role !== "user"))];
+};
+
+const PRO_DURATION_OPTIONS = [
+  { id: "keep", label: "保持当前时效" },
+  { id: "30", label: "30 天" },
+  { id: "90", label: "90 天" },
+  { id: "365", label: "365 天" },
+  { id: "lifetime", label: "永久" }
+] as const;
+
+type ProDuration = (typeof PRO_DURATION_OPTIONS)[number]["id"];
+
+const formatProExpiry = (item: {
+  role?: string[];
+  proLifetime?: boolean;
+  proExpired?: boolean;
+  proExpiresAt?: string | null;
+  remainingDays?: number | null;
+}) => {
+  if (!(item.role || []).includes("pro")) return null;
+  if (item.proLifetime) return "永久";
+  if (item.proExpired) return "已过期";
+  const dateText = item.proExpiresAt
+    ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(item.proExpiresAt))
+    : "";
+  if (item.remainingDays != null) {
+    return dateText ? `${dateText} · 剩 ${item.remainingDays} 天` : `剩 ${item.remainingDays} 天`;
+  }
+  return dateText || "—";
 };
 
 const roleBadgeClass = (roleId: string) => {
@@ -181,6 +212,11 @@ const AdminDashboard: React.FC = () => {
     nickname?: string;
     authProviders?: Array<"github" | "feishu">;
     role?: string[];
+    effectiveRole?: string[];
+    proExpiresAt?: string | null;
+    proLifetime?: boolean;
+    proExpired?: boolean;
+    remainingDays?: number | null;
     updatedAt?: number;
   }
   type RawRoleDoc = {
@@ -189,6 +225,11 @@ const AdminDashboard: React.FC = () => {
     nickname?: string;
     authProviders?: string[];
     role?: string[];
+    effectiveRole?: string[];
+    proExpiresAt?: string | null;
+    proLifetime?: boolean;
+    proExpired?: boolean;
+    remainingDays?: number | null;
     updatedAt?: number;
     updateTime?: number;
   };
@@ -200,6 +241,7 @@ const AdminDashboard: React.FC = () => {
   const [userRoleDialogUid, setUserRoleDialogUid] = useState("");
   const [userRoleDialogEmail, setUserRoleDialogEmail] = useState("");
   const [userRoleDialogRoles, setUserRoleDialogRoles] = useState<string[]>(["user"]);
+  const [userRoleDialogProDuration, setUserRoleDialogProDuration] = useState<ProDuration>("30");
   const [roleSavingUid, setRoleSavingUid] = useState("");
   const [resetRoleTarget, setResetRoleTarget] = useState<UserRoleDoc | null>(null);
   /**
@@ -220,6 +262,11 @@ const AdminDashboard: React.FC = () => {
           (provider): provider is "github" | "feishu" => provider === "github" || provider === "feishu"
         ),
         role: Array.isArray(d.role) ? d.role : [],
+        effectiveRole: Array.isArray(d.effectiveRole) ? d.effectiveRole : undefined,
+        proExpiresAt: d.proExpiresAt ?? null,
+        proLifetime: Boolean(d.proLifetime),
+        proExpired: Boolean(d.proExpired),
+        remainingDays: d.remainingDays ?? null,
         updatedAt: d.updatedAt || d.updateTime
       }));
       setRolesList(list);
@@ -237,7 +284,7 @@ const AdminDashboard: React.FC = () => {
    * saveRoleDoc
    * 保存或更新指定用户的角色配置（docId 为 uid）
    */
-  const saveRoleDoc = async (uid: string, selectedRoles: string[]) => {
+  const saveRoleDoc = async (uid: string, selectedRoles: string[], duration: ProDuration = "30") => {
     const targetUid = uid.trim();
     const roles = normalizeRoleIds(selectedRoles);
     if (!targetUid) {
@@ -252,9 +299,14 @@ const AdminDashboard: React.FC = () => {
       });
       return false;
     }
+    const grantOptions: { proDays?: number; proLifetime?: boolean } = {};
+    if (roles.includes("pro")) {
+      if (duration === "lifetime") grantOptions.proLifetime = true;
+      else if (duration !== "keep") grantOptions.proDays = Number(duration);
+    }
     setRoleSavingUid(targetUid);
     try {
-      const result = await adminApi.setUserRole(targetUid, roles);
+      const result = await adminApi.setUserRole(targetUid, roles, grantOptions);
       if (!result.success) throw new Error(result.message || "角色更新失败");
       toast({ title: "角色已更新", description: `用户 ${targetUid} 的角色将在下次刷新账户信息时生效` });
       await fetchRoles();
@@ -299,6 +351,7 @@ const AdminDashboard: React.FC = () => {
     setUserRoleDialogUid("");
     setUserRoleDialogEmail("");
     setUserRoleDialogRoles(["user"]);
+    setUserRoleDialogProDuration("30");
     setIsUserRoleDialogOpen(true);
   };
 
@@ -307,6 +360,8 @@ const AdminDashboard: React.FC = () => {
     setUserRoleDialogUid(item._id);
     setUserRoleDialogEmail(item.email || "");
     setUserRoleDialogRoles(normalizeRoleIds(item.role || []));
+    const hasActivePro = (item.role || []).includes("pro") && !item.proExpired;
+    setUserRoleDialogProDuration(hasActivePro ? (item.proLifetime ? "lifetime" : "keep") : "30");
     setIsUserRoleDialogOpen(true);
   };
 
@@ -318,7 +373,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const submitUserRoleDialog = async () => {
-    const saved = await saveRoleDoc(userRoleDialogUid, userRoleDialogRoles);
+    const saved = await saveRoleDoc(userRoleDialogUid, userRoleDialogRoles, userRoleDialogProDuration);
     if (saved) setIsUserRoleDialogOpen(false);
   };
   /**
@@ -877,7 +932,7 @@ const AdminDashboard: React.FC = () => {
       .some((value) => value.toLowerCase().includes(normalizedRoleSearch));
   });
   const roleCounts = roleOptions.reduce<Record<string, number>>((counts, option) => {
-    counts[option.id] = rolesList.filter((item) => getEffectiveRole(item.role || []).id === option.id).length;
+    counts[option.id] = rolesList.filter((item) => getEffectiveRole(item.effectiveRole || item.role || []).id === option.id).length;
     return counts;
   }, {});
   const dialogEffectiveRole = getEffectiveRole(userRoleDialogRoles);
@@ -1213,6 +1268,7 @@ const AdminDashboard: React.FC = () => {
                             <th className="py-3 pr-6 font-medium">第三方登录</th>
                             <th className="py-3 pr-6 font-medium">生效角色</th>
                             <th className="py-3 pr-6 font-medium">拥有角色</th>
+                            <th className="py-3 pr-6 font-medium">会员时效</th>
                             <th className="py-3 pr-6 font-medium">更新时间</th>
                             <th className="py-3 text-right font-medium">操作</th>
                           </tr>
@@ -1220,14 +1276,15 @@ const AdminDashboard: React.FC = () => {
                         <tbody>
                           {filteredRolesList.length === 0 ? (
                             <tr>
-                              <td className="py-10 text-center text-zinc-500" colSpan={6}>
+                              <td className="py-10 text-center text-zinc-500" colSpan={7}>
                                 {rolesLoading ? "正在加载角色配置..." : roleSearch ? "没有匹配的用户" : "暂无显式角色配置"}
                               </td>
                             </tr>
                           ) : (
                             filteredRolesList.map((item) => {
-                              const effectiveRole = getEffectiveRole(item.role || []);
+                              const effectiveRole = getEffectiveRole(item.effectiveRole || item.role || []);
                               const isCurrentUser = item._id === currentUserId;
+                              const proExpiryText = formatProExpiry(item);
                               return (
                                 <tr key={item._id} className="border-t border-zinc-800 align-middle">
                                   <td className="py-4 pr-6">
@@ -1268,6 +1325,13 @@ const AdminDashboard: React.FC = () => {
                                         return <Badge key={roleId} variant="outline" className={roleBadgeClass(roleId)}>{meta.name}</Badge>;
                                       })}
                                     </div>
+                                  </td>
+                                  <td className="whitespace-nowrap py-4 pr-6 text-sm">
+                                    {proExpiryText ? (
+                                      <span className={item.proExpired ? "text-red-300" : "text-zinc-300"}>{proExpiryText}</span>
+                                    ) : (
+                                      <span className="text-zinc-600">—</span>
+                                    )}
                                   </td>
                                   <td className="whitespace-nowrap py-4 pr-6 text-sm text-zinc-500">
                                     {item.updatedAt
@@ -1371,6 +1435,41 @@ const AdminDashboard: React.FC = () => {
                           );
                         })}
                       </fieldset>
+
+                      {userRoleDialogRoles.includes("pro") ? (
+                        <fieldset className="space-y-2">
+                          <legend className="mb-2 text-sm font-medium text-zinc-300">专业会员时效</legend>
+                          <RadioGroup
+                            value={userRoleDialogProDuration}
+                            onValueChange={(value) => setUserRoleDialogProDuration(value as ProDuration)}
+                            className="grid grid-cols-2 gap-2"
+                          >
+                            {PRO_DURATION_OPTIONS.filter((option) => {
+                              if (option.id !== "keep") return true;
+                              const editingUser = rolesList.find((item) => item._id === userRoleDialogUid);
+                              return userRoleDialogMode === "edit"
+                                && Boolean(editingUser)
+                                && (editingUser?.role || []).includes("pro")
+                                && !editingUser?.proExpired;
+                            }).map((option) => (
+                              <label
+                                key={option.id}
+                                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                                  userRoleDialogProDuration === option.id
+                                    ? "border-sky-400/40 bg-sky-400/10 text-zinc-100"
+                                    : "border-zinc-800 bg-zinc-950/40 text-zinc-300"
+                                }`}
+                              >
+                                <RadioGroupItem value={option.id} className="border-zinc-500" />
+                                {option.label}
+                              </label>
+                            ))}
+                          </RadioGroup>
+                          <p className="text-xs text-zinc-500">
+                            新开通默认 30 天；未过期会员选「保持当前时效」不会改到期日。后续充值开通复用同一套续期规则。
+                          </p>
+                        </fieldset>
+                      ) : null}
 
                       <div className="rounded-lg border border-sky-400/20 bg-sky-400/5 px-3 py-3">
                         <div className="text-xs text-zinc-500">保存后生效角色</div>

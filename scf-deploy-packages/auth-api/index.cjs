@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { query, transaction } = require('./shared/db.cjs');
 const { sign, verify, authenticate, generateUserId, generateRandomString } = require('./shared/jwt.cjs');
+const { membershipSummary } = require('./shared/membership.cjs');
 
 /**
  * SCF云函数入口
@@ -293,9 +294,15 @@ async function handleSendCode(event) {
   const emailSent = await sendEmail(cleanEmail, code, type);
 
   if (!emailSent) {
-    // 如果邮件发送失败，仍然返回成功（开发阶段）
-    // 生产环境应该返回错误
-    console.log('邮件发送失败，验证码:', code);
+    await query(
+      'DELETE FROM verification_codes WHERE email = ? AND code = ? AND used_at IS NULL',
+      [cleanEmail, code]
+    );
+    return {
+      statusCode: 502,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '验证码邮件发送失败，请稍后重试' })
+    };
   }
 
   console.log(`验证码已生成: ${cleanEmail} -> ${code}`);
@@ -1279,8 +1286,14 @@ function httpsJson(options, body) {
  * 发送邮件（使用腾讯云 SES 模板）
  */
 async function sendEmail(to, code, type) {
+  if (process.env.AUTH_EMAIL_DRY_RUN === '1') {
+    console.log('AUTH_EMAIL_DRY_RUN=1，跳过真实发信');
+    return true;
+  }
+
   const secretId = process.env.TENCENTCLOUD_SECRETID || process.env.TENCENT_SECRET_ID;
   const secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENT_SECRET_KEY;
+  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
 
   if (!secretId || !secretKey) {
     console.log('未配置腾讯云密钥，跳过邮件发送');
@@ -1292,7 +1305,7 @@ async function sendEmail(to, code, type) {
     const ses = require('tencentcloud-sdk-nodejs-ses').ses.v20201002;
 
     const client = new ses.Client({
-      credential: { secretId, secretKey },
+      credential: { secretId, secretKey, token },
       region: 'ap-hongkong'
     });
 
@@ -1348,13 +1361,13 @@ async function handleGetCurrentUser(event) {
   const userData = users[0];
   const nickname = await ensureUserNickname(userData);
 
-  // 获取用户角色（MySQL JSON 列可能已被驱动解析为数组，也可能是字符串）
-  const roles = await query('SELECT roles FROM user_roles WHERE user_id = ?', [user.userId]);
-  let userRoles = ['user'];
-  if (roles.length > 0 && roles[0].roles != null) {
-    const r = roles[0].roles;
-    userRoles = Array.isArray(r) ? r : (typeof r === 'string' ? JSON.parse(r) : r);
-  }
+  // 角色按会员时效计算：过期 pro 不再出现在 roles 里，前端用 roles 判断权益即可。
+  const roles = await query('SELECT * FROM user_roles WHERE user_id = ?', [user.userId]);
+  const membership = membershipSummary(
+    roles[0]?.roles || ['user'],
+    roles[0]?.pro_expires_at
+  );
+  const userRoles = membership.effectiveRoles.length > 0 ? membership.effectiveRoles : ['user'];
 
   return {
     statusCode: 200,
@@ -1372,6 +1385,13 @@ async function handleGetCurrentUser(event) {
         avatarUrl: userData.avatar_url,
         nickname,
         roles: userRoles,
+        membership: {
+          hasPro: membership.hasPro,
+          proExpired: membership.proExpired,
+          proLifetime: membership.proLifetime,
+          proExpiresAt: membership.proExpiresAt,
+          remainingDays: membership.remainingDays
+        },
         createdAt: userData.created_at
       }
     })
