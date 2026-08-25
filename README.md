@@ -223,7 +223,7 @@ Demox 不是玩具项目，而是**工程化的平台实现**：
 
 Demox 构建在腾讯云生态之上：
 
-- **SCF（云函数）**：鉴权、用户体系与所有核心业务逻辑
+- **SCF（云函数，命名空间 `demox`）**：鉴权、用户体系与所有核心业务逻辑；对外 API 为 `https://api.demox.site`。资源与计费约定见 [docs/tencent-cloud.md](docs/tencent-cloud.md)
 - **MySQL（TencentDB）**：用户、站点与权限数据
 - **COS（对象存储）**：静态资源托管
 - **EdgeOne**：CDN、HTTPS、泛域名访问与边缘路由

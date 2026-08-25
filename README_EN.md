@@ -222,7 +222,7 @@ Document templates: `insight`, `warm`, `dark` (via `--template` flag).
 
 Demox is built on Tencent Cloud infrastructure:
 
-- **SCF (Cloud Functions)** for authentication, the user system, and all core business logic
+- **SCF (Cloud Functions, namespace `demox`)** for authentication, the user system, and all core business logic; public API is `https://api.demox.site`. Resource and billing tags: [docs/tencent-cloud.md](docs/tencent-cloud.md)
 - **MySQL (TencentDB)** for user, site, and permission data
 - **COS** for static asset storage
 - **EdgeOne** for CDN, HTTPS, wildcard domains, and edge routing

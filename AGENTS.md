@@ -20,6 +20,10 @@
 - Demox 的后端都运行在腾讯云 SCF（云函数）上。
 - 前端发布只更新 Demox 主站静态资源；不要误以为推送前端代码会自动更新所有后端云函数。
 - 后端相关代码主要在 `scf-code/` 和 `scf-deploy-packages/` 下，涉及 SCF 部署时应先确认具体函数、环境和发布脚本。
+- 四个线上函数都在命名空间 **`demox`**（不是 `default`）：`demox-website-api`、`demox-auth-api`、`demox-mcp-api`、`demox-cert-renew`。
+- 对外 API 只用 `https://api.demox.site`。旧的 `*.tencentscf.com` 函数 URL 已失效。
+- 腾讯云 Demox 专属资源必须打计费标签 **`codename=demox`**。共享 MySQL 不要改成 demox。
+- 更新云函数时所有 tccli / SDK 调用都必须带 `Namespace=demox`。完整清单见 [docs/tencent-cloud.md](docs/tencent-cloud.md)。
 
 ## 给 Agent 的发布提醒
 
