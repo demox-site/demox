@@ -30,6 +30,7 @@ import {
   BarChart3,
   Settings2,
   Search,
+  Eye,
   EyeOff
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
@@ -464,16 +465,20 @@ export default function WebsiteCard({
                         title={canUseProFeatures ? t.watermarkToggleTitle : proHint}
                       >
                         <span className="flex min-w-0 items-center gap-2">
-                          <EyeOff className="h-4 w-4 shrink-0" />
-                          <span className="truncate">{t.watermarkHidden}</span>
+                          {website.hideWatermark === true ? (
+                            <EyeOff className="h-4 w-4 shrink-0" />
+                          ) : (
+                            <Eye className="h-4 w-4 shrink-0" />
+                          )}
+                          <span className="truncate">{t.watermarkLabel || t.watermarkHidden}</span>
                           {!canUseProFeatures && <PremiumMark t={t} />}
                         </span>
                         <Switch
-                          checked={website.hideWatermark === true}
+                          checked={website.hideWatermark !== true}
                           disabled={!canUseProFeatures || isProcessing || watermarkSaving[website._id]}
                           onCheckedChange={(checked) => {
                             if (canUseProFeatures && setWebsiteWatermark) {
-                              setWebsiteWatermark(website, checked);
+                              setWebsiteWatermark(website, !checked);
                             }
                           }}
                           className="scale-75"
