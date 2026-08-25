@@ -1086,6 +1086,8 @@ export const adminApi = {
         archivedProjects?: number;
         storage?: number;
         storageObjects?: number;
+        bucketStorage?: number | null;
+        bucketObjects?: number | null;
         admins?: number;
         proActive?: number;
         proExpired?: number;

@@ -3669,6 +3669,54 @@ function countSafe(rows, key = 'c') {
   return Number((rows && rows[0] && rows[0][key]) || 0);
 }
 
+async function summarizeEnabledBucketUsage() {
+  let cfgs = [];
+  try {
+    const rows = await query(
+      `SELECT * FROM storage_buckets
+       WHERE enabled = 1
+         AND (
+           is_default = 1
+           OR id IN (SELECT DISTINCT bucket_id FROM websites WHERE bucket_id IS NOT NULL)
+         )
+       ORDER BY is_default DESC, id ASC`
+    );
+    cfgs = (rows || []).map(buckets.rowToConfig);
+  } catch (e) {
+    console.warn('读取 storage_buckets 失败，跳过桶体积扫描:', e.message);
+    return { bytes: null, objects: null, perBucket: [] };
+  }
+  if (!cfgs.length) cfgs = [LEGACY_BUCKET];
+
+  let bytes = 0;
+  let objects = 0;
+  const perBucket = [];
+  for (const cfg of cfgs) {
+    let bucketBytes = 0;
+    let bucketObjects = 0;
+    let error = null;
+    try {
+      const items = await providerFor(cfg).list('');
+      for (const item of items) {
+        bucketBytes += Number(item.size || 0);
+        bucketObjects += 1;
+      }
+    } catch (e) {
+      error = e.message;
+      console.warn(`桶 ${cfg.name || cfg.bucket} 体积扫描失败:`, e.message);
+    }
+    bytes += bucketBytes;
+    objects += bucketObjects;
+    perBucket.push({
+      name: cfg.name || cfg.bucket,
+      bytes: bucketBytes,
+      objects: bucketObjects,
+      error
+    });
+  }
+  return { bytes, objects, perBucket };
+}
+
 /** 管理员平台数据概览 */
 async function handleGetPlatformOverview(event) {
   const a = await requireAdmin(event);
@@ -3687,6 +3735,8 @@ async function handleGetPlatformOverview(event) {
     projects: 0,
     archivedProjects: 0,
     storage: 0,
+    bucketStorage: null,
+    bucketObjects: null,
     admins: 0,
     proActive: 0,
     proExpired: 0
@@ -3716,6 +3766,15 @@ async function handleGetPlatformOverview(event) {
     counts.storage = countSafe(usage, 'storage');
   } catch (e) {
     console.warn('概览站点统计失败:', e.message);
+  }
+  try {
+    const bucketUsage = await summarizeEnabledBucketUsage();
+    if (bucketUsage.bytes != null) {
+      counts.bucketStorage = Number(bucketUsage.bytes);
+      counts.bucketObjects = Number(bucketUsage.objects || 0);
+    }
+  } catch (e) {
+    console.warn('概览桶体积失败:', e.message);
   }
   try {
     counts.sites7d = countSafe(await query(

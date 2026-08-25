@@ -30,7 +30,7 @@ import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Database, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
 
 const DEFAULT_ROLE_META = [
   { id: "admin", name: "管理员", priority: 100, enabled: true },
@@ -180,6 +180,8 @@ const AdminDashboard: React.FC = () => {
       archivedProjects?: number;
       storage?: number;
       storageObjects?: number;
+      bucketStorage?: number | null;
+      bucketObjects?: number | null;
       admins?: number;
       proActive?: number;
       proExpired?: number;
@@ -1012,15 +1014,31 @@ const AdminDashboard: React.FC = () => {
   const dialogEffectiveRole = getEffectiveRole(userRoleDialogRoles);
   const overview = platformOverview;
   const overviewDaily = fillDailySeries(overview?.traffic?.daily);
+  const deployedStorage = Number(overview?.counts?.storage || 0);
+  const bucketStorage = overview?.counts?.bucketStorage;
+  const bucketWaste = bucketStorage == null ? null : Math.max(0, Number(bucketStorage) - deployedStorage);
+  const bucketWasteHot = bucketWaste != null
+    && bucketWaste >= Math.max(1024 * 1024, deployedStorage * 0.05);
   const overviewCards = [
-    { label: "注册用户", value: formatCount(overview?.counts?.users), hint: `管理员 ${formatCount(overview?.counts?.admins)} · 近 7 天 +${formatCount(overview?.counts?.users7d)}`, icon: Users },
-    { label: "站点", value: formatCount(overview?.counts?.sites), hint: `近 7 天 +${formatCount(overview?.counts?.sites7d)}`, icon: Globe },
-    { label: "项目", value: formatCount(overview?.counts?.projects), hint: overview?.counts?.archivedProjects ? `已归档 ${formatCount(overview.counts.archivedProjects)}` : "运行中", icon: FolderKanban },
-    { label: "近 30 天访问", value: formatCount(overview?.traffic?.views30d), hint: `近 7 天 ${formatCount(overview?.traffic?.views7d)}`, icon: Eye },
-    { label: "专业会员", value: formatCount(overview?.counts?.proActive), hint: overview?.counts?.proExpired ? `已过期 ${formatCount(overview.counts.proExpired)}` : "生效中", icon: Crown },
-    { label: "部署存储", value: formatBytes(overview?.counts?.storage || 0), hint: overview?.counts?.storageObjects != null
-      ? `${formatCount(overview.counts.storageObjects)} 个文件 · ${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`
-      : `${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`, icon: HardDrive }
+    { label: "注册用户", value: formatCount(overview?.counts?.users), hint: `管理员 ${formatCount(overview?.counts?.admins)} · 近 7 天 +${formatCount(overview?.counts?.users7d)}`, icon: Users, warn: false },
+    { label: "站点", value: formatCount(overview?.counts?.sites), hint: `近 7 天 +${formatCount(overview?.counts?.sites7d)}`, icon: Globe, warn: false },
+    { label: "项目", value: formatCount(overview?.counts?.projects), hint: overview?.counts?.archivedProjects ? `已归档 ${formatCount(overview.counts.archivedProjects)}` : "运行中", icon: FolderKanban, warn: false },
+    { label: "近 30 天访问", value: formatCount(overview?.traffic?.views30d), hint: `近 7 天 ${formatCount(overview?.traffic?.views7d)}`, icon: Eye, warn: false },
+    { label: "专业会员", value: formatCount(overview?.counts?.proActive), hint: overview?.counts?.proExpired ? `已过期 ${formatCount(overview.counts.proExpired)}` : "生效中", icon: Crown, warn: false },
+    { label: "部署存储", value: formatBytes(deployedStorage), hint: `${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`, icon: HardDrive, warn: false },
+    {
+      label: "存储桶",
+      value: bucketStorage == null ? "—" : formatBytes(bucketStorage),
+      hint: bucketStorage == null
+        ? "未能读取桶体积"
+        : bucketWasteHot
+          ? `比部署多 ${formatBytes(bucketWaste)}，可能有垃圾`
+          : bucketWaste
+            ? `比部署多 ${formatBytes(bucketWaste)}`
+            : "与部署存储一致",
+      icon: Database,
+      warn: bucketWasteHot
+    }
   ];
 
 
@@ -1057,18 +1075,18 @@ const AdminDashboard: React.FC = () => {
                   </Button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 xl:grid-cols-6">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                   {overviewCards.map((card) => (
-                    <Card key={card.label} className="border-zinc-800 bg-zinc-900">
+                    <Card key={card.label} className={card.warn ? "border-amber-800/80 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}>
                       <CardContent className="pt-5">
-                        <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                        <div className={`flex items-center gap-1.5 text-xs ${card.warn ? "text-amber-300" : "text-zinc-500"}`}>
                           <card.icon className="h-3.5 w-3.5" />
                           {card.label}
                         </div>
                         <div className="mt-2 text-2xl font-semibold text-zinc-100">
                           {overviewLoading && !overview ? "—" : card.value}
                         </div>
-                        <div className="mt-1 text-xs text-zinc-500">{card.hint}</div>
+                        <div className={`mt-1 text-xs ${card.warn ? "text-amber-300" : "text-zinc-500"}`}>{card.hint}</div>
                       </CardContent>
                     </Card>
                   ))}

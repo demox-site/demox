@@ -306,6 +306,8 @@ test('admin platform overview returns live product counts and traffic', async ()
   assert.equal(body.traffic.views30d, 25);
   assert.equal(body.topSites[0].websiteId, 'HOT1');
   assert.equal(body.topSites[0].storage, 8192);
+  assert.equal(body.counts.bucketStorage, null);
+  assert.equal(body.counts.bucketObjects, null);
 });
 
 test('admin user overview rejects a missing uid', async () => {
