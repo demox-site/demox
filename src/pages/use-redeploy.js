@@ -3,6 +3,7 @@ import { websiteApi, tokenManager, userManager } from "../api";
 import { useToast } from "@/components/ui";
 import { sanitizeFileName, getComparableTimestamp } from "@/lib/website-utils";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
+import { buildHtmlSiteZipFile, isSupportedHtml } from "@/lib/html-to-site";
 
 /**
  * useRedeploy
@@ -78,15 +79,30 @@ export function useRedeploy({
   const submitRedeploy = async () => {
     if (!redeployWebsite || !redeployFile) return;
     const website = redeployWebsite;
-    const file = redeployFile;
+    let file = redeployFile;
 
-    if (!file.name.endsWith(".zip")) {
+    const isZip = String(file.name || "").toLowerCase().endsWith(".zip");
+    if (!isZip && !isSupportedHtml(file)) {
       toast({
         title: t.toastInvalidFileTitle,
         description: t.toastInvalidFileDesc,
         variant: "destructive"
       });
       return;
+    }
+
+    if (isSupportedHtml(file)) {
+      try {
+        file = (await buildHtmlSiteZipFile({ file })).zipFile;
+      } catch (error) {
+        console.error("HTML pack failed:", error);
+        toast({
+          title: t.toastHtmlPackFailedTitle,
+          description: t.toastHtmlPackFailedDesc,
+          variant: "destructive"
+        });
+        return;
+      }
     }
 
     if (roleLimits && roleLimits.enabled === false) {

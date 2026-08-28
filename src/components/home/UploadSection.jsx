@@ -86,8 +86,24 @@ export default function UploadSection({
     resetFileInput();
   };
 
+  const pickUploadFile = (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (files.length === 0) return null;
+    if (files.length === 1) return files[0];
+    const by = (pred) => files.find(pred);
+    return (
+      by(isZipFile) ||
+      by((file) => String(file.name || "").trim().toLowerCase() === "index.html") ||
+      by(isSupportedHtml) ||
+      by(isSupportedPdf) ||
+      by(isSupportedSpreadsheet) ||
+      by(isSupportedDoc) ||
+      files[0]
+    );
+  };
+
   const handleFiles = async (fileList) => {
-    const file = fileList && fileList.length > 0 ? fileList[0] : null;
+    const file = pickUploadFile(fileList);
     if (!file || uploading) return;
 
     if (isZipFile(file)) {

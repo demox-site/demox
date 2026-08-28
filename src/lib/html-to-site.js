@@ -1,8 +1,11 @@
 import JSZip from "jszip";
 
+const HTML_MIME_TYPES = new Set(["text/html", "application/xhtml+xml"]);
+
 const extOf = (name = "") => {
-  const i = name.toLowerCase().lastIndexOf(".");
-  return i >= 0 ? name.toLowerCase().slice(i) : "";
+  const cleaned = String(name).trim();
+  const i = cleaned.toLowerCase().lastIndexOf(".");
+  return i >= 0 ? cleaned.toLowerCase().slice(i) : "";
 };
 
 const stripExt = (name = "") => {
@@ -20,8 +23,12 @@ const asciiSlug = (name = "") => {
 
 export const SUPPORTED_HTML_EXTENSIONS = [".html", ".htm"];
 
-export const isSupportedHtml = (file) =>
-  !!file && SUPPORTED_HTML_EXTENSIONS.includes(extOf(file.name));
+export const isSupportedHtml = (file) => {
+  if (!file) return false;
+  if (SUPPORTED_HTML_EXTENSIONS.includes(extOf(file.name))) return true;
+  const type = String(file.type || "").split(";")[0].trim().toLowerCase();
+  return HTML_MIME_TYPES.has(type);
+};
 
 /**
  * buildHtmlSiteZipFile

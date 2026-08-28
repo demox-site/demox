@@ -9,8 +9,11 @@ import {
 import { validateStaticZipFile } from "./static-zip-validator.js";
 
 test("recognizes only .html and .htm files, case-insensitively", () => {
+  assert.equal(isSupportedHtml(new File([""], "index.html")), true);
   assert.equal(isSupportedHtml(new File([""], "page.html")), true);
   assert.equal(isSupportedHtml(new File([""], "PAGE.HTM")), true);
+  assert.equal(isSupportedHtml(new File([""], "index.html ")), true);
+  assert.equal(isSupportedHtml(new File([""], "download", { type: "text/html" })), true);
   assert.equal(isSupportedHtml(new File([""], "page.html.zip")), false);
   assert.equal(isSupportedHtml(new File([""], "page.xhtml")), false);
 });
@@ -33,15 +36,29 @@ test("packages a single HTML file as root index.html", async () => {
   );
 });
 
-test("keeps the existing static-site guard for missing local assets", async () => {
+test("allows a single HTML page even when local CSS/JS refs are missing", async () => {
   const source = new File(
     ['<!doctype html><link rel="stylesheet" href="./app.css"><h1>Hello</h1>'],
-    "page.html",
+    "index.html",
     { type: "text/html" }
   );
 
   const { zipFile } = await buildHtmlSiteZipFile({ file: source });
-  const result = await validateStaticZipFile(await zipFile.arrayBuffer(), "en");
+  assert.deepEqual(
+    await validateStaticZipFile(await zipFile.arrayBuffer(), "en"),
+    { valid: true }
+  );
+});
+
+test("still rejects a partial static zip that includes some but not all JS/CSS", async () => {
+  const zip = new JSZip();
+  zip.file(
+    "index.html",
+    '<!doctype html><link rel="stylesheet" href="./app.css"><script src="./app.js"></script>'
+  );
+  zip.file("app.js", "console.log(1)");
+  const bytes = await zip.generateAsync({ type: "uint8array" });
+  const result = await validateStaticZipFile(bytes, "en");
 
   assert.equal(result.valid, false);
   assert.match(result.message, /missing JS\/CSS files/i);

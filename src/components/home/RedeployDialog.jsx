@@ -47,7 +47,7 @@ export default function RedeployDialog({
             <input
               id="redeploy-file-input"
               type="file"
-              accept=".zip"
+              accept=".zip,.html,.htm"
               onChange={onFileChange}
               className="hidden"
             />

@@ -219,14 +219,22 @@ export async function validateStaticZipFile(file, lang = "zh") {
     return { valid: false, title: m.title, message: m.source };
   }
 
-  const missingAsset = refs.find((ref) => {
-    const normalized = normalizeHtmlRef(ref.value, rootIndex.name).toLowerCase();
-    const ext = normalized.split(".").pop();
-    if (!["js", "mjs", "css"].includes(ext)) return false;
-    return !names.has(normalized);
-  });
-  if (missingAsset) {
-    return { valid: false, title: m.title, message: m.missingAssets };
+  // A lone index.html (or HTML + images) is a supported single-page upload.
+  // Only treat missing JS/CSS as a broken partial build when the zip already
+  // contains some bundled assets.
+  const hasBundledAssets = entries.some((entry) =>
+    /\.(?:js|mjs|css)$/i.test(entry.lowerName)
+  );
+  if (hasBundledAssets) {
+    const missingAsset = refs.find((ref) => {
+      const normalized = normalizeHtmlRef(ref.value, rootIndex.name).toLowerCase();
+      const ext = normalized.split(".").pop();
+      if (!["js", "mjs", "css"].includes(ext)) return false;
+      return !names.has(normalized);
+    });
+    if (missingAsset) {
+      return { valid: false, title: m.title, message: m.missingAssets };
+    }
   }
 
   return { valid: true };

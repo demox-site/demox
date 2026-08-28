@@ -5916,7 +5916,8 @@ function validateStaticSiteZip(zipEntries) {
     };
   }
 
-  if (missingAssets.length > 0) {
+  const hasBundledAssets = records.some(r => /\.(?:js|mjs|css)$/i.test(r.lowerName));
+  if (hasBundledAssets && missingAssets.length > 0) {
     return {
       valid: false,
       code: 'MISSING_STATIC_ASSETS',
