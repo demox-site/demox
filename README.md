@@ -121,11 +121,10 @@ demox deploy ./notes.md --template warm
 
 ### 官方域名子域名
 
-为站点设置专属子域名前缀，并选择官方域名后缀：
+为站点设置专属子域名前缀：
 
 ```
 https://my-demo.demox.site
-https://my-demo.vibeme.cn
 ```
 
 在控制台或 CLI 中即可设置，无需配置 DNS。

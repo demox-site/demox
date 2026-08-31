@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { websiteApi } from "../api";
 import { useToast } from "@/components/ui";
-import { DEFAULT_OFFICIAL_DOMAIN, normalizeOfficialDomain } from "@/lib/official-domains";
+import { DEFAULT_OFFICIAL_DOMAIN, supportedOfficialBinding } from "@/lib/official-domains";
 
 /**
  * useDomainDialog
@@ -20,11 +20,11 @@ export function useDomainDialog({ t, setWebsites }) {
   const [domainCheck, setDomainCheck] = useState({ status: "idle", message: "" });
 
   const openDomainDialog = (website) => {
-    const suffix = normalizeOfficialDomain(website.subdomainDomain || website.subdomain_domain);
+    const binding = supportedOfficialBinding(website.subdomain, website.subdomainDomain || website.subdomain_domain);
     setDomainWebsite(website);
-    setDomainInput(website.subdomain || "");
-    setDomainSuffix(suffix);
-    setDomainInfo(website.subdomain ? { subdomain: website.subdomain, domain: suffix } : null);
+    setDomainInput(binding.subdomain || website.subdomain || "");
+    setDomainSuffix(DEFAULT_OFFICIAL_DOMAIN);
+    setDomainInfo(binding.subdomain ? { subdomain: binding.subdomain, domain: DEFAULT_OFFICIAL_DOMAIN } : null);
     setDomainCheck({ status: "idle", message: "" });
     setDomainOpen(true);
   };
@@ -37,14 +37,14 @@ export function useDomainDialog({ t, setWebsites }) {
     if (!domainOpen || !domainWebsite) return;
     if (domainInfo && domainInfo.subdomain) return; // 已设置态不检测
     const label = String(domainInput || "").trim().toLowerCase();
-    const suffix = normalizeOfficialDomain(domainSuffix);
+    const suffix = DEFAULT_OFFICIAL_DOMAIN;
     if (!label) {
       setDomainCheck({ status: "idle", message: "" });
       return;
     }
     // 与当前站点已有前缀相同 → 直接可用
-    const currentSuffix = normalizeOfficialDomain(domainWebsite.subdomainDomain || domainWebsite.subdomain_domain);
-    if (domainWebsite.subdomain && label === domainWebsite.subdomain && suffix === currentSuffix) {
+    const current = supportedOfficialBinding(domainWebsite.subdomain, domainWebsite.subdomainDomain || domainWebsite.subdomain_domain);
+    if (current.subdomain && label === current.subdomain && suffix === current.subdomainDomain) {
       setDomainCheck({ status: "ok", message: "" });
       return;
     }
@@ -83,7 +83,7 @@ export function useDomainDialog({ t, setWebsites }) {
   const bindDomain = async () => {
     if (!domainWebsite) return;
     const subdomain = String(domainInput || "").trim().toLowerCase();
-    const suffix = normalizeOfficialDomain(domainSuffix);
+    const suffix = DEFAULT_OFFICIAL_DOMAIN;
     if (!subdomain) return;
     setDomainBusy(true);
     try {
@@ -95,7 +95,7 @@ export function useDomainDialog({ t, setWebsites }) {
       });
       if (r && r.success) {
         const label = r.subdomain || subdomain;
-        const savedSuffix = normalizeOfficialDomain(r.subdomainDomain || r.subdomain_domain || suffix);
+        const savedSuffix = supportedOfficialBinding(r.subdomain || subdomain, r.subdomainDomain || r.subdomain_domain || suffix).subdomainDomain;
         setDomainInfo({ subdomain: label, domain: savedSuffix });
         setDomainSuffix(savedSuffix);
         setWebsites((prev) =>

@@ -1,10 +1,10 @@
 -- 官方域名池：允许同一个前缀在不同官方域名后缀下分别绑定。
--- 例如 my-site.demox.site 与 my-site.vibeme.cn 可以绑定到不同站点。
+-- 例如 my-site.demox.site 可以绑定自定义前缀。
 -- 执行前请确认已完成 001_add_subdomain.sql。
 
 ALTER TABLE websites
   ADD COLUMN subdomain_domain VARCHAR(255) NOT NULL DEFAULT 'demox.site'
-  COMMENT '官方域名后缀，如 demox.site / vibeme.cn';
+  COMMENT '官方域名后缀，如 demox.site';
 
 UPDATE websites
   SET subdomain_domain = 'demox.site'

@@ -3,11 +3,10 @@
 # 自定义子域名前缀功能 —— 部署记录 / 重建参考(非一键脚本)
 # ===========================================================================
 # 已于 2026-06-12 部署并端到端验证通过。访问 {label}.demox.site 命中对应站点。
-# 2026-06 新增官方域名池设计：{label}.vibeme.cn 也走同一套 label+domain 查表。
 #
 # 最终架构(不用 KV):
 #   - 路由表 = MySQL websites.subdomain + websites.subdomain_domain(联合唯一索引)。
-#   - 边缘函数 subdomain-router 接管 *.demox.site / *.vibeme.cn:
+#   - 边缘函数 subdomain-router 接管 *.demox.site:
 #       · 旧格式 sites-{userId}-{fileId}-{dir} 走内置正则(老站点零改动)
 #       · 自定义前缀 {label} → fetch website-api /resolve-subdomain 查 path
 #         → 回源 sites.demox.site/{path}/{uri};解析结果走边缘 Cache 60s。

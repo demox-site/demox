@@ -63,8 +63,8 @@ const logTranslations = {
     "The signed-in console moved from top navigation to a dedicated sidebar with nested routes, finally separating the product console from the marketing site.",
   "终于不再像两个妈生的了。": "They finally look like they belong to the same family.",
   "自定义子域名": "Custom subdomains",
-  "每个站点除了默认域名，还能挑一个好记的官方域名前缀，例如 {label}.demox.site 或 {label}.vibeme.cn。":
-    "Each site can choose a memorable official subdomain in addition to its default domain, such as {label}.demox.site or {label}.vibeme.cn.",
+  "每个站点除了默认域名，还能挑一个好记的官方域名前缀，例如 {label}.demox.site。":
+    "Each site can choose a memorable official subdomain in addition to its default domain, such as {label}.demox.site.",
   "抢一个好听的名字，手慢无。": "Claim a good name before someone else does.",
   "MCP 部署": "MCP deployments",
   "提供 MCP server，让 AI 助手直接帮你部署站点。你动嘴，它动手。":
@@ -312,7 +312,7 @@ const LogPage: React.FC = () => {
                 <Feature
                   tag="Feature"
                   title="自定义子域名"
-                  desc="每个站点除了默认域名，还能挑一个好记的官方域名前缀，例如 {label}.demox.site 或 {label}.vibeme.cn。"
+                  desc="每个站点除了默认域名，还能挑一个好记的官方域名前缀，例如 {label}.demox.site。"
                   note="抢一个好听的名字，手慢无。"
                 />
                 <Feature

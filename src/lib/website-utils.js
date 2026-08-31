@@ -1,4 +1,4 @@
-import { normalizeOfficialDomain } from "./official-domains";
+import { supportedOfficialBinding } from "./official-domains";
 
 /**
  * website-utils
@@ -133,23 +133,31 @@ export const getDisplayName = (w) => {
 
 /**
  * getSiteDomains
- * 返回站点的域名列表(最多 2 个):
- *   - 自定义前缀 <subdomain>.<official-domain>(可选，优先展示)
- *   - 默认域名 <websiteId 小写>.demox.site(始终存在)
+ * 返回站点的域名列表:
+ *   - 项目自定义域名(优先)
+ *   - 官方前缀 <subdomain>.<official-domain>
+ *   - 默认域名 <websiteId 小写>.demox.site
  * 每项 { host, url, isDefault }。
  */
 export const getSiteDomains = (w) => {
   if (!w) return [];
   const list = [];
-  const sub = (w.subdomain || "").trim();
-  if (sub && sub !== "undefined") {
-    const host = `${sub}.${normalizeOfficialDomain(w.subdomainDomain || w.subdomain_domain)}`;
-    list.push({ host, url: `https://${host}/`, isDefault: false });
+  const seen = new Set();
+  const push = (host, isDefault) => {
+    const clean = String(host || "").trim().toLowerCase().replace(/\/+$/, "");
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    list.push({ host: clean, url: `https://${clean}/`, isDefault });
+  };
+  const customHosts = w.customHosts || w.custom_hosts || [];
+  (Array.isArray(customHosts) ? customHosts : []).forEach((host) => push(host, false));
+  const binding = supportedOfficialBinding(w.subdomain, w.subdomainDomain || w.subdomain_domain);
+  if (binding.subdomain) {
+    push(`${binding.subdomain}.${binding.subdomainDomain}`, false);
   }
   const wid = (w.websiteId || "").trim();
   if (wid && wid !== "undefined") {
-    const host = `${wid.toLowerCase()}.demox.site`;
-    list.push({ host, url: `https://${host}/`, isDefault: true });
+    push(`${wid.toLowerCase()}.demox.site`, true);
   }
   return list;
 };

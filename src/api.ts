@@ -2,7 +2,7 @@
  * Demox API 服务 - 连接SCF HTTP触发器
  */
 import config from "./configs/env";
-import { OFFICIAL_DOMAINS, normalizeOfficialDomain } from "./lib/official-domains";
+import { OFFICIAL_DOMAINS, supportedOfficialBinding } from "./lib/official-domains";
 import {
   assertFeishuPkceSupport,
   beginFeishuOAuthFlow
@@ -1327,13 +1327,18 @@ export function isLoggedIn(): boolean {
  * 将 MySQL 行映射为 home.jsx 期望的字段名(_id, websiteId, fileName, ... 时间为 {$date})
  */
 export function mapWebsiteRow(row: any): any {
+  const binding = supportedOfficialBinding(row.subdomain, row.subdomain_domain || row.subdomainDomain);
+  const customHosts = (row.customHosts || row.custom_hosts || [])
+    .map((host: string) => String(host || "").trim().toLowerCase())
+    .filter(Boolean);
   return {
     _id: String(row.id),
     websiteId: row.website_id,
     fileName: row.file_name,
     name: row.name || row.file_name,
     path: row.path,
-    url: row.url,
+    url: customHosts[0] ? `https://${customHosts[0]}/` : row.url,
+    customHosts,
     tags: typeof row.tags === "string" ? JSON.parse(row.tags) : (row.tags || []),
     userId: row.user_id,
     userNickname: row.user_nickname || row.userNickname || "",
@@ -1343,8 +1348,8 @@ export function mapWebsiteRow(row: any): any {
     projectName: row.project_name || row.projectName || null,
     projectSlug: row.project_slug || row.projectSlug || null,
     projectRole: row.project_role || row.projectRole || null,
-    subdomain: row.subdomain || null,
-    subdomainDomain: normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain),
+    subdomain: binding.subdomain,
+    subdomainDomain: binding.subdomainDomain,
     visibility: row.visibility === "private" ? "private" : "public",
     hideWatermark: row.hideWatermark === true || row.hide_watermark === true || Number(row.hide_watermark) === 1,
     deployedSize: Number(row.deployedSize ?? row.deployed_size ?? row.storage_size ?? 0),

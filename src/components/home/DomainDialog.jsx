@@ -9,7 +9,7 @@ import {
   DialogDescription,
   Input
 } from "@/components/ui";
-import { OFFICIAL_DOMAINS, normalizeOfficialDomain } from "@/lib/official-domains";
+import { DEFAULT_OFFICIAL_DOMAIN, normalizeOfficialDomain } from "@/lib/official-domains";
 // @ts-ignore;
 import { Link2, Pencil, X, Loader2, Copy, Check, XCircle } from "lucide-react";
 
@@ -137,18 +137,9 @@ export default function DomainDialog({
                       if (e.key === "Enter" && domainCheck.status === "ok" && !domainBusy) onBind();
                     }}
 	                  />
-	                  <select
-	                    value={normalizeOfficialDomain(domainSuffix)}
-	                    onChange={(e) => setDomainSuffix(e.target.value)}
-	                    disabled={domainBusy}
-	                    className="h-10 border-l border-zinc-800 bg-zinc-950 px-3 text-sm font-mono text-zinc-300 outline-none disabled:opacity-50"
-	                  >
-	                    {OFFICIAL_DOMAINS.map((domain) => (
-	                      <option key={domain} value={domain}>
-	                        .{domain}
-	                      </option>
-	                    ))}
-	                  </select>
+	                  <span className="h-10 flex items-center border-l border-zinc-800 bg-zinc-950 px-3 text-sm font-mono text-zinc-400">
+	                    .{DEFAULT_OFFICIAL_DOMAIN}
+	                  </span>
 	                </div>
                 <Button
                   onClick={onBind}

@@ -64,12 +64,13 @@ const {
 } = require('./shared/membership.js');
 
 const defaultDomain = 'demox.site';
-const builtinOfficialDomains = ['demox.site', 'vibeme.cn'];
+const unsupportedOfficialDomains = new Set(['vibeme.cn', 'vibemd.cn']);
+const builtinOfficialDomains = ['demox.site'];
 const officialDomains = Array.from(new Set([
   defaultDomain,
   ...builtinOfficialDomains,
   ...(process.env.OFFICIAL_SITE_DOMAINS || '').split(',')
-])).map(normalizeDomainValue).filter(Boolean);
+])).map(normalizeDomainValue).filter((domain) => domain && !unsupportedOfficialDomains.has(domain));
 const officialDomainSet = new Set(officialDomains);
 const CUSTOM_DOMAIN_CNAME_TARGET = String(process.env.CUSTOM_DOMAIN_CNAME_TARGET || 'customers.demox.site')
   .trim()
@@ -194,8 +195,17 @@ async function lookupCustomDomainCname(hostname) {
   return { matched: false, chain };
 }
 
+function getSupportedOfficialBinding(row) {
+  const label = String(row?.subdomain || '').trim().toLowerCase();
+  const stored = normalizeDomainValue(row?.subdomain_domain || row?.subdomainDomain) || defaultDomain;
+  if (!label || !officialDomainSet.has(stored)) {
+    return { subdomain: null, subdomainDomain: defaultDomain };
+  }
+  return { subdomain: label, subdomainDomain: stored };
+}
+
 function getRowSubdomainDomain(row) {
-  return normalizeOfficialDomain(row.subdomain_domain || row.subdomainDomain) || defaultDomain;
+  return getSupportedOfficialBinding(row).subdomainDomain;
 }
 
 function buildDefaultSiteUrl(websiteId) {
@@ -213,10 +223,60 @@ function normalizeBooleanFlag(value) {
   return value === true || value === 1 || value === '1';
 }
 
+async function loadCustomHostsByNumericIds(numericIds) {
+  const ids = [...new Set((numericIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return new Map();
+  try {
+    await ensureCustomDomainsTable();
+    const rows = await query(
+      `SELECT r.website_id AS numeric_id, cd.hostname AS root_hostname, r.label
+       FROM custom_domain_routes r
+       JOIN custom_domains cd ON cd.id = r.custom_domain_id
+       WHERE r.website_id IN (${ids.map(() => '?').join(',')})
+       ORDER BY r.label = '' DESC, r.label ASC, r.id ASC`,
+      ids
+    );
+    const map = new Map();
+    for (const row of rows) {
+      const root = String(row.root_hostname || '').trim().toLowerCase();
+      const label = String(row.label || '').trim().toLowerCase();
+      const host = label ? `${label}.${root}` : root;
+      if (!host) continue;
+      const key = String(row.numeric_id);
+      const list = map.get(key) || [];
+      if (!list.includes(host)) list.push(host);
+      map.set(key, list);
+    }
+    return map;
+  } catch (error) {
+    console.warn('读取站点自定义域名失败，跳过:', error.message);
+    return new Map();
+  }
+}
+
+async function formatWebsitesForClient(rows) {
+  const formatted = (rows || []).map(formatWebsiteForClient);
+  const hostsById = await loadCustomHostsByNumericIds((rows || []).map((row) => row.id));
+  return formatted.map((website, index) => {
+    const hosts = hostsById.get(String(rows[index].id)) || [];
+    const customUrl = hosts[0] ? `https://${hosts[0]}/` : '';
+    const preferredUrl = customUrl || website.preferredUrl || website.url || '';
+    return {
+      ...website,
+      custom_hosts: hosts,
+      customHosts: hosts,
+      url: preferredUrl,
+      preferred_url: preferredUrl,
+      preferredUrl
+    };
+  });
+}
+
 function formatWebsiteForClient(row) {
   const defaultUrl = buildDefaultSiteUrl(row.website_id || row.websiteId);
-  const subdomainDomain = getRowSubdomainDomain(row);
-  const customUrl = buildCustomSiteUrl(row.subdomain, subdomainDomain);
+  const binding = getSupportedOfficialBinding(row);
+  const subdomainDomain = binding.subdomainDomain;
+  const customUrl = buildCustomSiteUrl(binding.subdomain, subdomainDomain);
   const preferredUrl = customUrl || defaultUrl || row.url || '';
   const visibility = normalizeVisibility(row.visibility);
   const userNickname = String(row.user_nickname || row.userNickname || '').trim();
@@ -239,6 +299,7 @@ function formatWebsiteForClient(row) {
     user_nickname: userNickname,
     userNickname,
     url: preferredUrl,
+    subdomain: binding.subdomain,
     subdomain_domain: subdomainDomain,
     subdomainDomain,
     default_url: defaultUrl,
@@ -1192,7 +1253,7 @@ async function handleListWebsites(event) {
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      websites: websites.map(formatWebsiteForClient),
+      websites: await formatWebsitesForClient(websites),
       count: websites.length
     })
   };
@@ -1229,7 +1290,7 @@ async function handleListAllWebsites(event) {
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      websites: websites.map(formatWebsiteForClient),
+      websites: await formatWebsitesForClient(websites),
       count: websites.length
     })
   };
@@ -7331,17 +7392,18 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
           ? (existing[0].project_id || await ensureWebsiteDefaultProject(existing[0].user_id, websiteId))
           : await ensureWebsiteDefaultProject(userId, websiteId));
     const projectKey = projectId ? await ensureProjectKeyForId(projectId) : null;
+    const existingBinding = existing.length > 0 ? getSupportedOfficialBinding(existing[0]) : { subdomain: null, subdomainDomain: null };
     const cachePurge = await purgeSiteCache({
       websiteId,
-      subdomain: existing.length > 0 ? existing[0].subdomain : null,
-      subdomainDomain: existing.length > 0 ? getRowSubdomainDomain(existing[0]) : null,
+      subdomain: existingBinding.subdomain,
+      subdomainDomain: existingBinding.subdomainDomain,
       originHost: bucketCfg.originHost || LEGACY_BUCKET.originHost,
       originPath: targetPrefix,
       ownerId: deploymentOwnerId
     });
-    const existingSubdomainDomain = existing.length > 0 ? getRowSubdomainDomain(existing[0]) : defaultDomain;
+    const existingSubdomainDomain = existingBinding.subdomainDomain || defaultDomain;
     const customUrl = existing.length > 0
-      ? buildCustomSiteUrl(existing[0].subdomain, existingSubdomainDomain)
+      ? buildCustomSiteUrl(existingBinding.subdomain, existingSubdomainDomain)
       : '';
     const preferredUrl = customUrl || finalUrl;
 
