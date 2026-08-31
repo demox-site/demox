@@ -18,7 +18,8 @@ import {
   X,
   FolderKanban,
   Globe2,
-  LockKeyhole
+  LockKeyhole,
+  Settings2
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import {
@@ -30,8 +31,8 @@ import { formatBytes } from "@/lib/utils";
 
 /**
  * WebsiteCard
- * 部署列表中的单条站点卡片：名称进入详情、标签内联编辑、状态徽章、
- * 创建/修改时间、域名列表。
+ * 部署列表中的单条站点卡片：名称内联编辑、标签内联编辑、状态徽章、
+ * 创建/修改时间、域名列表，右侧「详情」进入站点页。
  */
 export default function WebsiteCard({
   website,
@@ -103,19 +104,9 @@ export default function WebsiteCard({
             ) : (
               <>
                 <div className="flex items-center gap-2">
-                  {siteBasePath ? (
-                    <button
-                      type="button"
-                      onClick={() => navigate(siteBasePath)}
-                      className="truncate text-left text-[var(--stitch-ink)] font-bold hover:underline underline-offset-4"
-                    >
-                      {getDisplayName(website)}
-                    </button>
-                  ) : (
-                    <h3 className="text-[var(--stitch-ink)] font-bold truncate">
-                      {getDisplayName(website)}
-                    </h3>
-                  )}
+                  <h3 className="text-[var(--stitch-ink)] font-bold truncate">
+                    {getDisplayName(website)}
+                  </h3>
                   {canManageSite && (
                     <button
                       type="button"
@@ -317,6 +308,19 @@ export default function WebsiteCard({
           </div>
         )}
       </div>
+      {siteBasePath && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="stitch-action rounded-full"
+            onClick={() => navigate(siteBasePath)}
+          >
+            <Settings2 className="w-4 h-4 mr-2" />
+            {t.siteDetails || "详情"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
