@@ -31,108 +31,110 @@ const texts = {
   zh: {
     eyebrow: "项目",
     title: "项目设置",
-    subtitle: "每条记录是一个完整主机名，指向本项目里的一个站点。",
+    subtitle: "把你的域名指到这个项目里的站点。",
     domainTitle: "自定义域名",
-    domainDesc: "先绑 aaa.ccc.com 指向站点 A；再在这条下面加前缀 bbb，得到 bbb.aaa.ccc.com 指向站点 B。",
-    hostnameLabel: "完整主机名",
-    hostnamePlaceholder: "aaa.ccc.com",
-    siteLabel: "指向站点",
-    addDomain: "添加域名",
-    adding: "绑定中…",
-    emptySites: "这个项目还没有站点，先部署一个再配指向。",
-    emptyDomains: "还没有绑定项目域名。",
+    domainDesc: "填要访问的域名，选打开后看到哪个站点。证书由 Demox 签发，你只要在域名服务商加 CNAME。",
+    hostnameLabel: "域名",
+    hostnamePlaceholder: "docs.example.com",
+    hostnameHint: "填完整域名，不要带 https://",
+    siteLabel: "打开后显示",
+    addDomain: "添加",
+    adding: "添加中…",
+    emptySites: "这个项目还没有站点，先部署一个再绑定域名。",
+    emptyDomains: "还没有绑定域名。",
     loadFailed: "域名列表加载失败",
-    addFailed: "绑定失败",
-    added: "域名已绑定到项目",
-    removed: "已从项目解绑",
-    removeFailed: "解绑失败",
-    verified: "DNS 已生效",
-    verifyFailed: "还没解析到平台入口",
-    verifyError: "校验失败",
-    recordType: "类型",
+    addFailed: "添加失败",
+    added: "域名已添加",
+    removed: "域名已移除",
+    removeFailed: "移除失败",
+    verified: "DNS 已指到 Demox",
+    verifyFailed: "DNS 还没指到 Demox",
+    verifyError: "检查失败",
     recordHost: "主机记录",
-    recordValue: "值",
+    recordValue: "记录值",
     copy: "复制",
     copied: "已复制",
-    dnsTitle: "DNS 记录",
-    dnsRoot: "主机名本身",
-    dnsWildcard: "给子域名用的通配",
-    apexNote: "DNS 由你来写：aaa 和 *.aaa（或单独的 bbb.aaa）都 CNAME 到 customers.demox.site。",
-    httpsNote: "不要指到 www.demox.site，也不要指到站点的官方地址。证书由平台签发。",
+    dnsTitle: "在域名服务商添加这两条 CNAME",
+    dnsRoot: (fqdn: string) => `对应 ${fqdn}`,
+    dnsWildcard: (fqdn: string) => `对应 *.${fqdn}，给子域名用`,
+    dnsEmpty: "填好域名后，这里会列出要添加的 CNAME。",
+    dnsWrongTarget: "两条记录的值都用上面这一行。指到 www.demox.site 或其他 Demox 地址会打不开。",
     statusPending: "等待 DNS",
     statusActive: "已生效",
-    defaultSite: "这条记录指向",
+    defaultSite: "打开后显示",
     chooseSite: "选择站点",
-    unassigned: "尚未指向站点",
-    saveRoute: "保存指向",
-    subTitle: "在这条下面加前缀",
-    subDesc: "加前缀 bbb 后，完整主机名是 bbb.aaa.ccc.com，再选一个本项目站点。",
+    unassigned: "还没选站点，打开这个域名不会显示内容。",
+    saveRoute: "保存",
+    subTitle: "子域名",
+    subDesc: (host: string) => `如果还想用子域名打开另一个站点，填前缀即可。例如填 blog，访问地址是 blog.${host}`,
+    subPreview: (label: string, host: string) => `访问地址：${label}.${host}`,
     subLabel: "前缀",
-    subPlaceholder: "bbb",
-    addSub: "添加前缀",
-    removeRoute: "取消指向",
-    verify: "检测解析",
-    remove: "从项目解绑",
-    removeTitle: "解绑这个项目域名？",
-    removeDesc: "根域名和它下面的子域名指向都会删除。DNS 记录需要你自己改。",
-    memberHint: "只有项目 owner / admin 可以改域名。",
-    noHost: "请填写项目域名",
-    noLabel: "请填写子域名前缀",
+    subPlaceholder: "blog",
+    addSub: "添加子域名",
+    removeRoute: "移除",
+    verify: "检查 DNS",
+    remove: "移除域名",
+    removeTitle: "移除这个域名？",
+    removeDesc: "会同时去掉它下面的子域名。域名服务商里的 CNAME 需要你自己删。",
+    memberHint: "只有项目所有者和管理员可以改域名。",
+    noHost: "请填写域名",
+    noLabel: "请填写前缀",
     noSite: "请选择站点",
-    routeSaved: "指向已更新"
+    routeSaved: "已保存"
   },
   en: {
     eyebrow: "Project",
     title: "Project settings",
-    subtitle: "Each record is a full hostname pointing at a site in this project.",
+    subtitle: "Point your own domain at a site in this project.",
     domainTitle: "Custom domains",
-    domainDesc: "Bind aaa.ccc.com to site A, then add prefix bbb under that record to send bbb.aaa.ccc.com to site B.",
-    hostnameLabel: "Full hostname",
-    hostnamePlaceholder: "aaa.ccc.com",
-    siteLabel: "Target site",
-    addDomain: "Add domain",
-    adding: "Binding…",
-    emptySites: "This project has no sites yet. Deploy one before routing the domain.",
-    emptyDomains: "No project domain yet.",
+    domainDesc: "Enter the domain people will visit, and pick which site it opens. We issue the certificate. You only add a CNAME at your DNS provider.",
+    hostnameLabel: "Domain",
+    hostnamePlaceholder: "docs.example.com",
+    hostnameHint: "Full hostname, without https://",
+    siteLabel: "Opens this site",
+    addDomain: "Add",
+    adding: "Adding…",
+    emptySites: "This project has no sites yet. Deploy one first.",
+    emptyDomains: "No custom domain yet.",
     loadFailed: "Could not load domains",
-    addFailed: "Could not bind domain",
-    added: "Domain bound to this project",
-    removed: "Domain removed from project",
+    addFailed: "Could not add domain",
+    added: "Domain added",
+    removed: "Domain removed",
     removeFailed: "Could not remove domain",
-    verified: "DNS is pointing at the platform",
-    verifyFailed: "DNS is not pointing at the platform yet",
-    verifyError: "Could not verify DNS",
-    recordType: "Type",
+    verified: "DNS is pointing at Demox",
+    verifyFailed: "DNS is not pointing at Demox yet",
+    verifyError: "Could not check DNS",
     recordHost: "Host",
     recordValue: "Value",
     copy: "Copy",
     copied: "Copied",
-    dnsTitle: "DNS records",
-    dnsRoot: "This hostname",
-    dnsWildcard: "Wildcard for prefixes",
-    apexNote: "You write DNS: CNAME aaa and *.aaa (or bbb.aaa) to customers.demox.site.",
-    httpsNote: "Do not CNAME to www.demox.site or the official site URL. We issue the certificate.",
+    dnsTitle: "Add these two CNAMEs at your DNS provider",
+    dnsRoot: (fqdn: string) => `For ${fqdn}`,
+    dnsWildcard: (fqdn: string) => `For *.${fqdn} (subdomains)`,
+    dnsEmpty: "After you enter a domain, the CNAME records will show up here.",
+    dnsWrongTarget: "Use only this value. Do not CNAME to www.demox.site or any xxx.demox.site site URL.",
     statusPending: "Waiting for DNS",
     statusActive: "Active",
-    defaultSite: "This record points to",
+    defaultSite: "Opens",
     chooseSite: "Select a site",
-    unassigned: "Not pointing at a site yet",
-    saveRoute: "Save route",
-    subTitle: "Add a prefix under this record",
-    subDesc: "Prefix bbb becomes bbb.aaa.ccc.com and must point at another site in this project.",
+    unassigned: "No site selected. This domain will not show a site yet.",
+    saveRoute: "Save",
+    subTitle: "Subdomains",
+    subDesc: (host: string) => `Use a prefix to open another site. Example: blog becomes blog.${host}`,
+    subPreview: (label: string, host: string) => `Visitors open ${label}.${host}`,
     subLabel: "Prefix",
-    subPlaceholder: "bbb",
-    addSub: "Add prefix",
-    removeRoute: "Remove route",
+    subPlaceholder: "blog",
+    addSub: "Add subdomain",
+    removeRoute: "Remove",
     verify: "Check DNS",
-    remove: "Unbind from project",
-    removeTitle: "Unbind this project domain?",
-    removeDesc: "The root host and every subdomain route will be removed. Change DNS yourself if you no longer need it.",
+    remove: "Remove domain",
+    removeTitle: "Remove this domain?",
+    removeDesc: "Subdomains under it will be removed too. Delete the CNAME at your DNS provider yourself.",
     memberHint: "Only project owners and admins can change domains.",
-    noHost: "Enter a project domain",
-    noLabel: "Enter a subdomain label",
+    noHost: "Enter a domain",
+    noLabel: "Enter a prefix",
     noSite: "Select a site",
-    routeSaved: "Route updated"
+    routeSaved: "Saved"
   }
 } as const;
 
@@ -142,8 +144,9 @@ type ProjectSite = {
 };
 
 function cnameHostFromHostname(hostname: string) {
-  const value = String(hostname || "").trim().toLowerCase();
-  if (!value.includes(".")) return value || "demox";
+  const value = String(hostname || "").trim().toLowerCase().replace(/\.+$/, "");
+  if (!value) return "";
+  if (!value.includes(".")) return value;
   return value.slice(0, value.indexOf("."));
 }
 
@@ -242,7 +245,6 @@ export default function ProjectSettingsPage() {
     return <Navigate to="/console/projects" replace />;
   }
 
-  const previewHost = cnameHostFromHostname(hostname);
   const handleCopy = async (value: string, key: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -389,6 +391,21 @@ export default function ProjectSettingsPage() {
     }
   };
 
+  const renderDnsBox = (hostnameValue: string, keyPrefix: string) => {
+    const host = cnameHostFromHostname(hostnameValue);
+    if (!host) {
+      return <p className="text-sm text-[var(--stitch-muted)]">{t.dnsEmpty}</p>;
+    }
+    return (
+      <div className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-4 space-y-3">
+        <div className="text-sm font-medium text-[var(--stitch-ink)]">{t.dnsTitle}</div>
+        {renderDnsRow(host, t.dnsRoot(hostnameValue.trim().toLowerCase()), `${keyPrefix}-root`)}
+        {renderDnsRow(`*.${host}`, t.dnsWildcard(hostnameValue.trim().toLowerCase()), `${keyPrefix}-wild`)}
+        <p className="text-sm text-[var(--stitch-muted)]">{t.dnsWrongTarget}</p>
+      </div>
+    );
+  };
+
   const renderDnsRow = (host: string, hint: string, key: string) => (
     <div className="grid gap-2 sm:grid-cols-[5rem_1fr_1fr_auto] sm:items-center">
       <div className="font-mono text-sm text-[var(--stitch-ink)]">CNAME</div>
@@ -427,44 +444,40 @@ export default function ProjectSettingsPage() {
           <CardDescription className="text-[var(--stitch-muted)]">{t.domainDesc}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-4 space-y-3">
-            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.dnsTitle}</div>
-            {renderDnsRow(previewHost || "demox", t.dnsRoot, "root")}
-            {renderDnsRow(`*.${previewHost || "demox"}`, t.dnsWildcard, "wild")}
-            <p className="text-sm text-[var(--stitch-muted)]">{t.apexNote}</p>
-            <p className="text-sm text-[var(--stitch-muted)]">{t.httpsNote}</p>
-          </div>
-
           {canManage ? (
-            <form onSubmit={handleAddDomain} className="grid gap-4 sm:grid-cols-[1fr_minmax(12rem,16rem)_auto] sm:items-end">
-              <div className="space-y-2">
-                <Label className="text-[var(--stitch-ink)]">{t.hostnameLabel}</Label>
-                <Input
-                  value={hostname}
-                  onChange={(event) => setHostname(event.target.value)}
-                  placeholder={t.hostnamePlaceholder}
-                  className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
-                />
+            <form onSubmit={handleAddDomain} className="space-y-3">
+              <div className="grid gap-4 sm:grid-cols-[1fr_minmax(12rem,16rem)_auto] sm:items-end">
+                <div className="space-y-2">
+                  <Label className="text-[var(--stitch-ink)]">{t.hostnameLabel}</Label>
+                  <Input
+                    value={hostname}
+                    onChange={(event) => setHostname(event.target.value)}
+                    placeholder={t.hostnamePlaceholder}
+                    className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
+                  />
+                  <p className="text-xs text-[var(--stitch-muted)]">{t.hostnameHint}</p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[var(--stitch-ink)]">{t.siteLabel}</Label>
+                  <select
+                    value={addWebsiteId}
+                    onChange={(event) => setAddWebsiteId(event.target.value)}
+                    disabled={sites.length === 0}
+                    className="stitch-select h-10 w-full"
+                  >
+                    {sites.length === 0 && <option value="">{t.chooseSite}</option>}
+                    {sites.map((site) => (
+                      <option key={site.websiteId} value={site.websiteId}>
+                        {site.name || site.websiteId}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Button type="submit" disabled={saving || sites.length === 0} className="stitch-primary rounded-full">
+                  {saving ? t.adding : t.addDomain}
+                </Button>
               </div>
-              <div className="space-y-2">
-                <Label className="text-[var(--stitch-ink)]">{t.siteLabel}</Label>
-                <select
-                  value={addWebsiteId}
-                  onChange={(event) => setAddWebsiteId(event.target.value)}
-                  disabled={sites.length === 0}
-                  className="stitch-select h-10 w-full"
-                >
-                  {sites.length === 0 && <option value="">{t.chooseSite}</option>}
-                  {sites.map((site) => (
-                    <option key={site.websiteId} value={site.websiteId}>
-                      {site.name || site.websiteId}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <Button type="submit" disabled={saving || sites.length === 0} className="stitch-primary rounded-full">
-                {saving ? t.adding : t.addDomain}
-              </Button>
+              {cnameHostFromHostname(hostname) ? renderDnsBox(hostname, "add") : null}
             </form>
           ) : (
             <p className="text-sm text-[var(--stitch-muted)]">{t.memberHint}</p>
@@ -505,9 +518,6 @@ export default function ProjectSettingsPage() {
                         {domain.status === "active" ? t.statusActive : t.statusPending}
                       </Badge>
                     </div>
-                    <div className="font-mono text-xs text-[var(--stitch-muted)]">
-                      {domain.cnameHost} / {domain.wildcardHost} → {domain.cnameTarget || cnameTarget}
-                    </div>
                   </div>
                   {canManage && (
                     <div className="flex shrink-0 items-center gap-2">
@@ -523,24 +533,23 @@ export default function ProjectSettingsPage() {
                   )}
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-[1fr_minmax(12rem,16rem)_auto] sm:items-end">
-                  <div className="space-y-1">
+                <div className="grid gap-3 sm:grid-cols-[minmax(12rem,1fr)_auto] sm:items-end">
+                  <div className="space-y-2">
                     <Label className="text-[var(--stitch-ink)]">{t.defaultSite}</Label>
-                    <div className="text-xs text-[var(--stitch-muted)]">{domain.hostname}</div>
+                    <select
+                      value={defaultSite}
+                      onChange={(event) => setDefaultSiteByDomain((current) => ({ ...current, [domain.id]: event.target.value }))}
+                      disabled={!canManage || sites.length === 0}
+                      className="stitch-select h-10 w-full"
+                    >
+                      <option value="">{t.chooseSite}</option>
+                      {sites.map((site) => (
+                        <option key={site.websiteId} value={site.websiteId}>
+                          {site.name || site.websiteId}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <select
-                    value={defaultSite}
-                    onChange={(event) => setDefaultSiteByDomain((current) => ({ ...current, [domain.id]: event.target.value }))}
-                    disabled={!canManage || sites.length === 0}
-                    className="stitch-select h-10 w-full"
-                  >
-                    <option value="">{t.chooseSite}</option>
-                    {sites.map((site) => (
-                      <option key={site.websiteId} value={site.websiteId}>
-                        {site.name || site.websiteId}
-                      </option>
-                    ))}
-                  </select>
                   {canManage && (
                     <Button
                       type="button"
@@ -556,10 +565,12 @@ export default function ProjectSettingsPage() {
                   <p className="text-sm text-[var(--stitch-muted)]">{t.unassigned}</p>
                 )}
 
+                {renderDnsBox(domain.hostname, `domain-${domain.id}`)}
+
                 <div className="space-y-3 border-t border-[var(--stitch-line)] pt-4">
                   <div>
                     <div className="text-sm font-medium text-[var(--stitch-ink)]">{t.subTitle}</div>
-                    <p className="text-sm text-[var(--stitch-muted)]">{t.subDesc}</p>
+                    <p className="text-sm text-[var(--stitch-muted)]">{t.subDesc(domain.hostname)}</p>
                   </div>
                   {subRoutes.map((route) => (
                     <div key={route.id} className="flex flex-col gap-2 rounded-xl border border-[var(--stitch-line)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
@@ -592,7 +603,7 @@ export default function ProjectSettingsPage() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label className="text-[var(--stitch-ink)]">{t.chooseSite}</Label>
+                        <Label className="text-[var(--stitch-ink)]">{t.siteLabel}</Label>
                         <select
                           value={subSite}
                           onChange={(event) => setSubSiteByDomain((current) => ({ ...current, [domain.id]: event.target.value }))}
@@ -624,8 +635,8 @@ export default function ProjectSettingsPage() {
                     </div>
                   )}
                   {subLabel.trim() && (
-                    <div className="font-mono text-xs text-[var(--stitch-muted)]">
-                      {subLabel.trim().toLowerCase()}.{domain.hostname}
+                    <div className="text-sm text-[var(--stitch-muted)]">
+                      {t.subPreview(subLabel.trim().toLowerCase(), domain.hostname)}
                     </div>
                   )}
                 </div>
