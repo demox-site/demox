@@ -50,7 +50,9 @@ import {
   FolderKanban,
   ArrowLeft,
   UsersRound,
-  Settings2
+  Settings2,
+  BarChart3,
+  Code2
 } from "lucide-react";
 
 const navTexts = {
@@ -77,7 +79,12 @@ const navTexts = {
     noProjects: "暂无项目",
     logout: "退出登录",
     backHome: "返回首页",
-    backMainMenu: "返回主菜单"
+    backMainMenu: "返回主菜单",
+    groupSite: "站点",
+    siteSettings: "站点设置",
+    siteFunctions: "云函数",
+    siteAnalytics: "访问分析",
+    backSites: "返回站点列表"
   },
   en: {
     groupConsole: "Console",
@@ -102,7 +109,12 @@ const navTexts = {
     noProjects: "No projects",
     logout: "Log out",
     backHome: "Home",
-    backMainMenu: "Back to menu"
+    backMainMenu: "Back to menu",
+    groupSite: "Site",
+    siteSettings: "Site settings",
+    siteFunctions: "Functions",
+    siteAnalytics: "Analytics",
+    backSites: "Back to sites"
   }
 } as const;
 
@@ -239,11 +251,16 @@ export const ConsoleLayout: React.FC = () => {
     navigate("/index");
   };
 
+  const siteMatch = location.pathname.match(
+    /^\/console\/projects\/([^/]+)\/sites\/([^/]+)(?:\/([^/]+))?\/?$/
+  );
   const projectMatch = location.pathname.match(
     /^\/console\/projects\/([^/]+)\/(deploy|sites|members|settings)(?:\/|$)/
   );
-  const currentProjectId = projectMatch?.[1] || "";
+  const currentProjectId = siteMatch?.[1] || projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
+  const currentWebsiteId = siteMatch?.[2] || "";
+  const inSiteWorkspace = Boolean(currentProjectId && currentWebsiteId);
   const inProjectWorkspace = !!currentProjectId;
   const currentProject = projects.find((p) => p.id === currentProjectId || p.numericId === currentProjectId) || null;
   const currentSelectProjectId = currentProject?.id || currentProjectId;
@@ -283,6 +300,32 @@ export const ConsoleLayout: React.FC = () => {
       ]
     : [];
 
+  const siteBasePath = inSiteWorkspace
+    ? `/console/projects/${currentProjectId}/sites/${currentWebsiteId}`
+    : "";
+  const siteNav: NavItem[] = inSiteWorkspace
+    ? [
+        {
+          key: "site-settings",
+          path: siteBasePath,
+          label: t.siteSettings,
+          icon: Settings2
+        },
+        {
+          key: "site-functions",
+          path: `${siteBasePath}/functions`,
+          label: t.siteFunctions,
+          icon: Code2
+        },
+        {
+          key: "site-analytics",
+          path: `${siteBasePath}/analytics`,
+          label: t.siteAnalytics,
+          icon: BarChart3
+        }
+      ]
+    : [];
+
   const accountNav: NavItem[] = [
     {
       key: "settings",
@@ -300,13 +343,24 @@ export const ConsoleLayout: React.FC = () => {
     { key: "buckets", path: "/console/admin/buckets", label: t.adminBuckets }
   ];
 
-  const isActive = (path: string) =>
-    location.pathname === path || location.pathname.startsWith(path + "/");
+  const isActive = (path: string) => {
+    if (
+      path === siteBasePath ||
+      path === `/console/projects/${currentProjectId}/sites`
+    ) {
+      return location.pathname === path || location.pathname === `${path}/`;
+    }
+    return location.pathname === path || location.pathname.startsWith(`${path}/`);
+  };
 
   const onAdminPage = location.pathname.startsWith("/console/admin");
 
   const handleSwitchProject = (projectId: string) => {
     if (!projectId || projectId === currentProjectId) return;
+    if (inSiteWorkspace) {
+      navigate(`/console/projects/${projectId}/sites`);
+      return;
+    }
     navigate(`/console/projects/${projectId}/${currentProjectSection}`);
   };
 
@@ -381,7 +435,29 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarHeader>
 
         <SidebarContent>
-          {inProjectWorkspace ? (
+          {inSiteWorkspace ? (
+            <>
+              <SidebarGroup>
+                <SidebarGroupLabel>{t.groupSite}</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>{siteNav.map(renderItem)}</SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+
+              <SidebarGroup className="pt-5">
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {renderItem({
+                      key: "backSites",
+                      path: `/console/projects/${currentProjectId}/sites`,
+                      label: t.backSites,
+                      icon: ArrowLeft
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </>
+          ) : inProjectWorkspace ? (
             <>
               <SidebarGroup>
                 <SidebarGroupLabel>{t.groupProject}</SidebarGroupLabel>

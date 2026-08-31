@@ -1,0 +1,34 @@
+{
+  "checkedAt": "2026-08-31",
+  "namespace": "demox",
+  "qualifier": "$LATEST",
+  "note": "Entrypoint SHA-256 values from GetFunction(ShowCode=TRUE). Values are hashes only; no source or secrets are stored here.",
+  "entries": [
+    {
+      "name": "demox-website-api",
+      "localPath": "scf-code/website-api/index.js",
+      "liveSha256": "4e4ce28b25d518d3f2168a110e7e5c1afa60a3174f577c216a5e53d3f013b8d8",
+      "exactMatch": true
+    },
+    {
+      "name": "demox-auth-api",
+      "localPath": "scf-deploy-packages/auth-api/index.cjs",
+      "liveSha256": "f97e83779942b3a89829cdc371b07cf14bb54c70d99f1ed7285ac567eade1d16",
+      "exactMatch": true
+    },
+    {
+      "name": "demox-mcp-api",
+      "localPath": "scf-code/mcp-api/index.js",
+      "liveSha256": "eb4fde9609d2f99180481ac4fe02e3f381deb01144357e397daeaa994407179f",
+      "exactMatch": true
+    },
+    {
+      "name": "demox-cert-renew",
+      "localPath": "scf-code/cert-renew/index.js",
+      "liveSha256": "b98245fb3cbc4e7397f6bdb62a5cc3e717712c7f767646619f01b04c0114fe8b",
+      "livePackageSha256": "25ec75b12f4295604c9c376e7b4d313829a59d3ea315d4ff080455d54812d37d",
+      "exactMatch": false,
+      "note": "Local copy is a testable refactor of live $LATEST. See scf-code/cert-renew/SOURCE.md."
+    }
+  ]
+}

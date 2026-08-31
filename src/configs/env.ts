@@ -13,9 +13,13 @@ function withTrailingSlash(value: string): string {
   return clean ? `${clean}/` : "/";
 }
 
-const apiUrl = readEnv("VITE_DEMOX_API_URL").replace(/\/+$/, "");
+const apiRoot = readEnv("VITE_DEMOX_API_URL").replace(/\/+$/, "");
+const siteId = readEnv("VITE_DEMOX_SITE_ID");
+const functionEnv = readEnv("VITE_DEMOX_FUNCTION_ENV") || (siteId ? "production" : "");
+const apiUrl = siteId ? `${apiRoot}/${siteId}/${functionEnv}` : apiRoot;
 const authApiUrl = (readEnv("VITE_DEMOX_AUTH_API_URL") || apiUrl).replace(/\/+$/, "");
 const websiteApiUrl = (readEnv("VITE_DEMOX_WEBSITE_API_URL") || apiUrl).replace(/\/+$/, "");
+const functionsApiUrl = (readEnv("VITE_DEMOX_FUNCTIONS_URL") || apiUrl).replace(/\/+$/, "");
 if (!authApiUrl || !websiteApiUrl) {
   throw new Error("Missing required environment variable: VITE_DEMOX_API_URL");
 }
@@ -33,6 +37,7 @@ export const siteConfig = {
 const config = {
   authApiUrl,
   websiteApiUrl,
+  functionsApiUrl,
   // GitHub OAuth - client_id 为公开值；client_secret 仅在 SCF 后端环境变量中
   github: {
     clientId: "Ov23liHBClIIlop9S6mP",

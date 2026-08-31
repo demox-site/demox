@@ -1383,6 +1383,35 @@ test('project custom domain list and public resolve use root and subdomain route
   assert.equal(sub.path, 'sites/42/SUBSITE1/dist');
 });
 
+test('website list exposes custom hosts for the site card links', async () => {
+  queryImpl = async (sql) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('FROM websites w') && sql.includes('LEFT JOIN projects p')) {
+      return [{
+        id: 9,
+        user_id: 'project-owner',
+        website_id: 'SITEOK01',
+        project_id: 42,
+        name: 'Demox site',
+        subdomain: null,
+        subdomain_domain: 'demox.site',
+        visibility: 'public',
+        hide_watermark: 0
+      }];
+    }
+    if (sql.includes('JOIN custom_domains cd') && sql.includes('custom_domain_routes r')) {
+      return [{ numeric_id: 9, root_hostname: 'demox.aigc.sx.cn', label: '' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const listed = JSON.parse((await request('list', {}, 'project-owner')).body);
+  assert.equal(listed.success, true, JSON.stringify(listed));
+  assert.deepEqual(listed.websites[0].customHosts, ['demox.aigc.sx.cn']);
+  assert.equal(listed.websites[0].url, 'https://demox.aigc.sx.cn/');
+});
+
 test('project custom domain verify marks active when CNAME hits the shared entrance', async () => {
   dns.promises.resolveCname = async (hostname) => {
     if (hostname === 'demox.aigc.sx.cn') return ['customers.demox.site.'];

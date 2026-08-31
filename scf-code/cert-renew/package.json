@@ -1,0 +1,13 @@
+{
+  "name": "demox-cert-renew",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demox wildcard certificate renewal SCF",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "acme-client": "5.4.0"
+  }
+}

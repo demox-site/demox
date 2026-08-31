@@ -1,0 +1,71 @@
+[
+  {
+    "name": "demox-system-auth",
+    "displayName": "Auth",
+    "slug": "system-auth",
+    "sourceDir": "scf-deploy-packages/auth-api",
+    "entrypoint": "index.cjs",
+    "handler": "main",
+    "routePrefixes": ["/auth", "/oauth"],
+    "triggers": ["http"],
+    "requiresVpc": true,
+    "requiredEnvironment": ["JWT_SECRET", "MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"],
+    "sourcePresent": true
+  },
+  {
+    "name": "demox-system-website",
+    "displayName": "Website",
+    "slug": "system-website",
+    "sourceDir": "scf-code/website-api",
+    "entrypoint": "index.js",
+    "handler": "main",
+    "routePrefixes": [
+      "/website", "/upload", "/deploy-upload", "/list", "/list-all", "/update-name", "/update-tags",
+      "/set-subdomain", "/check-subdomain", "/clear-subdomain", "/update-visibility", "/update-watermark", "/update-seo",
+      "/content-scan", "/resolve-subdomain", "/check-site-access", "/track-site-event", "/analytics", "/site-stats",
+      "/site-access-logs", "/bucket-stats", "/list-projects", "/create-project", "/update-project", "/archive-project",
+      "/delete-project", "/set-website-project", "/list-project-custom-domains", "/add-project-custom-domain",
+      "/set-project-custom-domain-route", "/remove-project-custom-domain-route",
+      "/remove-project-custom-domain", "/verify-project-custom-domain",
+      "/list-project-members", "/search-project-invite-users", "/invite-project-member",
+      "/search-feishu-project-principals", "/grant-project-to-feishu", "/remove-project-feishu-grant",
+      "/search-github-project-principals", "/grant-project-to-github", "/remove-project-github-grant",
+      "/update-project-member-role", "/remove-project-member", "/list-user-roles", "/get-user-overview",
+      "/get-platform-overview", "/list-role-limits", "/set-role-limit", "/delete-role-limit", "/get-role-limits",
+      "/get-usage", "/create-token", "/list-tokens", "/revoke-token", "/track-product-event", "/get-product-funnel",
+      "/resolve-user-emails", "/list-buckets", "/register-bucket", "/update-bucket", "/delete-bucket", "/set-default-bucket"
+    ],
+    "timerTriggers": ["analytics-rollup-5m"],
+    "triggers": ["http", "timer"],
+    "requiresVpc": true,
+    "requiredEnvironment": ["JWT_SECRET", "MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"],
+    "sourcePresent": true
+  },
+  {
+    "name": "demox-system-mcp",
+    "displayName": "Deploy / MCP",
+    "slug": "system-mcp",
+    "sourceDir": "scf-code/mcp-api",
+    "entrypoint": "index.js",
+    "handler": "main",
+    "routePrefixes": ["/deploy", "/websites", "/mcp", "/health", "/me", "/send-code", "/login", "/login-code", "/register", "/delete"],
+    "triggers": ["http"],
+    "requiresVpc": false,
+    "requiredEnvironment": ["JWT_SECRET", "WEBSITE_API_URL", "AUTH_API_URL"],
+    "sourcePresent": true
+  },
+  {
+    "name": "demox-system-cert-renew",
+    "displayName": "Certificate renew",
+    "slug": "system-cert-renew",
+    "sourceDir": "scf-code/cert-renew",
+    "entrypoint": "index.js",
+    "handler": "main",
+    "timerTriggers": ["monthly-renew"],
+    "triggers": ["timer"],
+    "requiresVpc": false,
+    "requiredEnvironment": ["ACME_EMAIL", "EDGEONE_ZONE_ID", "RENEW_THRESHOLD_DAYS"],
+    "sourcePresent": true,
+    "sourceEvidence": "Recovered from demox-cert-renew $LATEST (zip SHA-256 25ec75b12f4295604c9c376e7b4d313829a59d3ea315d4ff080455d54812d37d); local index.js is a testable refactor, not a byte match. See scf-code/cert-renew/SOURCE.md."
+  }
+]

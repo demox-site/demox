@@ -1,0 +1,90 @@
+'use strict';
+
+const { loadSystemManifest } = require('./system-router.js');
+const { badRequest } = require('./errors.js');
+
+const PLATFORM_HOSTS = new Set(
+  String(process.env.DEMOX_PLATFORM_HOSTS || 'www.demox.site,demox.site')
+    .split(',')
+    .map((item) => normalizeHost(item))
+    .filter(Boolean)
+);
+const PLATFORM_WEBSITE_ID = String(process.env.DEMOX_PLATFORM_WEBSITE_ID || '').trim();
+
+function normalizeHost(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    return url.hostname.replace(/\.$/, '');
+  } catch {
+    return raw.replace(/^https?:\/\//, '').split('/')[0].replace(/\.$/, '');
+  }
+}
+
+function requireWebsiteId(value) {
+  const websiteId = String(value == null ? '' : value).trim();
+  if (!websiteId) throw badRequest('缺少 websiteId', 'MISSING_WEBSITE_ID');
+  if (websiteId.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(websiteId)) {
+    throw badRequest('websiteId 非法', 'INVALID_WEBSITE_ID');
+  }
+  return websiteId;
+}
+
+function readWebsiteScope(event = {}, body = {}) {
+  const query = event.queryStringParameters || event.queryString || event.query || {};
+  return {
+    websiteId: body.websiteId || body.website_id || query.websiteId || query.website_id || '',
+    host: body.host || query.host || '',
+    kind: String(body.kind || query.kind || '').trim().toLowerCase()
+  };
+}
+
+function isPlatformSite({ websiteId, host } = {}) {
+  if (PLATFORM_WEBSITE_ID && String(websiteId || '') === PLATFORM_WEBSITE_ID) return true;
+  const hosts = String(host || '')
+    .split(',')
+    .map((item) => normalizeHost(item))
+    .filter(Boolean);
+  return hosts.some((item) => PLATFORM_HOSTS.has(item));
+}
+
+function siteFunctionUrl(publicBaseUrl, websiteId, envName, route) {
+  if (!route) return null;
+  const base = String(publicBaseUrl || 'https://api.demox.site').replace(/\/+$/, '');
+  const siteId = String(websiteId || process.env.DEMOX_SITE_WEBSITE_ID || 'EPX2UU43').trim();
+  const env = String(envName || process.env.FUNCTION_ENV || 'production').trim();
+  return `${base}/${siteId}/${env}${route}`;
+}
+
+function publicSystemFunctions(publicBaseUrl, websiteId, envName) {
+  return loadSystemManifest().map((entry) => {
+    const route = (entry.routePrefixes || [])[0] || '';
+    const siteId = websiteId || process.env.DEMOX_SITE_WEBSITE_ID || 'EPX2UU43';
+    return {
+      functionId: entry.slug,
+      kind: 'site',
+      name: entry.displayName || entry.name,
+      slug: entry.slug,
+      websiteId: siteId,
+      env: envName || process.env.FUNCTION_ENV || 'production',
+      status: 'active',
+      runtime: 'nodejs',
+      publishedVersion: 1,
+      routes: [...(entry.routePrefixes || [])],
+      triggers: [...(entry.triggers || [])],
+      invokeUrl: siteFunctionUrl(publicBaseUrl, siteId, envName, route),
+      editable: false
+    };
+  });
+}
+
+module.exports = {
+  normalizeHost,
+  requireWebsiteId,
+  readWebsiteScope,
+  isPlatformSite,
+  publicSystemFunctions,
+  siteFunctionUrl,
+  PLATFORM_HOSTS
+};

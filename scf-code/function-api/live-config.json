@@ -1,0 +1,116 @@
+{
+  "checkedAt": "2026-08-31",
+  "namespace": "demox",
+  "role": "demox-runtime-role",
+  "note": "Redacted live GetFunction snapshot. Environment values are never stored here.",
+  "unifiedRecommendation": {
+    "runtime": "Nodejs18.15",
+    "handler": "index.main",
+    "memorySize": 512,
+    "timeout": 300,
+    "vpc": {
+      "vpcId": "vpc-bwtrj6fb",
+      "subnetId": "subnet-nzrl3bbq",
+      "reason": "website-api and auth-api both reach private MySQL through this VPC."
+    },
+    "environmentKeys": [
+      "ACME_EMAIL",
+      "ANALYTICS_HASH_SALT",
+      "ANALYTICS_RAW_BUCKET_ID",
+      "ANALYTICS_RAW_ENABLED",
+      "AUTH_API_URL",
+      "EDGEONE_ZONE_ID",
+      "ENCRYPTION_KEY",
+      "FEISHU_APP_ID",
+      "FEISHU_APP_SECRET",
+      "FEISHU_REDIRECT_URI",
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+      "JWT_EXPIRES_IN",
+      "JWT_SECRET",
+      "MYSQL_DATABASE",
+      "MYSQL_HOST",
+      "MYSQL_PASSWORD",
+      "MYSQL_PORT",
+      "MYSQL_USER",
+      "RENEW_THRESHOLD_DAYS",
+      "WEBSITE_API_URL"
+    ],
+    "triggers": [
+      { "name": "http", "type": "http", "note": "Keep api.demox.site on the old functions until staging evidence exists." },
+      { "name": "analytics-rollup-5m", "type": "timer" },
+      { "name": "monthly-renew", "type": "timer" }
+    ]
+  },
+  "functions": [
+    {
+      "name": "demox-website-api",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "memorySize": 512,
+      "timeout": 120,
+      "vpc": { "vpcId": "vpc-bwtrj6fb", "subnetId": "subnet-nzrl3bbq", "bound": true },
+      "environmentKeys": [
+        "ANALYTICS_HASH_SALT",
+        "ANALYTICS_RAW_BUCKET_ID",
+        "ANALYTICS_RAW_ENABLED",
+        "ENCRYPTION_KEY",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "JWT_SECRET",
+        "MYSQL_DATABASE",
+        "MYSQL_HOST",
+        "MYSQL_PASSWORD",
+        "MYSQL_PORT",
+        "MYSQL_USER"
+      ],
+      "triggers": [
+        { "name": "4t2b23jl8z", "type": "http", "enable": 1 },
+        { "name": "analytics-rollup-5m", "type": "timer", "enable": 1 }
+      ]
+    },
+    {
+      "name": "demox-auth-api",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "memorySize": 128,
+      "timeout": 10,
+      "vpc": { "vpcId": "vpc-bwtrj6fb", "subnetId": "subnet-nzrl3bbq", "bound": true },
+      "environmentKeys": [
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_REDIRECT_URI",
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+        "JWT_EXPIRES_IN",
+        "JWT_SECRET",
+        "MYSQL_DATABASE",
+        "MYSQL_HOST",
+        "MYSQL_PASSWORD",
+        "MYSQL_PORT",
+        "MYSQL_USER"
+      ],
+      "triggers": [{ "name": "jiiwh1kq1h", "type": "http", "enable": 1 }]
+    },
+    {
+      "name": "demox-mcp-api",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "memorySize": 256,
+      "timeout": 120,
+      "vpc": { "vpcId": "", "subnetId": "", "bound": false },
+      "environmentKeys": ["AUTH_API_URL", "JWT_SECRET", "WEBSITE_API_URL"],
+      "triggers": [{ "name": "bw5ot3a2gv", "type": "http", "enable": 1 }]
+    },
+    {
+      "name": "demox-cert-renew",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "memorySize": 256,
+      "timeout": 300,
+      "vpc": { "vpcId": "", "subnetId": "", "bound": false },
+      "environmentKeys": ["ACME_EMAIL", "EDGEONE_ZONE_ID", "RENEW_THRESHOLD_DAYS"],
+      "triggers": [{ "name": "monthly-renew", "type": "timer", "enable": 1 }]
+    }
+  ]
+}

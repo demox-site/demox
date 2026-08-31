@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.artifacts
 
 # Editor directories and files
 .vscode/*
@@ -36,7 +37,6 @@ scripts/*.tgz
 API_REFERENCE.md
 DEMOX_PROMO_SCRIPT.md
 postman/
-scf-code/cert-renew/
 scf-deploy-packages/website-api/
 scf-deploy-packages/auth-api/*test*.cjs
 scripts/QUICKSTART.md

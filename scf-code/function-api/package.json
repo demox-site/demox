@@ -1,0 +1,16 @@
+{
+  "name": "demox-function-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared runtime and control plane for Demox user-authored functions",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cos-nodejs-sdk-v5": "^3.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.17.0",
+    "quickjs-emscripten": "^0.32.0"
+  }
+}

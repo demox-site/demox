@@ -13,19 +13,13 @@ import { Globe, RefreshCw, Tag, UploadCloud, CheckCircle2, Copy, X, MessageSquar
 import { Navigate, useParams } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "./home-translations";
-import { parseTags, joinTags, hasProOrAboveRole } from "@/lib/website-utils";
-import DeleteConfirmDialog from "@/components/home/DeleteConfirmDialog";
-import RedeployDialog from "@/components/home/RedeployDialog";
-import DomainDialog from "@/components/home/DomainDialog";
-import SiteSettingsDialog from "@/components/home/SiteSettingsDialog";
+import { parseTags, joinTags } from "@/lib/website-utils";
 import UploadSection from "@/components/home/UploadSection";
 import WebsiteCard from "@/components/home/WebsiteCard";
 import { useAuth } from "./use-auth";
 import { useWebsites } from "./use-websites";
 import { useProjects } from "./use-projects";
 import { useUpload } from "./use-upload";
-import { useRedeploy } from "./use-redeploy";
-import { useDomainDialog } from "./use-domain-dialog";
 import { useFilters } from "./use-filters";
 import { track } from "@/lib/track";
 
@@ -44,7 +38,7 @@ export default function Home(props) {
   const auth = useAuth(t);
   const { isLoading, isLoggedIn, user, roleLimits, handleAuthError, navigate } = auth;
 
-  const sites = useWebsites({ user, t, handleAuthError });
+  const sites = useWebsites({ user, t, handleAuthError, projectId: currentProjectId });
   const {
     websites,
     setWebsites,
@@ -80,36 +74,6 @@ export default function Home(props) {
     setWebsites,
     setDeploying
   });
-
-  const redeploy = useRedeploy({
-    roleLimits,
-    t,
-    lang,
-    navigate,
-    loadWebsites,
-    setWebsites,
-    setDeploying
-  });
-
-  const domain = useDomainDialog({ t, setWebsites });
-
-  // SEO 设置弹窗状态
-  const [seoDialogOpen, setSeoDialogOpen] = React.useState(false);
-  const [seoWebsite, setSeoWebsite] = React.useState(null);
-  const openSeoDialog = React.useCallback((website) => {
-    if (!hasProOrAboveRole(user?.roles)) return;
-    setSeoWebsite(website);
-    setSeoDialogOpen(true);
-  }, [user]);
-  const handleSeoSaved = React.useCallback((seo) => {
-    if (seoWebsite && seo) {
-      setWebsites((prev) => prev.map((w) =>
-        w._id === seoWebsite._id
-          ? { ...w, seoTitle: seo.title, seoDescription: seo.description, ogImage: seo.ogImage }
-          : w
-      ));
-    }
-  }, [seoWebsite, setWebsites]);
 
   // 登录成功后加载站点和项目列表。
   React.useEffect(() => {
@@ -370,14 +334,6 @@ export default function Home(props) {
                         joinTags={joinTags}
                         getEmailByUserId={sites.getEmailByUserId}
                         showProjectInfo={false}
-                        projects={projects.activeProjects}
-                        moveWebsiteToProject={sites.moveWebsiteToProject}
-                        setWebsiteVisibility={sites.setWebsiteVisibility}
-                        setWebsiteWatermark={sites.setWebsiteWatermark}
-                        openRedeployDialog={redeploy.openRedeployDialog}
-                        openDomainDialog={domain.openDomainDialog}
-                        openSeoDialog={openSeoDialog}
-                        confirmDeleteWebsite={sites.confirmDeleteWebsite}
                       />
                     ))}
                   </div>
@@ -386,57 +342,6 @@ export default function Home(props) {
             </Card>
           )}
 
-          {!isDeployMode && (
-            <>
-              <DomainDialog
-                open={domain.domainOpen}
-                onOpenChange={domain.setDomainOpen}
-                domainInfo={domain.domainInfo}
-                setDomainInfo={domain.setDomainInfo}
-	                domainInput={domain.domainInput}
-	                setDomainInput={domain.setDomainInput}
-	                domainSuffix={domain.domainSuffix}
-	                setDomainSuffix={domain.setDomainSuffix}
-	                domainCheck={domain.domainCheck}
-                domainBusy={domain.domainBusy}
-                onBind={domain.bindDomain}
-                onUnbind={domain.unbindDomain}
-                onCopy={domain.copyCname}
-                t={t}
-              />
-
-              <RedeployDialog
-                open={redeploy.redeployOpen}
-                onOpenChange={redeploy.setRedeployOpen}
-                redeployFile={redeploy.redeployFile}
-                isDragActive={redeploy.isRedeployDragActive}
-                onDragEnter={redeploy.onRedeployDragEnter}
-                onDragOver={redeploy.onRedeployDragOver}
-                onDragLeave={redeploy.onRedeployDragLeave}
-                onDrop={redeploy.onRedeployDrop}
-                onFileChange={redeploy.handleRedeployFileChange}
-                onCancel={redeploy.closeRedeployDialog}
-                onConfirm={redeploy.submitRedeploy}
-                t={t}
-              />
-
-              <DeleteConfirmDialog
-                open={sites.deleteConfirmOpen}
-                onOpenChange={sites.setDeleteConfirmOpen}
-                onConfirm={sites.executeDeleteWebsite}
-                t={t}
-              />
-
-              <SiteSettingsDialog
-                open={seoDialogOpen}
-                onOpenChange={setSeoDialogOpen}
-                website={seoWebsite}
-                t={t}
-                lang={lang}
-                onSaved={handleSeoSaved}
-              />
-            </>
-          )}
         </div>
     </>
   );

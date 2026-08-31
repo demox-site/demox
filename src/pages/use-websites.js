@@ -13,7 +13,39 @@ import {
  * 站点列表的加载与维护：拉取、名称内联编辑、标签内联编辑、删除。
  * @param {{ t:Record<string,any>, handleAuthError:Function }} deps
  */
-export function useWebsites({ t, handleAuthError }) {
+async function attachCustomHostsFromProjects(mapped, projectId) {
+  if (mapped.some((site) => (site.customHosts || []).length)) return mapped;
+  const ids = [...new Set(
+    [projectId, ...mapped.map((site) => site.projectId)]
+      .filter(Boolean)
+      .map((id) => String(id))
+  )];
+  if (!ids.length) return mapped;
+  const hostByWebsiteId = new Map();
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const res = await websiteApi.listProjectCustomDomains(id);
+      if (!res?.success) return;
+      for (const domain of res.domains || []) {
+        for (const route of domain.routes || []) {
+          if (!route.websiteId || !route.hostname) continue;
+          const key = String(route.websiteId);
+          const list = hostByWebsiteId.get(key) || [];
+          if (!list.includes(route.hostname)) list.push(route.hostname);
+          hostByWebsiteId.set(key, list);
+        }
+      }
+    } catch {
+      // Keep the official / default links if custom-domain lookup fails.
+    }
+  }));
+  return mapped.map((site) => ({
+    ...site,
+    customHosts: hostByWebsiteId.get(String(site.websiteId)) || site.customHosts || []
+  }));
+}
+
+export function useWebsites({ t, handleAuthError, projectId }) {
   const { toast } = useToast();
   const [websites, setWebsites] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -38,10 +70,13 @@ export function useWebsites({ t, handleAuthError }) {
     try {
       const result = await websiteApi.list();
       if (result && result.success) {
-        const mapped = (result.websites || []).map((row) => ({
-          ...mapWebsiteRow(row),
-          status: "deployed"
-        }));
+        const mapped = await attachCustomHostsFromProjects(
+          (result.websites || []).map((row) => ({
+            ...mapWebsiteRow(row),
+            status: "deployed"
+          })),
+          projectId
+        );
         const sorted = mapped.sort(
           (a, b) => getComparableTimestamp(b) - getComparableTimestamp(a)
         );

@@ -12,6 +12,7 @@ import { getTopAwareSessionStorage } from "./lib/top-aware-session-storage";
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
+const FUNCTIONS_API_URL = config.functionsApiUrl;
 const DEPLOY_API_PATH = "/deploy";
 
 // Token管理
@@ -1358,6 +1359,79 @@ export function mapWebsiteRow(row: any): any {
   };
 }
 
+export type SiteFunction = {
+  functionId: string;
+  kind?: "user" | "system" | "site";
+  runtime?: string;
+  websiteId?: string | null;
+  name: string;
+  slug: string;
+  status?: string;
+  publishedVersion: number | null;
+  invokeUrl: string | null;
+  routes?: string[];
+  triggers?: string[];
+  editable?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  env?: string;
+};
+
+export const functionsApi = {
+  baseUrl: FUNCTIONS_API_URL,
+  list: (websiteId: string, init?: RequestOptions) => request<{ success: boolean; functions: SiteFunction[]; websiteId: string }>(
+    FUNCTIONS_API_URL,
+    `/functions?websiteId=${encodeURIComponent(websiteId)}`,
+    { method: "GET", ...init }
+  ),
+  listSystem: (host: string) => request<{ success: boolean; functions: SiteFunction[] }>(
+    FUNCTIONS_API_URL,
+    `/functions?kind=system&host=${encodeURIComponent(host)}`,
+    { method: "GET" }
+  ),
+  create: (websiteId: string, name: string, slug: string) => request<{ success: boolean; function: SiteFunction }>(
+    FUNCTIONS_API_URL,
+    "/functions",
+    { method: "POST", body: { websiteId, name, slug } }
+  ),
+  createVersion: (functionId: string, source: string) => request<{ success: boolean; version: {
+    version: number;
+    status: string;
+  } }>(FUNCTIONS_API_URL, `/functions/${functionId}/versions`, { method: "POST", body: { source } }),
+  publish: (functionId: string, version: number) => request<{ success: boolean; function: {
+    functionId: string;
+    publishedVersion: number | null;
+    invokeUrl: string;
+  } }>(FUNCTIONS_API_URL, `/functions/${functionId}/publish`, { method: "POST", body: { version } }),
+  getSource: (functionId: string, version?: number) => request<{
+    success: boolean;
+    functionId: string;
+    version: number;
+    source: string;
+  }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/source${version ? `?version=${encodeURIComponent(String(version))}` : ""}`,
+    { method: "GET" }
+  ),
+  invoke: async (functionId: string, payload: unknown) => {
+    const token = tokenManager.get();
+    const response = await fetch(`${FUNCTIONS_API_URL}/functions/${functionId}/invoke`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload ?? {})
+    });
+    const text = await response.text();
+    try {
+      return { status: response.status, body: JSON.parse(text) };
+    } catch {
+      return { status: response.status, body: text };
+    }
+  }
+};
+
 // 获取当前用户
 export function getCurrentUser() {
   return userManager.get();
@@ -1366,6 +1440,7 @@ export function getCurrentUser() {
 export default {
   auth: authApi,
   website: websiteApi,
+  functions: functionsApi,
   token: tokenManager,
   user: userManager,
   isLoggedIn,

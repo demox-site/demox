@@ -403,11 +403,11 @@ export default function SiteAnalyticsPage() {
         <div className="mx-auto max-w-3xl space-y-6">
           <button
             type="button"
-            onClick={() => navigate(`/console/projects/${projectId}/sites`)}
+            onClick={() => navigate(`/console/projects/${projectId}/sites/${websiteId}`)}
             className="inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
           >
             <ArrowLeft className="h-4 w-4" />
-            {language === "en" ? "Back to sites" : "返回站点列表"}
+            {language === "en" ? "Back to site settings" : "返回站点设置"}
           </button>
           <div className="rounded-[2rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-6 py-16 text-center shadow-[0_24px_70px_rgba(0,0,0,.10)] sm:px-10">
             <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] text-[var(--stitch-ink)]">
@@ -432,11 +432,11 @@ export default function SiteAnalyticsPage() {
           <div className="min-w-0">
             <button
               type="button"
-              onClick={() => navigate(`/console/projects/${projectId}/sites`)}
+              onClick={() => navigate(`/console/projects/${projectId}/sites/${websiteId}`)}
               className="mb-5 inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
             >
               <ArrowLeft className="h-4 w-4" />
-              返回站点列表
+              {language === "en" ? "Back to site settings" : "返回站点设置"}
             </button>
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)] px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-[var(--stitch-muted)]">
               <BarChart3 className="h-3.5 w-3.5" />

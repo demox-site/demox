@@ -4,16 +4,10 @@ import { useNavigate } from "react-router-dom";
 import {
   Button,
   Badge,
-  Input,
-  Switch,
-  Popover,
-  PopoverContent,
-  PopoverTrigger
+  Input
 } from "@/components/ui";
 // @ts-ignore;
 import {
-  Upload,
-  Trash2,
   ExternalLink,
   CheckCircle,
   XCircle,
@@ -22,46 +16,28 @@ import {
   Tag,
   Check,
   X,
-  Link2,
   FolderKanban,
   Globe2,
-  Lock,
-  LockKeyhole,
-  BarChart3,
-  Settings2,
-  Search,
-  Eye,
-  EyeOff
+  LockKeyhole
 } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import {
   getDisplayName,
   getSiteDomains,
-  formatTimestamp,
-  hasProOrAboveRole
+  formatTimestamp
 } from "@/lib/website-utils";
 import { formatBytes } from "@/lib/utils";
 
-function PremiumMark({ t }) {
-  return (
-    <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted px-1.5 py-px text-[10px] font-semibold text-muted-foreground">
-      <Lock className="h-3 w-3" />
-      {t.proFeatureBadge || "专业"}
-    </span>
-  );
-}
-
 /**
  * WebsiteCard
- * 部署列表中的单条站点卡片：名称内联编辑、标签内联编辑、状态徽章、
- * 创建/修改时间、域名列表、公开/私有、重新部署/自定义域名/删除操作。
+ * 部署列表中的单条站点卡片：名称进入详情、标签内联编辑、状态徽章、
+ * 创建/修改时间、域名列表。
  */
 export default function WebsiteCard({
   website,
   t,
   user,
   deploying,
-  watermarkSaving = {},
   // 名称编辑
   editingId,
   editingName,
@@ -80,41 +56,21 @@ export default function WebsiteCard({
   joinTags,
   // 其它
   getEmailByUserId,
-  showProjectInfo = true,
-  projects = [],
-  moveWebsiteToProject,
-  setWebsiteVisibility,
-  setWebsiteWatermark,
-  openRedeployDialog,
-  openDomainDialog,
-  openSeoDialog,
-  confirmDeleteWebsite
+  showProjectInfo = true
 }) {
   const navigate = useNavigate();
   const isProcessing = website.status === "processing" || deploying[website._id];
   const isPlatformAdmin = Array.isArray(user?.roles) && user.roles.includes("admin");
   const isSiteOwner = !website.userId || website.userId === user?.userId;
   const canManageByProject = ["owner", "admin"].includes(website.projectRole || "");
-  const canViewAnalyticsByProject = !!website.projectRole;
   const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
-  const canUseProFeatures = hasProOrAboveRole(user?.roles);
-  const canAccessAnalyticsEntry = isSiteOwner || isPlatformAdmin || canViewAnalyticsByProject;
-  const showSiteSettings = canManageSite || canAccessAnalyticsEntry;
-  const proHint = t.proFeatureUnavailable || "仅专业用户及以上可用";
-  const canMoveProject =
-    canManageSite &&
-    Array.isArray(projects) &&
-    projects.length > 0;
   const currentProjectName = website.projectName || (website.projectId ? t.defaultProjectName : "");
   const isPrivate = website.visibility === "private";
   const isPublic = !isPrivate;
   const creatorName = String(website.userNickname || "").trim();
-  const canChangeVisibility = canManageSite;
-  const analyticsPath = website.projectId && (website.websiteId || website._id)
-    ? `/console/projects/${website.projectId}/sites/${website.websiteId || website._id}/analytics`
+  const siteBasePath = website.projectId && (website.websiteId || website._id)
+    ? `/console/projects/${website.projectId}/sites/${website.websiteId || website._id}`
     : "";
-  const settingsActionClass =
-    "rounded-xl border-border bg-background text-foreground hover:bg-accent hover:text-accent-foreground";
 
   return (
     <div className="stitch-site-row p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 group">
@@ -147,9 +103,19 @@ export default function WebsiteCard({
             ) : (
               <>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-[var(--stitch-ink)] font-bold truncate">
-                    {getDisplayName(website)}
-                  </h3>
+                  {siteBasePath ? (
+                    <button
+                      type="button"
+                      onClick={() => navigate(siteBasePath)}
+                      className="truncate text-left text-[var(--stitch-ink)] font-bold hover:underline underline-offset-4"
+                    >
+                      {getDisplayName(website)}
+                    </button>
+                  ) : (
+                    <h3 className="text-[var(--stitch-ink)] font-bold truncate">
+                      {getDisplayName(website)}
+                    </h3>
+                  )}
                   {canManageSite && (
                     <button
                       type="button"
@@ -349,182 +315,6 @@ export default function WebsiteCard({
               </div>
             ))}
           </div>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {showSiteSettings && (
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="sm" className="stitch-action rounded-full">
-                <Settings2 className="w-4 h-4 mr-2" />
-                {t.siteSettings || "设置"}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="end"
-              className="w-[330px] rounded-2xl border-border bg-popover p-3 text-popover-foreground shadow-[0_24px_70px_rgba(0,0,0,.18)]"
-            >
-              <div className="mb-3 px-1">
-                <div className="text-sm font-black">{t.siteSettingsTitle || "站点设置"}</div>
-                <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {getDisplayName(website)}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                {canMoveProject && (
-                  <div className="rounded-xl border border-border bg-muted/50 p-3">
-                    <label className="mb-2 flex items-center gap-2 text-xs font-bold text-muted-foreground">
-                      <FolderKanban className="h-3.5 w-3.5" />
-                      {t.moveToProject}
-                    </label>
-                    <select
-                      value={website.projectId || ""}
-                      disabled={isProcessing}
-                      onChange={(e) => {
-                        const nextProjectId = String(e.target.value || "");
-                        if (!nextProjectId || nextProjectId === String(website.projectId || "")) return;
-                        const project = projects.find((p) => String(p.id) === nextProjectId);
-                        if (project && moveWebsiteToProject) moveWebsiteToProject(website, project);
-                      }}
-                      className="h-9 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-50"
-                      title={t.moveToProject}
-                    >
-                      {!website.projectId && <option value="">{t.noProject}</option>}
-                      {projects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {canChangeVisibility && (
-                  <div
-                    className="flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground"
-                    title={t.visibilityToggleTitle}
-                  >
-                    <span className="flex items-center gap-2">
-                      {isPublic ? <Globe2 className="h-4 w-4" /> : <LockKeyhole className="h-4 w-4" />}
-                      {isPublic ? t.visibilityPublic : t.visibilityPrivate}
-                    </span>
-                    <Switch
-                      checked={isPublic}
-                      disabled={isProcessing}
-                      onCheckedChange={(checked) => {
-                        if (setWebsiteVisibility) {
-                          setWebsiteVisibility(website, checked ? "public" : "private");
-                        }
-                      }}
-                      className="scale-75"
-                    />
-                  </div>
-                )}
-
-                {canManageSite && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={isProcessing}
-                      onClick={() => openRedeployDialog(website)}
-                      className={`${settingsActionClass} justify-start`}
-                      title={isProcessing ? t.redeployDisabledTooltip : t.redeployButton}
-                    >
-                      <Upload className="w-4 h-4 mr-2" />
-                      {t.redeployButton}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openDomainDialog(website)}
-                      className={`${settingsActionClass} justify-start`}
-                      title={t.customDomain}
-                    >
-                      <Link2 className="w-4 h-4 mr-2" />
-                      {website.subdomain ? t.domainBound : t.customDomain}
-                    </Button>
-                  </div>
-                )}
-
-                {(canAccessAnalyticsEntry || canManageSite) && (
-                  <div className="space-y-2 border-t border-border/70 pt-2">
-                    {canAccessAnalyticsEntry && (
-                      <div title={canUseProFeatures ? undefined : proHint}>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!canUseProFeatures || !analyticsPath}
-                          onClick={() => analyticsPath && navigate(analyticsPath)}
-                          className={`${settingsActionClass} w-full justify-start`}
-                        >
-                          <BarChart3 className="w-4 h-4 mr-2" />
-                          {t.analyticsButton || "分析"}
-                          {!canUseProFeatures && <PremiumMark t={t} />}
-                        </Button>
-                      </div>
-                    )}
-
-                    {canManageSite && (
-                      <div
-                        className={`flex items-center justify-between rounded-xl border border-border bg-muted/50 px-3 py-2.5 text-sm text-foreground ${canUseProFeatures ? "" : "opacity-60"}`}
-                        title={canUseProFeatures ? t.watermarkToggleTitle : proHint}
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          {website.hideWatermark === true ? (
-                            <EyeOff className="h-4 w-4 shrink-0" />
-                          ) : (
-                            <Eye className="h-4 w-4 shrink-0" />
-                          )}
-                          <span className="truncate">{t.watermarkLabel || t.watermarkHidden}</span>
-                          {!canUseProFeatures && <PremiumMark t={t} />}
-                        </span>
-                        <Switch
-                          checked={website.hideWatermark !== true}
-                          disabled={!canUseProFeatures || isProcessing || watermarkSaving[website._id]}
-                          onCheckedChange={(checked) => {
-                            if (canUseProFeatures && setWebsiteWatermark) {
-                              setWebsiteWatermark(website, !checked);
-                            }
-                          }}
-                          className="scale-75"
-                        />
-                      </div>
-                    )}
-
-                    {canManageSite && (
-                      <div title={canUseProFeatures ? (t.seoSettings || "SEO") : proHint}>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!canUseProFeatures}
-                          onClick={() => openSeoDialog && openSeoDialog(website)}
-                          className={`${settingsActionClass} w-full justify-start`}
-                        >
-                          <Search className="w-4 h-4 mr-2" />
-                          {t.seoSettings || "SEO"}
-                          {!canUseProFeatures && <PremiumMark t={t} />}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {canManageSite && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => confirmDeleteWebsite(website._id)}
-                    className="w-full justify-start rounded-xl text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
-                  >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    {t.deleteSite || "删除站点"}
-                  </Button>
-                )}
-              </div>
-            </PopoverContent>
-          </Popover>
         )}
       </div>
     </div>

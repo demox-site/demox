@@ -34,8 +34,10 @@ import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
 import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
+import FunctionsPage from "./pages/console/FunctionsPage";
 import UsagePage from "./pages/console/UsagePage";
 import SiteAnalyticsPage from "./pages/console/SiteAnalyticsPage";
+import SiteSettingsPage from "./pages/console/SiteSettingsPage.jsx";
 
 const history = createBrowserHistory();
 window._WEAPPS_HISTORY = history;
@@ -140,6 +142,14 @@ const App: React.FC = () => {
                       element={<SiteAnalyticsPage />}
                     />
                     <Route
+                      path="projects/:projectId/sites/:websiteId/functions"
+                      element={<FunctionsPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/sites/:websiteId"
+                      element={<SiteSettingsPage />}
+                    />
+                    <Route
                       path="projects/:projectId/members"
                       element={<ProjectMembersPage />}
                     />
@@ -151,6 +161,7 @@ const App: React.FC = () => {
                     <Route path="sites" element={<Navigate to="/console/projects" replace />} />
                     <Route path="usage" element={<UsagePage />} />
                     <Route path="tokens" element={<TokensPage />} />
+                    <Route path="functions" element={<Navigate to="/console/projects" replace />} />
                     <Route path="settings" element={<SettingsPage />} />
                     {/* 管理后台：真正的二级路由，section 决定展示哪个面板 */}
                     <Route
