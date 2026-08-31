@@ -1,4 +1,5 @@
 export const DEFAULT_OFFICIAL_DOMAIN = "demox.site";
+export const CUSTOM_DOMAIN_CNAME_TARGET = "customers.demox.site";
 
 export const OFFICIAL_DOMAINS = [
   DEFAULT_OFFICIAL_DOMAIN,

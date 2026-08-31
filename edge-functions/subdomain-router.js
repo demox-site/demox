@@ -122,7 +122,7 @@ function isWwwSpaRoute(pathname) {
     normalized === '/console/settings' || normalized === '/console/admin'
   ) return true;
   if (/^\/console\/admin\/[^/]+$/.test(normalized)) return true;
-  if (/^\/console\/projects\/[^/]+\/(deploy|sites|members)$/.test(normalized)) return true;
+  if (/^\/console\/projects\/[^/]+\/(deploy|sites|members|settings)$/.test(normalized)) return true;
   if (/^\/console\/projects\/[^/]+\/sites\/[^/]+\/analytics$/.test(normalized)) return true;
   return WWW_SPA_ROUTES.includes(normalized);
 }
@@ -802,7 +802,7 @@ async function completePrivateSiteLogin(req, label, domain) {
     });
   }
 
-  const access = await checkPrivateSiteAccessToken(token, label, domain);
+  const access = await checkPrivateSiteAccessToken(token, label, domain, requestUrl.hostname);
   const location = next.pathname + next.search + next.hash;
   if (!access.allowed) {
     if (!access.loginRequired) return accessDeniedPage(req);
@@ -903,19 +903,21 @@ function accessDeniedPage(req) {
   });
 }
 
-async function checkPrivateSiteAccess(req, label, domain) {
+async function checkPrivateSiteAccess(req, label, domain, host) {
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
-  return checkPrivateSiteAccessToken(token, label, domain);
+  return checkPrivateSiteAccessToken(token, label, domain, host);
 }
 
-async function checkPrivateSiteAccessToken(token, label, domain) {
+async function checkPrivateSiteAccessToken(token, label, domain, host) {
   try {
+    const payload = { action: 'check_site_access', label: label, domain: domain, token: token };
+    if (host) payload.host = host;
     const resp = await fetch(backendUrl('/check-site-access'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'check_site_access', label: label, domain: domain, token: token })
+      body: JSON.stringify(payload)
     });
     if (!resp.ok) return { allowed: false, loginRequired: false };
     const data = await resp.json();
@@ -933,6 +935,88 @@ async function checkPrivateSiteAccessToken(token, label, domain) {
  * path = 桶内路径前缀；origin = 该站点所属桶的回源域(多云)，为空时回退默认回源域。
  * 用 caches.default 把解析结果缓存 RESOLVE_CACHE_TTL 秒，避免每请求打 SCF。
  */
+async function resolveCustomHost(host) {
+  const hostname = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
+  if (!hostname) {
+    return { path: null, websiteId: null, origin: null, visibility: 'public', hideWatermark: false, seo: null };
+  }
+  const cacheKey = new Request('https://resolve.demox.site/custom/' + encodeURIComponent(hostname));
+  let cache = null;
+  try { cache = caches.default; } catch (e) { cache = null; }
+
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) {
+        const j = await hit.json();
+        return {
+          path: j && j.path ? j.path : null,
+          websiteId: (j && j.websiteId) || null,
+          origin: (j && j.origin) || null,
+          visibility: (j && j.visibility) || 'public',
+          hideWatermark: !!(j && j.hideWatermark),
+          seo: (j && j.seo) || null
+        };
+      }
+    } catch (e) {}
+  }
+
+  let path = null;
+  let origin = null;
+  let websiteId = null;
+  let visibility = 'public';
+  let hideWatermark = false;
+  let seo = null;
+  try {
+    const resp = await fetch(backendUrl('/resolve-subdomain'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'resolve_subdomain', host: hostname })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.success && data.path) {
+        path = data.path;
+        websiteId = data.websiteId || null;
+        origin = data.origin || null;
+        visibility = data.visibility || 'public';
+        hideWatermark = !!data.hideWatermark;
+        seo = data.seo || null;
+      }
+    }
+  } catch (e) {
+    path = null;
+  }
+
+  if (cache) {
+    try {
+      const body = JSON.stringify({
+        path: path,
+        websiteId: websiteId,
+        origin: origin,
+        visibility: visibility,
+        hideWatermark: hideWatermark,
+        seo: seo
+      });
+      await cache.put(cacheKey, new Response(body, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=' + RESOLVE_CACHE_TTL
+        }
+      }));
+    } catch (e) {}
+  }
+
+  return {
+    path: path,
+    websiteId: websiteId,
+    origin: origin,
+    visibility: visibility,
+    hideWatermark: hideWatermark,
+    seo: seo
+  };
+}
+
 async function resolveSite(label, domain) {
   const suffix = domain || DEFAULT_OFFICIAL_DOMAIN;
   const cacheKey = new Request(
@@ -1033,10 +1117,11 @@ async function handle(req, event) {
   // 只处理官方域名池的一层子域名；多层放行回源。
   // www.demox.site 不写死：label='www' 走下方通用路由表逻辑（DB websites.subdomain='www'）
   const parsedHost = parseOfficialHost(host);
-  if (!parsedHost) return fetch(req);
+  const customResolved = parsedHost ? null : await resolveCustomHost(host);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
-  const label = parsedHost.label;
-  const domain = parsedHost.domain;
+  const label = parsedHost ? parsedHost.label : host;
+  const domain = parsedHost ? parsedHost.domain : host;
   let rest = u.pathname.replace(/^\/+/, '');
 
   // 目录请求(根 / 或结尾 /)直接补 index.html，避免回源到「目录」让 COS 慢解析
@@ -1048,7 +1133,9 @@ async function handle(req, event) {
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
   // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, websiteId, origin, visibility, hideWatermark, seo } = await resolveSite(label, domain);
+  let { path, websiteId, origin, visibility, hideWatermark, seo } = customResolved
+    ? customResolved
+    : await resolveSite(label, domain);
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
@@ -1080,7 +1167,7 @@ async function handle(req, event) {
         }
         return completePrivateSiteLogin(req, label, domain);
       }
-      const access = await checkPrivateSiteAccess(req, label, domain);
+      const access = await checkPrivateSiteAccess(req, label, domain, parsedHost ? '' : host);
       if (!access.allowed) {
         if (!access.loginRequired) return accessDeniedPage(req);
         return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();

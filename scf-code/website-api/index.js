@@ -13,6 +13,7 @@ try {
 } catch (e) {
   geoip = null;
 }
+const dnsPromises = require('dns').promises;
 const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { createProvider } = require('./shared/storage.js');
@@ -70,6 +71,12 @@ const officialDomains = Array.from(new Set([
   ...(process.env.OFFICIAL_SITE_DOMAINS || '').split(',')
 ])).map(normalizeDomainValue).filter(Boolean);
 const officialDomainSet = new Set(officialDomains);
+const CUSTOM_DOMAIN_CNAME_TARGET = String(process.env.CUSTOM_DOMAIN_CNAME_TARGET || 'customers.demox.site')
+  .trim()
+  .toLowerCase()
+  .replace(/\.+$/, '');
+const CUSTOM_DOMAIN_STATUS_PENDING = 'pending';
+const CUSTOM_DOMAIN_STATUS_ACTIVE = 'active';
 const VISIBILITY_PUBLIC = 'public';
 const VISIBILITY_PRIVATE = 'private';
 const PROJECT_ROLE_OWNER = 'owner';
@@ -111,6 +118,80 @@ function parseOfficialHost(host) {
     }
   }
   return null;
+}
+
+function normalizeCustomHostname(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  const withoutScheme = raw.replace(/^https?:\/\//i, '');
+  const hostPort = withoutScheme.split('/')[0].split('?')[0].split('#')[0];
+  const host = hostPort.replace(/:\d+$/, '');
+  return normalizeDomainValue(host);
+}
+
+function isValidCustomHostname(hostname) {
+  if (!hostname || hostname.length > 253 || hostname.includes('..')) return false;
+  if (!hostname.includes('.')) return false;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return false;
+  return /^(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.(?!-)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(hostname);
+}
+
+function isOfficialOwnedHost(hostname) {
+  const host = normalizeCustomHostname(hostname);
+  if (!host) return false;
+  if (officialDomainSet.has(host)) return true;
+  if (parseOfficialHost(host)) return true;
+  for (const domain of officialDomains) {
+    if (host === domain || host.endsWith(`.${domain}`)) return true;
+  }
+  return false;
+}
+
+function isValidCustomRouteLabel(label) {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
+}
+
+function customDomainCnameHost(hostname) {
+  const host = String(hostname || '');
+  return host.includes('.') ? host.slice(0, host.indexOf('.')) : host;
+}
+
+function customDomainValidationError(hostname) {
+  if (!hostname) return { reason: 'invalid', message: '请填写要绑定的域名' };
+  if (!isValidCustomHostname(hostname)) {
+    return { reason: 'invalid', message: '域名不合法，请填写如 www.example.com 或 demo.example.com' };
+  }
+  if (isOfficialOwnedHost(hostname)) {
+    return { reason: 'official', message: '官方域名不能当作自定义域名绑定，请使用你自己的域名' };
+  }
+  if (hostname === CUSTOM_DOMAIN_CNAME_TARGET) {
+    return { reason: 'reserved', message: '不能绑定平台入口域名' };
+  }
+  return null;
+}
+
+async function lookupCustomDomainCname(hostname) {
+  const chain = [];
+  let current = hostname;
+  const seen = new Set();
+  for (let i = 0; i < 8; i += 1) {
+    if (!current || seen.has(current)) break;
+    seen.add(current);
+    let records = [];
+    try {
+      records = await dnsPromises.resolveCname(current);
+    } catch (error) {
+      break;
+    }
+    if (!Array.isArray(records) || !records.length) break;
+    current = normalizeDomainValue(records[0]);
+    if (!current) break;
+    chain.push(current);
+    if (current === CUSTOM_DOMAIN_CNAME_TARGET) {
+      return { matched: true, chain };
+    }
+  }
+  return { matched: false, chain };
 }
 
 function getRowSubdomainDomain(row) {
@@ -500,6 +581,12 @@ exports.main = async (event, context) => {
       update_watermark: handleUpdateWebsiteWatermark,
       update_seo: handleUpdateSeo,
       resolve_subdomain: handleResolveSubdomain,
+      list_project_custom_domains: handleListProjectCustomDomains,
+      add_project_custom_domain: handleAddProjectCustomDomain,
+      set_project_custom_domain_route: handleSetProjectCustomDomainRoute,
+      remove_project_custom_domain_route: handleRemoveProjectCustomDomainRoute,
+      remove_project_custom_domain: handleRemoveProjectCustomDomain,
+      verify_project_custom_domain: handleVerifyProjectCustomDomain,
       list_blocked_phrases: handleListBlockedPhrases,
       check_site_access: handleCheckSiteAccess,
       track_site_event: handleTrackSiteEvent,
@@ -588,6 +675,18 @@ exports.main = async (event, context) => {
       return await handleTrackProductEvent(event);
     } else if (pathUrl.includes('/get-product-funnel')) {
       return await handleGetProductFunnel(event);
+    } else if (pathUrl.includes('/list-project-custom-domains')) {
+      return await handleListProjectCustomDomains(event);
+    } else if (pathUrl.includes('/add-project-custom-domain')) {
+      return await handleAddProjectCustomDomain(event);
+    } else if (pathUrl.includes('/set-project-custom-domain-route')) {
+      return await handleSetProjectCustomDomainRoute(event);
+    } else if (pathUrl.includes('/remove-project-custom-domain-route')) {
+      return await handleRemoveProjectCustomDomainRoute(event);
+    } else if (pathUrl.includes('/remove-project-custom-domain')) {
+      return await handleRemoveProjectCustomDomain(event);
+    } else if (pathUrl.includes('/verify-project-custom-domain')) {
+      return await handleVerifyProjectCustomDomain(event);
     } else if (pathUrl.includes('/list-projects')) {
       return await handleListProjects(event);
     } else if (pathUrl.includes('/create-project')) {
@@ -845,6 +944,52 @@ async function ensureGithubGrantsTable() {
     console.warn('ensureGithubGrantsTable skipped:', e.message);
   }
   _githubGrantsTableEnsured = true;
+}
+
+let _customDomainsTableEnsured = false;
+async function ensureCustomDomainsTable() {
+  if (_customDomainsTableEnsured) return;
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS custom_domains (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        hostname VARCHAR(255) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+        created_by VARCHAR(64) NOT NULL,
+        verified_at TIMESTAMP NULL DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_custom_domain_hostname (hostname),
+        INDEX idx_custom_domains_project (project_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+    );
+    await query(
+      `CREATE TABLE IF NOT EXISTS custom_domain_routes (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        custom_domain_id BIGINT NOT NULL,
+        label VARCHAR(63) NOT NULL DEFAULT '',
+        website_id BIGINT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_custom_domain_route (custom_domain_id, label),
+        INDEX idx_custom_domain_routes_website (website_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+    );
+    const legacy = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'custom_domains' AND COLUMN_NAME = 'website_id'`
+    );
+    if (legacy.length) {
+      await query(
+        `INSERT IGNORE INTO custom_domain_routes (custom_domain_id, label, website_id)
+         SELECT id, '', website_id FROM custom_domains WHERE website_id IS NOT NULL`
+      );
+    }
+  } catch (e) {
+    console.warn('ensureCustomDomainsTable skipped:', e.message);
+  }
+  _customDomainsTableEnsured = true;
 }
 
 /**
@@ -1148,6 +1293,13 @@ async function handleDeleteWebsite(event) {
     }
   } catch (e) {
     console.warn('删除站点存储失败:', e.message);
+  }
+
+  try {
+    await ensureCustomDomainsTable();
+    await query('DELETE FROM custom_domain_routes WHERE website_id = ?', [site.id]);
+  } catch (e) {
+    console.warn('删除站点自定义域名失败:', e.message);
   }
 
   // 路由表在 websites.subdomain 列里，删除行即清理；边缘缓存 60s 内自然失效。
@@ -2719,6 +2871,380 @@ async function requireProjectMembershipManager(userId, projectId) {
     return { error: '只有项目 owner/admin 可以管理成员' };
   }
   return { project, role: project.project_role, isPlatformAdmin };
+}
+
+function formatCustomDomainRoute(rootHostname, row) {
+  const label = String(row.label || '').trim().toLowerCase();
+  const hostname = label ? `${label}.${rootHostname}` : rootHostname;
+  const websitePublicId = row.website_public_id || row.websiteId || null;
+  return {
+    id: row.id == null ? null : String(row.id),
+    label,
+    hostname,
+    url: hostname ? `https://${hostname}/` : '',
+    isDefault: !label,
+    websiteId: websitePublicId ? String(websitePublicId) : null,
+    websiteName: row.website_name || websitePublicId || ''
+  };
+}
+
+function formatCustomDomainForClient(row, routes = [], extra = {}) {
+  const hostname = String(row.hostname || '').toLowerCase();
+  const cnameHost = customDomainCnameHost(hostname);
+  const formattedRoutes = routes.map((item) => formatCustomDomainRoute(hostname, item));
+  const defaultRoute = formattedRoutes.find((item) => item.isDefault) || null;
+  return {
+    id: row.id == null ? null : String(row.id),
+    hostname,
+    status: row.status === CUSTOM_DOMAIN_STATUS_ACTIVE
+      ? CUSTOM_DOMAIN_STATUS_ACTIVE
+      : CUSTOM_DOMAIN_STATUS_PENDING,
+    cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
+    cnameHost,
+    wildcardHost: cnameHost ? `*.${cnameHost}` : '*',
+    url: hostname ? `https://${hostname}/` : '',
+    defaultWebsiteId: defaultRoute?.websiteId || null,
+    defaultWebsiteName: defaultRoute?.websiteName || '',
+    routes: formattedRoutes,
+    verifiedAt: row.verified_at ? new Date(row.verified_at).toISOString() : null,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    ...extra
+  };
+}
+
+async function loadCustomDomainRow(projectId, domainId, hostname) {
+  const where = ['project_id = ?'];
+  const params = [projectId];
+  const id = normalizePositiveId(domainId);
+  if (id) {
+    where.push('id = ?');
+    params.push(id);
+  } else if (hostname) {
+    where.push('hostname = ?');
+    params.push(hostname);
+  } else {
+    return null;
+  }
+  const rows = await query(
+    `SELECT * FROM custom_domains WHERE ${where.join(' AND ')} LIMIT 1`,
+    params
+  );
+  return rows[0] || null;
+}
+
+async function loadCustomDomainRoutes(domainId) {
+  return query(
+    `SELECT r.id, r.label, r.website_id, r.created_at,
+            w.website_id AS website_public_id, w.name AS website_name
+     FROM custom_domain_routes r
+     JOIN websites w ON w.id = r.website_id
+     WHERE r.custom_domain_id = ?
+     ORDER BY r.label = '' DESC, r.label ASC, r.id ASC`,
+    [domainId]
+  );
+}
+
+async function loadFormattedCustomDomain(projectId, domainId, hostname, extra = {}) {
+  const row = await loadCustomDomainRow(projectId, domainId, hostname);
+  if (!row) return null;
+  const routes = await loadCustomDomainRoutes(row.id);
+  return formatCustomDomainForClient(row, routes, extra);
+}
+
+async function refreshCustomDomainStatus(row, routes = []) {
+  const lookup = await lookupCustomDomainCname(row.hostname);
+  const nextStatus = lookup.matched ? CUSTOM_DOMAIN_STATUS_ACTIVE : CUSTOM_DOMAIN_STATUS_PENDING;
+  if (nextStatus !== row.status || (lookup.matched && !row.verified_at)) {
+    await query(
+      `UPDATE custom_domains
+       SET status = ?, verified_at = CASE WHEN ? = '${CUSTOM_DOMAIN_STATUS_ACTIVE}' THEN COALESCE(verified_at, NOW()) ELSE NULL END, updated_at = NOW()
+       WHERE id = ?`,
+      [nextStatus, nextStatus, row.id]
+    );
+    row.status = nextStatus;
+    if (lookup.matched && !row.verified_at) row.verified_at = new Date();
+    if (!lookup.matched) row.verified_at = null;
+  }
+  return formatCustomDomainForClient(row, routes, { cnameChain: lookup.chain });
+}
+
+async function requireProjectSite(projectId, userId, { websiteId, docId }) {
+  const site = await getWebsiteByIdentity({ docId, websiteId });
+  if (!site) return { error: '站点不存在' };
+  if (Number(site.project_id) !== Number(projectId)) {
+    return { error: '只能指向当前项目里的站点' };
+  }
+  if (!(await canUserManageSite(userId, site))) {
+    return { error: '无权操作该站点' };
+  }
+  return { site };
+}
+
+async function upsertCustomDomainRoute(domainId, label, websiteNumericId) {
+  const existing = await query(
+    'SELECT id FROM custom_domain_routes WHERE custom_domain_id = ? AND label = ? LIMIT 1',
+    [domainId, label]
+  );
+  if (existing[0]) {
+    await query(
+      'UPDATE custom_domain_routes SET website_id = ?, updated_at = NOW() WHERE id = ?',
+      [websiteNumericId, existing[0].id]
+    );
+    return existing[0].id;
+  }
+  const inserted = await query(
+    'INSERT INTO custom_domain_routes (custom_domain_id, label, website_id) VALUES (?, ?, ?)',
+    [domainId, label, websiteNumericId]
+  );
+  return inserted.insertId;
+}
+
+async function handleListProjectCustomDomains(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  if (!(await canUserReadProject(userId, projectId))) {
+    return ok({ success: false, message: '项目不存在或无权限' });
+  }
+
+  try {
+    await ensureCustomDomainsTable();
+    const rows = await query(
+      `SELECT * FROM custom_domains WHERE project_id = ? ORDER BY created_at DESC, id DESC`,
+      [projectId]
+    );
+    const domains = [];
+    for (const row of rows) {
+      domains.push(formatCustomDomainForClient(row, await loadCustomDomainRoutes(row.id)));
+    }
+    return ok({
+      success: true,
+      cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
+      canManage: await canUserWriteProject(userId, projectId),
+      domains,
+      count: domains.length
+    });
+  } catch (error) {
+    console.error('列出项目自定义域名失败:', error);
+    return ok({ success: false, message: error.message || '列出自定义域名失败' });
+  }
+}
+
+async function handleAddProjectCustomDomain(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const access = await requireProjectMembershipManager(userId, projectId);
+  if (access.error) return ok({ success: false, message: access.error });
+
+  const hostname = normalizeCustomHostname(body.hostname || body.domain || body.host);
+  const invalid = customDomainValidationError(hostname);
+  if (invalid) return ok({ success: false, ...invalid });
+
+  try {
+    await ensureCustomDomainsTable();
+    const conflicts = await query(
+      `SELECT id, project_id, hostname FROM custom_domains
+       WHERE hostname = ? OR hostname LIKE CONCAT('%.', ?) OR ? LIKE CONCAT('%.', hostname)
+       LIMIT 8`,
+      [hostname, hostname, hostname]
+    );
+    const owned = conflicts.find((row) => Number(row.project_id) === Number(projectId) && row.hostname === hostname);
+    if (conflicts.length && !owned) {
+      return ok({ success: false, code: 'DUPLICATE', message: '该域名或其上下级已被其他项目占用' });
+    }
+    if (owned) {
+      const domain = await loadFormattedCustomDomain(projectId, owned.id);
+      return ok({ success: true, domain, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET, message: '该域名已绑定到此项目' });
+    }
+
+    const websiteId = String(body.websiteId || body.siteId || '').trim();
+    const docId = normalizePositiveId(body.docId);
+    if (!websiteId && !docId) return ok({ success: false, message: '请选择要指向的站点' });
+    const siteAccess = await requireProjectSite(projectId, userId, { websiteId, docId });
+    if (siteAccess.error) return ok({ success: false, message: siteAccess.error });
+
+    const lookup = await lookupCustomDomainCname(hostname);
+    const status = lookup.matched ? CUSTOM_DOMAIN_STATUS_ACTIVE : CUSTOM_DOMAIN_STATUS_PENDING;
+    const insert = await query(
+      `INSERT INTO custom_domains (project_id, hostname, status, created_by, verified_at)
+       VALUES (?, ?, ?, ?, ${lookup.matched ? 'NOW()' : 'NULL'})`,
+      [projectId, hostname, status, String(userId)]
+    );
+    await upsertCustomDomainRoute(insert.insertId, '', siteAccess.site.id);
+    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { cnameChain: lookup.chain });
+    return ok({
+      success: true,
+      domain,
+      cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
+      message: lookup.matched
+        ? '域名已绑定到项目，DNS 已指向平台入口'
+        : '域名已绑定到项目。请把根域名和 *.主机 都 CNAME 到 customers.demox.site'
+    });
+  } catch (error) {
+    if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
+      return ok({ success: false, code: 'DUPLICATE', message: '该域名已被占用' });
+    }
+    console.error('添加项目自定义域名失败:', error);
+    return ok({ success: false, message: error.message || '添加自定义域名失败' });
+  }
+}
+
+async function handleSetProjectCustomDomainRoute(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const access = await requireProjectMembershipManager(userId, projectId);
+  if (access.error) return ok({ success: false, message: access.error });
+
+  const label = normalizeLabel(body.label || body.subdomain || '');
+  if (label && !isValidCustomRouteLabel(label)) {
+    return ok({ success: false, reason: 'invalid_label', message: '子域名前缀仅限小写字母、数字和连字符' });
+  }
+
+  const websiteId = String(body.websiteId || body.siteId || '').trim();
+  const docId = normalizePositiveId(body.docId);
+  if (!websiteId && !docId) return ok({ success: false, message: '请选择要指向的站点' });
+
+  try {
+    await ensureCustomDomainsTable();
+    const domainRow = await loadCustomDomainRow(
+      projectId,
+      body.domainId || body.customDomainId,
+      normalizeCustomHostname(body.hostname || body.domain)
+    );
+    if (!domainRow) return ok({ success: false, message: '域名不存在' });
+    if (label) {
+      const routeHost = `${label}.${domainRow.hostname}`;
+      const invalid = customDomainValidationError(routeHost);
+      if (invalid && invalid.reason === 'official') {
+        return ok({ success: false, message: '不能使用官方域名作为子域名' });
+      }
+    }
+    const siteAccess = await requireProjectSite(projectId, userId, { websiteId, docId });
+    if (siteAccess.error) return ok({ success: false, message: siteAccess.error });
+    await upsertCustomDomainRoute(domainRow.id, label, siteAccess.site.id);
+    const domain = await loadFormattedCustomDomain(projectId, domainRow.id);
+    return ok({
+      success: true,
+      domain,
+      route: domain?.routes?.find((item) => item.label === label) || null,
+      message: label
+        ? `已将 ${label}.${domainRow.hostname} 指向所选站点`
+        : `已将 ${domainRow.hostname} 指向所选站点`
+    });
+  } catch (error) {
+    if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
+      return ok({ success: false, code: 'DUPLICATE', message: '该子域名已被占用' });
+    }
+    console.error('设置项目域名路由失败:', error);
+    return ok({ success: false, message: error.message || '设置域名指向失败' });
+  }
+}
+
+async function handleRemoveProjectCustomDomainRoute(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const access = await requireProjectMembershipManager(userId, projectId);
+  if (access.error) return ok({ success: false, message: access.error });
+
+  try {
+    await ensureCustomDomainsTable();
+    const domainRow = await loadCustomDomainRow(
+      projectId,
+      body.domainId || body.customDomainId,
+      normalizeCustomHostname(body.hostname || body.domain)
+    );
+    if (!domainRow) return ok({ success: false, message: '域名不存在' });
+    const routeId = normalizePositiveId(body.routeId);
+    const label = normalizeLabel(body.label || body.subdomain || '');
+    if (routeId) {
+      await query(
+        'DELETE FROM custom_domain_routes WHERE id = ? AND custom_domain_id = ?',
+        [routeId, domainRow.id]
+      );
+    } else {
+      await query(
+        'DELETE FROM custom_domain_routes WHERE custom_domain_id = ? AND label = ?',
+        [domainRow.id, label]
+      );
+    }
+    const domain = await loadFormattedCustomDomain(projectId, domainRow.id);
+    return ok({ success: true, domain, message: '已取消该指向' });
+  } catch (error) {
+    console.error('删除项目域名路由失败:', error);
+    return ok({ success: false, message: error.message || '取消域名指向失败' });
+  }
+}
+
+async function handleRemoveProjectCustomDomain(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const access = await requireProjectMembershipManager(userId, projectId);
+  if (access.error) return ok({ success: false, message: access.error });
+
+  const hostname = normalizeCustomHostname(body.hostname || body.domain || body.host);
+  const domainId = body.domainId || body.customDomainId;
+  try {
+    await ensureCustomDomainsTable();
+    const row = await loadCustomDomainRow(projectId, domainId, hostname);
+    if (!row) return ok({ success: false, message: '域名不存在' });
+    await query('DELETE FROM custom_domain_routes WHERE custom_domain_id = ?', [row.id]);
+    await query('DELETE FROM custom_domains WHERE id = ? AND project_id = ?', [row.id, projectId]);
+    return ok({ success: true, hostname: row.hostname, message: '已从项目解绑该域名' });
+  } catch (error) {
+    console.error('删除项目自定义域名失败:', error);
+    return ok({ success: false, message: error.message || '删除自定义域名失败' });
+  }
+}
+
+async function handleVerifyProjectCustomDomain(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const access = await requireProjectMembershipManager(userId, projectId);
+  if (access.error) return ok({ success: false, message: access.error });
+
+  const hostname = normalizeCustomHostname(body.hostname || body.domain || body.host);
+  const domainId = body.domainId || body.customDomainId;
+  try {
+    await ensureCustomDomainsTable();
+    const row = await loadCustomDomainRow(projectId, domainId, hostname);
+    if (!row) return ok({ success: false, message: '域名不存在' });
+    const routes = await loadCustomDomainRoutes(row.id);
+    const domain = await refreshCustomDomainStatus(row, routes);
+    return ok({
+      success: true,
+      domain,
+      cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
+      message: domain.status === CUSTOM_DOMAIN_STATUS_ACTIVE
+        ? 'DNS 已指向平台入口'
+        : '还没有解析到 customers.demox.site'
+    });
+  } catch (error) {
+    console.error('校验项目自定义域名失败:', error);
+    return ok({ success: false, message: error.message || '校验自定义域名失败' });
+  }
 }
 
 async function handleListProjectMembers(event) {
@@ -4545,14 +5071,95 @@ async function handleListBlockedPhrases() {
  * 公开解析接口：label -> COS path。供 subdomain-router 边缘函数查表。
  * 无需鉴权：只返回站点路由必要信息，供边缘函数判断 public/private 与回源。
  */
+function resolveSitePayload(site, host, suffix) {
+  return {
+    success: true,
+    path: site.path,
+    websiteId: site.website_id || null,
+    origin: site.origin_host || null,
+    domain: suffix || null,
+    host,
+    visibility: normalizeVisibility(site.visibility),
+    hideWatermark: normalizeBooleanFlag(site.hide_watermark),
+    seo: {
+      title: site.seo_title || null,
+      description: site.seo_description || null,
+      ogImage: site.og_image || null
+    }
+  };
+}
+
+async function resolveSiteMetadataByCustomHost(hostname) {
+  const host = normalizeCustomHostname(hostname);
+  if (!host) return null;
+  await ensureCustomDomainsTable();
+  await ensureSeoColumns();
+  await ensureWatermarkColumn();
+  const selectSql =
+    `SELECT w.path AS path,
+            w.user_id AS user_id,
+            w.project_id AS project_id,
+            w.website_id AS website_id,
+            w.subdomain AS subdomain,
+            w.name AS site_name,
+            w.seo_title AS seo_title,
+            w.seo_description AS seo_description,
+            w.og_image AS og_image,
+            COALESCE(NULLIF(w.subdomain_domain, ''), ?) AS subdomain_domain,
+            COALESCE(NULLIF(w.visibility, ''), ?) AS visibility,
+            COALESCE(w.hide_watermark, 0) AS hide_watermark,
+            b.origin_host AS origin_host
+     FROM custom_domains cd
+     JOIN custom_domain_routes r ON r.custom_domain_id = cd.id
+     JOIN websites w ON w.id = r.website_id AND w.project_id = cd.project_id
+     LEFT JOIN storage_buckets b ON b.id = w.bucket_id`;
+  const exact = await query(
+    `${selectSql} WHERE cd.hostname = ? AND r.label = '' LIMIT 1`,
+    [defaultDomain, VISIBILITY_PUBLIC, host]
+  );
+  if (exact[0]) return exact[0];
+  const suffix = await query(
+    `${selectSql}
+     WHERE r.label != '' AND ? = CONCAT(r.label, '.', cd.hostname)
+     ORDER BY CHAR_LENGTH(cd.hostname) DESC
+     LIMIT 1`,
+    [defaultDomain, VISIBILITY_PUBLIC, host]
+  );
+  return suffix[0] || null;
+}
+
 async function handleResolveSubdomain(event) {
   const body = event.body || event;
   let { subdomain, domain } = body;
-  if (body.host && !subdomain) {
-    const parsed = parseOfficialHost(body.host);
+  const requestedHost = normalizeCustomHostname(body.host);
+  if (requestedHost && !subdomain) {
+    const parsed = parseOfficialHost(requestedHost);
     if (parsed) {
       subdomain = parsed.label;
       domain = parsed.domain;
+    } else {
+      try {
+        const site = await resolveSiteMetadataByCustomHost(requestedHost);
+        if (!site || !site.path) {
+          return {
+            statusCode: 200,
+            headers: getCORSHeaders(),
+            body: JSON.stringify({ success: false, message: 'not found' })
+          };
+        }
+        return {
+          statusCode: 200,
+          headers: getCORSHeaders(),
+          body: JSON.stringify(resolveSitePayload(site, requestedHost, null))
+        };
+      } catch (error) {
+        console.error('解析自定义域名失败:', error);
+        return {
+          statusCode: 200,
+          headers: getCORSHeaders(),
+          body: JSON.stringify({ success: false, message: error.message })
+        };
+      }
     }
   }
   const label = String(subdomain || '').trim().toLowerCase();
@@ -4587,21 +5194,7 @@ async function handleResolveSubdomain(event) {
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
-      body: JSON.stringify({
-        success: true,
-        path: site.path,
-        websiteId: site.website_id || null,
-        origin: site.origin_host || null,
-        domain: suffix,
-        host: `${label}.${suffix}`,
-        visibility: normalizeVisibility(site.visibility),
-        hideWatermark: normalizeBooleanFlag(site.hide_watermark),
-        seo: {
-          title: site.seo_title || null,
-          description: site.seo_description || null,
-          ogImage: site.og_image || null
-        }
-      })
+      body: JSON.stringify(resolveSitePayload(site, `${label}.${suffix}`, suffix))
     };
   } catch (error) {
     console.error('解析子域名失败:', error);
@@ -4629,11 +5222,16 @@ async function handleCheckSiteAccess(event) {
     }
   }
   const suffix = normalizeOfficialDomain(domain);
-  if (!label) return ok({ success: false, allowed: false, message: 'Missing label' });
-  if (!suffix) return ok({ success: false, allowed: false, message: 'Unsupported official domain' });
-
   try {
-    const site = await resolveSiteMetadataByLabel(label, suffix);
+    let site = null;
+    if (label && suffix) {
+      site = await resolveSiteMetadataByLabel(label, suffix);
+    } else if (body.host && !parseOfficialHost(body.host)) {
+      site = await resolveSiteMetadataByCustomHost(body.host);
+    } else {
+      if (!label) return ok({ success: false, allowed: false, message: 'Missing label' });
+      return ok({ success: false, allowed: false, message: 'Unsupported official domain' });
+    }
     if (!site || !site.path) {
       return ok({ success: true, allowed: false, reason: 'not_found' });
     }
@@ -5621,6 +6219,16 @@ async function updateWebsiteProjectWithLock(projectId, { docId = null, websiteId
     const identity = docId || websiteId;
     const [updated] = await conn.query(sql, [pid, identity]);
     if (updated.affectedRows !== 1) throw new Error('站点不存在或项目绑定失败');
+    try {
+      const siteNumericId = docId
+        ? docId
+        : ((await conn.query('SELECT id FROM websites WHERE website_id = ? LIMIT 1', [websiteId]))[0][0] || {}).id;
+      if (siteNumericId) {
+        await conn.query('DELETE FROM custom_domain_routes WHERE website_id = ?', [siteNumericId]);
+      }
+    } catch (e) {
+      // custom_domains may not exist yet
+    }
     return pid;
   });
 }

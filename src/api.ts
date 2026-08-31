@@ -137,6 +137,32 @@ type DeployUploadResult = {
   retryAfterMs?: number;
 };
 
+export type ProjectCustomDomainRoute = {
+  id: string;
+  label: string;
+  hostname: string;
+  url?: string;
+  isDefault?: boolean;
+  websiteId?: string | null;
+  websiteName?: string;
+};
+
+export type ProjectCustomDomain = {
+  id: string;
+  hostname: string;
+  status: "pending" | "active";
+  cnameTarget: string;
+  cnameHost?: string;
+  wildcardHost?: string;
+  url?: string;
+  defaultWebsiteId?: string | null;
+  defaultWebsiteName?: string;
+  routes?: ProjectCustomDomainRoute[];
+  verifiedAt?: string | null;
+  createdAt?: string | null;
+  cnameChain?: string[];
+};
+
 // 认证API
 export const authApi = {
   // 注册
@@ -553,11 +579,11 @@ export const websiteApi = {
   },
 
   // 获取网站列表
-  list: async () => {
+  list: async (data: { projectId?: string | number } = {}) => {
     return request<{ success: boolean; websites: any[]; count: number }>(
       WEBSITE_API_URL,
       "/website/list",
-      { method: "POST", body: { action: "list" } }
+      { method: "POST", body: { action: "list", ...data } }
     );
   },
 
@@ -703,6 +729,95 @@ export const websiteApi = {
       "/website/clear-subdomain",
       { method: "POST", body: { action: "clear_subdomain", ...data } }
     );
+  },
+
+  listProjectCustomDomains: async (projectId: string | number) => {
+    return request<{
+      success: boolean;
+      cnameTarget?: string;
+      canManage?: boolean;
+      domains?: ProjectCustomDomain[];
+      count?: number;
+      message?: string;
+    }>(WEBSITE_API_URL, "/website/list-project-custom-domains", {
+      method: "POST",
+      body: { action: "list_project_custom_domains", projectId }
+    });
+  },
+
+  addProjectCustomDomain: async (data: {
+    projectId: string | number;
+    hostname: string;
+    websiteId: string;
+  }) => {
+    return request<{
+      success: boolean;
+      domain?: ProjectCustomDomain;
+      cnameTarget?: string;
+      code?: string;
+      message?: string;
+    }>(WEBSITE_API_URL, "/website/add-project-custom-domain", {
+      method: "POST",
+      body: { action: "add_project_custom_domain", ...data }
+    });
+  },
+
+  setProjectCustomDomainRoute: async (data: {
+    projectId: string | number;
+    domainId: string | number;
+    label?: string;
+    websiteId: string;
+  }) => {
+    return request<{
+      success: boolean;
+      domain?: ProjectCustomDomain;
+      route?: ProjectCustomDomainRoute | null;
+      message?: string;
+    }>(WEBSITE_API_URL, "/website/set-project-custom-domain-route", {
+      method: "POST",
+      body: { action: "set_project_custom_domain_route", ...data }
+    });
+  },
+
+  removeProjectCustomDomainRoute: async (data: {
+    projectId: string | number;
+    domainId: string | number;
+    routeId?: string | number;
+    label?: string;
+  }) => {
+    return request<{ success: boolean; domain?: ProjectCustomDomain; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/remove-project-custom-domain-route",
+      { method: "POST", body: { action: "remove_project_custom_domain_route", ...data } }
+    );
+  },
+
+  removeProjectCustomDomain: async (data: {
+    projectId: string | number;
+    domainId?: string | number;
+    hostname?: string;
+  }) => {
+    return request<{ success: boolean; hostname?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/remove-project-custom-domain",
+      { method: "POST", body: { action: "remove_project_custom_domain", ...data } }
+    );
+  },
+
+  verifyProjectCustomDomain: async (data: {
+    projectId: string | number;
+    domainId?: string | number;
+    hostname?: string;
+  }) => {
+    return request<{
+      success: boolean;
+      domain?: ProjectCustomDomain;
+      cnameTarget?: string;
+      message?: string;
+    }>(WEBSITE_API_URL, "/website/verify-project-custom-domain", {
+      method: "POST",
+      body: { action: "verify_project_custom_domain", ...data }
+    });
   },
 
   listBlockedPhrases: async () => {

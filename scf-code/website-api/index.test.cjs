@@ -1205,6 +1205,216 @@ test('public site resolution exposes the persisted watermark preference to the e
   });
 });
 
+const dns = require('dns');
+const originalResolveCname = dns.promises.resolveCname;
+
+function customDomainFixtureQueries(sql, extras = {}) {
+  if (sql.includes('CREATE TABLE IF NOT EXISTS custom_domains') || sql.includes('CREATE TABLE IF NOT EXISTS custom_domain_routes')) {
+    return { affectedRows: 0 };
+  }
+  if (sql.includes('FROM user_roles')) return extras.roles || [];
+  if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) return [];
+  if (sql.includes('FROM project_github_grants') || sql.includes('FROM project_feishu_grants')) return [];
+  if (sql.includes('github_id') && sql.includes('FROM users WHERE id')) return [];
+  if (sql.includes('FROM projects p') && sql.includes('LEFT JOIN project_members')) {
+    return [{
+      id: 42,
+      user_id: extras.ownerId || 'project-owner',
+      project_role: extras.role || 'owner',
+      archived: 0
+    }];
+  }
+  if (sql.includes('FROM projects') && sql.includes('user_id =')) {
+    return [{ id: 42, user_id: extras.ownerId || 'project-owner', project_role: 'owner', archived: 0 }];
+  }
+  if (sql.includes('SELECT id FROM projects WHERE id = ? AND archived = 0')) return [{ id: 42 }];
+  if (sql.includes('information_schema.COLUMNS')) {
+    if (sql.includes("TABLE_NAME = 'custom_domains'") && sql.includes("COLUMN_NAME = 'website_id'")) return [];
+    if (sql.includes('hide_watermark')) return [{ COLUMN_NAME: 'hide_watermark' }];
+    return [{ COLUMN_NAME: 'seo_title' }, { COLUMN_NAME: 'seo_description' }, { COLUMN_NAME: 'og_image' }];
+  }
+  return extras.fallback ? extras.fallback(sql) : null;
+}
+
+const projectDomainRow = {
+  id: 17,
+  project_id: 42,
+  hostname: 'demox.aigc.sx.cn',
+  status: 'pending',
+  created_by: 'project-owner',
+  verified_at: null,
+  created_at: '2026-08-31T00:00:00Z'
+};
+
+function siteResolveRow(websiteId, path) {
+  return {
+    path,
+    user_id: 'project-owner',
+    project_id: 42,
+    website_id: websiteId,
+    subdomain: null,
+    site_name: websiteId,
+    seo_title: null,
+    seo_description: null,
+    og_image: null,
+    subdomain_domain: 'demox.site',
+    visibility: 'public',
+    hide_watermark: 0,
+    origin_host: 'sites.demox.site'
+  };
+}
+
+test('project custom domain belongs to the project and can route root plus a subdomain', async () => {
+  const insertedDomains = [];
+  const insertedRoutes = [];
+  dns.promises.resolveCname = async () => {
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  queryImpl = async (sql, params) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM websites WHERE website_id = ?')) {
+      return [{
+        id: params[0] === 'SUBSITE1' ? 10 : 9,
+        user_id: 'project-owner',
+        website_id: params[0],
+        project_id: 42,
+        name: params[0] === 'SUBSITE1' ? 'Sub site' : 'Demox site'
+      }];
+    }
+    if (sql.includes('FROM custom_domains') && sql.includes('LIKE CONCAT')) return [];
+    if (sql.includes('INSERT INTO custom_domains')) {
+      insertedDomains.push(params);
+      return { insertId: 17, affectedRows: 1 };
+    }
+    if (sql.includes('SELECT id FROM custom_domain_routes')) return [];
+    if (sql.includes('INSERT INTO custom_domain_routes')) {
+      insertedRoutes.push(params);
+      return { insertId: insertedRoutes.length, affectedRows: 1 };
+    }
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) return [{ ...projectDomainRow }];
+    if (sql.includes('FROM custom_domain_routes r')) {
+      return insertedRoutes.map((route, index) => ({
+        id: index + 1,
+        label: route[1],
+        website_id: route[2],
+        created_at: '2026-08-31T00:00:00Z',
+        website_public_id: route[2] === 10 ? 'SUBSITE1' : 'SITEOK01',
+        website_name: route[2] === 10 ? 'Sub site' : 'Demox site'
+      }));
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const rejected = JSON.parse((await request('add_project_custom_domain', {
+      projectId: 42,
+      hostname: 'hello.demox.site',
+      websiteId: 'SITEOK01'
+    }, 'project-owner')).body);
+    assert.equal(rejected.success, false, JSON.stringify(rejected));
+    assert.equal(rejected.reason, 'official');
+
+    const added = JSON.parse((await request('add_project_custom_domain', {
+      projectId: 42,
+      hostname: 'https://Demox.Aigc.sx.cn/path',
+      websiteId: 'SITEOK01'
+    }, 'project-owner')).body);
+    assert.equal(added.success, true, JSON.stringify(added));
+    assert.equal(added.domain.hostname, 'demox.aigc.sx.cn');
+    assert.equal(added.domain.defaultWebsiteId, 'SITEOK01');
+    assert.equal(added.domain.cnameHost, 'demox');
+    assert.equal(added.domain.wildcardHost, '*.demox');
+    assert.equal(insertedDomains[0][1], 'demox.aigc.sx.cn');
+    assert.equal(insertedRoutes[0][1], '');
+
+    const routed = JSON.parse((await request('set_project_custom_domain_route', {
+      projectId: 42,
+      domainId: 17,
+      label: 'subsite',
+      websiteId: 'SUBSITE1'
+    }, 'project-owner')).body);
+    assert.equal(routed.success, true, JSON.stringify(routed));
+    assert.equal(routed.route.hostname, 'subsite.demox.aigc.sx.cn');
+    assert.equal(routed.route.websiteId, 'SUBSITE1');
+    assert.equal(insertedRoutes[1][1], 'subsite');
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+});
+
+test('project custom domain list and public resolve use root and subdomain routes', async () => {
+  queryImpl = async (sql, params = []) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE project_id = ?')) return [{ ...projectDomainRow }];
+    if (sql.includes('FROM custom_domain_routes r') && sql.includes('r.custom_domain_id = ?')) {
+      return [
+        { id: 1, label: '', website_id: 9, website_public_id: 'SITEOK01', website_name: 'Demox site' },
+        { id: 2, label: 'subsite', website_id: 10, website_public_id: 'SUBSITE1', website_name: 'Sub site' }
+      ];
+    }
+    if (sql.includes("CONCAT(r.label, '.', cd.hostname)")) {
+      return [siteResolveRow('SUBSITE1', 'sites/42/SUBSITE1/dist')];
+    }
+    if (sql.includes("AND r.label = ''") && sql.includes('cd.hostname = ?')) {
+      const host = params[params.length - 1];
+      if (host !== 'demox.aigc.sx.cn') return [];
+      return [siteResolveRow('SITEOK01', 'sites/42/SITEOK01/dist')];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const listed = JSON.parse((await request('list_project_custom_domains', {
+    projectId: 42
+  }, 'project-owner')).body);
+  assert.equal(listed.success, true, JSON.stringify(listed));
+  assert.equal(listed.domains[0].hostname, 'demox.aigc.sx.cn');
+  assert.equal(listed.domains[0].routes.length, 2);
+  assert.equal(listed.domains[0].routes[1].hostname, 'subsite.demox.aigc.sx.cn');
+
+  const root = JSON.parse((await request('resolve_subdomain', { host: 'demox.aigc.sx.cn' })).body);
+  assert.equal(root.success, true, JSON.stringify(root));
+  assert.equal(root.websiteId, 'SITEOK01');
+
+  const sub = JSON.parse((await request('resolve_subdomain', { host: 'subsite.demox.aigc.sx.cn' })).body);
+  assert.equal(sub.success, true, JSON.stringify(sub));
+  assert.equal(sub.websiteId, 'SUBSITE1');
+  assert.equal(sub.path, 'sites/42/SUBSITE1/dist');
+});
+
+test('project custom domain verify marks active when CNAME hits the shared entrance', async () => {
+  dns.promises.resolveCname = async (hostname) => {
+    if (hostname === 'demox.aigc.sx.cn') return ['customers.demox.site.'];
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  const updates = [];
+  queryImpl = async (sql, params) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) return [{ ...projectDomainRow }];
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains') && sql.includes('SET status = ?')) {
+      updates.push(params);
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const body = JSON.parse((await request('verify_project_custom_domain', {
+      projectId: 42,
+      domainId: 17
+    }, 'project-owner')).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.domain.status, 'active');
+    assert.deepEqual(body.domain.cnameChain, ['customers.demox.site']);
+    assert.equal(updates[0][0], 'active');
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+});
+
 
 const { buildOriginPurgeTargets, websiteStoragePrefix, websitePrefixFromTarget, staleObjectKeys } = require('./index.js');
 

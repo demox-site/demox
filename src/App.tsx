@@ -31,6 +31,7 @@ import Home from "./pages/home.jsx";
 import AdminDashboard from "./pages/AdminDashboard";
 import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
+import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import UsagePage from "./pages/console/UsagePage";
@@ -141,6 +142,10 @@ const App: React.FC = () => {
                     <Route
                       path="projects/:projectId/members"
                       element={<ProjectMembersPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/settings"
+                      element={<ProjectSettingsPage />}
                     />
                     <Route path="deploy" element={<Navigate to="/console/projects" replace />} />
                     <Route path="sites" element={<Navigate to="/console/projects" replace />} />

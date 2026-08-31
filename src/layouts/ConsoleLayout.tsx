@@ -49,7 +49,8 @@ import {
   UploadCloud,
   FolderKanban,
   ArrowLeft,
-  UsersRound
+  UsersRound,
+  Settings2
 } from "lucide-react";
 
 const navTexts = {
@@ -62,6 +63,7 @@ const navTexts = {
     deploy: "部署新站点",
     sites: "我的站点",
     members: "成员",
+    projectSettings: "项目设置",
     usage: "用量套餐",
     tokens: "访问令牌",
     settings: "账号设置",
@@ -86,6 +88,7 @@ const navTexts = {
     deploy: "Deploy New Site",
     sites: "My Sites",
     members: "Members",
+    projectSettings: "Project Settings",
     usage: "Usage & Plan",
     tokens: "Access Tokens",
     settings: "Settings",
@@ -237,7 +240,7 @@ export const ConsoleLayout: React.FC = () => {
   };
 
   const projectMatch = location.pathname.match(
-    /^\/console\/projects\/([^/]+)\/(deploy|sites|members)(?:\/|$)/
+    /^\/console\/projects\/([^/]+)\/(deploy|sites|members|settings)(?:\/|$)/
   );
   const currentProjectId = projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
@@ -270,6 +273,12 @@ export const ConsoleLayout: React.FC = () => {
           path: `/console/projects/${currentProjectId}/members`,
           label: t.members,
           icon: UsersRound
+        },
+        {
+          key: "settings",
+          path: `/console/projects/${currentProjectId}/settings`,
+          label: t.projectSettings,
+          icon: Settings2
         }
       ]
     : [];
