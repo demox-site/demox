@@ -109,8 +109,8 @@ const report = {
     { id: "live-entrypoint-parity", status: unexpectedDrift.length ? "blocked" : "warning", detail: unexpectedDrift.length ? unexpectedDrift.map((entry) => `${entry.name} drifted from recorded live SHA-256`) : "website/auth/mcp matched the 2026-08-31 live entrypoints; cert-renew is a documented testable refactor, not a byte match." },
     { id: "vpc-mapping", status: "ready", detail: `website/auth live VPC is ${liveConfig.unifiedRecommendation.vpc.vpcId}/${liveConfig.unifiedRecommendation.vpc.subnetId}; a unified function must reuse this binding. Staging bind is still pending.` },
     { id: "environment-mapping", status: "ready", detail: `Merged ${liveConfig.unifiedRecommendation.environmentKeys.length} live environment key names into live-config.json. Values were not exported and must be copied only into a staging function.` },
-    { id: "trigger-mapping", status: "pending", detail: "Live timers analytics-rollup-5m and monthly-renew are confirmed. HTTP custom domain api.demox.site must stay on the four old functions until a staging invoke comparison succeeds." },
-    { id: "rollback", status: "pending", detail: "切换 api.demox.site 前保留四个旧函数作为回滚路径，并完成一次真实调用对照。" }
+    { id: "trigger-mapping", status: "ready", detail: "HTTP custom domain api.demox.site points at demox-function-api. analytics-rollup-5m and monthly-renew belong on demox-function-api; copies on the old functions should stay disabled until those functions are deleted." },
+    { id: "rollback", status: "warning", detail: "四个旧函数仍保留作回滚。HTTP 与定时器已切到 demox-function-api，删除旧函数前再确认一次调用对照。" }
   ]
 };
 

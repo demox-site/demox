@@ -15,7 +15,10 @@ before(() => {
   sign = require('./shared/jwt.js').sign;
 });
 
-afterEach(() => mock.restoreAll());
+afterEach(() => {
+  mock.restoreAll();
+  api.setBackendInvoker(null);
+});
 
 function mockUpstream(body = { success: true }) {
   let requestOptions;
@@ -97,4 +100,29 @@ test('rejects unrelated actions sent to /deploy', async () => {
   const result = await api.main(deployEvent({ action: 'delete', websiteId: 'HF4ODMTF' }));
   assert.equal(result.statusCode, 400);
   assert.equal(JSON.parse(result.body).error.code, 'INVALID_DEPLOY_ACTION');
+});
+
+test('prefers in-process backend invoker over HTTP', async () => {
+  const calls = [];
+  api.setBackendInvoker(async (url, data, token) => {
+    calls.push({ url, data, token });
+    return { statusCode: 201, body: JSON.stringify({ inProcess: true }) };
+  });
+  mock.method(https, 'request', () => {
+    throw new Error('http should not be used');
+  });
+  const payload = {
+    action: 'init_deploy_upload',
+    fileName: 'site.zip',
+    websiteId: 'HF4ODMTF',
+    totalSize: 1,
+    sha256: 'a'.repeat(64),
+    requestId: 'r1'
+  };
+  const result = await api.main(deployEvent(payload));
+  assert.equal(result.statusCode, 201);
+  assert.deepEqual(JSON.parse(result.body), { inProcess: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://website.example.test/upload');
+  assert.deepEqual(calls[0].data, payload);
 });

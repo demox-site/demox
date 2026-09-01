@@ -15,6 +15,7 @@ const COS = require("../scf-code/function-api/node_modules/cos-nodejs-sdk-v5");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apply = process.argv.includes("--apply");
 const unified = process.argv.includes("--unified");
+const disableLegacyTimers = process.argv.includes("--disable-legacy-timers");
 const functionName = "demox-function-api";
 const namespace = "demox";
 const region = "ap-guangzhou";
@@ -143,8 +144,8 @@ async function ensureFunction(copied) {
     FUNCTIONS_COS_BUCKET: cosBucket,
     FUNCTIONS_COS_REGION: cosRegion,
     FUNCTION_PUBLIC_BASE_URL: unified ? "https://api.demox.site" : publicBaseUrl,
-    AUTH_API_URL: `${publicBaseUrl}/auth`,
-    WEBSITE_API_URL: publicBaseUrl,
+    AUTH_API_URL: unified ? "https://api.demox.site/auth" : `${publicBaseUrl}/auth`,
+    WEBSITE_API_URL: unified ? "https://api.demox.site" : publicBaseUrl,
     DEMOX_SITE_WEBSITE_ID: "EPX2UU43",
     FUNCTION_ENV: "production"
   };
@@ -227,6 +228,55 @@ async function ensureHttpTrigger() {
   return { created: true };
 }
 
+const TIMER_TRIGGERS = [
+  { name: "analytics-rollup-5m", triggerDesc: "0 */5 * * * * *" },
+  { name: "monthly-renew", triggerDesc: "0 17 3 1 * * *" }
+];
+
+async function ensureTimerTriggers() {
+  const current = await scf.GetFunction({ FunctionName: functionName, Namespace: namespace });
+  const existing = new Set((current.Triggers || []).filter((item) => item.Type === "timer").map((item) => item.TriggerName));
+  const created = [];
+  for (const trigger of TIMER_TRIGGERS) {
+    if (existing.has(trigger.name)) continue;
+    await scf.CreateTrigger({
+      FunctionName: functionName,
+      Namespace: namespace,
+      TriggerName: trigger.name,
+      Type: "timer",
+      Qualifier: "$LATEST",
+      Enable: "OPEN",
+      TriggerDesc: trigger.triggerDesc
+    });
+    created.push(trigger.name);
+  }
+  return { created, existing: [...existing] };
+}
+
+async function closeLegacyTimerTriggers() {
+  const legacy = [
+    { functionName: "demox-website-api", triggerName: "analytics-rollup-5m", triggerDesc: "0 */5 * * * * *" },
+    { functionName: "demox-cert-renew", triggerName: "monthly-renew", triggerDesc: "0 17 3 1 * * *" }
+  ];
+  const disabled = [];
+  for (const trigger of legacy) {
+    const current = await scf.GetFunction({ FunctionName: trigger.functionName, Namespace: namespace });
+    const live = (current.Triggers || []).find((item) => item.Type === "timer" && item.TriggerName === trigger.triggerName);
+    if (!live || Number(live.Enable) === 0 || String(live.Enable).toUpperCase() === "CLOSE") continue;
+    await scf.UpdateTrigger({
+      FunctionName: trigger.functionName,
+      Namespace: namespace,
+      TriggerName: trigger.triggerName,
+      Type: "timer",
+      Qualifier: live.Qualifier || "$LATEST",
+      Enable: "CLOSE",
+      TriggerDesc: live.TriggerDesc || trigger.triggerDesc
+    });
+    disabled.push(`${trigger.functionName}:${trigger.triggerName}`);
+  }
+  return { disabled };
+}
+
 async function ensureCustomDomain() {
   const domain = await scf.GetCustomDomain({ Domain: "api.demox.site" });
   const endpoints = (domain.EndpointsConfig || []).map((item) => ({
@@ -307,14 +357,18 @@ const copied = await uploadZip(artifact);
 const created = await ensureFunction(copied);
 const active = await waitActive();
 const trigger = await ensureHttpTrigger();
+const timers = unified ? await ensureTimerTriggers() : { created: [], existing: [] };
 const domain = await ensureCustomDomain();
 const migrated = await migrate();
+const legacyTimers = unified && disableLegacyTimers ? await closeLegacyTimerTriggers() : { disabled: [] };
 console.log(JSON.stringify({
   ...inventory,
   existed: created.exists,
   environmentKeys: created.environmentKeys,
   status: active.Status,
   trigger,
+  timers,
   domain,
-  migrated
+  migrated,
+  legacyTimers
 }, null, 2));

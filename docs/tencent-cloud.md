@@ -20,13 +20,13 @@
 | `demox-auth-api` | `demox` | 登录、OAuth | `scf-deploy-packages/auth-api/` | HTTP |
 | `demox-mcp-api` | `demox` | CLI / MCP / `/deploy` | `scf-code/mcp-api/` | HTTP |
 | `demox-cert-renew` | `demox` | `*.demox.site` Let's Encrypt 续期 | `scf-code/cert-renew/` | 定时 `monthly-renew`（每月 1 号 03:17） |
-| `demox-function-api` | `demox` | 用户云函数（与上面四个并行） | `scf-code/function-api/` | HTTP `/functions`、`/functions/*` |
+| `demox-function-api` | `demox` | 统一入口：系统函数 + 用户云函数 | `scf-code/function-api/` | HTTP `api.demox.site`；定时 `analytics-rollup-5m`、`monthly-renew` |
 
 四个函数都绑定运行角色 `demox-runtime-role`，Handler 均为 `index.main`。`demox-website-api` 和 `demox-auth-api` 绑定 VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`。统一入口若要承接这两套后端，必须沿用同一 VPC，内存至少 512 MB，超时至少 300 秒。完整环境变量名清单见 `scf-code/function-api/live-config.json`（不含值）。
 
 ### 统一入口迁移（开发中）
 
-`scf-code/function-api/index.js` 已提供一个共享入口：固定清单中的 auth、website、MCP 路径先由受信任系统函数处理，`/functions/:functionId/invoke` 再进入 QuickJS/WASM 用户函数运行时。`scripts/package-unified-scf.mjs` 默认只生成迁移清单，只有 `--apply` 才生成本地 SCF 包。
+`scf-code/function-api/index.js` 已提供一个共享入口：固定清单中的 auth、website、MCP 路径先由受信任系统函数处理，`/functions/:functionId/invoke` 再进入 QuickJS/WASM 用户函数运行时。MCP 在统一包内通过进程内回源调用 Auth/Website，不再走 `*.tencentscf.com` HTTP。`scripts/package-unified-scf.mjs` 默认只生成迁移清单，只有 `--apply` 才生成本地 SCF 包。`api.demox.site` 与两个定时器已经切到 `demox-function-api`；旧四个函数仍保留作回滚，其定时器应保持关闭。
 
 `demox-cert-renew` 的 live `$LATEST` 已从腾讯云回收并写入 `scf-code/cert-renew/`。本地入口是可测试的重构，不是线上字节副本；哈希与差异见 `scf-code/cert-renew/SOURCE.md` 和 `scf-code/function-api/live-parity.json`。`demox-website-api`、`demox-auth-api`、`demox-mcp-api` 的入口在 2026-08-31 与 live `$LATEST` 字节一致。VPC、环境变量合并、staging 调用和回滚尚未验证，因此不能视为已替换线上四个函数。
 

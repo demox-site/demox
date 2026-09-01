@@ -124,6 +124,7 @@ function createPlatformHandler({
     entries: systemEntries,
     logger
   });
+  if (!systemHandler) bindInProcessSystemBackends(resolvedSystemHandler, logger);
 
   return async function platformMain(event = {}, context = {}) {
     const scopedEvent = applySiteScope(event, systemEntries);
@@ -133,6 +134,29 @@ function createPlatformHandler({
     }
     return resolvedUserHandler(scopedEvent, context);
   };
+}
+
+function bindInProcessSystemBackends(systemHandler, logger = console) {
+  try {
+    const mcp = require(require('path').join(__dirname, '..', 'mcp-api'));
+    if (typeof mcp.setBackendInvoker !== 'function') return false;
+    mcp.setBackendInvoker(async (url, data, token) => {
+      const target = new URL(String(url), 'https://api.demox.site');
+      return systemHandler({
+        httpMethod: 'POST',
+        path: target.pathname || '/',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {})
+        },
+        body: data
+      }, {});
+    });
+    return true;
+  } catch (error) {
+    logger.warn?.('系统函数进程内回源未启用:', error.message);
+    return false;
+  }
 }
 
 function isTimerEvent(event = {}) {
@@ -440,6 +464,7 @@ module.exports = {
   main: defaultHandler,
   createFunctionHttpHandler,
   createPlatformHandler,
+  bindInProcessSystemBackends,
   createProductionHandler,
   createMysqlDatabaseFromEnv,
   parseBody,

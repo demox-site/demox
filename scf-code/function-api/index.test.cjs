@@ -260,6 +260,46 @@ test('functions belong to a website and keep slugs unique per site', async () =>
   assert.equal(JSON.parse(missingSite.body).error, 'MISSING_WEBSITE_ID');
 });
 
+test('unified MCP deploy dispatches to the website system function in process', async () => {
+  process.env.AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.example.test';
+  process.env.WEBSITE_API_URL = process.env.WEBSITE_API_URL || 'https://website.example.test';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-that-is-long-enough-for-proxy-tests';
+  const { sign } = require('../mcp-api/shared/jwt.js');
+  const calls = [];
+  const handler = createPlatformHandler({
+    systemRouterOptions: {
+      loaders: {
+        'demox-system-website': () => ({
+          main: async (request) => {
+            calls.push({ path: request.path, body: request.body });
+            return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+          }
+        }),
+        'demox-system-auth': () => ({ main: async () => ({ statusCode: 200, body: '{}' }) }),
+        'demox-system-cert-renew': () => ({ main: async () => ({ statusCode: 204, body: '' }) })
+      }
+    },
+    userHandler: async () => ({ statusCode: 418, body: 'user' })
+  });
+  const response = await handler(event('/deploy', 'POST', {
+    action: 'init_deploy_upload',
+    fileName: 'site.zip',
+    websiteId: 'HF4ODMTF',
+    totalSize: 1,
+    sha256: 'a'.repeat(64),
+    requestId: 'r1'
+  }, {
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${sign({ userId: 'user-1' })}`
+    }
+  }));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { ok: true });
+  assert.equal(calls[0].path, '/upload');
+  assert.equal(calls[0].body.action, 'init_deploy_upload');
+});
+
 test('site-scoped paths dispatch to the same backends as /auth /website /deploy', async () => {
   const calls = [];
   const handler = createPlatformHandler({

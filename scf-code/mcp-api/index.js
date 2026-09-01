@@ -26,6 +26,12 @@ function requiredEnv(name) {
 const AUTH_API_URL = requiredEnv('AUTH_API_URL');
 const WEBSITE_API_URL = requiredEnv('WEBSITE_API_URL');
 
+let backendInvoker = null;
+
+function setBackendInvoker(invoker) {
+  backendInvoker = typeof invoker === 'function' ? invoker : null;
+}
+
 function httpRequest(url, options, data) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -114,6 +120,15 @@ function isDeployRequest(path, requestData) {
 }
 
 async function proxy(url, data, token) {
+  if (backendInvoker) {
+    const result = await backendInvoker(url, data, token);
+    const raw = result && result.body;
+    let parsed = raw;
+    if (typeof raw === 'string') {
+      try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+    }
+    return response(result?.statusCode || 500, parsed === undefined ? '' : parsed);
+  }
   const result = await httpRequest(url, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {}
@@ -245,4 +260,5 @@ exports.main = async (event) => {
   }
 };
 
+exports.setBackendInvoker = setBackendInvoker;
 exports.__private = { normalizeDeployPayload, isDeployRequest };
