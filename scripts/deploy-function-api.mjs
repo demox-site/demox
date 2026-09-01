@@ -236,7 +236,7 @@ async function ensureCustomDomain() {
     PathMatch: item.PathMatch,
     ...(item.PathRewrite ? { PathRewrite: item.PathRewrite } : {})
   }));
-  const needed = ["/functions", "/functions/*", "/EPX2UU43", "/EPX2UU43/*"];
+  const needed = ["/", "/*", "/functions", "/functions/*", "/EPX2UU43", "/EPX2UU43/*"];
   const missing = needed.filter((pathMatch) => !endpoints.some((item) => item.PathMatch === pathMatch));
   if (!missing.length) return { updated: false, added: [] };
   for (const pathMatch of missing) {

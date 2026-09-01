@@ -13,6 +13,12 @@ import { getTopAwareSessionStorage } from "./lib/top-aware-session-storage";
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
 const FUNCTIONS_API_URL = config.functionsApiUrl;
+const FUNCTION_ENV = config.functionEnv || "production";
+
+function scopedFunctionPath(websiteId: string, suffix = "/functions") {
+  const rest = suffix.startsWith("/") ? suffix : `/${suffix}`;
+  return `/${encodeURIComponent(websiteId)}/${encodeURIComponent(FUNCTION_ENV)}${rest}`;
+}
 const DEPLOY_API_PATH = "/deploy";
 
 // Token管理
@@ -1353,6 +1359,9 @@ export function mapWebsiteRow(row: any): any {
     subdomainDomain: binding.subdomainDomain,
     visibility: row.visibility === "private" ? "private" : "public",
     hideWatermark: row.hideWatermark === true || row.hide_watermark === true || Number(row.hide_watermark) === 1,
+    seoTitle: row.seoTitle || row.seo_title || "",
+    seoDescription: row.seoDescription || row.seo_description || "",
+    ogImage: row.ogImage || row.og_image || "",
     deployedSize: Number(row.deployedSize ?? row.deployed_size ?? row.storage_size ?? 0),
     createdAt: row.created_at ? { $date: new Date(row.created_at).getTime() } : undefined,
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
@@ -1375,13 +1384,21 @@ export type SiteFunction = {
   createdAt?: string;
   updatedAt?: string;
   env?: string;
+  limits?: {
+    timeoutMs?: number;
+    memoryLimitBytes?: number;
+    maxBodyBytes?: number;
+    maxResponseBytes?: number;
+    maxCodeBytes?: number;
+    maxInvocationsPerMinute?: number;
+  };
 };
 
 export const functionsApi = {
   baseUrl: FUNCTIONS_API_URL,
   list: (websiteId: string, init?: RequestOptions) => request<{ success: boolean; functions: SiteFunction[]; websiteId: string }>(
     FUNCTIONS_API_URL,
-    `/functions?websiteId=${encodeURIComponent(websiteId)}`,
+    scopedFunctionPath(websiteId, "/functions"),
     { method: "GET", ...init }
   ),
   listSystem: (host: string) => request<{ success: boolean; functions: SiteFunction[] }>(
@@ -1391,9 +1408,16 @@ export const functionsApi = {
   ),
   create: (websiteId: string, name: string, slug: string) => request<{ success: boolean; function: SiteFunction }>(
     FUNCTIONS_API_URL,
-    "/functions",
+    scopedFunctionPath(websiteId, "/functions"),
     { method: "POST", body: { websiteId, name, slug } }
   ),
+  listVersions: (functionId: string) => request<{ success: boolean; versions: Array<{
+    version: number;
+    status: string;
+    sha256?: string;
+    sizeBytes?: number;
+    createdAt?: string;
+  }> }>(FUNCTIONS_API_URL, `/functions/${functionId}/versions`, { method: "GET" }),
   createVersion: (functionId: string, source: string) => request<{ success: boolean; version: {
     version: number;
     status: string;

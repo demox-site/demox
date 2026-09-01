@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   loadSystemManifest,
+  parseSiteScopedPath,
   resolveSystemFunction,
   createSystemFunctionRouter,
   routeMatches
@@ -17,6 +18,15 @@ test('system manifest is copied without sharing mutable arrays', () => {
   assert.notDeepEqual(first[0].routePrefixes, second[0].routePrefixes);
   assert.notDeepEqual(first[0].timerTriggers, second[0].timerTriggers);
   assert.ok(second.some((entry) => entry.timerTriggers.includes('analytics-rollup-5m')));
+});
+
+test('site /api paths stay as function routes instead of website ids', () => {
+  assert.equal(parseSiteScopedPath('/api/hello'), null);
+  assert.deepEqual(parseSiteScopedPath('/SITE1/production/api/hello'), {
+    websiteId: 'SITE1',
+    env: 'production',
+    rest: '/api/hello'
+  });
 });
 
 test('system routes match exact prefixes and nested paths, not lookalikes', () => {

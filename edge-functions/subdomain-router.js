@@ -62,6 +62,40 @@ function optionalBackendUrl(path) {
   return base ? base + path : '';
 }
 
+function isSiteApiPath(pathname) {
+  return String(pathname || '').split('?')[0].indexOf('/api/') === 0;
+}
+
+function proxySiteFunction(req, websiteId, u) {
+  const siteId = String(websiteId || '').trim();
+  const base = runtimeEnv('DEMOX_API_URL');
+  if (!siteId || !base) {
+    return new Response('Site function is not configured', {
+      status: 502,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+  const target = base + '/' + encodeURIComponent(siteId) + '/production' + u.pathname + u.search;
+  const headers = new Headers(req.headers);
+  headers.delete('host');
+  const init = {
+    method: req.method,
+    headers: headers
+  };
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    init.body = req.body;
+    init.duplex = 'half';
+  }
+  let proxied;
+  try {
+    proxied = new Request(target, init);
+  } catch (e) {
+    delete init.duplex;
+    proxied = new Request(target, init);
+  }
+  return fetch(proxied);
+}
+
 function demoxHomeUrl() {
   return (runtimeEnv('DEMOX_HOME_URL') || ('https://' + WWW_HOST)).replace(/\/+$/, '') + '/';
 }
@@ -1172,6 +1206,9 @@ async function handle(req, event) {
         if (!access.loginRequired) return accessDeniedPage(req);
         return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
       }
+    }
+    if (isSiteApiPath(u.pathname)) {
+      return proxySiteFunction(req, websiteId, u);
     }
     // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
     return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, {

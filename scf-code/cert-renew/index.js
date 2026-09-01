@@ -188,9 +188,10 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
   }
 
   async function bindToEdgeOne(certId) {
+    const hosts = [...new Set([config.domain, ...config.san].filter(Boolean))];
     await apis.teo('ModifyHostsCertificate', {
       ZoneId: config.zoneId,
-      Hosts: [config.domain],
+      Hosts: hosts,
       Mode: 'sslcert',
       ServerCertInfo: [{ CertId: certId }]
     });

@@ -32,24 +32,19 @@ import {
 } from "@/components/ui";
 import { ArrowLeft, Copy, Loader2, Play, Plus, RefreshCw, Search } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
-import { functionsApi, mapWebsiteRow, tokenManager, websiteApi, type SiteFunction } from "@/api";
+import { functionsApi, mapWebsiteRow, websiteApi, type SiteFunction } from "@/api";
 import { getDisplayName, getSiteDomains } from "@/lib/website-utils";
-import {
-  DEMOX_PLATFORM_WEBSITE_ID,
-  hostnameFromSiteValue,
-  isDemoxPlatformHost,
-  isDemoxPlatformSite
-} from "@/lib/official-domains";
 
 const USER_LIST_TIMEOUT_MS = 12_000;
 
-function platformHostFor(site: any): string {
-  const hosts = [
-    site?.url,
-    site?.subdomain && `${site.subdomain}.${site.subdomainDomain || site.subdomain_domain || "demox.site"}`,
-    ...getSiteDomains(site || {}).map((item: { host: string }) => item.host)
-  ];
-  return hosts.map((item) => hostnameFromSiteValue(String(item || ""))).find((item) => isDemoxPlatformHost(item)) || "www.demox.site";
+function siteApiPath(slug: string) {
+  return `/api/${String(slug || "").trim()}`;
+}
+
+function siteApiUrl(site: any, slug: string) {
+  const host = getSiteDomains(site || {})[0]?.host;
+  if (!host || !slug) return "";
+  return `https://${host}${siteApiPath(slug)}`;
 }
 
 function slugFromName(value: string) {
@@ -89,31 +84,6 @@ function formatUpdatedAt(item: SiteFunction, locale: string) {
   return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-function builtinSource(item: SiteFunction) {
-  const routes = (item.routes || []).join(" ");
-  return `// ${item.name} (${item.slug})
-// Runtime: Node.js  ·  Triggers: ${triggerLabels(item).join(", ")}
-${routes ? `// Routes: ${routes}\n` : ""}// This builtin runs in the site Node.js runtime and cannot be edited here.
-export default async function handler(request) {
-  return {
-    status: 200,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ function: ${JSON.stringify(item.slug)}, builtin: true })
-  };
-}
-`;
-}
-
-function localBuiltins(websiteId: string): SiteFunction[] {
-  const base = functionsApi.baseUrl.replace(/\/+$/, "");
-  return [
-    { functionId: "system-auth", kind: "site", name: "Auth", slug: "system-auth", runtime: "nodejs", status: "active", publishedVersion: 1, routes: ["/auth", "/oauth"], triggers: ["http"], invokeUrl: `${base}/auth`, editable: false },
-    { functionId: "system-website", kind: "site", name: "Website", slug: "system-website", runtime: "nodejs", status: "active", publishedVersion: 1, routes: ["/website"], triggers: ["http", "timer"], invokeUrl: `${base}/website`, editable: false },
-    { functionId: "system-mcp", kind: "site", name: "Deploy / MCP", slug: "system-mcp", runtime: "nodejs", status: "active", publishedVersion: 1, routes: ["/deploy", "/websites", "/mcp"], triggers: ["http"], invokeUrl: `${base}/deploy`, editable: false },
-    { functionId: "system-cert-renew", kind: "site", name: "Certificate renew", slug: "system-cert-renew", runtime: "nodejs", status: "active", publishedVersion: 1, routes: [], triggers: ["timer"], invokeUrl: null, editable: false }
-  ].map((item) => ({ ...item, websiteId }));
-}
-
 const DEFAULT_SOURCE = `export default async function handler(request, env) {
   return {
     status: 200,
@@ -128,10 +98,10 @@ const DEFAULT_SOURCE = `export default async function handler(request, env) {
 const texts = {
   zh: {
     title: "云函数",
-    subtitle: "函数属于当前站点，可在此查看运行状态、触发方式和调用地址。",
+    subtitle: "给当前站点加一段后端。发布后，前端用 fetch('/api/函数标识') 调用。",
     back: "返回站点设置",
     createTitle: "新建函数",
-    createDesc: "创建后会立即上传代码并发布为可调用版本。",
+    createDesc: "发布后，这个站点上的页面可以用 fetch('/api/函数标识') 调用它。",
     name: "函数名称",
     slug: "函数标识",
     source: "函数代码",
@@ -140,9 +110,9 @@ const texts = {
     creating: "发布中...",
     invoke: "测试调用",
     invoking: "调用中...",
-    empty: "还没有函数。点击右上角新建一个。",
+    empty: "还没有函数。新建一个，前端就能 fetch('/api/标识')。",
     loadFailed: "函数列表加载失败",
-    userListSlow: "用户函数仍在同步，站点函数已可查看。",
+    userListSlow: "函数列表仍在加载。",
     createFailed: "创建失败",
     invokeFailed: "调用失败",
     copied: "已复制调用地址",
@@ -164,7 +134,8 @@ const texts = {
     open: "详情",
     total: (count: number) => `共 ${count} 个函数`,
     env: "环境",
-    invokeUrl: "调用地址",
+    invokeUrl: "站点调用地址",
+    invokeHint: "在已部署的前端里这样调用：",
     routes: "路径",
     timerOnly: "定时触发",
     code: "函数代码",
@@ -177,10 +148,10 @@ const texts = {
   },
   en: {
     title: "Functions",
-    subtitle: "Functions belong to this site. Check status, triggers, and invoke URLs here.",
+    subtitle: "Add a backend to this site. After publish, call it with fetch('/api/slug').",
     back: "Back to site settings",
     createTitle: "Create function",
-    createDesc: "The function is published as an invokable version right after you create it.",
+    createDesc: "After publish, pages on this site can call it with fetch('/api/slug').",
     name: "Function name",
     slug: "Function ID",
     source: "Code",
@@ -189,9 +160,9 @@ const texts = {
     creating: "Publishing...",
     invoke: "Test invoke",
     invoking: "Invoking...",
-    empty: "No functions yet. Create one to get started.",
+    empty: "No functions yet. Create one, then fetch('/api/slug') from the site.",
     loadFailed: "Failed to load functions",
-    userListSlow: "User functions are still syncing. Site functions are ready.",
+    userListSlow: "Still loading functions.",
     createFailed: "Create failed",
     invokeFailed: "Invoke failed",
     copied: "Invoke URL copied",
@@ -213,7 +184,8 @@ const texts = {
     open: "Details",
     total: (count: number) => `${count} functions`,
     env: "Environment",
-    invokeUrl: "Invoke URL",
+    invokeUrl: "Site URL",
+    invokeHint: "Call it from the deployed frontend like this:",
     routes: "Routes",
     timerOnly: "Timer",
     code: "Code",
@@ -234,9 +206,7 @@ export default function FunctionsPage() {
   const locale = language === "en" ? "en" : "zh-CN";
   const { toast } = useToast();
   const [website, setWebsite] = useState<any>(websiteId ? { websiteId } : null);
-  const [items, setItems] = useState<SiteFunction[]>(() => (
-    websiteId === DEMOX_PLATFORM_WEBSITE_ID ? localBuiltins(websiteId) : []
-  ));
+  const [items, setItems] = useState<SiteFunction[]>([]);
   const [name, setName] = useState("hello");
   const [slug, setSlug] = useState("hello");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -270,62 +240,35 @@ export default function FunctionsPage() {
     }
   }, [projectId, websiteId]);
 
-  const mergeItems = useCallback((next: SiteFunction[]) => {
-    setItems((current) => {
-      const byId = new Map<string, SiteFunction>();
-      for (const item of [...current, ...next]) byId.set(item.functionId, item);
-      return [...byId.values()];
-    });
-  }, []);
-
-  const load = useCallback(async (site: any) => {
+  const load = useCallback(async () => {
     if (!websiteId) return;
-    const platformSite = isDemoxPlatformSite(site) || websiteId === DEMOX_PLATFORM_WEBSITE_ID;
     setLoading(true);
     setUserListPending(true);
-    if (platformSite) mergeItems(localBuiltins(websiteId));
-
-    if (platformSite) {
-      try {
-        const builtins = await functionsApi.listSystem(platformHostFor(site));
-        if (builtins.functions?.length) {
-          setItems((current) => {
-            const users = current.filter((item) => item.editable !== false);
-            return [...builtins.functions, ...users];
-          });
-        }
-      } catch (error) {
-        toast({ title: t.loadFailed, description: error instanceof Error ? error.message : String(error), variant: "destructive" });
-      }
-    }
-
-    setLoading(false);
-
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), USER_LIST_TIMEOUT_MS);
     try {
       const response = await functionsApi.list(websiteId, { signal: controller.signal });
-      setItems((current) => {
-        const builtins = current.filter((item) => item.editable === false);
-        return [...builtins, ...(response.functions || [])];
-      });
+      setItems(response.functions || []);
     } catch (error) {
       if ((error as { name?: string })?.name !== "AbortError") {
-        toast({ title: t.userListSlow, description: error instanceof Error ? error.message : String(error) });
+        toast({ title: t.loadFailed, description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+      } else {
+        toast({ title: t.userListSlow });
       }
     } finally {
       window.clearTimeout(timer);
+      setLoading(false);
       setUserListPending(false);
     }
-  }, [mergeItems, t.loadFailed, t.userListSlow, toast, websiteId]);
+  }, [t.loadFailed, t.userListSlow, toast, websiteId]);
 
   useEffect(() => {
     void loadWebsite();
   }, [loadWebsite]);
 
   useEffect(() => {
-    if (website) void load(website);
-  }, [load, website]);
+    if (websiteId) void load();
+  }, [load, websiteId]);
 
   const onCreate = async () => {
     setCreating(true);
@@ -337,7 +280,8 @@ export default function FunctionsPage() {
       sourceCache.current.set(created.function.functionId, source);
       setEditorSource(source);
       setCreateOpen(false);
-      await load(website);
+      toast({ title: t.saved });
+      await load();
     } catch (error) {
       toast({ title: t.createFailed, description: error instanceof Error ? error.message : String(error), variant: "destructive" });
     } finally {
@@ -352,16 +296,26 @@ export default function FunctionsPage() {
     try {
       let body: unknown = payload;
       try { body = JSON.parse(payload); } catch { /* keep raw string */ }
-      const response = selectedFunction.editable === false && selectedFunction.invokeUrl
-        ? await fetch(selectedFunction.invokeUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(tokenManager.get() ? { Authorization: `Bearer ${tokenManager.get()}` } : {})
-          },
-          body: JSON.stringify(body ?? {})
-        }).then(async (res) => ({ status: res.status, body: await res.json().catch(async () => res.text()) }))
-        : await functionsApi.invoke(selectedFunction.functionId, body);
+      const siteUrl = siteApiUrl(website, selectedFunction.slug);
+      let response = null;
+      if (siteUrl) {
+        try {
+          const res = await fetch(siteUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body ?? {})
+          });
+          const parsed = await res.json().catch(async () => res.text());
+          const looksLikeSiteFunction = res.ok || (parsed && typeof parsed === "object" && !String(parsed).includes("<"));
+          if (looksLikeSiteFunction) response = { status: res.status, body: parsed, url: siteUrl };
+        } catch {
+          // Fall back to the management invoke path if the public site URL is not live yet.
+        }
+      }
+      if (!response) {
+        const invoked = await functionsApi.invoke(selectedFunction.functionId, body);
+        response = { ...invoked, url: siteUrl || siteApiPath(selectedFunction.slug) };
+      }
       setResult(JSON.stringify(response, null, 2));
     } catch (error) {
       toast({ title: t.invokeFailed, description: error instanceof Error ? error.message : String(error), variant: "destructive" });
@@ -381,11 +335,6 @@ export default function FunctionsPage() {
 
   useEffect(() => {
     if (!selected) return;
-    if (selected.editable === false) {
-      setEditorSource(builtinSource(selected));
-      setSourceLoading(false);
-      return;
-    }
     const cached = sourceCache.current.get(selected.functionId);
     if (cached) {
       setEditorSource(cached);
@@ -442,7 +391,7 @@ export default function FunctionsPage() {
     });
   }, [items, query, runtimeFilter, statusFilter]);
 
-  const envLabel = selected?.env || website?.subdomain || "production";
+  const envLabel = selected?.env || "production";
 
   return (
     <div className="min-h-full p-4 sm:p-6 lg:p-8">
@@ -451,11 +400,11 @@ export default function FunctionsPage() {
           <div>
             <button
               type="button"
-            onClick={() => navigate(`/console/projects/${projectId}/sites/${websiteId}`)}
-            className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {t.back}
+              onClick={() => navigate(`/console/projects/${projectId}/sites/${websiteId}`)}
+              className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {t.back}
             </button>
             <h1 className="text-2xl font-semibold tracking-tight">{t.title}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -465,7 +414,7 @@ export default function FunctionsPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => website && void load(website)} disabled={loading}>
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={`mr-2 h-4 w-4 ${loading || userListPending ? "animate-spin" : ""}`} />
               {t.refresh}
             </Button>
@@ -492,7 +441,6 @@ export default function FunctionsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{t.runtime}: {t.all}</SelectItem>
-              <SelectItem value="nodejs">{t.nodejs}</SelectItem>
               <SelectItem value="quickjs">{t.quickjs}</SelectItem>
             </SelectContent>
           </Select>
@@ -574,10 +522,10 @@ export default function FunctionsPage() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={!item.invokeUrl}
+                        disabled={!siteApiUrl(website, item.slug)}
                         onClick={(event) => {
                           event.stopPropagation();
-                          void copyUrl(item.invokeUrl);
+                          void copyUrl(siteApiUrl(website, item.slug));
                         }}
                       >
                         <Copy className="h-4 w-4" />
@@ -672,52 +620,42 @@ export default function FunctionsPage() {
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">{t.invokeUrl}</div>
-                  <div className="mt-1 break-all font-mono text-xs">{selected.invokeUrl || t.timerOnly}</div>
-                </div>
-                {(selected.routes || []).length ? (
-                  <div>
-                    <div className="text-xs text-muted-foreground">{t.routes}</div>
-                    <div className="mt-1 font-mono text-xs text-muted-foreground">{selected.routes?.join(" · ")}</div>
+                  <div className="mt-1 break-all font-mono text-xs">
+                    {siteApiUrl(website, selected.slug) || siteApiPath(selected.slug)}
                   </div>
-                ) : null}
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t.invokeHint}{" "}
+                    <span className="font-mono">fetch('{siteApiPath(selected.slug)}')</span>
+                  </p>
+                </div>
                 <div className="space-y-1.5">
                   <Label>{t.code}</Label>
-                  {!selectedEditable ? (
-                    <p className="text-xs text-muted-foreground">{t.builtinCodeHint}</p>
-                  ) : null}
                   <Textarea
                     className="min-h-64 font-mono text-sm"
                     value={sourceLoading ? "" : editorSource}
-                    readOnly={!selectedEditable}
                     disabled={sourceLoading}
                     onChange={(event) => setEditorSource(event.target.value)}
                   />
-                  {selectedEditable ? (
-                    <Button onClick={onSave} disabled={saving || sourceLoading || !editorSource.trim()}>
-                      {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                      {saving ? t.saving : t.save}
-                    </Button>
-                  ) : null}
+                  <Button onClick={onSave} disabled={saving || sourceLoading || !editorSource.trim()}>
+                    {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    {saving ? t.saving : t.save}
+                  </Button>
                 </div>
-                {selected.invokeUrl ? (
-                  <>
-                    <div className="space-y-1.5">
-                      <Label>{t.payload}</Label>
-                      <Textarea className="min-h-24 font-mono text-sm" value={payload} onChange={(event) => setPayload(event.target.value)} />
-                    </div>
-                    <div className="flex gap-2">
-                      <Button onClick={onInvoke} disabled={invoking}>
-                        {invoking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-                        {invoking ? t.invoking : t.invoke}
-                      </Button>
-                      <Button variant="outline" onClick={() => void copyUrl(selected.invokeUrl)}>
-                        <Copy className="mr-2 h-4 w-4" />
-                        {t.copyUrl}
-                      </Button>
-                    </div>
-                    {result ? <pre className="overflow-auto rounded-md border bg-muted p-3 text-xs">{result}</pre> : null}
-                  </>
-                ) : null}
+                <div className="space-y-1.5">
+                  <Label>{t.payload}</Label>
+                  <Textarea className="min-h-24 font-mono text-sm" value={payload} onChange={(event) => setPayload(event.target.value)} />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={onInvoke} disabled={invoking}>
+                    {invoking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                    {invoking ? t.invoking : t.invoke}
+                  </Button>
+                  <Button variant="outline" onClick={() => void copyUrl(siteApiUrl(website, selected.slug) || siteApiPath(selected.slug))}>
+                    <Copy className="mr-2 h-4 w-4" />
+                    {t.copyUrl}
+                  </Button>
+                </div>
+                {result ? <pre className="overflow-auto rounded-md border bg-muted p-3 text-xs">{result}</pre> : null}
               </div>
             </>
           ) : null}

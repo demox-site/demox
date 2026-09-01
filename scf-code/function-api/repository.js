@@ -42,6 +42,13 @@ class InMemoryFunctionRepository {
     return clone(this.functions.get(functionId) || null);
   }
 
+  async getFunctionByWebsiteSlug(websiteId, slug) {
+    const record = [...this.functions.values()].find(
+      (item) => item.websiteId === String(websiteId) && item.slug === String(slug)
+    );
+    return clone(record || null);
+  }
+
   async listFunctions(websiteId) {
     return [...this.functions.values()]
       .filter((item) => item.websiteId === String(websiteId))
@@ -154,6 +161,19 @@ function createMysqlFunctionRepository({ query, transaction }) {
                 allowed_outbound_hosts_json, created_at, updated_at
            FROM demox_functions WHERE function_id = ? LIMIT 1`,
         [functionId]
+      );
+      if (!rows.length) return null;
+      return mapFunctionRow(rows[0]);
+    },
+
+    async getFunctionByWebsiteSlug(websiteId, slug) {
+      const rows = await query(
+        `SELECT function_id, owner_user_id, website_id, name, slug, status, published_version,
+                timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
+                max_code_bytes, max_invocations_per_minute, env_json,
+                allowed_outbound_hosts_json, created_at, updated_at
+           FROM demox_functions WHERE website_id = ? AND slug = ? LIMIT 1`,
+        [String(websiteId), String(slug)]
       );
       if (!rows.length) return null;
       return mapFunctionRow(rows[0]);

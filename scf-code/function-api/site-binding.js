@@ -31,8 +31,17 @@ function requireWebsiteId(value) {
   return websiteId;
 }
 
+function readQuery(event = {}) {
+  const raw = event.queryStringParameters || event.queryString || event.query || {};
+  if (typeof raw === 'string') {
+    return Object.fromEntries(new URLSearchParams(raw.startsWith('?') ? raw.slice(1) : raw));
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...raw };
+  return {};
+}
+
 function readWebsiteScope(event = {}, body = {}) {
-  const query = event.queryStringParameters || event.queryString || event.query || {};
+  const query = readQuery(event);
   return {
     websiteId: body.websiteId || body.website_id || query.websiteId || query.website_id || '',
     host: body.host || query.host || '',
@@ -82,6 +91,7 @@ function publicSystemFunctions(publicBaseUrl, websiteId, envName) {
 module.exports = {
   normalizeHost,
   requireWebsiteId,
+  readQuery,
   readWebsiteScope,
   isPlatformSite,
   publicSystemFunctions,

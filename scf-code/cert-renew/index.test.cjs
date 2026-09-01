@@ -106,6 +106,7 @@ test('forced renewal writes DNS challenge, uploads SSL, and binds EdgeOne in ord
   ]);
   assert.equal(calls[1][2].SubDomain, '_acme-challenge');
   assert.equal(calls[4][2].ZoneId, 'zone-test');
+  assert.deepEqual(calls[4][2].Hosts, ['*.demox.site', 'demox.site']);
   assert.deepEqual(calls[4][2].ServerCertInfo, [{ CertId: 'cert-new' }]);
 });
 

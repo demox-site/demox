@@ -133,6 +133,52 @@ test('router passes resolved SEO into the hosted HTML response', async () => {
   assert.match(html, /<main>Live<\/main>/);
 });
 
+test('hosted site /api routes go to the site function runtime', async () => {
+  const requests = [];
+  const routerContext = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    console,
+    env: { DEMOX_API_URL: 'https://api.test' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input, init) => {
+      const url = String(input && input.url ? input.url : input);
+      requests.push({ url, method: init?.method || (input && input.method) || 'GET' });
+      if (url.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify({
+          success: true,
+          path: 'sites/demo/ABC',
+          websiteId: 'SITEAPI',
+          origin: 'sites.demox.site',
+          visibility: 'public'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/SITEAPI/production/api/hello')) {
+        return new Response(JSON.stringify({ ok: true, from: 'function' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response('missing', { status: 404 });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  const response = await routerContext.__testHooks.handle(
+    new Request('https://sample.demox.site/api/hello', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ name: 'Demox' })
+    }),
+    { waitUntil: () => {}, passThroughOnException: () => {} }
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, from: 'function' });
+  assert.ok(requests.some((item) => item.url.includes('https://api.test/SITEAPI/production/api/hello')));
+});
+
 test('the EdgeOne allowlist covers every current Demox client route', () => {
   const routes = new Set(['/']);
   for (const match of appSource.matchAll(/path="(\/[^"*:]+)"/g)) {

@@ -64,5 +64,5 @@ tccli scf GetFunction --FunctionName demox-website-api --Namespace demox --regio
 
 ## 已知未改项
 
-- 根域名 `demox.site` 证书不覆盖 apex（泛证书只覆盖 `*.demox.site`）。对外主站走 `https://www.demox.site`。
+- 根域名 `demox.site` 与 `*.demox.site` 共用同一张 Let's Encrypt 证书（SAN 含 apex）。`demox-cert-renew` 绑定时必须同时写入这两个主机，否则 apex HTTPS 会回落到 `*.cdn.myqcloud.com`。对外主站仍建议走 `https://www.demox.site`。
 - 前端主站发布仍走 GitHub Actions → Demox `/deploy`，不会自动更新上述云函数。

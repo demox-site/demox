@@ -149,6 +149,21 @@ class FunctionService {
     return { function: this.publicFunction(result.function), version: this.publicVersion(result.version) };
   }
 
+  async invokeBySlug({ websiteId, slug, event, context } = {}) {
+    const siteId = requireWebsiteId(websiteId);
+    let normalizedSlug;
+    try {
+      normalizedSlug = normalizeSlug(slug);
+    } catch {
+      throw notFound();
+    }
+    const record = typeof this.repository.getFunctionByWebsiteSlug === 'function'
+      ? await this.repository.getFunctionByWebsiteSlug(siteId, normalizedSlug)
+      : (await this.repository.listFunctions(siteId)).find((item) => item.slug === normalizedSlug);
+    if (!record) throw notFound('函数不存在');
+    return this.invoke({ functionId: record.functionId, event, context });
+  }
+
   async invoke({ functionId, event, context } = {}) {
     if (!isFunctionId(functionId)) throw notFound();
     const functionRecord = await this.repository.getFunction(functionId);
@@ -222,7 +237,7 @@ class FunctionService {
       updatedAt: record.updatedAt,
       editable: true,
       invokeUrl: record.websiteId
-        ? `${this.publicBaseUrl}/${encodeURIComponent(record.websiteId)}/${encodeURIComponent(process.env.FUNCTION_ENV || 'production')}/functions/${encodeURIComponent(record.functionId)}/invoke`
+        ? `${this.publicBaseUrl}/${encodeURIComponent(record.websiteId)}/${encodeURIComponent(process.env.FUNCTION_ENV || 'production')}/api/${encodeURIComponent(record.slug)}`
         : `${this.publicBaseUrl}/functions/${encodeURIComponent(record.functionId)}/invoke`
     };
   }

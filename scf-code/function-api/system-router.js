@@ -16,7 +16,7 @@ function loadSystemManifest() {
 }
 
 function reservedFirstSegments(entries = manifest) {
-  const reserved = new Set(['functions', 'health']);
+  const reserved = new Set(['functions', 'health', 'api']);
   for (const entry of entries) {
     for (const prefix of entry.routePrefixes || []) {
       const first = normalizeRoutePath(prefix).split('/').filter(Boolean)[0];
@@ -45,10 +45,12 @@ function applySiteScope(event = {}, entries = manifest) {
   const bodyPath = event.body && typeof event.body === 'object'
     ? event.body.path
     : parseBodyPath(event.body);
-  const raw = normalizeRoutePath(event.path || event.rawPath || event.requestContext?.http?.path || bodyPath || '/');
+  const rawPath = String(event.path || event.rawPath || event.requestContext?.http?.path || bodyPath || '/').split('?')[0];
+  const raw = normalizeRoutePath(rawPath);
   const scoped = parseSiteScopedPath(raw, entries);
   if (!scoped) return event;
-  const query = { ...(event.queryStringParameters || event.queryString || event.query || {}) };
+  const { readQuery } = require('./site-binding.js');
+  const query = readQuery(event);
   if (!query.websiteId && !query.website_id) query.websiteId = scoped.websiteId;
   if (!query.env) query.env = scoped.env;
   return {

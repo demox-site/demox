@@ -65,7 +65,7 @@ test('creates, versions, publishes and invokes a function through one shared han
   assert.equal(createdResponse.statusCode, 201);
   const created = JSON.parse(createdResponse.body).function;
   assert.match(created.functionId, /^fn_/);
-  assert.equal(created.invokeUrl, `https://functions.test/site-a/production/functions/${created.functionId}/invoke`);
+  assert.equal(created.invokeUrl, 'https://functions.test/site-a/production/api/hello');
 
   const source = `export default async function(request, env) {
     return { status: 201, headers: { 'content-type': 'application/json' },
@@ -83,6 +83,10 @@ test('creates, versions, publishes and invokes a function through one shared han
   const invokeResponse = await handler(event(`/functions/${created.functionId}/invoke`, 'POST', { hello: 'world' }));
   assert.equal(invokeResponse.statusCode, 201);
   assert.deepEqual(JSON.parse(invokeResponse.body), { greeting: 'hi', input: { hello: 'world' } });
+
+  const siteApiResponse = await handler(event('/site-a/production/api/hello', 'POST', { hello: 'world' }));
+  assert.equal(siteApiResponse.statusCode, 201);
+  assert.deepEqual(JSON.parse(siteApiResponse.body), { greeting: 'hi', input: { hello: 'world' } });
 
   const sourceResponse = await handler(event(`/functions/${created.functionId}/source`, 'GET'));
   assert.equal(sourceResponse.statusCode, 200);
@@ -241,6 +245,16 @@ test('functions belong to a website and keep slugs unique per site', async () =>
   const listed = JSON.parse((await handler(event('/functions?websiteId=site-a', 'GET'))).body).functions;
   assert.equal(listed.length, 1);
   assert.equal(listed[0].functionId, first.functionId);
+  const listedByPath = JSON.parse((await handler(event('/site-a/production/functions', 'GET'))).body).functions;
+  assert.equal(listedByPath.length, 1);
+  assert.equal(listedByPath[0].functionId, first.functionId);
+  const listedByQueryString = JSON.parse((await handler({
+    path: '/functions',
+    httpMethod: 'GET',
+    queryString: 'websiteId=site-a',
+    headers: { 'content-type': 'application/json' }
+  })).body).functions;
+  assert.equal(listedByQueryString.length, 1);
   const missingSite = await handler(event('/functions', 'POST', { name: 'Nope', slug: 'nope' }));
   assert.equal(missingSite.statusCode, 400);
   assert.equal(JSON.parse(missingSite.body).error, 'MISSING_WEBSITE_ID');

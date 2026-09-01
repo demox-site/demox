@@ -43,6 +43,14 @@ function createFunctionHttpHandler({
       }
 
       const scope = readWebsiteScope(event, body);
+      if (isSiteApiRoute(path, action)) {
+        return responseFromInvoke(await service.invokeBySlug({
+          websiteId: requireWebsiteId(scope.websiteId),
+          slug: siteApiSlug(path) || body.slug,
+          event: { ...event, body: event.body },
+          context
+        }));
+      }
       if (isListRoute(path, action, method) && scope.kind === 'system') {
         const functions = isPlatformSite(scope) ? publicSystemFunctions(publicBaseUrl, scope.websiteId || null) : [];
         return jsonResponse(200, { success: true, functions, kind: 'system' });
@@ -175,6 +183,15 @@ function isInvokeRoute(path, action) {
   return action === 'invoke_function' || /^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/invoke$/.test(path);
 }
 
+function isSiteApiRoute(path, action) {
+  return action === 'invoke_site_function' || /^\/api\/[a-z0-9][a-z0-9_-]{1,62}(?:\/|$)/i.test(path);
+}
+
+function siteApiSlug(path) {
+  const match = String(path || '').match(/^\/api\/([a-z0-9][a-z0-9_-]{1,62})(?:\/|$)/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
 function isCreateRoute(path, action, method) {
   return (action === 'create_function' || (path === '/functions' && method === 'POST'));
 }
@@ -274,7 +291,31 @@ function createProductionHandler({ publicBaseUrl, logger = console, database, bu
   });
 }
 
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    })
+  ]);
+}
+
 function createMysqlDatabaseFromEnv() {
+  return wrapMysqlDatabase(loadWebsiteMysqlAdapter() || createDedicatedMysqlAdapter());
+}
+
+function loadWebsiteMysqlAdapter() {
+  try {
+    const shared = require(require('path').join(__dirname, '../website-api/shared/db.js'));
+    if (typeof shared.query === 'function' && typeof shared.transaction === 'function') return shared;
+  } catch {
+    // Local function-api-only packages do not ship the website database module.
+  }
+  return null;
+}
+
+function createDedicatedMysqlAdapter() {
   const required = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) throw new Error(`函数服务缺少数据库环境变量: ${missing.join(', ')}`);
@@ -288,40 +329,17 @@ function createMysqlDatabaseFromEnv() {
     timezone: 'Z',
     waitForConnections: true,
     connectionLimit: Number(process.env.FUNCTIONS_DB_POOL_SIZE || 5),
-    queueLimit: 0,
-    connectTimeout: 8000
+    queueLimit: 0
   });
   pool.on('connection', (connection) => {
     connection.query("SET time_zone = '+00:00'").catch(() => {});
   });
-  let schemaReady = null;
-  const ensureSchema = async () => {
-    if (!schemaReady) {
-      const fs = require('fs');
-      const path = require('path');
-      const sql = fs.readFileSync(path.join(__dirname, 'migrations/001_create_function_tables.sql'), 'utf8');
-      schemaReady = (async () => {
-        try {
-          for (const statement of sql.split(';').map((item) => item.trim()).filter(Boolean)) {
-            await pool.query(statement);
-          }
-          await ensureWebsiteBinding(pool);
-        } catch (error) {
-          schemaReady = null;
-          throw error;
-        }
-      })();
-    }
-    await schemaReady;
-  };
   return {
     query: async (sql, params = []) => {
-      await ensureSchema();
       const [rows] = await pool.query(sql, params);
       return rows;
     },
     transaction: async (callback) => {
-      await ensureSchema();
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
@@ -339,22 +357,63 @@ function createMysqlDatabaseFromEnv() {
   };
 }
 
-async function ensureWebsiteBinding(pool) {
-  const [columns] = await pool.query(
+function wrapMysqlDatabase(adapter) {
+  let schemaReady = null;
+  const ensureSchema = async () => {
+    if (!schemaReady) {
+      schemaReady = (async () => {
+        try {
+          const tables = await withTimeout(
+            adapter.query("SHOW TABLES LIKE 'demox_functions'"),
+            8000,
+            '函数表检查超时'
+          );
+          if (!tables.length) {
+            const fs = require('fs');
+            const path = require('path');
+            const sql = fs.readFileSync(path.join(__dirname, 'migrations/001_create_function_tables.sql'), 'utf8');
+            for (const statement of sql.split(';').map((item) => item.trim()).filter(Boolean)) {
+              await withTimeout(adapter.query(statement), 8000, '函数表创建超时');
+            }
+          }
+          await withTimeout(ensureWebsiteBinding(adapter), 8000, '函数表迁移超时');
+        } catch (error) {
+          schemaReady = null;
+          throw error;
+        }
+      })();
+    }
+    await schemaReady;
+  };
+  return {
+    query: async (sql, params = []) => {
+      await ensureSchema();
+      return adapter.query(sql, params);
+    },
+    transaction: async (callback) => {
+      await ensureSchema();
+      return adapter.transaction(callback);
+    },
+    close: () => (adapter.close ? adapter.close() : undefined)
+  };
+}
+
+async function ensureWebsiteBinding(adapter) {
+  const columns = await adapter.query(
     `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'demox_functions' AND COLUMN_NAME = 'website_id'`
   );
   if (!columns.length) {
-    await pool.query("ALTER TABLE demox_functions ADD COLUMN website_id VARCHAR(128) NULL AFTER owner_user_id");
-    await pool.query('ALTER TABLE demox_functions ADD KEY idx_demox_functions_website (website_id)');
+    await adapter.query("ALTER TABLE demox_functions ADD COLUMN website_id VARCHAR(128) NULL AFTER owner_user_id");
+    await adapter.query('ALTER TABLE demox_functions ADD KEY idx_demox_functions_website (website_id)');
   }
-  const [ownerSlug] = await pool.query("SHOW INDEX FROM demox_functions WHERE Key_name = 'uq_demox_functions_owner_slug'");
+  const ownerSlug = await adapter.query("SHOW INDEX FROM demox_functions WHERE Key_name = 'uq_demox_functions_owner_slug'");
   if (ownerSlug.length) {
-    await pool.query('ALTER TABLE demox_functions DROP INDEX uq_demox_functions_owner_slug');
+    await adapter.query('ALTER TABLE demox_functions DROP INDEX uq_demox_functions_owner_slug');
   }
-  const [websiteSlug] = await pool.query("SHOW INDEX FROM demox_functions WHERE Key_name = 'uq_demox_functions_website_slug'");
+  const websiteSlug = await adapter.query("SHOW INDEX FROM demox_functions WHERE Key_name = 'uq_demox_functions_website_slug'");
   if (!websiteSlug.length) {
-    await pool.query('ALTER TABLE demox_functions ADD UNIQUE KEY uq_demox_functions_website_slug (website_id, slug)');
+    await adapter.query('ALTER TABLE demox_functions ADD UNIQUE KEY uq_demox_functions_website_slug (website_id, slug)');
   }
 }
 
