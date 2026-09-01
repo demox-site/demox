@@ -46,7 +46,7 @@ class FunctionService {
         name: normalizedName,
         slug: normalizedSlug,
         limits: normalizeLimits(limits),
-        env: normalizeEnv(env)
+        env: assertAllowedEnv(normalizeEnv(env))
       });
     } catch (error) {
       if (error?.code === 'ER_DUP_ENTRY' || /已存在|duplicate/i.test(error?.message || '')) {
@@ -59,6 +59,33 @@ class FunctionService {
 
   async listFunctions(websiteId) {
     return (await this.repository.listFunctions(requireWebsiteId(websiteId))).map((item) => this.publicFunction(item));
+  }
+
+  async getWebsiteEnv(websiteId) {
+    const siteId = requireWebsiteId(websiteId);
+    if (typeof this.repository.getWebsiteEnv !== 'function') return {};
+    return normalizeEnv(await this.repository.getWebsiteEnv(siteId));
+  }
+
+  async putWebsiteEnv(websiteId, env) {
+    const siteId = requireWebsiteId(websiteId);
+    if (typeof this.repository.putWebsiteEnv !== 'function') {
+      throw internalError('当前存储不支持站点环境变量');
+    }
+    const normalized = assertAllowedEnv(normalizeEnv(env));
+    return this.repository.putWebsiteEnv(siteId, normalized);
+  }
+
+  async resolveRuntimeEnv(functionRecord) {
+    const siteEnv = typeof this.repository.getWebsiteEnv === 'function'
+      ? normalizeEnv(await this.repository.getWebsiteEnv(functionRecord.websiteId))
+      : {};
+    return {
+      ...siteEnv,
+      ...normalizeEnv(functionRecord.env),
+      SITE_ID: String(functionRecord.websiteId || ''),
+      FUNCTION_SLUG: String(functionRecord.slug || '')
+    };
   }
 
   async createVersion({ ownerId, functionId, source, sourceBase64, entrypoint = 'index.mjs' } = {}) {
@@ -193,7 +220,13 @@ class FunctionService {
     let status = 'success';
     let errorCode = null;
     try {
-      output = await this.runtime.execute({ source, request: request.value, env: functionRecord.env, limits: functionRecord.limits, context });
+      output = await this.runtime.execute({
+        source,
+        request: request.value,
+        env: await this.resolveRuntimeEnv(functionRecord),
+        limits: functionRecord.limits,
+        context
+      });
       const response = normalizeFunctionResponse(output, functionRecord.limits.maxResponseBytes);
       this.recordInvocation({ functionRecord, version, status, startedAt, requestBytes: request.bodyBytes, responseBytes: Buffer.byteLength(response.body), errorCode });
       return response;
@@ -279,6 +312,31 @@ function parseVersion(value) {
   return version;
 }
 
+const RESERVED_ENV_KEYS = new Set([
+  'SITE_ID',
+  'FUNCTION_SLUG',
+  'JWT_SECRET',
+  'MYSQL_HOST',
+  'MYSQL_USER',
+  'MYSQL_PASSWORD',
+  'MYSQL_DATABASE',
+  'MYSQL_PORT',
+  'ENCRYPTION_KEY',
+  'GITHUB_CLIENT_SECRET',
+  'FEISHU_APP_SECRET'
+]);
+const RESERVED_ENV_PREFIXES = [
+  'MYSQL_',
+  'JWT_',
+  'FUNCTIONS_',
+  'TENCENT',
+  'DEMOX_',
+  'AWS_',
+  'COS_',
+  'SCF_',
+  'ACME_'
+];
+
 function normalizeEnv(env) {
   if (env === undefined || env === null) return {};
   if (typeof env !== 'object' || Array.isArray(env)) throw badRequest('env 必须是对象', 'INVALID_ENV');
@@ -291,6 +349,15 @@ function normalizeEnv(env) {
     output[key] = value;
   }
   return output;
+}
+
+function assertAllowedEnv(env) {
+  for (const key of Object.keys(env || {})) {
+    if (RESERVED_ENV_KEYS.has(key) || RESERVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      throw badRequest(`环境变量名保留给平台使用: ${key}`, 'RESERVED_ENV_KEY');
+    }
+  }
+  return env;
 }
 
 function normalizeInvocationRequest(event = {}) {
@@ -360,6 +427,7 @@ function normalizeFunctionResponse(output, maxResponseBytes) {
 module.exports = {
   FunctionService,
   normalizeEnv,
+  assertAllowedEnv,
   normalizeInvocationRequest,
   normalizeFunctionResponse
 };

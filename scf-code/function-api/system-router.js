@@ -16,7 +16,7 @@ function loadSystemManifest() {
 }
 
 function reservedFirstSegments(entries = manifest) {
-  const reserved = new Set(['functions', 'health', 'api']);
+  const reserved = new Set(['functions', 'health', 'api', 'env']);
   for (const entry of entries) {
     for (const prefix of entry.routePrefixes || []) {
       const first = normalizeRoutePath(prefix).split('/').filter(Boolean)[0];

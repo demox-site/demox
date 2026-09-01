@@ -1411,6 +1411,16 @@ export const functionsApi = {
     scopedFunctionPath(websiteId, "/functions"),
     { method: "POST", body: { websiteId, name, slug } }
   ),
+  getEnv: (websiteId: string) => request<{ success: boolean; websiteId: string; env: Record<string, string> }>(
+    FUNCTIONS_API_URL,
+    scopedFunctionPath(websiteId, "/env"),
+    { method: "GET" }
+  ),
+  putEnv: (websiteId: string, env: Record<string, string>) => request<{ success: boolean; websiteId: string; env: Record<string, string> }>(
+    FUNCTIONS_API_URL,
+    scopedFunctionPath(websiteId, "/env"),
+    { method: "POST", body: { env } }
+  ),
   listVersions: (functionId: string) => request<{ success: boolean; versions: Array<{
     version: number;
     status: string;

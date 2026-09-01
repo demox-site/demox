@@ -11,6 +11,7 @@ class InMemoryFunctionRepository {
     this.functions = new Map();
     this.versions = new Map();
     this.usage = [];
+    this.websiteEnvs = new Map();
     this.nextVersionId = 1;
   }
 
@@ -113,6 +114,15 @@ class InMemoryFunctionRepository {
   async recordInvocation(record) {
     this.usage.push(clone(record));
     if (this.usage.length > 10_000) this.usage.splice(0, this.usage.length - 10_000);
+  }
+
+  async getWebsiteEnv(websiteId) {
+    return clone(this.websiteEnvs.get(String(websiteId)) || {});
+  }
+
+  async putWebsiteEnv(websiteId, env) {
+    this.websiteEnvs.set(String(websiteId), { ...(env || {}) });
+    return this.getWebsiteEnv(websiteId);
   }
 }
 
@@ -292,6 +302,26 @@ function createMysqlFunctionRepository({ query, transaction }) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
         [record.functionId, record.version, String(record.ownerId), record.status, record.durationMs, record.requestBytes, record.responseBytes, record.errorCode || null]
       );
+    },
+
+    async getWebsiteEnv(websiteId) {
+      const rows = await query(
+        'SELECT env_json FROM demox_website_envs WHERE website_id = ? LIMIT 1',
+        [String(websiteId)]
+      );
+      if (!rows.length) return {};
+      return parseJson(rows[0].env_json, {});
+    },
+
+    async putWebsiteEnv(websiteId, env) {
+      const payload = JSON.stringify(env || {});
+      await query(
+        `INSERT INTO demox_website_envs (website_id, env_json)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE env_json = VALUES(env_json), updated_at = CURRENT_TIMESTAMP`,
+        [String(websiteId), payload]
+      );
+      return this.getWebsiteEnv(websiteId);
     }
   };
 }

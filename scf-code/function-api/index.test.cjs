@@ -93,6 +93,32 @@ test('creates, versions, publishes and invokes a function through one shared han
   assert.equal(JSON.parse(sourceResponse.body).source, source);
 });
 
+test('site environment variables are injected and cannot use reserved platform keys', async () => {
+  const { handler } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Env', slug: 'envfn' }))).body).function;
+  const source = `export default async function(request, env) {
+    return { status: 200, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ greeting: env.GREETING, site: env.SITE_ID, slug: env.FUNCTION_SLUG }) };
+  }`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+
+  const reserved = await handler(event('/site-a/production/env', 'POST', { env: { JWT_SECRET: 'nope' } }));
+  assert.equal(reserved.statusCode, 400);
+  assert.equal(JSON.parse(reserved.body).error, 'RESERVED_ENV_KEY');
+
+  const saved = await handler(event('/site-a/production/env', 'POST', { env: { GREETING: 'from-site' } }));
+  assert.equal(saved.statusCode, 200);
+  assert.equal(JSON.parse(saved.body).env.GREETING, 'from-site');
+
+  const listed = await handler(event('/site-a/production/env', 'GET'));
+  assert.equal(JSON.parse(listed.body).env.GREETING, 'from-site');
+
+  const invoked = await handler(event('/site-a/production/api/envfn', 'POST', {}));
+  assert.equal(invoked.statusCode, 200);
+  assert.deepEqual(JSON.parse(invoked.body), { greeting: 'from-site', site: 'site-a', slug: 'envfn' });
+});
+
 test('does not allow another user to manage a function', async () => {
   const first = makeApp({ userId: 'owner' });
   const created = JSON.parse((await first.handler(event('/functions', 'POST', { ...siteA, name: 'Private', slug: 'private' }))).body).function;

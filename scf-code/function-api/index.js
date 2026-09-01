@@ -73,6 +73,16 @@ function createFunctionHttpHandler({
         });
         return jsonResponse(201, { success: true, function: created });
       }
+      if (isGetEnvRoute(path, action, method)) {
+        const websiteId = requireWebsiteId(scope.websiteId);
+        const env = await service.getWebsiteEnv(websiteId);
+        return jsonResponse(200, { success: true, websiteId, env });
+      }
+      if (isPutEnvRoute(path, action, method)) {
+        const websiteId = requireWebsiteId(scope.websiteId);
+        const env = await service.putWebsiteEnv(websiteId, body.env);
+        return jsonResponse(200, { success: true, websiteId, env });
+      }
 
       const functionId = routeFunctionId(path) || body.functionId;
       if (!functionId) throw badRequest('缺少 functionId', 'MISSING_FUNCTION_ID');
@@ -222,6 +232,14 @@ function isCreateRoute(path, action, method) {
 
 function isListRoute(path, action, method) {
   return action === 'list_functions' || (path === '/functions' && method === 'GET');
+}
+
+function isGetEnvRoute(path, action, method) {
+  return action === 'get_website_env' || (path === '/env' && method === 'GET');
+}
+
+function isPutEnvRoute(path, action, method) {
+  return action === 'put_website_env' || (path === '/env' && method === 'POST');
 }
 
 function isVersionCreateRoute(path, action, method) {
@@ -401,6 +419,7 @@ function wrapMysqlDatabase(adapter) {
             }
           }
           await withTimeout(ensureWebsiteBinding(adapter), 8000, '函数表迁移超时');
+          await withTimeout(ensureWebsiteEnvTable(adapter), 8000, '站点环境变量表创建超时');
         } catch (error) {
           schemaReady = null;
           throw error;
@@ -420,6 +439,17 @@ function wrapMysqlDatabase(adapter) {
     },
     close: () => (adapter.close ? adapter.close() : undefined)
   };
+}
+
+async function ensureWebsiteEnvTable(adapter) {
+  const tables = await adapter.query("SHOW TABLES LIKE 'demox_website_envs'");
+  if (tables.length) return;
+  const fs = require('fs');
+  const path = require('path');
+  const sql = fs.readFileSync(path.join(__dirname, 'migrations/002_create_website_envs.sql'), 'utf8');
+  for (const statement of sql.split(';').map((item) => item.trim()).filter(Boolean)) {
+    await adapter.query(statement);
+  }
 }
 
 async function ensureWebsiteBinding(adapter) {

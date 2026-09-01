@@ -30,7 +30,7 @@ import {
   Textarea,
   useToast
 } from "@/components/ui";
-import { ArrowLeft, Copy, Loader2, Play, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, Copy, Loader2, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { functionsApi, mapWebsiteRow, websiteApi, type SiteFunction } from "@/api";
 import { getDisplayName, getSiteDomains } from "@/lib/website-utils";
@@ -90,6 +90,7 @@ const DEFAULT_SOURCE = `export default async function handler(request, env) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       ok: true,
+      site: env.SITE_ID,
       input: request.body
     })
   };
@@ -134,6 +135,15 @@ const texts = {
     open: "详情",
     total: (count: number) => `共 ${count} 个函数`,
     env: "环境",
+    siteEnvTitle: "站点环境变量",
+    siteEnvHint: "这个站点下的云函数都能读到。写在 handler(request, env) 的 env 里，例如 env.API_KEY。不会注入 Demox 平台密钥。",
+    siteEnvKey: "变量名",
+    siteEnvValue: "值",
+    siteEnvAdd: "添加变量",
+    siteEnvSave: "保存环境变量",
+    siteEnvSaved: "环境变量已保存",
+    siteEnvSaveFailed: "环境变量保存失败",
+    siteEnvLoadFailed: "环境变量加载失败",
     invokeUrl: "站点调用地址",
     invokeHint: "在已部署的前端里这样调用：",
     routes: "路径",
@@ -184,6 +194,15 @@ const texts = {
     open: "Details",
     total: (count: number) => `${count} functions`,
     env: "Environment",
+    siteEnvTitle: "Site environment variables",
+    siteEnvHint: "Shared by every function on this site as handler(request, env), for example env.API_KEY. Demox platform secrets are not injected.",
+    siteEnvKey: "Name",
+    siteEnvValue: "Value",
+    siteEnvAdd: "Add variable",
+    siteEnvSave: "Save variables",
+    siteEnvSaved: "Environment variables saved",
+    siteEnvSaveFailed: "Failed to save environment variables",
+    siteEnvLoadFailed: "Failed to load environment variables",
     invokeUrl: "Site URL",
     invokeHint: "Call it from the deployed frontend like this:",
     routes: "Routes",
@@ -225,6 +244,8 @@ export default function FunctionsPage() {
   const [editorSource, setEditorSource] = useState(DEFAULT_SOURCE);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [envRows, setEnvRows] = useState<Array<{ key: string; value: string }>>([{ key: "", value: "" }]);
+  const [envSaving, setEnvSaving] = useState(false);
   const sourceCache = React.useRef(new Map<string, string>());
 
   const loadWebsite = useCallback(async () => {
@@ -269,6 +290,50 @@ export default function FunctionsPage() {
   useEffect(() => {
     if (websiteId) void load();
   }, [load, websiteId]);
+
+  const loadEnv = useCallback(async () => {
+    if (!websiteId) return;
+    try {
+      const response = await functionsApi.getEnv(websiteId);
+      const entries = Object.entries(response.env || {});
+      setEnvRows(entries.length ? entries.map(([key, value]) => ({ key, value })) : [{ key: "", value: "" }]);
+    } catch (error) {
+      setEnvRows([{ key: "", value: "" }]);
+      toast({
+        title: t.siteEnvLoadFailed,
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive"
+      });
+    }
+  }, [t.siteEnvLoadFailed, toast, websiteId]);
+
+  useEffect(() => {
+    if (websiteId) void loadEnv();
+  }, [loadEnv, websiteId]);
+
+  const onSaveEnv = async () => {
+    const env: Record<string, string> = {};
+    for (const row of envRows) {
+      const key = row.key.trim().toUpperCase();
+      if (!key) continue;
+      env[key] = row.value;
+    }
+    setEnvSaving(true);
+    try {
+      const saved = await functionsApi.putEnv(websiteId, env);
+      const entries = Object.entries(saved.env || {});
+      setEnvRows(entries.length ? entries.map(([key, value]) => ({ key, value })) : [{ key: "", value: "" }]);
+      toast({ title: t.siteEnvSaved });
+    } catch (error) {
+      toast({
+        title: t.siteEnvSaveFailed,
+        description: error instanceof Error ? error.message : String(error),
+        variant: "destructive"
+      });
+    } finally {
+      setEnvSaving(false);
+    }
+  };
 
   const onCreate = async () => {
     setCreating(true);
@@ -422,6 +487,69 @@ export default function FunctionsPage() {
               <Plus className="mr-2 h-4 w-4" />
               {t.create}
             </Button>
+          </div>
+        </div>
+
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-sm font-medium">{t.siteEnvTitle}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{t.siteEnvHint}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEnvRows((current) => [...current, { key: "", value: "" }])}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                {t.siteEnvAdd}
+              </Button>
+              <Button type="button" size="sm" onClick={() => void onSaveEnv()} disabled={envSaving || !websiteId}>
+                {envSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t.siteEnvSave}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-3 space-y-2">
+            {envRows.map((row, index) => (
+              <div key={index} className="grid grid-cols-[1fr_minmax(0,1.4fr)_auto] gap-2">
+                <Input
+                  value={row.key}
+                  placeholder={t.siteEnvKey}
+                  className="font-mono text-sm"
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setEnvRows((current) => current.map((item, itemIndex) => (
+                      itemIndex === index ? { ...item, key: value } : item
+                    )));
+                  }}
+                />
+                <Input
+                  value={row.value}
+                  placeholder={t.siteEnvValue}
+                  className="font-mono text-sm"
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setEnvRows((current) => current.map((item, itemIndex) => (
+                      itemIndex === index ? { ...item, value } : item
+                    )));
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setEnvRows((current) => {
+                    const next = current.filter((_, itemIndex) => itemIndex !== index);
+                    return next.length ? next : [{ key: "", value: "" }];
+                  })}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
           </div>
         </div>
 
