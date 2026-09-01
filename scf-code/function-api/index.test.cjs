@@ -119,6 +119,48 @@ test('site environment variables are injected and cannot use reserved platform k
   assert.deepEqual(JSON.parse(invoked.body), { greeting: 'from-site', site: 'site-a', slug: 'envfn' });
 });
 
+test('published function can call outbound HTTP using site env on /api/{slug}', async () => {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'platform-secret-must-not-leak';
+  const calls = [];
+  const runtime = new QuickJSFunctionRuntime({
+    fetch: async (url, init = {}) => {
+      calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
+      return {
+        status: 200,
+        ok: true,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ echo: url, auth: (init.headers || {}).authorization })
+      };
+    }
+  });
+  const { handler } = makeApp({ runtime });
+  const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Proxy', slug: 'proxy' }))).body).function;
+  const saved = await handler(event('/site-a/production/env', 'POST', {
+    env: { UPSTREAM_URL: 'https://api.example.test/v1/me', API_KEY: 'site-secret' }
+  }));
+  assert.equal(saved.statusCode, 200);
+  assert.equal(JSON.parse(saved.body).env.API_KEY, 'site-secret');
+  const source = `export default async function(request, env) {
+    let leaked = null;
+    try { leaked = globalThis.process && globalThis.process.env && globalThis.process.env.JWT_SECRET; } catch {}
+    const res = await fetch(env.UPSTREAM_URL, { headers: { authorization: env.API_KEY } });
+    return { status: 200, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ site: env.SITE_ID, leaked: leaked == null ? null : leaked, upstream: JSON.parse(res.body) }) };
+  }`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  const invoked = await handler(event('/site-a/production/api/proxy', 'POST', { ping: true }));
+  assert.equal(invoked.statusCode, 200);
+  assert.deepEqual(JSON.parse(invoked.body), {
+    site: 'site-a',
+    leaked: null,
+    upstream: { echo: 'https://api.example.test/v1/me', auth: 'site-secret' }
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.example.test/v1/me');
+  assert.equal(calls[0].headers.authorization, 'site-secret');
+});
+
 test('does not allow another user to manage a function', async () => {
   const first = makeApp({ userId: 'owner' });
   const created = JSON.parse((await first.handler(event('/functions', 'POST', { ...siteA, name: 'Private', slug: 'private' }))).body).function;

@@ -12,9 +12,10 @@ class FunctionRuntimeError extends Error {
 }
 
 class QuickJSFunctionRuntime {
-  constructor({ quickjsLoader = getQuickJS, logger = console } = {}) {
+  constructor({ quickjsLoader = getQuickJS, logger = console, fetch: fetchImpl = globalThis.fetch } = {}) {
     this.quickjsLoader = quickjsLoader;
     this.logger = logger;
+    this.fetchImpl = typeof fetchImpl === 'function' ? fetchImpl.bind(globalThis) : null;
     this.quickjsPromise = null;
   }
 
@@ -39,6 +40,7 @@ class QuickJSFunctionRuntime {
     let moduleObject = null;
     let exportsObject = null;
     let handler = null;
+    const pendingFetches = new Set();
 
     runtime.setMemoryLimit(memoryLimitBytes);
     runtime.setMaxStackSize(Math.min(Math.max(memoryLimitBytes / 8, 128 * 1024), 4 * 1024 * 1024));
@@ -50,6 +52,11 @@ class QuickJSFunctionRuntime {
 
     try {
       this.installConsole(context);
+      this.installFetch(context, {
+        deadline,
+        maxBodyBytes: Number(limits?.maxResponseBytes || 256 * 1024),
+        pendingFetches
+      });
 
       // Expose a CommonJS-shaped object as a compatibility convenience. It is
       // still evaluated by QuickJS and has no access to Node.js host APIs.
@@ -120,6 +127,91 @@ class QuickJSFunctionRuntime {
     return result.value;
   }
 
+  installFetch(context, { deadline, maxBodyBytes, pendingFetches }) {
+    const fetchFn = context.newFunction('fetch', (urlHandle, initHandle) => {
+      const deferred = context.newPromise();
+      pendingFetches.add(deferred);
+      let url;
+      let init = {};
+      try {
+        url = context.getString(urlHandle);
+        if (initHandle) init = context.dump(initHandle) || {};
+      } catch (error) {
+        const message = context.newString(error.message || 'fetch 参数无效');
+        deferred.reject(message);
+        if (message.alive) message.dispose();
+        pendingFetches.delete(deferred);
+        return deferred.handle;
+      }
+      this.hostFetch(url, init, { deadline, maxBodyBytes })
+        .then((result) => {
+          if (!context.alive || !deferred.alive) return;
+          const value = this.jsonHandle(context, result);
+          deferred.resolve(value);
+          if (value.alive) value.dispose();
+        })
+        .catch((error) => {
+          if (!context.alive || !deferred.alive) return;
+          const message = context.newString(error.message || '出站请求失败');
+          deferred.reject(message);
+          if (message.alive) message.dispose();
+        })
+        .finally(() => {
+          pendingFetches.delete(deferred);
+          if (context.runtime?.alive) context.runtime.executePendingJobs();
+        });
+      deferred.settled.then(() => {
+        if (context.runtime?.alive) context.runtime.executePendingJobs();
+      });
+      return deferred.handle;
+    });
+    context.setProp(context.global, 'fetch', fetchFn);
+    fetchFn.dispose();
+  }
+
+  async hostFetch(url, init = {}, { deadline, maxBodyBytes } = {}) {
+    let parsed;
+    try {
+      parsed = new URL(String(url || ''));
+    } catch {
+      throw new FunctionRuntimeError('出站地址非法', 'FUNCTION_FETCH_ERROR');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new FunctionRuntimeError('只允许 http/https 出站请求', 'FUNCTION_FETCH_ERROR');
+    }
+    const method = String(init.method || 'GET').toUpperCase();
+    const headers = {};
+    if (init.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [key, value] of Object.entries(init.headers)) {
+        if (typeof value === 'string' || typeof value === 'number') headers[String(key)] = String(value);
+      }
+    }
+    let body = init.body;
+    if (body != null && typeof body !== 'string') {
+      try { body = JSON.stringify(body); } catch { body = String(body); }
+    }
+    const remainingMs = Math.max(1, Number(deadline || Date.now()) - Date.now());
+    const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(remainingMs)
+      : undefined;
+    const result = await this.fetchImpl(parsed.toString(), {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? undefined : body,
+      redirect: 'follow',
+      ...(signal ? { signal } : {})
+    });
+    if (result && typeof result.text === 'function') {
+      const text = await result.text();
+      const headersOut = {};
+      if (result.headers && typeof result.headers.forEach === 'function') {
+        result.headers.forEach((value, key) => { headersOut[String(key)] = String(value); });
+      }
+      return normalizeFetchResult({ status: result.status, ok: result.ok, headers: headersOut, body: text }, maxBodyBytes);
+    }
+    return normalizeFetchResult(result, maxBodyBytes);
+  }
+
   installConsole(context) {
     const consoleObject = context.newObject();
     for (const method of ['log', 'info', 'warn', 'error']) {
@@ -186,4 +278,36 @@ class QuickJSFunctionRuntime {
   }
 }
 
-module.exports = { QuickJSFunctionRuntime, FunctionRuntimeError };
+function normalizeFetchResult(result, maxBodyBytes = 256 * 1024) {
+  if (result == null || typeof result !== 'object') {
+    throw new FunctionRuntimeError('出站请求返回值非法', 'FUNCTION_FETCH_ERROR');
+  }
+  let body = '';
+  if (typeof result.body === 'string') body = result.body;
+  else if (typeof result.text === 'function') {
+    // Host Response-like objects are normalized by the caller before this helper.
+    body = '';
+  } else if (result.body != null) {
+    try { body = JSON.stringify(result.body); } catch { body = String(result.body); }
+  }
+  if (Buffer.byteLength(body) > maxBodyBytes) {
+    body = Buffer.from(body, 'utf8').subarray(0, maxBodyBytes).toString('utf8');
+  }
+  const headers = {};
+  if (result.headers && typeof result.headers.forEach === 'function') {
+    result.headers.forEach((value, key) => { headers[String(key)] = String(value); });
+  } else if (result.headers && typeof result.headers === 'object') {
+    for (const [key, value] of Object.entries(result.headers)) {
+      if (typeof value === 'string' || typeof value === 'number') headers[String(key)] = String(value);
+    }
+  }
+  const status = Number(result.status) || 0;
+  return {
+    status,
+    ok: result.ok !== undefined ? Boolean(result.ok) : (status >= 200 && status < 300),
+    headers,
+    body
+  };
+}
+
+module.exports = { QuickJSFunctionRuntime, FunctionRuntimeError, normalizeFetchResult };
