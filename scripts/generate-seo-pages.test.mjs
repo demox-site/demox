@@ -34,15 +34,17 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(home, /"@type":"SoftwareApplication"/);
     assert.match(home, /"@type":"FAQPage"/);
     assert.match(home, /"@type":"HowTo"/);
-    const englishWords = (home.match(/<main data-crawlable-fallback>[\s\S]*?<\/main>/)?.[0] || "")
+    const englishWords = (home.match(/<main[^>]*data-crawlable-fallback[^>]*>[\s\S]*?<\/main>/)?.[0] || "")
       .replace(/<[^>]+>/g, " ")
       .match(/\b[A-Za-z]{2,}\b/g) || [];
     assert.ok(englishWords.length >= 300, `expected 300+ English words in crawlable homepage, got ${englishWords.length}`);
-    assert.match(home, /<div id="root"><\/div>\s*<noscript data-crawlable-fallback-shell>\s*<main data-crawlable-fallback>/);
-    assert.doesNotMatch(home, /<div id="root">\s*<main data-crawlable-fallback>/);
+    assert.match(home, /<div id="root"><\/div>\s*<div data-crawlable-fallback-shell>\s*<main id="main" data-crawlable-fallback>/);
+    assert.doesNotMatch(home, /<div id="root">\s*<main/);
+    assert.doesNotMatch(home, /<noscript data-crawlable-fallback-shell>/);
+    assert.match(home, /#root:not\(:empty\)\s*~\s*\[data-crawlable-fallback-shell\]/);
 
     const fallbackStyle = home.match(/<style data-seo="fallback-style">([\s\S]*?)<\/style>/)?.[1];
-    const fallbackMarkup = home.match(/<main data-crawlable-fallback>([\s\S]*?)<\/main>/)?.[0];
+    const fallbackMarkup = home.match(/<main[^>]*data-crawlable-fallback[^>]*>([\s\S]*?)<\/main>/)?.[0];
     assert.ok(fallbackStyle, "crawlable fallback styles should be present");
     assert.ok(fallbackMarkup, "crawlable fallback markup should be present");
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*background(?:-color)?\s*:\s*#09090b/i);

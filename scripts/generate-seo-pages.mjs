@@ -38,13 +38,13 @@ const HOME_HOWTO_STEPS = [
 
 const crawlableFooter = `
   <footer class="fallback-footer">
-    <p><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:phosa@qq.com">Contact phosa@qq.com</a> · <a href="https://github.com/demox-site/demox">GitHub</a></p>
-    <p>Demox uses essential cookies for login. It does not use advertising cookies and does not sell personal data. Read the privacy policy for data handling and retention.</p>
+    <p><a href="/privacy">Privacy Policy</a> · <a href="/privacy#cookies">Cookie policy</a> · <a href="/terms">Terms of Service</a> · <a href="/how-demox-hosts-itself">About</a> · <a href="mailto:phosa@qq.com">Contact phosa@qq.com</a> · <a href="https://github.com/demox-site/demox">GitHub</a></p>
+    <p>Demox uses essential cookies for login. It does not use advertising cookies and does not sell personal data. Read the <a href="/privacy#cookies">cookie policy</a> for data handling and retention.</p>
   </footer>`;
 
 const homeFallback = `
-<main data-crawlable-fallback>
-  <a class="fallback-skip" href="#demox-overview">Skip to main content</a>
+<main id="main" data-crawlable-fallback>
+  <a class="fallback-skip" href="#main">Skip to main content</a>
   <header class="fallback-header">
     <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
     <nav class="fallback-nav" aria-label="Main pages">
@@ -87,7 +87,19 @@ const homeFallback = `
     </section>
     <section>
       <h2>How Demox hosts itself</h2>
-      <p>The public site is a normal Demox site. Pages ship with <code>demox deploy</code>. Auth, website, MCP, and certificate jobs ship with <code>demox functions push</code>. That case study is on <a href="/how-demox-hosts-itself">how Demox hosts itself</a>.</p>
+      <p><time datetime="2026-09-14">Updated 14 September 2026</time>. The public site is a normal Demox site. Pages ship with <code>demox deploy</code>. Auth, website, MCP, and certificate jobs ship with <code>demox functions push</code>. That case study is on <a href="/how-demox-hosts-itself">how Demox hosts itself</a>.</p>
+      <p>The CLI needs version 1.1.6 or later for functions, env, and alias. Four platform functions share the same site: auth, website, MCP, and cert-renew. Source is on <a href="https://github.com/demox-site/demox">GitHub</a> and in the <a href="https://nodejs.org/docs/latest/api/">Node.js API docs</a>.</p>
+    </section>
+    <section>
+      <h2>Key terms</h2>
+      <dl>
+        <dt>Demox</dt>
+        <dd>A host for static websites and small Node functions, with HTTPS and a CDN included.</dd>
+        <dt>handler(request, env)</dt>
+        <dd>The Node function export Demox runs. It is not an Express <code>listen</code> server.</dd>
+        <dt>demox deploy</dt>
+        <dd>The command that uploads HTML, a dist folder, or a ZIP and returns a public URL.</dd>
+      </dl>
     </section>
     <section>
       <h2>Frequently asked questions</h2>
@@ -104,7 +116,7 @@ const homeFallback = `
 export const PUBLIC_PAGES = {
   "": {
     title: "Demox — Publish static sites and Node functions",
-    description: "Demox publishes HTML, ZIP, and frontend builds as HTTPS static sites. Node backends export handler(request, env) and run as cloud functions via web, CLI, MCP, or API.",
+    description: "Demox publishes HTML and frontend builds as HTTPS sites. Node backends export handler(request, env) and run as cloud functions.",
     fallback: homeFallback,
     faq: HOME_FAQ,
     howTo: {
@@ -115,7 +127,7 @@ export const PUBLIC_PAGES = {
   },
   index: {
     title: "Demox — Publish static sites and Node functions",
-    description: "Demox publishes HTML, ZIP, and frontend builds as HTTPS static sites. Node backends export handler(request, env) and run as cloud functions via web, CLI, MCP, or API.",
+    description: "Demox publishes HTML and frontend builds as HTTPS sites. Node backends export handler(request, env) and run as cloud functions.",
     canonicalPath: "/",
     fallback: homeFallback,
     faq: HOME_FAQ,
@@ -158,7 +170,7 @@ export const PUBLIC_PAGES = {
   privacy: {
     title: "Demox Privacy Policy",
     description: "Read how Demox handles account data, uploaded website files, access logs, cookies, security, and data retention.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Privacy Policy</h1><p>Last updated 21 July 2026.</p><p>Demox collects account email, login logs, and the files you upload so we can host your site. We use that data to run accounts, deploy sites, review content for the public blocklist, and keep the service secure.</p><p>Login uses essential cookies. Demox does not use advertising cookies and does not sell personal data. You can ask us to delete an account by emailing <a href="mailto:phosa@qq.com">phosa@qq.com</a>.</p><p>This page is the cookie policy and the privacy policy. Open it in a browser for the full Chinese text covering account data, uploads, access logs, security, and retention.</p><p><a href="/">Return to Demox</a> · <a href="/terms">Terms of Service</a></p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Privacy Policy</h1><p>Last updated 21 July 2026.</p><p>Demox collects account email, login logs, and the files you upload so we can host your site. We use that data to run accounts, deploy sites, review content for the public blocklist, and keep the service secure.</p><h2 id="cookies">Cookie policy</h2><p>Login uses essential cookies. Demox does not use advertising cookies, does not run a non-essential tracker, and does not sell personal data. There is no advertising cookie to accept or reject.</p><p>You can ask us to delete an account by emailing <a href="mailto:phosa@qq.com">phosa@qq.com</a>.</p><p>Open this page in a browser for the full Chinese text covering account data, uploads, access logs, security, and retention.</p><p><a href="/">Return to Demox</a> · <a href="/terms">Terms of Service</a></p></main>`,
   },
   log: {
     title: "Demox Changelog - Product and Infrastructure Updates",
@@ -307,7 +319,7 @@ function schemaDocuments({ title, description, url, article, faq, howTo }) {
 
   const documents = [
     organizationSchema(),
-    { "@context": "https://schema.org", "@graph": graph },
+    ...graph.map((node) => ({ "@context": "https://schema.org", ...node })),
   ];
 
   if (faq?.length) {
@@ -365,7 +377,7 @@ export function renderSeoPage(baseHtml, route, config) {
   html = replaceRequired(html, /<meta\s+data-seo="og-url"[^>]*>/, `<meta data-seo="og-url" data-rh="true" property="og:url" content="${url}" />`, "Open Graph URL");
   html = replaceRequired(html, /<meta\s+data-seo="twitter-title"[^>]*>/, `<meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="${attrTitle}" />`, "Twitter title");
   html = replaceRequired(html, /<meta\s+data-seo="twitter-description"[^>]*>/, `<meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="${attrDescription}" />`, "Twitter description");
-  html = replaceRequired(html, /<main data-crawlable-fallback>[\s\S]*?<\/main>/, config.fallback, "crawlable fallback");
+  html = replaceRequired(html, /<main[^>]*data-crawlable-fallback[^>]*>[\s\S]*?<\/main>/, config.fallback, "crawlable fallback");
 
   const schema = shouldIndex
     ? jsonLdScripts(schemaDocuments({
