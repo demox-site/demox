@@ -29,9 +29,21 @@ export const INTENT_LANDINGS = [
       { q: "Do I need Git?", a: "No. Drag-and-drop, CLI, and MCP all publish files you already have." },
     ],
     zh: {
+      title: "免费静态网站托管，支持 CLI 和 MCP | Demox",
+      description: "免费托管 HTML、ZIP、React/Vue/Vite 构建产物。网页拖拽、CLI 或 MCP 发布后得到公网 HTTPS 地址。",
       eyebrow: "免费静态托管",
       h1: "免费静态网站发布平台，支持 CLI 和 MCP",
       answer: "把 HTML、ZIP 或 React/Vue/Vite 构建产物上传到 Demox，立刻拿到公网 HTTPS 地址。不需要 Git，也不需要自己配服务器。网页端拖拽，终端用 demox deploy，AI 助手走 MCP。",
+      steps: [
+        "先把站点导出或构建成根目录含 index.html 的静态产物。",
+        "在 www.demox.site 登录，或执行 demox login。",
+        "网页端上传，或 demox deploy ./dist，或让 MCP 助手发布。",
+        "用无痕窗口打开得到的 HTTPS 地址。",
+      ],
+      faqs: [
+        { q: "Demox 免费吗？", a: "公开价格页里基础版、专业版、尊贵土豪版都是免费。愿意的话可以给 GitHub 仓库点 star。" },
+        { q: "必须用 Git 吗？", a: "不用。拖拽、CLI、MCP 都是发布你已经有的文件。" },
+      ],
     },
   },
   {
@@ -53,9 +65,21 @@ export const INTENT_LANDINGS = [
       { q: "Can I upload the source repo?", a: "Usually no. Upload the built dist, a ZIP with index.html at the root, or a single HTML file." },
     ],
     zh: {
+      title: "用 CLI 和 MCP 发布 AI 生成的网站 | Demox",
+      description: "把 Claude、Cursor、Codex 或 v0 生成的 HTML、ZIP 或前端构建产物发布成公网网站。",
       eyebrow: "AI 网站发布",
       h1: "AI 生成网页后，怎样发布成网站？",
       answer: "产物是单个 HTML 就直接上传。React/Vue/Vite 先构建再发 dist。网页、CLI、MCP 都可以。把文档地址发给能读本地文件并执行工具的 AI 即可。",
+      steps: [
+        "让 AI 生成静态页面，或先跑生产构建。",
+        "确认文件夹或 ZIP 根目录有 index.html。",
+        "用网页端、demox deploy 或 Demox MCP 发布。",
+        "分享 HTTPS 地址。不要把密钥写进前端文件。",
+      ],
+      faqs: [
+        { q: "AI 能替我发布吗？", a: "可以，前提是它能读本地文件并执行 MCP 或 CLI。把 https://www.demox.site/doc 发给它，要求部署。" },
+        { q: "源码仓库能直接上传吗？", a: "通常不行。上传构建后的 dist、根目录含 index.html 的 ZIP，或单个 HTML。" },
+      ],
     },
   },
   {
@@ -77,9 +101,21 @@ export const INTENT_LANDINGS = [
       { q: "Do I need an API key in the config?", a: "No environment variable is required. Login happens in the browser on first deploy." },
     ],
     zh: {
+      title: "用 MCP 从 Claude Code / Cursor 发布网站 | Demox",
+      description: "给 MCP 兼容的 AI 助手安装 @demox-site/mcp-server，把 HTML、ZIP 或 dist 发布成公网 HTTPS 地址。",
       eyebrow: "MCP 发布",
       h1: "用 MCP 把网站发布到公网",
       answer: "在 Claude Code 或 Cursor 里加入 npx -y @demox-site/mcp-server@latest。首次部署会打开浏览器登录。之后 AI 可以直接上传 HTML、ZIP 或 dist。",
+      steps: [
+        "在助手配置里加入 npx -y @demox-site/mcp-server@latest。",
+        "重启助手，第一次发布时完成浏览器登录。",
+        "把含 index.html 的目录或单个 HTML 交给它。",
+        "让它发布到 Demox 并返回公开地址。",
+      ],
+      faqs: [
+        { q: "哪些助手能用？", a: "能跑 npx 的 MCP 客户端都可以。文档里的例子是 Claude Code 和 Cursor。" },
+        { q: "配置里要写 API key 吗？", a: "不用环境变量。第一次发布会在浏览器登录。" },
+      ],
     },
   },
   {
@@ -101,9 +137,21 @@ export const INTENT_LANDINGS = [
       { q: "Can CI use it?", a: "Yes. Non-interactive runs can use a DEMOX_TOKEN environment variable." },
     ],
     zh: {
+      title: "用 CLI 发布静态网站：demox deploy ./dist | Demox",
+      description: "安装 @demox-site/cli，登录后执行 demox deploy ./dist，把本地目录发布成公网 HTTPS 地址。",
       eyebrow: "命令行发布",
       h1: "用 CLI 发布静态网站",
       answer: "安装 @demox-site/cli，登录后执行 demox deploy ./dist。目录根必须有 index.html。也可以发单个 HTML、PDF 或 Markdown。",
+      steps: [
+        "npm install -g @demox-site/cli@latest",
+        "demox login",
+        "demox deploy ./dist",
+        "从命令输出复制 HTTPS 地址。",
+      ],
+      faqs: [
+        { q: "demox deploy ./dist 做什么？", a: "上传 dist 目录并返回公开站点地址。更新已有站点时加 --id WEBSITE_ID。" },
+        { q: "CI 能用吗？", a: "可以。非交互环境用 DEMOX_TOKEN 环境变量。" },
+      ],
     },
   },
   {
@@ -125,9 +173,21 @@ export const INTENT_LANDINGS = [
       { q: "Can I keep the same URL after edits?", a: "Yes. Redeploy to the same site ID." },
     ],
     zh: {
+      title: "发布 AI 已经生成的网页 | Demox",
+      description: "手里已经有 AI 写的 HTML。上传文件或 ZIP 到 Demox，拿到公网 HTTPS 链接。不需要 Git。",
       eyebrow: "AI 已经写好了页面",
       h1: "AI 生成的网页怎么发布？",
       answer: "单个 HTML 直接上传。有 CSS 和图片就把它们和 HTML 放在一起，用相对路径打 ZIP。不需要先建 Git 仓库。",
+      steps: [
+        "把 AI 产物存成 .html，或存成根目录含 index.html 的文件夹。",
+        "把本机磁盘路径改成相对路径。",
+        "上传文件或 ZIP，或执行 demox deploy。",
+        "用无痕窗口检查线上页面。",
+      ],
+      faqs: [
+        { q: "为什么样式丢了？", a: "HTML 还在指向本机文件。资源放在同一目录，使用相对路径。" },
+        { q: "改完还能用同一个地址吗？", a: "可以。对同一个站点 ID 重新发布。" },
+      ],
     },
   },
   {
@@ -149,9 +209,21 @@ export const INTENT_LANDINGS = [
       { q: "Can it deploy Node APIs?", a: "Only after the backend is rewritten as handler(request, env) and pushed with functions." },
     ],
     zh: {
+      title: "用 Claude Code 发布网站 | Demox",
+      description: "通过 Demox MCP，从 Claude Code 发布静态网站。不需要 Git 托管，直接拿到公网 HTTPS 地址。",
       eyebrow: "Claude Code",
       h1: "用 Claude Code 发布网站",
       answer: "加上 Demox MCP 后，让 Claude Code 读文档并部署当前 HTML 或 dist。第一次会打开浏览器登录。",
+      steps: [
+        "在 Claude Code 的 MCP 设置里加入 @demox-site/mcp-server。",
+        "重启 Claude Code，第一次发布时完成登录。",
+        "让它部署当前 HTML 文件或 dist 目录。",
+        "核对它返回的 HTTPS 地址。",
+      ],
+      faqs: [
+        { q: "配置文件在哪？", a: "用 Claude Code 的 MCP 设置。命令是 npx -y @demox-site/mcp-server@latest。" },
+        { q: "能发 Node 接口吗？", a: "只有把后端改成 handler(request, env) 并用 functions 推送之后才可以。" },
+      ],
     },
   },
   {
@@ -173,9 +245,21 @@ export const INTENT_LANDINGS = [
       { q: "Does Cursor need GitHub?", a: "No. Demox publishes local files." },
     ],
     zh: {
+      title: "用 Cursor 发布网站 | Demox",
+      description: "在 Cursor 里用 Demox MCP 或 CLI 发布 HTML 或前端构建产物。",
       eyebrow: "Cursor",
       h1: "用 Cursor 发布网站",
       answer: "在 Cursor 里接 Demox MCP，或让它执行 demox deploy ./dist。把文档地址发给它，要求用本地文件发布。",
+      steps: [
+        "在 Cursor 启用 Demox MCP，或安装 CLI。",
+        "打开已经有 HTML 或 dist 的项目。",
+        "让 Cursor 用 Demox 发布并返回地址。",
+        "用无痕窗口打开该地址。",
+      ],
+      faqs: [
+        { q: "用 MCP 还是 CLI？", a: "想让 Cursor 调工具就用 MCP。想自己敲命令就用 demox deploy。" },
+        { q: "Cursor 需要 GitHub 吗？", a: "不需要。Demox 发布的是本地文件。" },
+      ],
     },
   },
   {
@@ -197,9 +281,21 @@ export const INTENT_LANDINGS = [
       { q: "Can it keep updating the same site?", a: "Yes. Pass --id WEBSITE_ID on later deploys." },
     ],
     zh: {
+      title: "用 Codex 发布网站 | Demox",
+      description: "用 Demox CLI 或 MCP 从 Codex 发布静态网站。上传 HTML、ZIP 或 dist，拿到公网 HTTPS 地址。",
       eyebrow: "Codex",
       h1: "用 Codex 发布网站",
       answer: "让 Codex 安装 CLI 或走 MCP，构建后执行 demox deploy。不要上传密钥和 node_modules。",
+      steps: [
+        "安装 CLI，或配置 MCP。",
+        "如果还不是静态 HTML，先构建项目。",
+        "让 Codex 执行 demox deploy 或 MCP 发布。",
+        "确认线上地址不再依赖本机路径。",
+      ],
+      faqs: [
+        { q: "Codex 需要 Demox 账号吗？", a: "需要。第一次发布会打开浏览器登录。" },
+        { q: "能反复更新同一个站点吗？", a: "可以。之后发布加上 --id WEBSITE_ID。" },
+      ],
     },
   },
   {
@@ -221,9 +317,21 @@ export const INTENT_LANDINGS = [
       { q: "Is there a custom domain?", a: "Official subdomains such as name.demox.site are documented in the CLI." },
     ],
     zh: {
+      title: "免费托管单个 HTML 页面 | Demox",
+      description: "免费托管一个 HTML 文件。上传 .html 到 Demox，得到公网 HTTPS 地址。不需要 Git，也不需要服务器。",
       eyebrow: "单个 HTML",
       h1: "免费托管一个 HTML 文件",
       answer: "网页端直接选 .html。有本地 CSS 或图片时，改成相对路径后打 ZIP 上传。",
+      steps: [
+        "把页面存成 .html 文件。",
+        "资源内联，或按相对路径打 ZIP。",
+        "上传文件，或执行 demox deploy ./page.html。",
+        "分享 HTTPS 地址。",
+      ],
+      faqs: [
+        { q: "page.html 引用了 ./style.css 怎么办？", a: "把两个文件打进同一个 ZIP，入口文件名为 index.html。" },
+        { q: "有自定义域名吗？", a: "官方子域名如 name.demox.site，用法见 CLI 文档。" },
+      ],
     },
   },
   {
@@ -245,9 +353,21 @@ export const INTENT_LANDINGS = [
       { q: "SPA routes 404 on refresh?", a: "Demox keeps SPA fallback for hosted sites. Unknown document routes on www.demox.site stay real 404s." },
     ],
     zh: {
+      title: "发布 dist 目录 | Demox",
+      description: "发布根目录含 index.html 的 dist 或 build。执行 demox deploy ./dist，得到公网 HTTPS 地址。",
       eyebrow: "dist 目录",
       h1: "怎样发布 dist 目录？",
       answer: "根目录必须有 index.html。执行 demox deploy ./dist，或把目录打成 ZIP 上传。不要上传源码仓库根目录。",
+      steps: [
+        "执行项目的生产构建。",
+        "确认存在 dist/index.html。",
+        "执行 demox deploy ./dist，或把目录打 ZIP 上传。",
+        "打开站点，检查 CSS、JS 和前端路由。",
+      ],
+      faqs: [
+        { q: "能上传仓库根目录吗？", a: "不能。发布构建产物，不要上传 package.json 和 node_modules。" },
+        { q: "刷新 SPA 路由会 404 吗？", a: "用户站点保留 SPA 回退。www.demox.site 上未知文档路径仍是真正的 404。" },
+      ],
     },
   },
   {
@@ -269,9 +389,21 @@ export const INTENT_LANDINGS = [
       { q: "Environment variables?", a: "Only VITE_ public variables belong in the frontend build. Secrets stay in function env." },
     ],
     zh: {
+      title: "发布 Vite 应用 | Demox",
+      description: "构建 Vite 应用后把 dist 发到 Demox。用 demox deploy ./dist 或 MCP。不需要 Git 托管。",
       eyebrow: "Vite",
       h1: "Vite 项目怎么发布？",
       answer: "先 npm run build，再 demox deploy ./dist。资源 base path 按静态托管设置。不要上传源码。",
+      steps: [
+        "npm run build",
+        "检查 dist/index.html 和带 hash 的资源。",
+        "demox deploy ./dist",
+        "用无痕窗口刷新内部路由。",
+      ],
+      faqs: [
+        { q: "Vite SSR 怎么办？", a: "先静态导出，或把服务放在别的地方。Demox 不跑 Vite 开发服务器。" },
+        { q: "环境变量呢？", a: "只有 VITE_ 开头的公开变量能进前端构建。密钥放在函数 env。" },
+      ],
     },
   },
   {
@@ -293,9 +425,21 @@ export const INTENT_LANDINGS = [
       { q: "Create React App or Vite?", a: "Both work after build. Point demox deploy at dist or build." },
     ],
     zh: {
+      title: "发布 React 构建产物 | Demox",
+      description: "先生产构建，再 demox deploy ./dist 或 ./build，得到公网 HTTPS 地址。",
       eyebrow: "React",
       h1: "React 构建产物怎么发布？",
       answer: "先生产构建。Vite 一般是 dist，CRA 一般是 build。对那个目录执行 demox deploy。源码目录不能直接上。",
+      steps: [
+        "按你的 React 工具链执行生产构建。",
+        "找到含 index.html 的目录。",
+        "对该目录执行 demox deploy。",
+        "对嵌套的前端路由做一次硬刷新检查。",
+      ],
+      faqs: [
+        { q: "能上传 src/ 吗？", a: "不能。上传生产构建产物。" },
+        { q: "Create React App 还是 Vite？", a: "构建完成后都可以。把 demox deploy 指向 dist 或 build。" },
+      ],
     },
   },
   {
@@ -317,9 +461,21 @@ export const INTENT_LANDINGS = [
       { q: "Can I drag a ZIP?", a: "Yes. The ZIP root must contain index.html." },
     ],
     zh: {
+      title: "Netlify Drop 的快速发链接替代 | Demox",
+      description: "没有完整 Netlify 项目、只想把文件夹变成公开链接？Demox 支持 HTML、ZIP、dist，以及网页、CLI、MCP。",
       eyebrow: "Netlify Drop 替代",
       h1: "什么时候用 Demox 代替拖拽发布？",
       answer: "手里已经有静态目录、只想马上发链接时，可以用 Demox。它不是完整 Netlify。Git 集成和整套 CI 请留在原平台。",
+      steps: [
+        "如果只有静态文件目录，上传到 Demox 或执行 demox deploy。",
+        "如果要让 AI 助手发布，用 MCP。",
+        "如果需要 Netlify 的完整 CI 和身份体系，留在 Netlify。",
+        "迁移已有应用前先看 /when-to-use-demox。",
+      ],
+      faqs: [
+        { q: "这是可以原样替换的 Netlify 吗？", a: "不是。它适合给静态文件和小 Node handler 一个马上能打开的链接。" },
+        { q: "能拖 ZIP 吗？", a: "可以。ZIP 根目录必须有 index.html。" },
+      ],
     },
   },
   {
@@ -341,9 +497,21 @@ export const INTENT_LANDINGS = [
       { q: "Does MCP exist on Surge?", a: "Demox documents MCP for Claude Code and Cursor. That is the difference this page is about." },
     ],
     zh: {
+      title: "Surge.sh 的静态发布替代 | Demox",
+      description: "用 CLI 发布静态站，同时还有网页端和 MCP。Demox 不是完整的 Surge 替代品。",
       eyebrow: "Surge 替代",
       h1: "什么时候用 Demox 代替 Surge？",
       answer: "需要 CLI 发静态目录，同时又要网页拖拽和 MCP 时，可以用 Demox。命令不是 surge，而是 demox deploy。",
+      steps: [
+        "安装 @demox-site/cli。",
+        "demox login",
+        "demox deploy ./dist",
+        "如果项目不是静态站，先对照 /when-to-use-demox。",
+      ],
+      faqs: [
+        { q: "命令是 surge 吗？", a: "不是。命令是 demox deploy。" },
+        { q: "Surge 有 MCP 吗？", a: "Demox 为 Claude Code 和 Cursor 提供了 MCP。这就是本页要说的差别。" },
+      ],
     },
   },
   {
@@ -365,9 +533,21 @@ export const INTENT_LANDINGS = [
       { q: "What about Next.js?", a: "Only a static export. App Router server features need another host." },
     ],
     zh: {
+      title: "静态站场景下的 Vercel 替代选择 | Demox",
+      description: "没有完整 Vercel 项目、只想给静态构建一个公开地址？Demox 可通过网页、CLI 或 MCP 发布 dist、HTML 和 ZIP。",
       eyebrow: "静态站场景",
       h1: "静态站什么时候用 Demox 而不是完整云平台？",
       answer: "只有 dist 或 HTML、需要马上发链接、并且希望 CLI/MCP 也能发时，用 Demox。它不是 Vercel 替代品。需要 SSR 就留在能跑该运行时的平台。",
+      steps: [
+        "先做静态导出，或 Vite/React 生产构建。",
+        "用 Demox 发布该目录。",
+        "如果需要完整云平台，继续用 Vercel 或同类服务。",
+        "不适合的情况见 /when-to-use-demox。",
+      ],
+      faqs: [
+        { q: "Demox 能替代 Vercel 吗？", a: "不能。产品和文档写的是：给一个马上能打开的链接，外加小型 Node handler。" },
+        { q: "Next.js 呢？", a: "只支持静态导出。App Router 的服务端能力需要别的主机。" },
+      ],
     },
   },
 ];
@@ -375,11 +555,13 @@ export const INTENT_LANDINGS = [
 export function renderIntentFallback(page) {
   const steps = page.steps.map((step, index) => `<li><strong>Step ${index + 1}.</strong> ${escapeHtml(step)}</li>`).join("");
   const faqs = page.faqs.map((item) => `<h3>${escapeHtml(item.q)}</h3><p>${escapeHtml(item.a)}</p>`).join("");
+  const zhSteps = page.zh.steps.map((step, index) => `<li><strong>${String(index + 1).padStart(2, "0")}</strong> ${escapeHtml(step)}</li>`).join("");
+  const zhFaqs = page.zh.faqs.map((item) => `<h3>${escapeHtml(item.q)}</h3><p>${escapeHtml(item.a)}</p>`).join("");
   const related = INTENT_LANDINGS.filter((item) => item.id !== page.id)
     .slice(0, 6)
     .map((item) => `<li><a href="/${item.id}">${escapeHtml(item.h1)}</a></li>`)
     .join("");
-  return `<main data-crawlable-fallback class="fallback-simple" lang="en"><article><p>${escapeHtml(page.eyebrow)} · Updated ${INTENT_UPDATED} · Demox team</p><h1>${escapeHtml(page.h1)}</h1><p><strong>Direct answer:</strong> ${escapeHtml(page.answer)}</p><h2>How to do it</h2><ol>${steps}</ol><h2>FAQ</h2>${faqs}<section lang="zh-CN"><h2>${escapeHtml(page.zh.h1)}</h2><p>${escapeHtml(page.zh.answer)}</p></section><h2>Related Demox pages</h2><ul>${related}<li><a href="/doc">CLI and MCP docs</a></li><li><a href="/when-to-use-demox">When to use Demox</a></li></ul><p><a href="/console/projects">Upload and publish</a> · <a href="/doc">Read the docs</a></p></article></main>`;
+  return `<main data-crawlable-fallback class="fallback-simple" lang="en"><article><p>${escapeHtml(page.eyebrow)} · Updated ${INTENT_UPDATED} · Demox team</p><h1>${escapeHtml(page.h1)}</h1><p><strong>Direct answer:</strong> ${escapeHtml(page.answer)}</p><h2>How to do it</h2><ol>${steps}</ol><h2>FAQ</h2>${faqs}<section lang="zh-CN"><h2>${escapeHtml(page.zh.h1)}</h2><p>${escapeHtml(page.zh.answer)}</p><h3>按这个顺序做</h3><ol>${zhSteps}</ol><h3>常见问题</h3>${zhFaqs}</section><h2>Related Demox pages</h2><ul>${related}<li><a href="/doc">CLI and MCP docs</a></li><li><a href="/when-to-use-demox">When to use Demox</a></li></ul><p><a href="/console/projects">Upload and publish</a> · <a href="/doc">Read the docs</a></p></article></main>`;
 }
 
 export function intentPublicPages() {

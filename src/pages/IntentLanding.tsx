@@ -36,11 +36,13 @@ export const IntentLanding: React.FC = () => {
 
   const h1 = isZh ? page.zh.h1 : page.h1;
   const answer = isZh ? page.zh.answer : page.answer;
+  const steps = isZh ? page.zh.steps : page.steps;
+  const faqs = isZh ? page.zh.faqs : page.faqs;
   const related = INTENT_LANDINGS.filter((item) => item.id !== page.id).slice(0, 8);
 
   return (
     <>
-      <Seo title={page.title} description={page.description} />
+      <Seo title={isZh ? page.zh.title : page.title} description={isZh ? page.zh.description : page.description} />
       <GeoArticle
         url={`https://www.demox.site/${page.id}`}
         published={INTENT_PUBLISHED}
@@ -64,8 +66,8 @@ export const IntentLanding: React.FC = () => {
             id="how-to"
           />
           <ol className="mt-8 space-y-4">
-            {page.steps.map((step, index) => (
-              <li key={step} className="grid grid-cols-[2.5rem_1fr] gap-4">
+            {steps.map((step, index) => (
+              <li key={`${index}-${step}`} className="grid grid-cols-[2.5rem_1fr] gap-4">
                 <span className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--stitch-line)] font-mono text-xs font-bold">
                   {String(index + 1).padStart(2, "0")}
                 </span>
@@ -77,7 +79,7 @@ export const IntentLanding: React.FC = () => {
         <section className="mx-auto max-w-5xl pb-14 md:pb-20" aria-labelledby="faq">
           <GeoSectionHeading eyebrow="FAQ" title={isZh ? "常见问题" : "Questions"} id="faq" />
           <div className="mt-8 divide-y divide-[var(--stitch-line)] border-y border-[var(--stitch-line)]">
-            {page.faqs.map((item) => (
+            {faqs.map((item) => (
               <article key={item.q} className="py-6">
                 <h3 className="text-lg font-bold">{item.q}</h3>
                 <p className="mt-3 max-w-3xl leading-7 text-[var(--stitch-muted)]">{item.a}</p>

@@ -107,6 +107,13 @@ test("generates indexable static shells and noindex auth shells", async () => {
     const vite = await readFile(path.join(distDir, "deploy-vite-app", "index.html"), "utf8");
     assert.match(vite, /demox deploy \.\/dist/);
 
+    const vercel = await readFile(path.join(distDir, "vercel-alternative-for-static-sites", "index.html"), "utf8");
+    assert.match(vercel, /Keep Vercel or similar if you need that full platform/);
+    assert.match(vercel, /先做静态导出，或 Vite\/React 生产构建/);
+    assert.match(vercel, /常见问题/);
+    assert.match(vercel, /Demox 能替代 Vercel 吗？/);
+    assert.match(vercel, /Next\.js 呢？/);
+
     const callback = await readFile(path.join(distDir, NOINDEX_ROUTES[0], "index.html"), "utf8");
     assert.match(callback, /content="noindex, nofollow"/);
     assert.doesNotMatch(callback, /application\/ld\+json/);
