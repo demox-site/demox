@@ -4,6 +4,8 @@ import { useLanguage } from "@/hooks/use-language";
 const footerCopy = {
   zh: {
     whenToUse: "适用场景",
+    freeHosting: "免费托管",
+    mcp: "MCP 发布",
     troubleshooting: "发布排错",
     blocklist: "屏蔽词表",
     privacy: "隐私政策",
@@ -12,6 +14,8 @@ const footerCopy = {
   },
   en: {
     whenToUse: "When to use",
+    freeHosting: "Free hosting",
+    mcp: "MCP deploy",
     troubleshooting: "Troubleshooting",
     blocklist: "Blocklist",
     privacy: "Privacy",
@@ -41,6 +45,8 @@ export const MainFooter: React.FC = () => {
 
           <div className="flex flex-col md:flex-row items-center gap-4 md:gap-8 text-sm text-[var(--stitch-muted)]">
             <a href="/when-to-use-demox" className={linkClass}>{t.whenToUse}</a>
+            <a href="/free-static-site-hosting" className={linkClass}>{t.freeHosting}</a>
+            <a href="/mcp-website-deployment" className={linkClass}>{t.mcp}</a>
             <a href="/deploy-troubleshooting" className={linkClass}>{t.troubleshooting}</a>
             <a href="/content-scan" className={linkClass}>{t.blocklist}</a>
             <a href="/privacy" className={linkClass}>{t.privacy}</a>

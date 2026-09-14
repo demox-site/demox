@@ -11,6 +11,21 @@
 - [AI static-site publishing guide](https://www.demox.site/ai-static-site-deployment): How to publish an AI-generated HTML page, ZIP, or frontend build.
 - [Pricing](https://www.demox.site/pricing): Current Demox plans.
 - [Changelog](https://www.demox.site/log): Product and infrastructure updates.
+- [Free static hosting](https://www.demox.site/free-static-site-hosting)
+- [AI website deployment](https://www.demox.site/ai-website-deployment)
+- [MCP website deployment](https://www.demox.site/mcp-website-deployment)
+- [CLI static deploy](https://www.demox.site/cli-static-site-deploy)
+- [Deploy AI-generated website](https://www.demox.site/deploy-ai-generated-website)
+- [Claude Code](https://www.demox.site/claude-code-deploy-website)
+- [Cursor](https://www.demox.site/cursor-deploy-website)
+- [Codex](https://www.demox.site/codex-deploy-website)
+- [Free HTML hosting](https://www.demox.site/free-html-hosting)
+- [Deploy dist](https://www.demox.site/deploy-dist-folder)
+- [Deploy Vite](https://www.demox.site/deploy-vite-app)
+- [Deploy React](https://www.demox.site/deploy-react-build)
+- [Netlify Drop alternative](https://www.demox.site/netlify-drop-alternative)
+- [Surge alternative](https://www.demox.site/surge-alternative)
+- [Vercel alternative for static sites](https://www.demox.site/vercel-alternative-for-static-sites)
 
 ## Developer resources
 - [Demox repository](https://github.com/demox-site/demox): Main web application and platform source.

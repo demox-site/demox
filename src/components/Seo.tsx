@@ -3,6 +3,7 @@ import { Helmet } from "react-helmet-async";
 import { useLocation } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { siteConfig } from "@/configs/env";
+import { INTENT_LANDINGS } from "@/content/intent-landings.mjs";
 
 interface SeoProps {
   title?: string;
@@ -22,6 +23,7 @@ const INDEXABLE_PATHS = new Set([
   "/when-to-use-demox",
   "/deploy-troubleshooting",
   "/how-demox-hosts-itself",
+  ...INTENT_LANDINGS.map((page) => `/${page.id}`),
   "/terms",
   "/privacy",
   "/log"
@@ -38,14 +40,18 @@ export const Seo: React.FC<SeoProps> = ({
   const isZh = language === "zh";
 
   const defaultTitle = isZh
-    ? "Demox - 静态网站与 Node 云函数发布"
-    : "Demox - Static sites and Node functions";
+    ? "免费静态网站发布平台，支持 CLI 和 MCP | Demox"
+    : "Free Static Website Hosting with CLI & MCP | Demox";
 
   const defaultDescription = isZh
-    ? "Demox 把 HTML、ZIP 和前端构建产物发布为带 HTTPS 的静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。"
-    : "Demox publishes HTML, ZIP archives, and frontend builds as HTTPS static sites, and hosts Node handlers as functions on the same site through the web, CLI, MCP, or API.";
+    ? "将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。支持网页、CLI 与 MCP。"
+    : "Demox is a free static website hosting platform for AI-generated websites. Deploy HTML, ZIP, React/Vue/Vite builds through drag-and-drop, CLI or MCP and get a public HTTPS URL.";
 
-  const siteTitle = title ? `${title} | ${SITE_NAME}` : defaultTitle;
+  const siteTitle = title
+    ? title.includes(SITE_NAME)
+      ? title
+      : `${title} | ${SITE_NAME}`
+    : defaultTitle;
   const siteDescription = description || defaultDescription;
   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
   const canonicalPath = normalizedPath === "/index" ? "/" : normalizedPath;

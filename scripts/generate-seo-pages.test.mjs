@@ -99,6 +99,14 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(selfHost, /demox functions push/);
     assert.match(selfHost, /EPX2UU43/);
 
+    const mcp = await readFile(path.join(distDir, "mcp-website-deployment", "index.html"), "utf8");
+    assert.match(mcp, /<h1>Deploy a website from MCP<\/h1>/);
+    assert.match(mcp, /@demox-site\/mcp-server/);
+    assert.match(mcp, /"@type":"HowTo"/);
+
+    const vite = await readFile(path.join(distDir, "deploy-vite-app", "index.html"), "utf8");
+    assert.match(vite, /demox deploy \.\/dist/);
+
     const callback = await readFile(path.join(distDir, NOINDEX_ROUTES[0], "index.html"), "utf8");
     assert.match(callback, /content="noindex, nofollow"/);
     assert.doesNotMatch(callback, /application\/ld\+json/);
@@ -121,6 +129,9 @@ test("sitemap contains only generated public routes on the canonical host", asyn
   assert.ok(paths.includes("/when-to-use-demox"));
   assert.ok(paths.includes("/deploy-troubleshooting"));
   assert.ok(paths.includes("/how-demox-hosts-itself"));
+  assert.ok(paths.includes("/free-static-site-hosting"));
+  assert.ok(paths.includes("/mcp-website-deployment"));
+  assert.ok(paths.includes("/vercel-alternative-for-static-sites"));
   assert.ok(paths.includes("/content-scan"));
   for (const pathname of paths) {
     const route = pathname.replace(/^\//, "").replace(/\/$/, "");

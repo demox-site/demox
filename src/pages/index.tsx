@@ -18,14 +18,15 @@ import { useLanguage } from "../hooks/use-language";
 import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
 import { track } from "@/lib/track";
+import { INTENT_LANDINGS } from "@/content/intent-landings.mjs";
 
 const translations = {
   zh: {
     hero: {
       version: `v${siteConfig.version} 现已发布`,
-      title_start: "上传构建产物，立刻获得一个能打开的链接",
+      title_start: "免费静态网站发布平台，支持 CLI 和 MCP",
       title_end: "",
-      desc: "适合前端 Demo、AI 生成页面、客户评审、文档网页化，以及改成 handler 的 Node 接口。页面走 demox deploy，函数走 demox functions push。",
+      desc: "将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。",
       start_btn: "立即上传",
       examples_btn: "看 30 秒示例"
     },
@@ -138,9 +139,9 @@ const translations = {
   en: {
     hero: {
       version: `v${siteConfig.version} is now live`,
-      title_start: "Upload your build,",
-      title_end: "get a link that opens.",
-      desc: "For frontend demos, AI-generated pages, client previews, documents, and Node handlers. Pages use demox deploy; functions use demox functions push.",
+      title_start: "Deploy AI-generated websites",
+      title_end: "in seconds.",
+      desc: "Demox is a free static website hosting platform for AI-generated websites. Deploy HTML, ZIP, React/Vue/Vite builds through drag-and-drop, CLI or MCP and get a public HTTPS URL.",
       start_btn: "Upload now",
       examples_btn: "See 30s examples"
     },
@@ -446,6 +447,31 @@ const CloudHostLanding: React.FC = () => {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section id="intent-guides" className="py-16 px-4 border-t border-[var(--stitch-line)]">
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-2xl md:text-3xl font-bold mb-3 text-white">
+            {lang === "zh" ? "按具体发布任务查" : "Guides for a specific deploy job"}
+          </h2>
+          <p className="text-zinc-400 mb-8 max-w-3xl">
+            {lang === "zh"
+              ? "这些页面直接回答 CLI、MCP、Vite、React、单个 HTML 和常见平台对比，方便搜索引擎和 AI 引用。"
+              : "These pages answer CLI, MCP, Vite, React, single HTML, and honest platform comparisons so search engines and AI tools can cite them."}
+          </p>
+          <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {INTENT_LANDINGS.map((page) => (
+              <li key={page.id}>
+                <a
+                  href={`/${page.id}`}
+                  className="block rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-4 py-3 text-sm font-medium text-[var(--stitch-ink)] hover:border-[var(--stitch-muted)]"
+                >
+                  {lang === "zh" ? page.zh.h1 : page.h1}
+                </a>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 

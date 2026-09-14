@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { INTENT_LANDINGS, intentPublicPages } from "../src/content/intent-landings.mjs";
 
 const SITE_URL = "https://www.demox.site";
 const INDEX_ROBOTS = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -57,8 +58,8 @@ const homeFallback = `
   </header>
   <section id="demox-overview" class="fallback-hero" lang="en">
     <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static sites and Node functions</div>
-    <h1>How do you publish a site with Demox?</h1>
-    <p class="fallback-summary"><strong>Direct answer:</strong> Upload one HTML file, or a folder or ZIP with <code>index.html</code> at the root. Demox returns an HTTPS link on a CDN. For a Node API, export <code>handler(request, env)</code> and run <code>demox functions push</code>.</p>
+    <h1>Deploy AI-generated websites in seconds</h1>
+    <p class="fallback-summary"><strong>Direct answer:</strong> Demox is a free static website hosting platform for AI-generated websites. Deploy HTML, ZIP, React/Vue/Vite build output, PDF or Markdown through drag-and-drop, CLI or MCP and instantly get a public HTTPS URL. No Git and no server setup.</p>
     <div class="fallback-actions">
       <a class="fallback-action fallback-action-primary" href="/console/projects">Upload and publish</a>
       <a class="fallback-action" href="/when-to-use-demox">See if it fits</a>
@@ -106,8 +107,14 @@ const homeFallback = `
       ${HOME_FAQ.map((item) => `<h3>${item.question}</h3><p>${item.answer}</p>`).join("\n      ")}
     </section>
     <section lang="zh-CN">
-      <h2>Demox 是什么？</h2>
-      <p>Demox 把 HTML、静态构建目录、ZIP 或文档变成可分享的 HTTPS 站点，并把 Node handler 作为云函数挂到同一站点。它适合前端 Demo、AI 生成页面、客户评审、文档页，以及已改成 <code>handler(request, env)</code> 的 Node 接口。Python、PHP、Java、Express listen，以及必须直连私密数据库或常驻进程的服务，仍需独立后端或先改造。Demox 不声称替代完整 CI/CD 平台。</p>
+      <h2>免费静态网站发布平台，支持 CLI 和 MCP</h2>
+      <p>将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。网页端拖拽，终端用 <code>demox deploy</code>，AI 助手走 MCP。Python、PHP、Java、Express listen 不是直接适配。</p>
+    </section>
+    <section>
+      <h2>Guides for specific deploy jobs</h2>
+      <ul>
+        ${INTENT_LANDINGS.map((page) => `<li><a href="/${page.id}">${page.h1}</a></li>`).join("\n        ")}
+      </ul>
     </section>
   </section>
   ${crawlableFooter}
@@ -115,8 +122,8 @@ const homeFallback = `
 
 export const PUBLIC_PAGES = {
   "": {
-    title: "Demox — Publish static sites and Node functions",
-    description: "Demox publishes HTML and frontend builds as HTTPS sites. Node backends export handler(request, env) and run as cloud functions.",
+    title: "Free Static Website Hosting with CLI & MCP | Demox",
+    description: "Demox is a free static website hosting platform for AI-generated websites. Deploy HTML, ZIP, React/Vue/Vite builds through drag-and-drop, CLI or MCP and get a public HTTPS URL.",
     fallback: homeFallback,
     faq: HOME_FAQ,
     howTo: {
@@ -126,8 +133,8 @@ export const PUBLIC_PAGES = {
     },
   },
   index: {
-    title: "Demox — Publish static sites and Node functions",
-    description: "Demox publishes HTML and frontend builds as HTTPS sites. Node backends export handler(request, env) and run as cloud functions.",
+    title: "Free Static Website Hosting with CLI & MCP | Demox",
+    description: "Demox is a free static website hosting platform for AI-generated websites. Deploy HTML, ZIP, React/Vue/Vite builds through drag-and-drop, CLI or MCP and get a public HTTPS URL.",
     canonicalPath: "/",
     fallback: homeFallback,
     faq: HOME_FAQ,
@@ -212,6 +219,7 @@ demox functions push ./scf-code/website-api --id EPX2UU43 --slug website
 demox functions push ./scf-code/mcp-api --id EPX2UU43 --slug mcp
 demox functions push ./scf-code/cert-renew --id EPX2UU43 --slug cert-renew</code></pre><h2>这个案例能证明什么</h2><p>能证明静态页面和 Node handler 可以挂在同一站点，且 Demox 自己走这条路径。不能证明任意 Express 或 Python 应用可以零改动迁入。完整边界见 <a href="/when-to-use-demox">适用场景</a>。</p></article></main>`,
   },
+  ...intentPublicPages(),
 };
 
 export const NOINDEX_ROUTES = [

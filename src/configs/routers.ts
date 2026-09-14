@@ -18,6 +18,8 @@ import ContentScanPage from "../pages/ContentScanPage";
 import WhenToUseDemox from "../pages/WhenToUseDemox";
 import DeployTroubleshooting from "../pages/DeployTroubleshooting";
 import HowDemoxHostsItself from "../pages/HowDemoxHostsItself";
+import IntentLanding from "../pages/IntentLanding";
+import { INTENT_LANDINGS } from "../content/intent-landings.mjs";
 
 export const routers = [
   {
@@ -53,6 +55,10 @@ export const routers = [
     id: "how-demox-hosts-itself",
     component: HowDemoxHostsItself
   },
+  ...INTENT_LANDINGS.map((page) => ({
+    id: page.id,
+    component: IntentLanding
+  })),
   {
     id: "layout-demo",
     component: LayoutDemo

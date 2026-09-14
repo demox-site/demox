@@ -13,10 +13,11 @@ This report follows the installed `seo-geo` skill. Scores are transparent heuris
 | Production baseline (2026-08-11) | 3/25 | 1/20 | 5/15 | 5/20 | 4/20 | **18/100** |
 | Local candidate after crawlable shells (2026-08-24) | 20/25 | 16/20 | 8/15 | 10/20 | 18/20 | **72/100** |
 | Local candidate after content refresh (2026-09-14) | 23/25 | 18/20 | 8/15 | 13/20 | 18/20 | **80/100** |
+| Local candidate after intent landings (2026-09-14) | 24/25 | 19/20 | 8/15 | 13/20 | 18/20 | **82/100** |
 
 The remaining score gap is still first-party metrics, independent brand mentions, Search Console/AI citation proof, and multi-modal assets. This pass does not invent usage numbers or third-party mentions.
 
-The 2026-09-14 local candidate adds answer-first comparison, troubleshooting, and a first-party self-host case, and it corrects the product definition: Demox publishes static sites **and** Node `handler(request, env)` functions. Earlier copy that said Node backends always needed a separate host is no longer accurate.
+A later 2026-09-14 check (without using the brand name) found npm, Glama, and a TRAE community post, but not Demox on generic queries such as “免费 静态网站 发布 CLI MCP” or “free static website hosting MCP CLI AI deploy”. `site:demox.site` was empty in that check. Brand search works; unbranded intent search does not. This pass adds dedicated intent URLs and search-shaped homepage copy. It does not prove indexing. npm README changes are local until those packages are published. New www routes are in the edge allowlist source; the live edge function still has to pick that list up or those paths can 404.
 
 ## 2. Platform breakdown
 

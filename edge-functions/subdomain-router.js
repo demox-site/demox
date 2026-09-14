@@ -31,6 +31,10 @@ var WWW_FALLBACK_PATH = 'sites/1985655011013808129/EPX2UU43/dist'; // www 兜底
 var WWW_SPA_ROUTES = [
   '/', '/index', '/pricing', '/doc', '/content-scan', '/ai-static-site-deployment', '/layout-demo', '/terms', '/privacy', '/log',
   '/when-to-use-demox', '/deploy-troubleshooting', '/how-demox-hosts-itself',
+  '/free-static-site-hosting', '/ai-website-deployment', '/mcp-website-deployment', '/cli-static-site-deploy',
+  '/deploy-ai-generated-website', '/claude-code-deploy-website', '/cursor-deploy-website', '/codex-deploy-website',
+  '/free-html-hosting', '/deploy-dist-folder', '/deploy-vite-app', '/deploy-react-build',
+  '/netlify-drop-alternative', '/surge-alternative', '/vercel-alternative-for-static-sites',
   '/mcp-login', '/mcp-authorize', '/github-callback', '/github-link',
   '/feishu-callback', '/feishu-link', '/site-auth', '/home', '/admin', '/mcp', '/docs'
 ];
