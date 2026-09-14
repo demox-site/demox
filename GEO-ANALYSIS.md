@@ -1,97 +1,101 @@
 # Demox SEO/GEO Analysis
 
-Audit date: 2026-08-11 (Asia/Singapore)
+Audit date: 2026-09-14 (Asia/Singapore)
 
 Target: <https://www.demox.site/>
 
-This report follows the installed `seo-geo` skill. Scores are transparent heuristics, not Google ranking data. Google Search Console and AI-platform citation telemetry were not available for this audit.
+This report follows the installed `seo-geo` skill. Scores are transparent heuristics, not Google ranking data. Google Search Console and AI-platform citation telemetry were not re-checked in this pass.
 
 ## 1. GEO readiness score
 
 | State | Citability | Structure | Multi-modal | Authority | Technical | Total |
 |---|---:|---:|---:|---:|---:|---:|
-| Production baseline | 3/25 | 1/20 | 5/15 | 5/20 | 4/20 | **18/100** |
-| Local candidate | 20/25 | 16/20 | 8/15 | 10/20 | 18/20 | **72/100** |
+| Production baseline (2026-08-11) | 3/25 | 1/20 | 5/15 | 5/20 | 4/20 | **18/100** |
+| Local candidate after crawlable shells (2026-08-24) | 20/25 | 16/20 | 8/15 | 10/20 | 18/20 | **72/100** |
+| Local candidate after content refresh (2026-09-14) | 23/25 | 18/20 | 8/15 | 13/20 | 18/20 | **80/100** |
 
-The baseline is low because the production HTML contains an empty React root and only the title `Demox`; non-JavaScript crawlers cannot read the product explanation. In addition, `/index` and `/doc` return HTTP 404, while `robots.txt` and `sitemap.xml` still identify `ai-builder.aigc.sx.cn` as the canonical site.
+The remaining score gap is still first-party metrics, independent brand mentions, Search Console/AI citation proof, and multi-modal assets. This pass does not invent usage numbers or third-party mentions.
 
-The local candidate fixes the crawlability and entity-description layer. The remaining score gap is mainly first-party evidence, dated authorship, independent brand mentions, and production verification.
+The 2026-09-14 local candidate adds answer-first comparison, troubleshooting, and a first-party self-host case, and it corrects the product definition: Demox publishes static sites **and** Node `handler(request, env)` functions. Earlier copy that said Node backends always needed a separate host is no longer accurate.
 
 ## 2. Platform breakdown
 
-| Platform | Baseline | Local candidate | Main remaining dependency |
+| Platform | Previous local | 2026-09-14 local | Main remaining dependency |
 |---|---:|---:|---|
-| Google Search / AI Overviews | 20/100 | 76/100 | Deploy, validate indexing, and inspect Search Console |
-| ChatGPT Search | 15/100 | 70/100 | Deploy, then measure whether Demox is cited for target queries |
-| Perplexity | 15/100 | 70/100 | Deploy, then verify crawling and citations |
-| Bing / Copilot | 18/100 | 72/100 | Submit and validate the corrected sitemap in Bing Webmaster Tools |
+| Google Search / AI Overviews | 76/100 | 82/100 | Deploy, then inspect Search Console stored crawl and snippets |
+| Google AI Mode | 70/100 | 78/100 | Fresh dated articles plus entity consistency after deploy |
+| ChatGPT Search | 70/100 | 76/100 | Measure citations for “what is Demox” and deploy-error queries |
+| Perplexity | 70/100 | 76/100 | Same; Reddit/Wikipedia presence is still absent |
+| Bing / Copilot | 72/100 | 78/100 | Submit the updated sitemap after deploy |
 
 ## 3. AI crawler access
 
-Production currently permits all crawlers through `User-agent: *`, so GPTBot, OAI-SearchBot, ClaudeBot, and PerplexityBot are not blocked. The local `robots.txt` makes those search crawlers explicit while excluding authentication and console routes. Explicit rules improve auditability; they do not create a ranking boost by themselves.
+Unchanged and still correct: `robots.txt` allows GPTBot, OAI-SearchBot, ClaudeBot, PerplexityBot, and `User-agent: *`, while excluding `/console/` and auth routes.
 
 ## 4. `llms.txt` status
 
-Production returns HTTP 404 for `/llms.txt`. The local candidate adds a concise file linking the homepage, CLI/MCP documentation, changelog, repositories, package names, and supported inputs.
-
-This is optional developer-documentation support, not a Google ranking tactic. Google's AI optimization guidance says Google Search ignores `llms.txt`, including for generative AI features.
+Present locally at `/llms.txt`. It now points at the comparison, troubleshooting, and self-host pages, plus functions. Google Search ignores `llms.txt`; keep it as optional agent navigation.
 
 ## 5. Brand mention analysis
 
-- Confirmed first-party presence: the `demox-site/demox` and `demox-site/skill` GitHub repositories.
-- The product UI says the Demox X account is not yet available.
-- Wikipedia, Reddit, YouTube, LinkedIn, third-party reviews, and independent citations were not verified in this audit.
-- No independent authority score is claimed. A future audit should measure real mentions and referral/citation traffic rather than manufacture mentions for GEO.
+- First-party: `demox-site/demox`, `demox-site/skill`, and `https://x.com/a_phos` (linked from the pricing page). Organization JSON-LD `sameAs` now includes those three URLs.
+- Wikipedia, Reddit, YouTube, LinkedIn, and independent reviews were not verified in this pass.
+- No usage, uptime, or customer counts are claimed.
 
 ## 6. Passage-level citability
 
-The local static homepage shell adds a self-contained product definition near the start of the raw HTML. It states what Demox is, supported inputs, deployment surfaces, operational benefits, intended use cases, public/private behavior, and the boundary that Demox does not replace a full CI/CD platform.
+New self-contained answer blocks:
 
-The local docs shell adds an answer-first distinction between CLI and MCP, followed by exact package names and minimal commands. These passages are available without JavaScript and match the visible application content.
+- Homepage: what Demox is, including Node functions and explicit non-fits.
+- `/when-to-use-demox`: fit table plus a first-party self-host pointer.
+- `/deploy-troubleshooting`: exact `MISSING_ENTRYPOINT`, `CONTENT_BLOCKED`, `INVALID_STATIC_SITE`, and `Access denied` text with verified remedies.
+- `/how-demox-hosts-itself`: the current `demox deploy` + `demox functions push` path from AGENTS.md, with an explicit non-claim on metrics.
 
 ## 7. Server-side rendering check
 
-Demox is a client-rendered Vite/React application and does not use SSR. The local change does not introduce an SSR framework; it generates route-specific static HTML shells after the Vite build. This is the smallest reversible change that makes the key public routes readable to non-JavaScript crawlers while preserving the existing application runtime.
+Unchanged architecture: Vite/React SPA plus post-build static HTML shells. Non-JavaScript crawlers can read the new routes after `npm run build`.
 
-## 8. Top five highest-impact changes
+## 8. Top five highest-impact changes in this pass
 
-1. Generate HTTP-200 static route shells for `/doc`, `/pricing`, `/log`, `/terms`, `/privacy`, and the legacy `/index` alias.
-2. Put a factual, crawlable product definition in the initial HTML instead of an empty React root.
-3. Replace the obsolete host in `robots.txt` and `sitemap.xml` with `https://www.demox.site` and remove hash URLs.
-4. Add canonical URLs, index/noindex controls, Open Graph URLs, correct Twitter-card attributes, and route-specific metadata.
-5. Add Organization, WebSite, SoftwareApplication, and WebPage JSON-LD that reflects confirmed product facts.
+1. Correct the crawlable product definition so Node functions are part of Demox, not “always use another backend”.
+2. Add `/when-to-use-demox` with a comparison table and non-fit boundaries.
+3. Add `/deploy-troubleshooting` that quotes real error codes and messages.
+4. Add `/how-demox-hosts-itself` as dated first-party evidence, without fabricated metrics.
+5. Refresh sitemap, `llms.txt`, SoftwareApplication schema, internal links, and homepage/guide copy so JS and no-JS views agree.
 
 ## 9. Schema recommendations
 
-Implemented locally:
+Implemented:
 
-- `Organization` for the Demox entity and GitHub identity.
-- `WebSite` for the canonical domain and supported languages.
-- `SoftwareApplication` for the developer deployment product.
-- `WebPage` for each generated public route.
+- Existing Organization / WebSite / SoftwareApplication / WebPage graph, with an updated SoftwareApplication description.
+- TechArticle on the guide, comparison, troubleshooting, and self-host pages, with `datePublished` / `dateModified`.
+- `sameAs` for GitHub repos and the public X profile already linked from pricing.
 
-Not added:
+Still not added:
 
-- Review, rating, user-count, uptime, or customer schema because no current evidence was provided.
-- FAQ rich-result markup because it is not a general commercial-site ranking lever and the visible FAQ content remains client-rendered.
-- Offer markup because pricing can drift and should only be emitted from a maintained pricing source of truth.
+- Review, rating, user-count, or Offer markup.
+- FAQ rich-result markup. Visible FAQ copy remains; commercial FAQ schema is still withheld.
 
 ## 10. Content recommendations
 
-- Add dated, first-party case studies with measurable deployment outcomes and methodology.
-- Add a maintained comparison page that states when Demox is and is not a fit; avoid unsupported competitor claims.
-- Give changelog entries stable URLs and publication/update dates.
-- Publish troubleshooting pages for common deployment failures, using exact error messages and verified remedies.
-- Measure target-query impressions, indexed pages, and AI referrals after deployment before making further content changes.
+Done locally in this pass:
+
+- Comparison page that states when Demox is and is not a fit.
+- Troubleshooting page with exact error messages.
+- Dated first-party self-host case with methodology and explicit limits.
+
+Still open:
+
+- Changelog entries still share `/log` instead of stable per-entry URLs.
+- No independent case study with measured outcomes from a customer site.
+- No original survey, video, or diagram assets beyond the existing OG image.
+- Production crawl, Search Console stored HTML, and actual AI citations remain unverified until this candidate is deployed.
 
 ## Verification evidence and limits
 
-- Baseline HTTP checks: `/` 200; `/pricing` 200; `/index` 404; `/doc` 404; `/llms.txt` 404.
-- Baseline source: raw homepage HTML has no description, canonical, structured data, or crawlable body content.
-- `npm run test:seo` passes both route-generation and sitemap-contract tests.
-- A focused snapshot built from `origin/master` passes `npm ci` and `npm run build` without adding the unrelated `@demox-site/sdk` consumer dependency.
-- Browser smoke passes for `/` and `/doc`: React replaces the static fallback, each route retains exactly one description/canonical/robots tag, `/doc` renders its real H1, and no browser console errors were observed. `/mcp-authorize` retains `noindex, nofollow` after React starts.
-- Deployment, production crawl, Search Console indexing, Bing indexing, and actual AI citations remain out of scope until the code is committed and pushed through the repository's GitHub Actions release path.
+- `npm run test:seo` is the contract for route shells and sitemap membership.
+- Browser verification in this pass covers the new React routes locally; it does not prove production indexing.
+- Do not treat this file update as a ranking or citation result.
 
 ## Primary guidance
 

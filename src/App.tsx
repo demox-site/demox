@@ -28,6 +28,7 @@ import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
+import SitesPage from "./pages/console/SitesPage.jsx";
 import AdminDashboard from "./pages/AdminDashboard";
 import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
@@ -131,11 +132,11 @@ const App: React.FC = () => {
                     <Route path="projects" element={<ProjectsPage />} />
                     <Route
                       path="projects/:projectId/deploy"
-                      element={<Home mode="deploy" />}
+                      element={<Home />}
                     />
                     <Route
                       path="projects/:projectId/sites"
-                      element={<Home mode="sites" />}
+                      element={<SitesPage />}
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId/analytics"

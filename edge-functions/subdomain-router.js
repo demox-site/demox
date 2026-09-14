@@ -356,78 +356,6 @@ function getDefault404Html(meta, u) {
 </html>`;
 }
 
-function escapeHtmlText(value) {
-  return String(value || '').replace(/[&<>"']/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-  });
-}
-
-function getUnknownSite404Html(u) {
-  const host = escapeHtmlText(u && u.hostname);
-  const home = escapeHtmlText(demoxHomeUrl());
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="robots" content="noindex, nofollow">
-<title>404 · 站点未发布</title>
-<style>
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px 20px;
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111;
-    background: #f7f7f5; }
-  .wrap { width: min(480px, 100%); text-align: center; }
-  .kicker { margin: 0 0 16px; color: #71717a; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-transform: uppercase; }
-  h1 { margin: 0 0 12px; font-size: 36px; letter-spacing: -.03em; }
-  p { margin: 0 0 12px; color: #52525b; }
-  .host { display: inline-block; margin-top: 6px; padding: 4px 10px; border: 1px solid #e4e4e7; border-radius: 999px;
-    background: #fff; color: #18181b; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .btn { display: inline-block; margin-top: 16px; padding: 12px 22px; border-radius: 12px; background: #111; color: #fff;
-    font-weight: 650; text-decoration: none; }
-  .brand { margin-top: 32px; color: #71717a; font-size: 12px; }
-  .brand a { color: inherit; }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <p class="kicker">404</p>
-  <h1>站点未发布</h1>
-  <p>这个地址还没有站点。</p>
-  <p><span class="host">${host}</span></p>
-  <p>它可能已被删除、尚未部署，或域名写错了。</p>
-  <a class="btn" href="${home}">打开 Demox</a>
-  <p class="brand">Published with <a href="${home}">Demox</a></p>
-</div>
-</body>
-</html>`;
-}
-
-function unknownSiteNotFoundResponse(u) {
-  if (isSiteApiPath(u.pathname)) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'SITE_NOT_FOUND',
-      message: 'No site is published at this address'
-    }), {
-      status: 404,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'public, max-age=60',
-        'X-Robots-Tag': 'noindex, nofollow'
-      }
-    });
-  }
-  return new Response(getUnknownSite404Html(u), {
-    status: 404,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'public, max-age=60',
-      'X-Robots-Tag': 'noindex, nofollow'
-    }
-  });
-}
-
 function shouldInjectDemoxBadge(req, resp) {
   const host = new URL(req.url).hostname.toLowerCase();
   if (host === WWW_HOST) return false;
@@ -1300,5 +1228,5 @@ async function handle(req, event) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
-  return unknownSiteNotFoundResponse(u);
+  return fetch(req);
 }

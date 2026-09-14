@@ -216,7 +216,10 @@ async function applyBundle(inventory) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const rootFiles = { "index.js": "module.exports = require('./scf-code/function-api/index.js');\n" };
+  const rootFiles = {
+    "index.js": "module.exports = require('./scf-code/function-api/index.js');\n",
+    "runtime-nodejs.js": "module.exports = require('./scf-code/function-api/runtime-nodejs-handler.js');\n"
+  };
   for (const [relative, contents] of Object.entries(rootFiles)) {
     await mkdir(path.join(stageDir, path.dirname(relative)), { recursive: true });
     await writeFile(path.join(stageDir, relative), contents);

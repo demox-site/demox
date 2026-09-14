@@ -1,24 +1,25 @@
 import React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Badge, Button, Input } from "@/components/ui";
-import {
-  CheckCircle,
-  ExternalLink,
-  Globe2,
-  LockKeyhole,
-  Pencil,
-  Tag,
-  XCircle
-} from "lucide-react";
+import { Button, useToast } from "@/components/ui";
+import { ExternalLink, Globe2, LockKeyhole, Upload } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "../home-translations";
-import { getDisplayName, getSiteDomains, hasProOrAboveRole, parseTags, joinTags } from "@/lib/website-utils";
+import {
+  getDisplayName,
+  getPrimaryDomain,
+  getSiteDomains,
+  hasProOrAboveRole,
+  isSiteBusy,
+  joinTags
+} from "@/lib/website-utils";
 import DeleteConfirmDialog from "@/components/home/DeleteConfirmDialog";
 import RedeployDialog from "@/components/home/RedeployDialog";
 import DomainDialog from "@/components/home/DomainDialog";
 import SiteSettingsDialog from "@/components/home/SiteSettingsDialog";
 import SiteSettingsPanel from "@/components/home/SiteSettingsPanel";
-import StatusBadge from "@/components/home/StatusBadge";
+import SiteUrlBar from "@/components/home/SiteUrlBar";
+import SiteCustomDomains from "./SiteCustomDomains";
+import { copySiteUrl } from "@/lib/copy-site-url";
 import { useAuth } from "../use-auth";
 import { useWebsites } from "../use-websites";
 import { useProjects } from "../use-projects";
@@ -28,6 +29,7 @@ import { useDomainDialog } from "../use-domain-dialog";
 export default function SiteSettingsPage() {
   const { projectId = "", websiteId = "" } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { language: lang } = useLanguage();
   const t = translations[lang];
   const auth = useAuth(t);
@@ -47,6 +49,8 @@ export default function SiteSettingsPage() {
   const [seoDialogOpen, setSeoDialogOpen] = React.useState(false);
   const [seoWebsite, setSeoWebsite] = React.useState(null);
   const [ready, setReady] = React.useState(false);
+  const [nameDraft, setNameDraft] = React.useState("");
+  const [tagsDraft, setTagsDraft] = React.useState("");
 
   React.useEffect(() => {
     if (!isLoggedIn) return;
@@ -64,6 +68,19 @@ export default function SiteSettingsPage() {
     (item) => item.websiteId === websiteId || item._id === websiteId
   );
   const isPrivate = website?.visibility === "private";
+  const primary = getPrimaryDomain(website);
+  const extraDomains = getSiteDomains(website).filter((item) => item.host !== primary?.host);
+  const busy = isSiteBusy(website, sites.deploying);
+
+  const websiteKey = website?._id || "";
+  const websiteName = getDisplayName(website);
+  const websiteTagKey = joinTags(website?.tags || []);
+
+  React.useEffect(() => {
+    if (!websiteKey) return;
+    setNameDraft(websiteName);
+    setTagsDraft(websiteTagKey);
+  }, [websiteKey, websiteName, websiteTagKey]);
 
   React.useEffect(() => {
     if (!ready) return;
@@ -93,125 +110,110 @@ export default function SiteSettingsPage() {
 
   if (!ready || !website) {
     return (
-      <div className="min-h-full p-4 sm:p-6 lg:p-8">
-        <p className="text-sm text-muted-foreground">{t.loading || "Loading..."}</p>
+      <div className="stitch-page">
+        <div className="site-list-row h-36 animate-pulse" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-full p-4 sm:p-6 lg:p-8">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t.siteSettingsTitle || "站点设置"}</h1>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">ID: {website.websiteId || website._id}</p>
+    <div className="stitch-page max-w-5xl">
+      <div className="mb-8 flex flex-col gap-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="site-page-kicker">{t.siteSettingsTitle}</div>
+            <h1 className="site-page-title">{getDisplayName(website)}</h1>
+            <p className="mt-2 inline-flex items-center gap-1.5 text-sm text-[var(--stitch-muted)]">
+              {isPrivate ? <LockKeyhole className="h-3.5 w-3.5" /> : <Globe2 className="h-3.5 w-3.5" />}
+              {isPrivate ? t.visibilityPrivate : t.visibilityPublic}
+              {busy ? <span>· {t.processingUrl}</span> : null}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              className="stitch-primary rounded-full px-5"
+              onClick={() => primary && window.open(primary.url, "_blank", "noopener,noreferrer")}
+              disabled={!primary}
+            >
+              <ExternalLink className="mr-2 h-4 w-4" />
+              {t.openSite}
+            </Button>
+            <Button
+              variant="outline"
+              className="stitch-action rounded-full px-5"
+              onClick={() => primary && copySiteUrl(primary.url, toast, t)}
+              disabled={!primary}
+            >
+              {t.copyLink}
+            </Button>
+            <Button
+              variant="outline"
+              className="stitch-action rounded-full px-5"
+              disabled={busy}
+              title={busy ? t.redeployDisabledTooltip : t.redeployButton}
+              onClick={() => redeploy.openRedeployDialog(website)}
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {t.redeployButton}
+            </Button>
+          </div>
         </div>
 
-        <section className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-5">
-          <div className="flex flex-wrap items-center gap-3">
-            {sites.editingId === website._id ? (
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={sites.editingName}
-                  onChange={(e) => sites.setEditingName(e.target.value)}
-                  className="w-56 rounded-lg border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] px-2 py-1 text-sm"
-                />
-                <button type="button" onClick={() => sites.saveEditName(website)} title={t.save}>
-                  <CheckCircle className="h-4 w-4" />
-                </button>
-                <button type="button" onClick={sites.cancelEditName} title={t.cancel}>
-                  <XCircle className="h-4 w-4" />
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold">{getDisplayName(website)}</h2>
-                <button
-                  type="button"
-                  onClick={() => sites.startEditName(website)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] px-2 py-0.5 text-[11px] text-muted-foreground"
-                >
-                  <Pencil className="h-3 w-3" />
-                  {t.editName || "编辑名称"}
-                </button>
-              </div>
-            )}
-            <StatusBadge status={website.status} t={t} />
-            <Badge className={isPrivate ? "stitch-status-private" : "stitch-status-public"}>
-              {isPrivate ? <LockKeyhole className="mr-1 h-3 w-3" /> : <Globe2 className="mr-1 h-3 w-3" />}
-              {isPrivate ? t.visibilityPrivate : t.visibilityPublic}
-            </Badge>
+        <SiteUrlBar website={website} t={t} deploying={sites.deploying} size="lg" />
+
+        {extraDomains.length > 0 ? (
+          <div className="flex flex-col gap-1.5 px-1">
+            {extraDomains.map((item) => (
+              <a
+                key={item.host}
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="site-alt-host hover:text-[var(--stitch-ink)]"
+              >
+                <span className="truncate">
+                  {item.isDefault
+                    ? t.defaultAddress
+                    : website.subdomain &&
+                        item.host.startsWith(`${String(website.subdomain).toLowerCase()}.`)
+                      ? t.officialPrefix
+                      : t.projectAddresses}{" "}
+                  · {item.host}
+                </span>
+              </a>
+            ))}
           </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {sites.editingTagsId === website._id ? (
-              <div className="flex w-full max-w-md items-center gap-2">
-                <Input
-                  value={sites.editingTagsValue}
-                  onChange={(e) => sites.setEditingTagsValue(e.target.value)}
-                  className="h-8 text-xs"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") sites.saveEditTags(website);
-                    if (e.key === "Escape") sites.cancelEditTags();
-                  }}
-                />
-                <Button size="sm" variant="ghost" onClick={() => sites.saveEditTags(website)}>{t.save}</Button>
-                <Button size="sm" variant="ghost" onClick={sites.cancelEditTags}>{t.cancel}</Button>
-              </div>
-            ) : (
-              <>
-                {(website.tags || []).map((tag) => (
-                  <span key={tag} className="rounded-full border border-[var(--stitch-line)] px-2 py-0.5 text-[11px]">
-                    {tag}
-                  </span>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => sites.startEditTags(website)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--stitch-line)] px-2 py-0.5 text-[11px] text-muted-foreground"
-                >
-                  <Tag className="h-3 w-3" />
-                  {t.editTags || "编辑标签"}
-                </button>
-              </>
-            )}
-          </div>
-
-          {getSiteDomains(website).length > 0 && (
-            <div className="mt-4 flex flex-col gap-2">
-              {getSiteDomains(website).map((d) => (
-                <a
-                  key={d.host}
-                  href={d.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 font-mono text-sm text-[var(--stitch-ink)] hover:underline"
-                >
-                  {d.host}
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <SiteSettingsPanel
-          website={website}
-          t={t}
-          user={user}
-          deploying={sites.deploying}
-          watermarkSaving={sites.watermarkSaving}
-          projects={projects.activeProjects}
-          moveWebsiteToProject={sites.moveWebsiteToProject}
-          setWebsiteVisibility={sites.setWebsiteVisibility}
-          setWebsiteWatermark={sites.setWebsiteWatermark}
-          openRedeployDialog={redeploy.openRedeployDialog}
-          openDomainDialog={domain.openDomainDialog}
-          openSeoDialog={openSeoDialog}
-          confirmDeleteWebsite={sites.confirmDeleteWebsite}
-        />
+        ) : null}
       </div>
+
+      <SiteCustomDomains
+        projectId={projectId}
+        websiteId={website.websiteId || websiteId}
+        onChanged={() => {
+          void sites.loadWebsites();
+        }}
+      />
+
+      <SiteSettingsPanel
+        website={website}
+        t={t}
+        user={user}
+        deploying={sites.deploying}
+        watermarkSaving={sites.watermarkSaving}
+        projects={projects.activeProjects}
+        nameDraft={nameDraft}
+        setNameDraft={setNameDraft}
+        tagsDraft={tagsDraft}
+        setTagsDraft={setTagsDraft}
+        saveName={() => sites.saveEditName(website, nameDraft)}
+        saveTags={() => sites.saveEditTags(website, tagsDraft)}
+        moveWebsiteToProject={sites.moveWebsiteToProject}
+        setWebsiteVisibility={sites.setWebsiteVisibility}
+        setWebsiteWatermark={sites.setWebsiteWatermark}
+        openDomainDialog={domain.openDomainDialog}
+        openSeoDialog={openSeoDialog}
+        confirmDeleteWebsite={sites.confirmDeleteWebsite}
+      />
 
       <DomainDialog
         open={domain.domainOpen}

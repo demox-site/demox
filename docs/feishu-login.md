@@ -30,23 +30,24 @@ scf-deploy-packages/auth-api/migrations/001_add_feishu_identity.sql
 
 迁移增加 `feishu_open_id`、`feishu_union_id` 和 `feishu_name`，并对两个身份标识建立唯一约束。
 
-## 3. 配置并发布 auth-api
+## 3. 配置并发布 auth 云函数
 
-在 auth-api SCF 环境变量中配置：
+飞书 App Secret 只允许作为 auth 函数的环境变量存在，不得写入仓库、前端变量或构建日志：
 
-```text
-FEISHU_APP_ID=cli_xxx
-FEISHU_APP_SECRET=xxx
-FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
+```bash
+demox env set --id EPX2UU43 --slug auth \
+  FEISHU_APP_ID=cli_xxx \
+  FEISHU_APP_SECRET=xxx \
+  FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
+
+demox functions push ./scf-deploy-packages/auth-api --id EPX2UU43 --slug auth
 ```
 
-`FEISHU_APP_SECRET` 只允许存在于 SCF 环境变量中，不得写入仓库、前端变量或构建日志。
-完成配置后，单独发布 `scf-deploy-packages/auth-api/` 对应的认证云函数；主站的 GitHub
-Actions 只发布静态前端，不会更新 auth-api。
+不要再对腾讯云 `demox-auth-api` 做 `UpdateFunctionCode`。前端 `demox deploy` 不会更新 auth。
 
 ## 4. 配置并发布前端
 
-在 GitHub Actions Variables 中增加：
+构建时需要公开的 App ID（不是 Secret）：
 
 ```text
 VITE_FEISHU_APP_ID=cli_xxx
@@ -54,10 +55,13 @@ VITE_FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
 ```
 
 `VITE_FEISHU_REDIRECT_URI` 可省略，前端会默认使用
-`${VITE_DEMOX_SITE_URL}/feishu-callback`。App ID 是公开标识，可以进入前端构建；App Secret
-不可以。
+`${VITE_DEMOX_SITE_URL}/feishu-callback`。然后：
 
-代码推送到 `master` 后，现有工作流会构建和发布主站。
+```bash
+cd demox
+npm run build
+demox deploy ./dist --id EPX2UU43
+```
 
 ## 5. 上线验证
 
@@ -70,7 +74,7 @@ VITE_FEISHU_REDIRECT_URI=https://www.demox.site/feishu-callback
 5. 私有站点登录入口能够完成 OAuth 并回到原站点。
 6. 账号设置页能够显示绑定状态；未设置密码时拒绝解绑，避免账号失去登录入口。
 
-前端构建、auth-api 发布和数据库迁移只证明代码已就位；必须完成至少一次真实飞书账号授权，才能确认生产登录闭环。
+前端构建、`demox functions push` 发布 auth、以及数据库迁移只证明代码已就位；必须完成至少一次真实飞书账号授权，才能确认生产登录闭环。
 
 ## 6. PKCE 故障诊断
 

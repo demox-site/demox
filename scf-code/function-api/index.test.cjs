@@ -6,8 +6,9 @@ const { createFunctionHttpHandler, createPlatformHandler, main: defaultMain } = 
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
-const { QuickJSFunctionRuntime } = require('./runtime-quickjs.js');
 const { FunctionService } = require('./service.js');
+const { NodejsFunctionRuntime } = require('./runtime-nodejs.js');
+const http = require('node:http');
 
 function makeApp({ userId = 'user-1', limits, runtime } = {}) {
   const repository = new InMemoryFunctionRepository();
@@ -65,6 +66,7 @@ test('creates, versions, publishes and invokes a function through one shared han
   assert.equal(createdResponse.statusCode, 201);
   const created = JSON.parse(createdResponse.body).function;
   assert.match(created.functionId, /^fn_/);
+  assert.equal(created.runtime, 'nodejs');
   assert.equal(created.invokeUrl, 'https://functions.test/site-a/production/api/hello');
 
   const source = `export default async function(request, env) {
@@ -93,72 +95,126 @@ test('creates, versions, publishes and invokes a function through one shared han
   assert.equal(JSON.parse(sourceResponse.body).source, source);
 });
 
-test('site environment variables are injected and cannot use reserved platform keys', async () => {
+test('function environment variables are injected and cannot use reserved platform keys', async () => {
   const { handler } = makeApp();
   const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Env', slug: 'envfn' }))).body).function;
   const source = `export default async function(request, env) {
     return { status: 200, headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ greeting: env.GREETING, site: env.SITE_ID, slug: env.FUNCTION_SLUG }) };
+      body: JSON.stringify({ greeting: env.GREETING, secret: env.JWT_SECRET, site: env.SITE_ID, slug: env.FUNCTION_SLUG }) };
   }`;
   await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
-  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
 
-  const reserved = await handler(event('/site-a/production/env', 'POST', { env: { JWT_SECRET: 'nope' } }));
+  const reserved = await handler(event(`/functions/${created.functionId}/env`, 'POST', { env: { SITE_ID: 'nope' } }));
   assert.equal(reserved.statusCode, 400);
   assert.equal(JSON.parse(reserved.body).error, 'RESERVED_ENV_KEY');
 
-  const saved = await handler(event('/site-a/production/env', 'POST', { env: { GREETING: 'from-site' } }));
-  assert.equal(saved.statusCode, 200);
-  assert.equal(JSON.parse(saved.body).env.GREETING, 'from-site');
+  const functionsReserved = await handler(event(`/functions/${created.functionId}/env`, 'POST', { env: { FUNCTIONS_COS_BUCKET: 'nope' } }));
+  assert.equal(functionsReserved.statusCode, 400);
 
-  const listed = await handler(event('/site-a/production/env', 'GET'));
-  assert.equal(JSON.parse(listed.body).env.GREETING, 'from-site');
+  const saved = await handler(event(`/functions/${created.functionId}/env`, 'POST', { env: { GREETING: 'from-fn', JWT_SECRET: 'fn-secret' } }));
+  assert.equal(saved.statusCode, 200);
+  assert.equal(JSON.parse(saved.body).env.GREETING, 'from-fn');
+  assert.equal(JSON.parse(saved.body).env.JWT_SECRET, 'fn-secret');
+
+  const listed = await handler(event(`/functions/${created.functionId}/env`, 'GET'));
+  assert.equal(JSON.parse(listed.body).env.JWT_SECRET, 'fn-secret');
 
   const invoked = await handler(event('/site-a/production/api/envfn', 'POST', {}));
   assert.equal(invoked.statusCode, 200);
-  assert.deepEqual(JSON.parse(invoked.body), { greeting: 'from-site', site: 'site-a', slug: 'envfn' });
+  assert.deepEqual(JSON.parse(invoked.body), { greeting: 'from-fn', secret: 'fn-secret', site: 'site-a', slug: 'envfn' });
+});
+
+test('default aliases point at v1 and stay put when a newer version is uploaded', async () => {
+  const { handler } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Alias', slug: 'aliasfn' }))).body).function;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', {
+    source: 'module.exports = async () => ({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ n: 1 }) });'
+  }));
+  const aliases = JSON.parse((await handler(event(`/functions/${created.functionId}/aliases`, 'GET'))).body).aliases;
+  assert.deepEqual(aliases.map((item) => [item.alias, item.version]).sort(), [['develop', 1], ['production', 1]]);
+
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', {
+    source: 'module.exports = async () => ({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ n: 2 }) });'
+  }));
+  const after = JSON.parse((await handler(event(`/functions/${created.functionId}/aliases`, 'GET'))).body).aliases;
+  assert.deepEqual(after.map((item) => [item.alias, item.version]).sort(), [['develop', 1], ['production', 1]]);
+  assert.equal(JSON.parse((await handler(event('/site-a/production/api/aliasfn', 'GET'))).body).n, 1);
+
+  const moved = await handler(event(`/functions/${created.functionId}/aliases/production`, 'POST', { version: 2 }));
+  assert.equal(moved.statusCode, 200);
+  assert.equal(JSON.parse(moved.body).alias.version, 2);
+  assert.equal(JSON.parse((await handler(event('/site-a/production/api/aliasfn', 'GET'))).body).n, 2);
+  assert.equal(JSON.parse((await handler(event('/site-a/develop/api/aliasfn', 'GET'))).body).n, 1);
+
+  const denied = await handler(event(`/functions/${created.functionId}/aliases/production`, 'DELETE'));
+  assert.equal(denied.statusCode, 400);
+  assert.equal(JSON.parse(denied.body).error, 'RESERVED_ALIAS');
+
+  const staging = await handler(event(`/functions/${created.functionId}/aliases`, 'POST', { alias: 'staging', version: 2 }));
+  assert.equal(staging.statusCode, 200);
+  assert.equal(JSON.parse(staging.body).alias.alias, 'staging');
+  assert.equal(JSON.parse(staging.body).alias.version, 2);
+  assert.equal(JSON.parse((await handler(event('/site-a/staging/api/aliasfn', 'GET'))).body).n, 2);
+});
+
+test('existing functions without aliases backfill production/develop to the current version', async () => {
+  const { handler, repository } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Legacy', slug: 'legacyfn' }))).body).function;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', {
+    source: 'module.exports = async () => ({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ n: 1 }) });'
+  }));
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', {
+    source: 'module.exports = async () => ({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ n: 3 }) });'
+  }));
+  await handler(event(`/functions/${created.functionId}/aliases/production`, 'POST', { version: 2 }));
+  for (const alias of ['production', 'develop', 'staging']) {
+    repository.aliases.delete(`${created.functionId}:${alias}`);
+  }
+
+  const listed = JSON.parse((await handler(event(`/functions/${created.functionId}/aliases`, 'GET'))).body).aliases;
+  assert.deepEqual(listed.map((item) => [item.alias, item.version]).sort(), [['develop', 2], ['production', 2]]);
+  assert.equal(JSON.parse((await handler(event('/site-a/production/api/legacyfn', 'GET'))).body).n, 3);
 });
 
 test('published function can call outbound HTTP using site env on /api/{slug}', async () => {
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'platform-secret-must-not-leak';
-  const calls = [];
-  const runtime = new QuickJSFunctionRuntime({
-    fetch: async (url, init = {}) => {
-      calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
-      return {
-        status: 200,
-        ok: true,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ echo: url, auth: (init.headers || {}).authorization })
-      };
-    }
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({ url: req.url, auth: req.headers.authorization });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ echo: req.url, auth: req.headers.authorization }));
   });
-  const { handler } = makeApp({ runtime });
-  const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Proxy', slug: 'proxy' }))).body).function;
-  const saved = await handler(event('/site-a/production/env', 'POST', {
-    env: { UPSTREAM_URL: 'https://api.example.test/v1/me', API_KEY: 'site-secret' }
-  }));
-  assert.equal(saved.statusCode, 200);
-  assert.equal(JSON.parse(saved.body).env.API_KEY, 'site-secret');
-  const source = `export default async function(request, env) {
-    let leaked = null;
-    try { leaked = globalThis.process && globalThis.process.env && globalThis.process.env.JWT_SECRET; } catch {}
-    const res = await fetch(env.UPSTREAM_URL, { headers: { authorization: env.API_KEY } });
-    return { status: 200, headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ site: env.SITE_ID, leaked: leaked == null ? null : leaked, upstream: JSON.parse(res.body) }) };
-  }`;
-  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
-  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
-  const invoked = await handler(event('/site-a/production/api/proxy', 'POST', { ping: true }));
-  assert.equal(invoked.statusCode, 200);
-  assert.deepEqual(JSON.parse(invoked.body), {
-    site: 'site-a',
-    leaked: null,
-    upstream: { echo: 'https://api.example.test/v1/me', auth: 'site-secret' }
-  });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://api.example.test/v1/me');
-  assert.equal(calls[0].headers.authorization, 'site-secret');
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const { handler } = makeApp();
+    const created = JSON.parse((await handler(event('/functions', 'POST', { ...siteA, name: 'Proxy', slug: 'proxy' }))).body).function;
+    const saved = await handler(event(`/functions/${created.functionId}/env`, 'POST', {
+      env: { UPSTREAM_URL: `http://127.0.0.1:${port}/v1/me`, API_KEY: 'site-secret' }
+    }));
+    assert.equal(saved.statusCode, 200);
+    assert.equal(JSON.parse(saved.body).env.API_KEY, 'site-secret');
+    const source = `module.exports = async function(request, env) {
+      const leaked = process.env.JWT_SECRET == null ? null : process.env.JWT_SECRET;
+      const res = await fetch(env.UPSTREAM_URL, { headers: { authorization: env.API_KEY } });
+      const upstream = await res.json();
+      return { status: 200, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ site: env.SITE_ID, leaked, upstream }) };
+    };`;
+    await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+    await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+    const invoked = await handler(event('/site-a/production/api/proxy', 'POST', { ping: true }));
+    assert.equal(invoked.statusCode, 200);
+    assert.deepEqual(JSON.parse(invoked.body), {
+      site: 'site-a',
+      leaked: null,
+      upstream: { echo: '/v1/me', auth: 'site-secret' }
+    });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].auth, 'site-secret');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test('does not allow another user to manage a function', async () => {
@@ -181,11 +237,11 @@ test('does not allow another user to manage a function', async () => {
 test('rejects missing management auth while keeping invocation public', async () => {
   const repository = new InMemoryFunctionRepository();
   const bundleStore = new InMemoryBundleStore();
-  const service = new FunctionService({ repository, bundleStore, runtime: new QuickJSFunctionRuntime() });
+  const service = new FunctionService({ repository, bundleStore, runtime: new NodejsFunctionRuntime() });
   const record = await service.createFunction({ ownerId: 'owner', websiteId: 'site-a', name: 'Public', slug: 'public' });
   await service.createVersion({ ownerId: 'owner', functionId: record.functionId, source: 'module.exports = () => "ok"' });
   await service.publishVersion({ ownerId: 'owner', functionId: record.functionId, version: 1 });
-  const handler = createFunctionHttpHandler({ repository, bundleStore, runtime: new QuickJSFunctionRuntime(), authenticate: () => null });
+  const handler = createFunctionHttpHandler({ repository, bundleStore, runtime: new NodejsFunctionRuntime(), authenticate: () => null });
   const management = await handler(event('/functions', 'GET', {}));
   assert.equal(management.statusCode, 401);
   const invocation = await handler(event(`/functions/${record.functionId}/invoke`, 'GET', undefined, { headers: {} }));
@@ -196,7 +252,7 @@ test('rejects missing management auth while keeping invocation public', async ()
 test('enforces request, response and rate limits', async () => {
   const repository = new InMemoryFunctionRepository();
   const bundleStore = new InMemoryBundleStore();
-  const service = new FunctionService({ repository, bundleStore, runtime: new QuickJSFunctionRuntime() });
+  const service = new FunctionService({ repository, bundleStore, runtime: new NodejsFunctionRuntime() });
   const record = await service.createFunction({
     ownerId: 'owner', websiteId: 'site-a', name: 'Limited', slug: 'limited',
     limits: { maxBodyBytes: 4, maxResponseBytes: 4, maxInvocationsPerMinute: 10 }
@@ -221,19 +277,19 @@ test('enforces request, response and rate limits', async () => {
   );
 });
 
-test('QuickJS runtime blocks imports and interrupts infinite loops', async () => {
-  const runtime = new QuickJSFunctionRuntime();
+test('Node runtime blocks child_process and interrupts infinite loops', async () => {
+  const runtime = new NodejsFunctionRuntime();
   await assert.rejects(
     runtime.execute({
-      source: 'import fs from "node:fs"; export default () => fs.readFileSync("/etc/passwd")',
-      request: {}, env: {}, limits: { timeoutMs: 1000, memoryLimitBytes: 16 * 1024 * 1024, maxCodeBytes: 10000 }
+      source: 'module.exports = () => require("child_process")',
+      request: {}, env: {}, limits: { timeoutMs: 5000, memoryLimitBytes: 64 * 1024 * 1024, maxCodeBytes: 10000 }
     }),
-    (error) => error.code === 'FUNCTION_COMPILE_ERROR'
+    (error) => error.code === 'FUNCTION_MODULE_DENIED'
   );
   await assert.rejects(
     runtime.execute({
-      source: 'export default () => { while (true) {} }',
-      request: {}, env: {}, limits: { timeoutMs: 20, memoryLimitBytes: 16 * 1024 * 1024, maxCodeBytes: 10000 }
+      source: 'module.exports = () => { while (true) {} }',
+      request: {}, env: {}, limits: { timeoutMs: 200, memoryLimitBytes: 64 * 1024 * 1024, maxCodeBytes: 10000 }
     }),
     (error) => error.code === 'FUNCTION_TIMEOUT'
   );
@@ -273,7 +329,7 @@ test('MySQL adapter keeps version allocation and publication behind repository m
 test('published bundle checksum is verified again at invocation time', async () => {
   const repository = new InMemoryFunctionRepository();
   const bundleStore = new InMemoryBundleStore();
-  const service = new FunctionService({ repository, bundleStore, runtime: new QuickJSFunctionRuntime() });
+  const service = new FunctionService({ repository, bundleStore, runtime: new NodejsFunctionRuntime() });
   const record = await service.createFunction({ ownerId: 'owner', websiteId: 'site-a', name: 'Checksum', slug: 'checksum' });
   await service.createVersion({ ownerId: 'owner', functionId: record.functionId, source: 'module.exports = () => "ok"' });
   await service.publishVersion({ ownerId: 'owner', functionId: record.functionId, version: 1 });
@@ -401,7 +457,7 @@ test('system function list does not require a management token', async () => {
   const handler = createFunctionHttpHandler({
     repository: new InMemoryFunctionRepository(),
     bundleStore: new InMemoryBundleStore(),
-    runtime: new QuickJSFunctionRuntime(),
+    runtime: new NodejsFunctionRuntime(),
     authenticate: () => {
       throw new Error('should not authenticate');
     },
@@ -424,3 +480,209 @@ test('maps function failures to gateway errors without exposing host details', a
   assert.equal(payload.message, '函数执行失败');
   assert.doesNotMatch(response.body, /secret host path/);
 });
+
+test('rejects python and go runtimes until those runtime SCFs exist', async () => {
+  const { handler } = makeApp();
+  const coerced = JSON.parse((await handler(event('/functions', 'POST', {
+    ...siteA, name: 'Legacy', slug: 'legacy-js', runtime: 'quickjs'
+  }))).body).function;
+  assert.equal(coerced.runtime, 'nodejs');
+  const python = await handler(event('/functions', 'POST', { ...siteA, name: 'Py', slug: 'py-fn', runtime: 'python' }));
+  assert.equal(python.statusCode, 400);
+  assert.equal(JSON.parse(python.body).error, 'RUNTIME_NOT_AVAILABLE');
+  const go = await handler(event('/functions', 'POST', { ...siteA, name: 'Go', slug: 'go-fn', runtime: 'go' }));
+  assert.equal(go.statusCode, 400);
+});
+
+test('Node.js functions run outside the router process and can require jsonwebtoken', async () => {
+  process.env.PARENT_SECRET = 'router-secret-must-not-leak';
+  const { handler } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', {
+    ...siteA, name: 'Jwt', slug: 'jwt', runtime: 'nodejs'
+  }))).body).function;
+  assert.equal(created.runtime, 'nodejs');
+  const saved = await handler(event('/site-a/production/env', 'POST', { env: { JWT_SECRET: 'site-jwt-secret' } }));
+  assert.equal(saved.statusCode, 200);
+  const source = `module.exports = async function(request, env) {
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign({ sub: env.SITE_ID }, env.JWT_SECRET);
+    return {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        site: process.env.SITE_ID,
+        leaked: process.env.PARENT_SECRET == null ? null : process.env.PARENT_SECRET,
+        tokenOk: Boolean(token)
+      })
+    };
+  };`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  const invoked = await handler(event('/site-a/production/api/jwt', 'POST', {}));
+  assert.equal(invoked.statusCode, 200);
+  assert.deepEqual(JSON.parse(invoked.body), { site: 'site-a', leaked: null, tokenOk: true });
+});
+
+test('published platform function source runs for system prefixes', async () => {
+  const { handler, repository, bundleStore } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', {
+    websiteId: 'EPX2UU43',
+    name: 'Auth',
+    slug: 'auth',
+    runtime: 'nodejs',
+    routes: ['/auth']
+  }))).body).function;
+  const source = `exports.main = async function(event) {
+    return {
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: 'published', path: event.path })
+    };
+  };`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  const platform = createPlatformHandler({
+    userHandler: createFunctionHttpHandler({
+      repository,
+      bundleStore,
+      authenticate: () => ({ userId: 'user-1' }),
+      publicBaseUrl: 'https://functions.test'
+    }),
+    systemHandler: async () => ({ statusCode: 418, body: 'system' })
+  });
+  const response = await platform(event('/auth/me', 'GET', {}));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { from: 'published', path: '/auth/me' });
+  const fallback = await platform(event('/website/list', 'POST', {}));
+  assert.equal(fallback.statusCode, 418);
+});
+
+test('platform seed replaces wrapper source with the real backend', async () => {
+  const { handler } = makeApp();
+  handler.service.repository.websiteOwners.set('EPX2UU43', 'user-1');
+  const created = JSON.parse((await handler(event('/functions', 'POST', {
+    websiteId: 'EPX2UU43',
+    name: 'Auth',
+    slug: 'auth',
+    runtime: 'nodejs',
+    routes: ['/auth']
+  }))).body).function;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', {
+    source: 'const loaded = require("demox-auth");\nmodule.exports = async () => loaded;\n'
+  }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  const { seedPlatformSiteFunctions, isFakeWrapperSource } = require('./platform-site.js');
+  await seedPlatformSiteFunctions({
+    service: handler.service,
+    ownerId: 'user-1',
+    websiteId: 'EPX2UU43'
+  });
+  const source = (await handler.service.getSource({
+    ownerId: 'user-1',
+    functionId: created.functionId
+  })).source;
+  assert.equal(isFakeWrapperSource(source), false);
+  assert.match(source, /exports\.main/);
+  assert.ok(source.length > 10_000);
+
+  const custom = 'exports.main = async function() { return { statusCode: 200, body: "cli-push" }; };\n';
+  const version = JSON.parse((await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source: custom }))).body).version;
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: version.version }));
+  await seedPlatformSiteFunctions({
+    service: handler.service,
+    ownerId: 'user-1',
+    websiteId: 'EPX2UU43'
+  });
+  const kept = (await handler.service.getSource({
+    ownerId: 'user-1',
+    functionId: created.functionId
+  })).source;
+  assert.equal(kept, custom);
+});
+
+test('custom site routes take over only when they are not system prefixes', async () => {
+  const { handler, repository, bundleStore } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', {
+    websiteId: 'site-a',
+    name: 'Hook',
+    slug: 'hook',
+    runtime: 'nodejs',
+    routes: ['/hooks/demo']
+  }))).body).function;
+  const source = `module.exports = async function(request) {
+    return {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ takeover: true, path: request.path })
+    };
+  };`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+
+  const platform = createPlatformHandler({
+    userHandler: createFunctionHttpHandler({
+      repository,
+      bundleStore,
+      authenticate: () => ({ userId: 'user-1' }),
+      publicBaseUrl: 'https://functions.test'
+    }),
+    systemHandler: async () => ({ statusCode: 418, body: 'system' })
+  });
+  const custom = await platform(event('/site-a/production/hooks/demo', 'POST', { hello: true }));
+  assert.equal(custom.statusCode, 200);
+  assert.deepEqual(JSON.parse(custom.body), { takeover: true, path: '/hooks/demo' });
+  const systemPath = await platform(event('/website/list', 'POST', {}));
+  assert.equal(systemPath.statusCode, 418);
+});
+
+test('user timer names take over only when they are not platform timers', async () => {
+  const { handler, repository, bundleStore } = makeApp();
+  const created = JSON.parse((await handler(event('/functions', 'POST', {
+    websiteId: 'site-a',
+    name: 'Tick',
+    slug: 'tick',
+    runtime: 'nodejs',
+    triggers: ['timer'],
+    timerName: 'site-cron'
+  }))).body).function;
+  const source = `module.exports = async function(request) {
+    return {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timer: request.trigger && request.trigger.name })
+    };
+  };`;
+  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  const platform = createPlatformHandler({
+    userHandler: createFunctionHttpHandler({
+      repository,
+      bundleStore,
+      authenticate: () => ({ userId: 'user-1' }),
+      publicBaseUrl: 'https://functions.test'
+    }),
+    systemHandler: async (request) => ({ statusCode: 418, body: request.TriggerName || 'system' })
+  });
+  const custom = await platform({ Type: 'Timer', TriggerName: 'site-cron' });
+  assert.equal(custom.statusCode, 200);
+  assert.deepEqual(JSON.parse(custom.body), { timer: 'site-cron' });
+  const platformTimer = await platform({ Type: 'Timer', TriggerName: 'monthly-renew' });
+  assert.equal(platformTimer.statusCode, 418);
+  assert.equal(platformTimer.body, 'monthly-renew');
+});
+
+test('env GET/PUT is owner-only when the website owner is known', async () => {
+  const first = makeApp({ userId: 'owner' });
+  first.repository.websiteOwners.set('site-a', 'owner');
+  const saved = await first.handler(event('/site-a/production/env', 'POST', { env: { API_KEY: 'secret' } }));
+  assert.equal(saved.statusCode, 200);
+  const other = createFunctionHttpHandler({
+    repository: first.repository,
+    bundleStore: first.bundleStore,
+    authenticate: () => ({ userId: 'other' }),
+    publicBaseUrl: 'https://functions.test'
+  });
+  const denied = await other(event('/site-a/production/env', 'GET'));
+  assert.equal(denied.statusCode, 403);
+});
+

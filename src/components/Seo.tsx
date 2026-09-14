@@ -19,6 +19,9 @@ const INDEXABLE_PATHS = new Set([
   "/doc",
   "/content-scan",
   "/ai-static-site-deployment",
+  "/when-to-use-demox",
+  "/deploy-troubleshooting",
+  "/how-demox-hosts-itself",
   "/terms",
   "/privacy",
   "/log"
@@ -35,12 +38,12 @@ export const Seo: React.FC<SeoProps> = ({
   const isZh = language === "zh";
 
   const defaultTitle = isZh
-    ? "Demox - AI 生成网页静态发布与前端部署"
-    : "Demox - AI-Generated Static Site Deployment";
+    ? "Demox - 静态网站与 Node 云函数发布"
+    : "Demox - Static sites and Node functions";
 
   const defaultDescription = isZh
-    ? "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。"
-    : "Demox publishes AI-generated HTML, ZIP archives, and frontend builds as shareable static websites through the web, CLI, MCP, or API.";
+    ? "Demox 把 HTML、ZIP 和前端构建产物发布为带 HTTPS 的静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。"
+    : "Demox publishes HTML, ZIP archives, and frontend builds as HTTPS static sites, and hosts Node handlers as functions on the same site through the web, CLI, MCP, or API.";
 
   const siteTitle = title ? `${title} | ${SITE_NAME}` : defaultTitle;
   const siteDescription = description || defaultDescription;

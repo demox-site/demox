@@ -18,6 +18,24 @@ const ABSOLUTE_LIMITS = Object.freeze({
   maxInvocationsPerMinute: 10_000
 });
 
+const NODE_DEFAULT_LIMITS = Object.freeze({
+  timeoutMs: 30_000,
+  memoryLimitBytes: 128 * 1024 * 1024,
+  maxBodyBytes: 6 * 1024 * 1024,
+  maxResponseBytes: 6 * 1024 * 1024,
+  maxCodeBytes: 1024 * 1024,
+  maxInvocationsPerMinute: 60
+});
+
+const NODE_ABSOLUTE_LIMITS = Object.freeze({
+  timeoutMs: 300_000,
+  memoryLimitBytes: 512 * 1024 * 1024,
+  maxBodyBytes: 6 * 1024 * 1024,
+  maxResponseBytes: 6 * 1024 * 1024,
+  maxCodeBytes: 2 * 1024 * 1024,
+  maxInvocationsPerMinute: 10_000
+});
+
 function positiveInteger(value, fallback, maximum) {
   if (value === undefined || value === null || value === '') return fallback;
   const number = Number(value);
@@ -25,15 +43,31 @@ function positiveInteger(value, fallback, maximum) {
   return Math.min(number, maximum);
 }
 
-function normalizeLimits(input = {}) {
+function limitsForRuntime(runtime) {
+  const name = String(runtime || 'nodejs').toLowerCase();
+  if (name === 'quickjs' || name === 'js') {
+    return { defaults: DEFAULT_LIMITS, absolute: ABSOLUTE_LIMITS };
+  }
+  return { defaults: NODE_DEFAULT_LIMITS, absolute: NODE_ABSOLUTE_LIMITS };
+}
+
+function normalizeLimits(input = {}, runtime = 'nodejs') {
+  const { defaults, absolute } = limitsForRuntime(runtime);
   return {
-    timeoutMs: positiveInteger(input.timeoutMs, DEFAULT_LIMITS.timeoutMs, ABSOLUTE_LIMITS.timeoutMs),
-    memoryLimitBytes: positiveInteger(input.memoryLimitBytes, DEFAULT_LIMITS.memoryLimitBytes, ABSOLUTE_LIMITS.memoryLimitBytes),
-    maxBodyBytes: positiveInteger(input.maxBodyBytes, DEFAULT_LIMITS.maxBodyBytes, ABSOLUTE_LIMITS.maxBodyBytes),
-    maxResponseBytes: positiveInteger(input.maxResponseBytes, DEFAULT_LIMITS.maxResponseBytes, ABSOLUTE_LIMITS.maxResponseBytes),
-    maxCodeBytes: positiveInteger(input.maxCodeBytes, DEFAULT_LIMITS.maxCodeBytes, ABSOLUTE_LIMITS.maxCodeBytes),
-    maxInvocationsPerMinute: positiveInteger(input.maxInvocationsPerMinute, DEFAULT_LIMITS.maxInvocationsPerMinute, ABSOLUTE_LIMITS.maxInvocationsPerMinute)
+    timeoutMs: positiveInteger(input.timeoutMs, defaults.timeoutMs, absolute.timeoutMs),
+    memoryLimitBytes: positiveInteger(input.memoryLimitBytes, defaults.memoryLimitBytes, absolute.memoryLimitBytes),
+    maxBodyBytes: positiveInteger(input.maxBodyBytes, defaults.maxBodyBytes, absolute.maxBodyBytes),
+    maxResponseBytes: positiveInteger(input.maxResponseBytes, defaults.maxResponseBytes, absolute.maxResponseBytes),
+    maxCodeBytes: positiveInteger(input.maxCodeBytes, defaults.maxCodeBytes, absolute.maxCodeBytes),
+    maxInvocationsPerMinute: positiveInteger(input.maxInvocationsPerMinute, defaults.maxInvocationsPerMinute, absolute.maxInvocationsPerMinute)
   };
 }
 
-module.exports = { DEFAULT_LIMITS, ABSOLUTE_LIMITS, normalizeLimits };
+module.exports = {
+  DEFAULT_LIMITS,
+  ABSOLUTE_LIMITS,
+  NODE_DEFAULT_LIMITS,
+  NODE_ABSOLUTE_LIMITS,
+  normalizeLimits,
+  limitsForRuntime
+};

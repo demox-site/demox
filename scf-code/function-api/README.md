@@ -1,14 +1,15 @@
 # Demox Functions（统一 SCF 入口）
 
-这个包实现 Demox 的共享函数服务：所有用户函数代码可以放在同一个 COS 桶里，由一个公共 SCF 入口按 `functionId` 路由；同一个入口也会按固定清单转发 Demox 自有的 auth、website、MCP 系统函数。它解决“用户写代码、发布版本、拿到 URL、别人调用”的闭环，不创建线上资源，也不会自动执行数据库迁移。
+这个包实现 Demox 的共享函数服务：控制面（路由、版本、函数环境变量、别名）和运行时是分开的。`demox-function-api` 只负责路由和元数据；用户 Node.js 代码在独立的 `demox-user-nodejs` 里执行，路由器按 `runtime` 选择运行时 SCF。Python / Go 预留同一种接入方式，当前未部署。
 
 ## 统一入口
 
 `createPlatformHandler()` 是共享 SCF 的入口编排：
 
-- `/auth...`、`/oauth...`、`/website...`、`/deploy`、`/websites...`、`/mcp...` 只从 `system-functions.json` 加载固定的受信任 Node.js 后端。
-- `/functions...` 走 QuickJS/WASM 用户函数运行时，用户请求不能选择或切换到受信任运行时。
-- `Type=Timer` 的事件按 `TriggerName` 分发；`analytics-rollup-5m` 接入 website API，`monthly-renew` 接入 `scf-code/cert-renew`。该源码从线上 `$LATEST` 回收后做了可测试重构，不是线上字节副本。
+- 已发布的站点函数按 slug（`/api/{slug}`）、自定义路径或定时器名称**优先**匹配；可接管 `/auth`、`/website`、`/deploy` 等路径。
+- 未匹配时，`/auth`、`/oauth`、`/website`、`/deploy`、`/mcp` 等仍从 `system-functions.json` 加载系统后端作为回退。
+- 用户函数目前只支持 Node.js：路由器通过 SCF Invoke 交给 `demox-user-nodejs`，该函数不配置 JWT_SECRET / MYSQL_*。Python / Go 尚未上线。
+- `Type=Timer` 的事件先找用户函数的 `timerName`，否则按系统清单分发。
 
 本地可查看统一包清单（默认只读 dry-run）：
 
@@ -27,27 +28,41 @@ npm run report:unified-scf
 
 报告只输出环境变量名称，不输出任何线上密钥值。`live-config.json` 已记录统一函数建议：VPC `vpc-bwtrj6fb` / `subnet-nzrl3bbq`，512 MB，300 秒，以及四个线上函数的环境变量名并集。真实 staging 绑定、调用对照和 `api.demox.site` 切换仍未做。
 
+## 怎么发布用户函数
+
+不要把用户后端部署成腾讯云 SCF。创建站点后用 CLI：
+
+```bash
+demox deploy ./dist --name my-site
+demox functions push ./api/hello --id WEBSITE_ID --slug hello
+demox env set --id WEBSITE_ID --slug hello --from .env
+demox functions alias set --id WEBSITE_ID --slug hello production --version 2
+demox functions invoke --id WEBSITE_ID --slug hello --body '{"ping":true}'
+```
+
+平台自己的 Auth / Website / MCP / 证书同样走 `demox functions push --id EPX2UU43`。只有改本包的路由或 `demox-user-nodejs` 运行时，才用 `scripts/deploy-function-api.mjs --unified --apply`。
+
 ## 函数代码合约
 
-上传一个 `index.mjs`，导出一个函数：
+上传 `index.js`，导出一个函数：
 
 ```js
-export default async function handler(request, env) {
+module.exports = async function handler(request, env) {
   return {
     status: 200,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       method: request.method,
-      name: env.NAME || "world",
+      name: env.NAME || process.env.NAME || "world",
       input: request.body
     })
   };
-}
+};
 ```
 
-也兼容 `module.exports = async function (request, env) { ... }`。`request` 包含 `method`、`url`、`path`、`query`、小写 `headers` 和已按 `content-type` 解析的 `body`；`env` 只包含函数配置的普通字符串环境变量。
+也兼容 `export default async function (request, env) { ... }`。`request` 包含 `method`、`url`、`path`、`query`、小写 `headers` 和已按 `content-type` 解析的 `body`；`env` 与 `process.env` 都是**当前函数**的环境变量，不含路由器上的平台密钥。可 `require('mysql2')`、`require('jsonwebtoken')` 以及 `demox-auth` / `demox-website` / `demox-mcp` / `demox-cert-renew`。
 
-当前运行时明确不提供 Node.js、文件系统、进程、外部网络和 npm 模块导入。代码在 QuickJS/WASM 独立运行时中执行，并设置 CPU 中断、内存、请求体、响应体和代码大小上限。这样 COS 只负责存储，不能越权读取其他租户数据。
+每个函数有自己的别名。首次成功上传 v1 时，默认创建 `production` 和 `develop`，都指向 v1。之后再上传新版本不会移动别名，需要 `demox functions alias set` 或控制台主动改指向。
 
 每分钟配额目前是单个 SCF 实例内的滑动窗口，调用记录异步写入 MySQL；正式多实例限流和计费前还需要接入 Redis/TDMQ 等共享计数器，不能把这版内存计数当成全局配额。
 
@@ -58,18 +73,24 @@ export default async function handler(request, env) {
 ```text
 POST /functions                         创建函数
 GET  /functions                         列出当前用户函数
-POST /functions/:functionId/versions    上传一个草稿版本
+POST /functions/:functionId/versions    上传一个版本（v1 会创建默认别名）
 GET  /functions/:functionId/versions    列出版本
-POST /functions/:functionId/publish     发布指定 version
+GET  /functions/:functionId/env         读取该函数环境变量
+POST /functions/:functionId/env         覆盖写入该函数环境变量
+GET  /functions/:functionId/aliases     列出别名
+POST /functions/:functionId/aliases/:alias  把别名指向 { version }
+DELETE /functions/:functionId/aliases/:alias  删除自定义别名（不能删 production/develop）
+POST /functions/:functionId/publish     兼容接口：把 production 指向指定 version
 ```
 
-发布后公开调用地址为：
+公开调用按别名解析版本：
 
 ```text
+GET|POST /{websiteId}/{alias}/api/{slug}
 POST|GET /functions/:functionId/invoke
 ```
 
-创建、上传、发布均为幂等边界之外的独立步骤：上传失败的版本会标为 `failed`，只有校验过 COS 内容和 SHA-256 后才能发布。
+站点域名上的 `/api/{slug}` 走 `production` 别名。上传失败的版本会标为 `failed`，不能被别名引用。
 
 ## 接入现有 Demox
 

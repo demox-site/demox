@@ -4,6 +4,10 @@ const { createFunctionId, isFunctionId, normalizeName, normalizeSlug } = require
 const { requireWebsiteId } = require('./site-binding.js');
 const { bundleKey, sha256 } = require('./bundle-store.js');
 const { normalizeLimits } = require('./limits.js');
+const { normalizeRuntime, defaultEntrypointFor, isAllowedEntrypoint } = require('./runtimes.js');
+const { isTimerEvent } = require('./function-events.js');
+const { routeMatches } = require('./system-router.js');
+const { mergeLiveCredentials, packageNameFor } = require('./platform-site.js');
 const {
   badRequest,
   forbidden,
@@ -26,11 +30,12 @@ class FunctionService {
     this.rateBuckets = new Map();
   }
 
-  async createFunction({ ownerId, websiteId, name, slug, limits, env } = {}) {
+  async createFunction({ ownerId, websiteId, name, slug, limits, env, runtime, routes, triggers, timerName } = {}) {
     const owner = requireOwnerId(ownerId);
     const siteId = requireWebsiteId(websiteId);
     let normalizedName;
     let normalizedSlug;
+    const normalizedRuntime = normalizeRuntime(runtime);
     try {
       normalizedName = normalizeName(name);
       normalizedSlug = normalizeSlug(slug);
@@ -45,7 +50,11 @@ class FunctionService {
         websiteId: siteId,
         name: normalizedName,
         slug: normalizedSlug,
-        limits: normalizeLimits(limits),
+        runtime: normalizedRuntime,
+        routes: normalizeRoutes(routes),
+        triggers: normalizeTriggers(triggers, timerName),
+        timerName: normalizeTimerName(timerName),
+        limits: normalizeLimits(limits, normalizedRuntime),
         env: assertAllowedEnv(normalizeEnv(env))
       });
     } catch (error) {
@@ -57,8 +66,16 @@ class FunctionService {
     return this.publicFunction(record);
   }
 
+  async assertWebsiteOwner(userId, websiteId) {
+    const siteId = requireWebsiteId(websiteId);
+    if (typeof this.repository.getWebsiteOwner !== 'function') return;
+    const owner = await this.repository.getWebsiteOwner(siteId);
+    if (owner && String(owner) !== String(userId)) throw forbidden('没有权限操作此站点环境变量');
+  }
+
   async listFunctions(websiteId) {
-    return (await this.repository.listFunctions(requireWebsiteId(websiteId))).map((item) => this.publicFunction(item));
+    const records = await this.repository.listFunctions(requireWebsiteId(websiteId));
+    return Promise.all(records.map(async (item) => this.publicFunction(item, await this.aliasesFor(item))));
   }
 
   async getWebsiteEnv(websiteId) {
@@ -76,22 +93,76 @@ class FunctionService {
     return this.repository.putWebsiteEnv(siteId, normalized);
   }
 
+  async getFunctionEnv({ ownerId, functionId } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    return normalizeEnv(functionRecord.env);
+  }
+
+  async putFunctionEnv({ ownerId, functionId, env } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    if (typeof this.repository.putFunctionEnv !== 'function') {
+      throw internalError('当前存储不支持函数环境变量');
+    }
+    return this.repository.putFunctionEnv(functionRecord.functionId, assertAllowedEnv(normalizeEnv(env)));
+  }
+
+  async listAliases({ ownerId, functionId } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    return this.aliasesFor(functionRecord);
+  }
+
+  async setAlias({ ownerId, functionId, alias, version } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    const name = normalizeAliasName(alias);
+    const versionNumber = parseVersion(version);
+    const versionRecord = await this.repository.getVersion(functionRecord.functionId, versionNumber);
+    if (!versionRecord || versionRecord.status === 'failed') throw notFound('函数版本不存在');
+    if (versionRecord.status === 'draft') throw badRequest('该版本还不能被别名引用', 'VERSION_NOT_READY');
+    const record = await this.repository.setAlias(functionRecord.functionId, name, versionNumber);
+    if (!record) throw notFound('函数版本不存在');
+    return record;
+  }
+
+  async deleteAlias({ ownerId, functionId, alias } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    const name = normalizeAliasName(alias);
+    if (DEFAULT_ALIASES.includes(name)) throw badRequest('不能删除默认别名', 'RESERVED_ALIAS');
+    await this.repository.deleteAlias(functionRecord.functionId, name);
+    return { alias: name, deleted: true };
+  }
+
+  async aliasesFor(functionRecord) {
+    if (typeof this.repository.listAliases !== 'function') return [];
+    let aliases = await this.repository.listAliases(functionRecord.functionId);
+    const missingDefault = DEFAULT_ALIASES.some((name) => !aliases.some((item) => item.alias === name));
+    if (missingDefault && functionRecord.publishedVersion && typeof this.repository.ensureDefaultAliases === 'function') {
+      aliases = await this.repository.ensureDefaultAliases(functionRecord.functionId, functionRecord.publishedVersion);
+    }
+    return aliases;
+  }
+
   async resolveRuntimeEnv(functionRecord) {
     const siteEnv = typeof this.repository.getWebsiteEnv === 'function'
       ? normalizeEnv(await this.repository.getWebsiteEnv(functionRecord.websiteId))
       : {};
-    return {
+    const merged = mergeLiveCredentials({
       ...siteEnv,
-      ...normalizeEnv(functionRecord.env),
+      ...normalizeEnv(functionRecord.env)
+    }, functionRecord.websiteId);
+    return {
+      ...merged,
       SITE_ID: String(functionRecord.websiteId || ''),
       FUNCTION_SLUG: String(functionRecord.slug || '')
     };
   }
 
-  async createVersion({ ownerId, functionId, source, sourceBase64, entrypoint = 'index.mjs' } = {}) {
+  async createVersion({ ownerId, functionId, source, sourceBase64, entrypoint } = {}) {
     const owner = requireOwnerId(ownerId);
     const functionRecord = await this.getOwnedFunction(owner, functionId);
-    if (entrypoint !== 'index.mjs') throw badRequest('当前运行时只支持 index.mjs 入口', 'UNSUPPORTED_ENTRYPOINT');
+    const resolvedEntrypoint = entrypoint || defaultEntrypointFor(functionRecord.runtime);
+    if (!isAllowedEntrypoint(functionRecord.runtime, resolvedEntrypoint)) {
+      throw badRequest('当前运行时不支持该入口文件', 'UNSUPPORTED_ENTRYPOINT');
+    }
 
     let sourceBuffer;
     if (sourceBase64 !== undefined) {
@@ -116,7 +187,7 @@ class FunctionService {
       functionId: functionRecord.functionId,
       sha256: digest,
       sizeBytes: sourceBuffer.length,
-      entrypoint,
+      entrypoint: resolvedEntrypoint,
       bundleKeyFactory: (versionNumber) => bundleKey(functionRecord.functionId, versionNumber)
     });
     if (!version) throw notFound();
@@ -128,7 +199,22 @@ class FunctionService {
       if (failedVersion) await Promise.resolve(failedVersion).catch(() => {});
       throw internalError('函数代码保存失败', { cause: error.message });
     }
-    return this.publicVersion(version);
+    const previousPublished = Number(functionRecord.publishedVersion || 0);
+    const available = this.repository.markVersionAvailable
+      ? await this.repository.markVersionAvailable(functionRecord.functionId, version.version)
+      : version;
+    if (typeof this.repository.ensureDefaultAliases === 'function') {
+      const existing = typeof this.repository.listAliases === 'function'
+        ? await this.repository.listAliases(functionRecord.functionId)
+        : [];
+      if (!existing.length) {
+        await this.repository.ensureDefaultAliases(
+          functionRecord.functionId,
+          previousPublished || available.version || 1
+        );
+      }
+    }
+    return this.publicVersion(available || version);
   }
 
   async listVersions({ ownerId, functionId } = {}) {
@@ -173,10 +259,13 @@ class FunctionService {
     if (sha256(bundle) !== versionRecord.sha256) throw internalError('函数代码校验失败，不能发布', { code: 'BUNDLE_CHECKSUM_MISMATCH' });
     const result = await this.repository.publishVersion(functionRecord.functionId, versionNumber);
     if (!result) throw notFound('函数版本不存在');
-    return { function: this.publicFunction(result.function), version: this.publicVersion(result.version) };
+    return {
+      function: this.publicFunction(result.function, await this.aliasesFor(result.function)),
+      version: this.publicVersion(result.version)
+    };
   }
 
-  async invokeBySlug({ websiteId, slug, event, context } = {}) {
+  async invokeBySlug({ websiteId, slug, event, context, alias } = {}) {
     const siteId = requireWebsiteId(websiteId);
     let normalizedSlug;
     try {
@@ -188,15 +277,60 @@ class FunctionService {
       ? await this.repository.getFunctionByWebsiteSlug(siteId, normalizedSlug)
       : (await this.repository.listFunctions(siteId)).find((item) => item.slug === normalizedSlug);
     if (!record) throw notFound('函数不存在');
-    return this.invoke({ functionId: record.functionId, event, context });
+    return this.invoke({ functionId: record.functionId, event, context, alias });
   }
 
-  async invoke({ functionId, event, context } = {}) {
+  async findPublishedByRoute(websiteId, pathValue) {
+    const siteId = requireWebsiteId(websiteId);
+    const functions = await this.repository.listFunctions(siteId);
+    let best = null;
+    let bestLength = -1;
+    for (const record of functions) {
+      if (record.status !== 'active') continue;
+      if (!record.publishedVersion && typeof this.repository.listAliases === 'function') {
+        const aliases = await this.repository.listAliases(record.functionId);
+        if (!aliases.length) continue;
+      } else if (!record.publishedVersion) continue;
+      for (const route of record.routes || []) {
+        if (routeMatches(pathValue, route) && String(route).length > bestLength) {
+          best = record;
+          bestLength = String(route).length;
+        }
+      }
+    }
+    return best;
+  }
+
+  async findPublishedByTimer(timerName) {
+    const name = String(timerName || '').trim();
+    if (!name || typeof this.repository.getFunctionByTimerName !== 'function') return null;
+    const record = await this.repository.getFunctionByTimerName(name);
+    if (!record || record.status !== 'active') return null;
+    return record;
+  }
+
+  async resolveAliasVersion(functionRecord, aliasName) {
+    if (typeof this.repository.getAlias === 'function') {
+      const pointed = await this.repository.getAlias(functionRecord.functionId, aliasName);
+      if (pointed?.version) return Number(pointed.version);
+      if (functionRecord.publishedVersion && DEFAULT_ALIASES.includes(aliasName)) {
+        await this.repository.ensureDefaultAliases(functionRecord.functionId, functionRecord.publishedVersion);
+        const created = await this.repository.getAlias(functionRecord.functionId, aliasName);
+        if (created?.version) return Number(created.version);
+      }
+    }
+    return Number(functionRecord.publishedVersion || 0) || null;
+  }
+
+  async invoke({ functionId, event, context, alias } = {}) {
     if (!isFunctionId(functionId)) throw notFound();
     const functionRecord = await this.repository.getFunction(functionId);
     if (!functionRecord) throw notFound();
     if (functionRecord.status !== 'active') throw notFound('函数已停用');
-    if (!functionRecord.publishedVersion) throw badRequest('函数尚未发布版本', 'FUNCTION_NOT_PUBLISHED');
+
+    const aliasName = normalizeAliasName(alias || 'production');
+    const versionNumber = await this.resolveAliasVersion(functionRecord, aliasName);
+    if (!versionNumber) throw badRequest('函数别名未指向版本', 'ALIAS_NOT_FOUND');
 
     const request = normalizeInvocationRequest(event);
     if (request.bodyBytes > functionRecord.limits.maxBodyBytes) {
@@ -205,8 +339,10 @@ class FunctionService {
     const rateKey = `${functionId}:${request.clientKey}`;
     this.consumeRateLimit(rateKey, functionRecord.limits.maxInvocationsPerMinute);
 
-    const version = await this.repository.getVersion(functionId, functionRecord.publishedVersion);
-    if (!version || version.status !== 'published') throw internalError('已发布函数版本不存在');
+    const version = await this.repository.getVersion(functionId, versionNumber);
+    if (!version || version.status === 'failed' || version.status === 'draft') {
+      throw internalError('别名指向的函数版本不可用');
+    }
     let source;
     try {
       source = await this.bundleStore.getBuffer(version.bundleKey);
@@ -220,11 +356,16 @@ class FunctionService {
     let status = 'success';
     let errorCode = null;
     try {
+      const packageName = packageNameFor(functionRecord);
       output = await this.runtime.execute({
         source,
         request: request.value,
         env: await this.resolveRuntimeEnv(functionRecord),
         limits: functionRecord.limits,
+        runtime: functionRecord.runtime,
+        entrypoint: version.entrypoint,
+        packageName,
+        callingConvention: packageName ? 'scf-event' : undefined,
         context
       });
       const response = normalizeFunctionResponse(output, functionRecord.limits.maxResponseBytes);
@@ -255,23 +396,30 @@ class FunctionService {
     return record;
   }
 
-  publicFunction(record) {
+  publicFunction(record, aliases = []) {
+    const envName = process.env.FUNCTION_ENV || 'production';
+    const route = (record.routes || [])[0];
+    const invokeUrl = record.websiteId
+      ? `${this.publicBaseUrl}/${encodeURIComponent(record.websiteId)}/${encodeURIComponent(envName)}${route || `/api/${encodeURIComponent(record.slug)}`}`
+      : `${this.publicBaseUrl}/functions/${encodeURIComponent(record.functionId)}/invoke`;
     return {
       functionId: record.functionId,
       kind: 'user',
-      runtime: 'quickjs',
+      runtime: record.runtime && record.runtime !== 'quickjs' ? record.runtime : 'nodejs',
       websiteId: record.websiteId,
       name: record.name,
       slug: record.slug,
       status: record.status,
       publishedVersion: record.publishedVersion,
+      routes: [...(record.routes || [])],
+      triggers: [...(record.triggers || ['http'])],
+      timerName: record.timerName || null,
+      aliases: (aliases || []).map((item) => ({ alias: item.alias, version: item.version })),
       limits: record.limits,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       editable: true,
-      invokeUrl: record.websiteId
-        ? `${this.publicBaseUrl}/${encodeURIComponent(record.websiteId)}/${encodeURIComponent(process.env.FUNCTION_ENV || 'production')}/api/${encodeURIComponent(record.slug)}`
-        : `${this.publicBaseUrl}/functions/${encodeURIComponent(record.functionId)}/invoke`
+      invokeUrl
     };
   }
 
@@ -315,33 +463,20 @@ function parseVersion(value) {
 const RESERVED_ENV_KEYS = new Set([
   'SITE_ID',
   'FUNCTION_SLUG',
-  'JWT_SECRET',
-  'MYSQL_HOST',
-  'MYSQL_USER',
-  'MYSQL_PASSWORD',
-  'MYSQL_DATABASE',
-  'MYSQL_PORT',
-  'ENCRYPTION_KEY',
-  'GITHUB_CLIENT_SECRET',
-  'FEISHU_APP_SECRET'
+  'PATH',
+  'NODE_PATH',
+  'NODE_OPTIONS',
+  'HOME'
 ]);
 const RESERVED_ENV_PREFIXES = [
-  'MYSQL_',
-  'JWT_',
-  'FUNCTIONS_',
-  'TENCENT',
-  'DEMOX_',
-  'AWS_',
-  'COS_',
-  'SCF_',
-  'ACME_'
+  'FUNCTIONS_'
 ];
 
 function normalizeEnv(env) {
   if (env === undefined || env === null) return {};
   if (typeof env !== 'object' || Array.isArray(env)) throw badRequest('env 必须是对象', 'INVALID_ENV');
   const entries = Object.entries(env);
-  if (entries.length > 32) throw badRequest('环境变量不能超过 32 个', 'ENV_TOO_LARGE');
+  if (entries.length > 128) throw badRequest('环境变量不能超过 128 个', 'ENV_TOO_LARGE');
   const output = {};
   for (const [key, value] of entries) {
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(key)) throw badRequest(`环境变量名非法: ${key}`, 'INVALID_ENV_KEY');
@@ -360,7 +495,64 @@ function assertAllowedEnv(env) {
   return env;
 }
 
+function normalizeRoutes(routes) {
+  if (routes == null || routes === '') return [];
+  const values = Array.isArray(routes)
+    ? routes
+    : String(routes).split(/[\s,]+/).filter(Boolean);
+  if (values.length > 256) throw badRequest('自定义路径不能超过 256 条', 'ROUTES_TOO_LARGE');
+  const output = [];
+  for (const item of values) {
+    const route = String(item || '').trim();
+    if (!route) continue;
+    if (!/^\/[A-Za-z0-9._/-]{0,127}$/.test(route) || route.includes('//')) {
+      throw badRequest(`自定义路径非法: ${route}`, 'INVALID_ROUTE');
+    }
+    const first = route.split('/').filter(Boolean)[0];
+    if (['functions', 'env'].includes(String(first || '').toLowerCase())) {
+      throw badRequest(`自定义路径保留给平台使用: ${route}`, 'RESERVED_ROUTE');
+    }
+    output.push(route.length > 1 && route.endsWith('/') ? route.slice(0, -1) : route);
+  }
+  return [...new Set(output)];
+}
+
+function normalizeTimerName(value) {
+  if (value == null || value === '') return null;
+  const name = String(value).trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) throw badRequest('定时触发名称非法', 'INVALID_TIMER_NAME');
+  return name;
+}
+
+function normalizeTriggers(triggers, timerName) {
+  const values = Array.isArray(triggers)
+    ? triggers.map((item) => String(item).trim().toLowerCase()).filter(Boolean)
+    : [];
+  const output = new Set(values.length ? values : ['http']);
+  if (timerName) output.add('timer');
+  for (const item of output) {
+    if (item !== 'http' && item !== 'timer') throw badRequest(`不支持的触发方式: ${item}`, 'INVALID_TRIGGER');
+  }
+  return [...output];
+}
+
 function normalizeInvocationRequest(event = {}) {
+  if (isTimerEvent(event)) {
+    const name = String(event.TriggerName || event.triggerName || '').trim();
+    return {
+      bodyBytes: 0,
+      clientKey: 'timer',
+      value: {
+        method: 'TIMER',
+        url: '',
+        path: '',
+        query: {},
+        headers: {},
+        body: { TriggerName: name, Type: event.Type || event.type || 'Timer' },
+        trigger: { type: 'timer', name }
+      }
+    };
+  }
   const headers = {};
   for (const [key, value] of Object.entries(event.headers || {})) headers[String(key).toLowerCase()] = String(value);
   const method = String(event.httpMethod || event.requestContext?.http?.method || 'GET').toUpperCase();
@@ -424,10 +616,26 @@ function normalizeFunctionResponse(output, maxResponseBytes) {
   return { statusCode: status, headers: safeHeaders, body, isBase64Encoded: false };
 }
 
+const DEFAULT_ALIASES = Object.freeze(['production', 'develop']);
+const RESERVED_ALIAS_NAMES = new Set(['functions', 'env', 'api']);
+
+function normalizeAliasName(value) {
+  const alias = String(value || '').trim().toLowerCase();
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(alias) || RESERVED_ALIAS_NAMES.has(alias)) {
+    throw badRequest('别名非法', 'INVALID_ALIAS');
+  }
+  return alias;
+}
+
 module.exports = {
   FunctionService,
+  DEFAULT_ALIASES,
+  normalizeAliasName,
   normalizeEnv,
   assertAllowedEnv,
   normalizeInvocationRequest,
-  normalizeFunctionResponse
+  normalizeFunctionResponse,
+  normalizeRoutes,
+  normalizeTriggers,
+  normalizeTimerName
 };

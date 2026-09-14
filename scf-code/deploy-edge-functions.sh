@@ -33,6 +33,10 @@
 #   tccli teo ModifyFunction --ZoneId zone-3kplfkbflnd6 --FunctionId ef-1281msyw \
 #     --Content "$(cat edge-functions/subdomain-router.js)" --region ap-guangzhou
 #
+# 强制 HTTPS（站点全局，HTTP 301 → HTTPS + HSTS）:
+#   tccli teo ModifyL7AccSetting --ZoneId zone-3kplfkbflnd6 --region ap-guangzhou \
+#     --ZoneConfig '{"ForceRedirectHTTPS":{"Switch":"on","RedirectStatusCode":301},"HSTS":{"Switch":"on","Timeout":31536000,"IncludeSubDomains":"on","Preload":"off"}}'
+#
 # 更新 website-api:下载线上包作底座覆盖 index.js 重打包(详见会话记录),
 #   scf-deploy-packages/ 目录是过期垃圾,勿用。
 #
@@ -40,6 +44,11 @@
 #   - 标准版边缘函数读环境变量用 env.XXX,不是裸全局。
 #   - EdgeOne 不允许两条规则同 host 条件(DuplicateRule),只能改指向不能新建。
 #   - 函数专属域名 <name>.eo-edgefunctions.com 可直连调试,绕过触发规则。
+#   - P0 2026-09-14：此函数挂整个 *.demox.site（含 www）。未知子域名 404 不得
+#     改写已 resolve 站点的回源 404。ModifyFunction 后必须核对 www + 一个真实
+#     用户站点仍为 200，再看未绑定 host。事故：docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
+#   - 未绑定子域名的品牌 404 用 COS 桶根 404.html（静态网站 ErrorDocument），
+#     不要为这件事改 ef-1281msyw。源文件：edge-functions/cos-root-404.html
 #
 # 收尾可做(可选):删除 website-api 的临时 migrate_subdomain action 和 MIGRATION_KEY 环境变量。
 echo "这是部署记录文档,非可执行脚本。详见文件内注释。"

@@ -9,7 +9,11 @@ const PLATFORM_HOSTS = new Set(
     .map((item) => normalizeHost(item))
     .filter(Boolean)
 );
-const PLATFORM_WEBSITE_ID = String(process.env.DEMOX_PLATFORM_WEBSITE_ID || '').trim();
+function platformWebsiteId(env = process.env) {
+  return String(env.DEMOX_PLATFORM_WEBSITE_ID || env.DEMOX_SITE_WEBSITE_ID || 'EPX2UU43').trim();
+}
+
+const PLATFORM_WEBSITE_ID = platformWebsiteId();
 
 function normalizeHost(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -44,13 +48,15 @@ function readWebsiteScope(event = {}, body = {}) {
   const query = readQuery(event);
   return {
     websiteId: body.websiteId || body.website_id || query.websiteId || query.website_id || '',
+    env: body.env || query.env || process.env.FUNCTION_ENV || 'production',
     host: body.host || query.host || '',
     kind: String(body.kind || query.kind || '').trim().toLowerCase()
   };
 }
 
 function isPlatformSite({ websiteId, host } = {}) {
-  if (PLATFORM_WEBSITE_ID && String(websiteId || '') === PLATFORM_WEBSITE_ID) return true;
+  const platformId = platformWebsiteId();
+  if (platformId && String(websiteId || '') === platformId) return true;
   const hosts = String(host || '')
     .split(',')
     .map((item) => normalizeHost(item))
@@ -61,7 +67,7 @@ function isPlatformSite({ websiteId, host } = {}) {
 function siteFunctionUrl(publicBaseUrl, websiteId, envName, route) {
   if (!route) return null;
   const base = String(publicBaseUrl || 'https://api.demox.site').replace(/\/+$/, '');
-  const siteId = String(websiteId || process.env.DEMOX_SITE_WEBSITE_ID || 'EPX2UU43').trim();
+  const siteId = String(websiteId || platformWebsiteId()).trim();
   const env = String(envName || process.env.FUNCTION_ENV || 'production').trim();
   return `${base}/${siteId}/${env}${route}`;
 }
@@ -69,7 +75,7 @@ function siteFunctionUrl(publicBaseUrl, websiteId, envName, route) {
 function publicSystemFunctions(publicBaseUrl, websiteId, envName) {
   return loadSystemManifest().map((entry) => {
     const route = (entry.routePrefixes || [])[0] || '';
-    const siteId = websiteId || process.env.DEMOX_SITE_WEBSITE_ID || 'EPX2UU43';
+    const siteId = websiteId || platformWebsiteId();
     return {
       functionId: entry.slug,
       kind: 'site',
@@ -96,5 +102,6 @@ module.exports = {
   isPlatformSite,
   publicSystemFunctions,
   siteFunctionUrl,
+  platformWebsiteId,
   PLATFORM_HOSTS
 };

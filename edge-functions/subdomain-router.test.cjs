@@ -212,31 +212,6 @@ test('P0: www hardcoded fallback still 200 when resolve misses', async () => {
   assert.doesNotMatch(html, /站点未发布/);
 });
 
-test('unknown official subdomain returns Demox 404 and does not fetch origin', async () => {
-  const { response, html, requests } = await handleSite('https://your-demo.demox.site/', {
-    resolve: { success: false, message: 'not found' }
-  });
-  assert.equal(response.status, 404);
-  assert.match(html, /站点未发布/);
-  assert.match(html, /your-demo\.demox\.site/);
-  assert.match(html, /https:\/\/www\.demox\.site/);
-  assert.doesNotMatch(html, /NoSuchKey/);
-  assert.equal(requests.every((href) => href.includes('/resolve-subdomain')), true);
-});
-
-test('unknown official subdomain API returns SITE_NOT_FOUND JSON', async () => {
-  const { response, html, requests } = await handleSite('https://your-demo.demox.site/api/hello', {
-    resolve: { success: false, message: 'not found' }
-  });
-  assert.equal(response.status, 404);
-  assert.deepEqual(JSON.parse(html), {
-    success: false,
-    error: 'SITE_NOT_FOUND',
-    message: 'No site is published at this address'
-  });
-  assert.equal(requests.every((href) => href.includes('/resolve-subdomain')), true);
-});
-
 test('P0: resolved user SPA keeps fallback when the path is missing', async () => {
   const { response, html } = await handleSite('https://coverage.demox.site/dashboard', {
     resolve: {

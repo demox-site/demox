@@ -16,7 +16,7 @@ import { MainLayout } from "@/layouts/MainLayout";
 
 const PAGE_URL = "https://www.demox.site/ai-static-site-deployment";
 const PUBLISHED_AT = "2026-08-18";
-const UPDATED_AT = "2026-08-24";
+const UPDATED_AT = "2026-09-14";
 
 const guideTexts = {
   zh: {
@@ -25,7 +25,7 @@ const guideTexts = {
     answer:
       "AI 生成网页后，先确认产物是单个 HTML 文件，或根目录含 index.html 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。",
     published: "发布于 2026-08-18",
-    updated: "更新于 2026-08-24",
+    updated: "更新于 2026-09-14",
     author: "Demox 团队",
     primaryCta: "现在上传",
     secondaryCta: "查看完整文档",
@@ -98,13 +98,14 @@ const guideTexts = {
       "React、Vue、Vite 等项目的构建产物",
       "产品演示、客户评审页和短期活动页",
       "只在浏览器运行，或调用已有远程 API 的前端",
+      "已改成 handler(request, env) 的 Node 接口，用 demox functions push 挂到同一站点",
     ],
     badTitle: "需要先改造或换平台",
     badItems: [
-      "必须常驻运行 Node.js、Python、PHP 或 Java 服务",
-      "直接连接数据库、执行服务端任务或保存本地文件",
+      "Python、PHP、Java，或仍在 app.listen 的 Express 服务",
+      "必须直连私密数据库、写本地磁盘或常驻进程",
       "依赖服务器端渲染且没有静态导出结果",
-      "需要由 Demox 同时托管后端 API 的完整应用",
+      "把 Demox 当成完整 CI/CD 平台的替代",
     ],
     agentTitle: "把文档链接直接发给 AI，真的能部署吗？",
     agentAnswer:
@@ -130,7 +131,7 @@ const guideTexts = {
       {
         question: "静态网站能调用接口吗？",
         answer:
-          "可以调用公开的 HTTPS API，但接口必须允许浏览器跨域访问，并且不能把私密凭据放在前端代码里。需要保密的业务逻辑仍应放在独立后端。",
+          "可以调用公开的 HTTPS API，也可以把 Node handler 发到同一站点后用 fetch('/api/标识')。不要把私密凭据放在前端代码里。Python 或其他非 Node 后端仍需独立部署。",
       },
     ],
     closingTitle: "网页已经做好了，就别让部署成为最后一道门槛。",
@@ -143,7 +144,7 @@ const guideTexts = {
     answer:
       "After generating a page with AI, make sure you have either one HTML file or a static directory or ZIP with index.html at its root. Upload it to Demox to receive a public HTTPS link delivered through CDN, without configuring a server.",
     published: "Published Aug 18, 2026",
-    updated: "Updated Aug 24, 2026",
+    updated: "Updated Sep 14, 2026",
     author: "Demox team",
     primaryCta: "Upload now",
     secondaryCta: "Read the full docs",
@@ -216,13 +217,14 @@ const guideTexts = {
       "Built output from React, Vue, Vite, and similar tools",
       "Product demos, client review pages, and campaign pages",
       "Browser-only frontends or pages that call an existing remote API",
+      "Node APIs rewritten as handler(request, env) and published with demox functions push",
     ],
     badTitle: "Needs changes or another platform",
     badItems: [
-      "Apps that must run Node.js, Python, PHP, or Java continuously",
-      "Apps that connect directly to a database or run server-side jobs",
+      "Python, PHP, Java, or Express apps that still call app.listen",
+      "Apps that must open a private database, write local disk, or run as a daemon",
       "Server-rendered apps without a static export",
-      "Full applications that require Demox to host their backend API too",
+      "Treating Demox as a full CI/CD platform replacement",
     ],
     agentTitle: "Can an AI really deploy from the documentation link?",
     agentAnswer:
@@ -248,7 +250,7 @@ const guideTexts = {
       {
         question: "Can a static website call an API?",
         answer:
-          "Yes, it can call a public HTTPS API if that API allows browser cross-origin requests. Never place private credentials in frontend code; sensitive logic still belongs in a separate backend.",
+          "Yes. It can call a public HTTPS API, or a Node handler published to the same site with fetch('/api/{slug}'). Never place private credentials in frontend code. Python and other non-Node backends still need a separate host.",
       },
     ],
     closingTitle: "Once the page is ready, deployment should not be the last obstacle.",
@@ -393,6 +395,15 @@ export const AiStaticSiteGuide: React.FC = () => {
             <FitCard icon={Check} title={t.goodTitle} items={t.goodItems} />
             <FitCard icon={ServerOff} title={t.badTitle} items={t.badItems} muted />
           </div>
+          <p className="mt-6 text-sm leading-7 text-[var(--stitch-muted)]">
+            <a href="/when-to-use-demox" className="font-bold text-[var(--stitch-ink)]">
+              {language === "zh" ? "查看完整适用场景对照表" : "See the full fit table"}
+            </a>
+            {" · "}
+            <a href="/deploy-troubleshooting" className="font-bold text-[var(--stitch-ink)]">
+              {language === "zh" ? "对照发布失败原文" : "Match deploy error text"}
+            </a>
+          </p>
         </section>
 
         <section className="mx-auto max-w-5xl rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-7 md:p-10" aria-labelledby="ai-agent-answer">

@@ -10,7 +10,6 @@
   "dependencies": {
     "cos-nodejs-sdk-v5": "^3.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.17.0",
-    "quickjs-emscripten": "^0.32.0"
+    "mysql2": "^3.17.0"
   }
 }

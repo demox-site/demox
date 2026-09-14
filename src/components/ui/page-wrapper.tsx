@@ -37,6 +37,27 @@ export function PageWrapper({
             ? '从单个 HTML、ZIP 或前端构建产物出发，用网页、CLI、MCP 或 AI 助手发布静态网站并获得 HTTPS 链接。'
             : 'Publish an AI-generated HTML page, ZIP, or frontend build as a static website through the web, CLI, MCP, or an AI assistant.',
         };
+      case 'when-to-use-demox':
+        return {
+          title: isZh ? '什么时候该用 Demox' : 'When to use Demox',
+          description: isZh
+            ? '对照静态页面、Node handler、Express 和独立后端，判断项目是否适合 Demox。'
+            : 'Compare static pages, Node handlers, Express, and separate backends to see whether Demox is a fit.',
+        };
+      case 'deploy-troubleshooting':
+        return {
+          title: isZh ? 'Demox 发布失败排错' : 'Demox deploy troubleshooting',
+          description: isZh
+            ? '对照 MISSING_ENTRYPOINT、CONTENT_BLOCKED、INVALID_STATIC_SITE 和 Access denied 等原文处理发布失败。'
+            : 'Match MISSING_ENTRYPOINT, CONTENT_BLOCKED, INVALID_STATIC_SITE, and Access denied to the verified fix.',
+        };
+      case 'how-demox-hosts-itself':
+        return {
+          title: isZh ? 'Demox 怎样用自己部署自己' : 'How Demox hosts itself',
+          description: isZh
+            ? '主站用 demox deploy 发页面，用 demox functions push 发 Node 后端。这是仓库记录的现行发布方式。'
+            : 'The main site uses demox deploy for pages and demox functions push for Node backends. This is the current repository release path.',
+        };
       case 'terms':
         return {
           title: isZh ? '服务条款' : 'Terms of Service',

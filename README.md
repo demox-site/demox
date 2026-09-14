@@ -80,15 +80,21 @@ npm install -g @demox-site/cli@latest
 # 登录
 demox login
 
-# 部署
+# 部署前端
 demox deploy ./dist
 
 # 部署文档（PDF、Markdown、DOCX 自动转网页）
 demox deploy ./document.pdf
 demox deploy ./notes.md --template warm
+
+# 推送 Node 云函数（创建站点后用同一个 --id）
+demox functions push ./api/hello --id WEBSITE_ID --slug hello
+demox env set --id WEBSITE_ID --slug hello API_KEY=secret
+demox functions alias set --id WEBSITE_ID --slug hello production --version 2
+demox functions invoke --id WEBSITE_ID --slug hello --body '{"ping":true}'
 ```
 
-更多用法见 [CLI README](../cli/README.md)。
+页面走 `demox deploy`，后端走 `demox functions push`。函数入口是 `module.exports = async function handler(request, env)`，页面里 `fetch('/api/{slug}')`。更多用法见 [CLI README](../cli/README.md) 和 [Node 后端 skill](./skills/node-backend-cli/SKILL.md)。
 
 ### MCP Server（AI 工具集成）
 

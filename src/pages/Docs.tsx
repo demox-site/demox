@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Sparkles,
   Shield,
+  Server,
 } from "lucide-react";
 
 /** 文档章节 id（用于侧边栏锚点与滚动高亮）。 */
@@ -22,6 +23,7 @@ type SectionId =
   | "start"
   | "mcp"
   | "cli"
+  | "functions"
   | "auth"
   | "files"
   | "moderation"
@@ -31,19 +33,20 @@ const t = {
   zh: {
     seoTitle: "文档 - 接入 Demox（MCP & CLI）",
     pageTitle: "Demox 文档",
-    pageSubtitle: "两种方式把网站部署接入你的工作流：AI 助手用 MCP，终端用 CLI。",
+    pageSubtitle: "静态页面用 demox deploy，Node 后端用 demox functions push。AI 助手走 MCP，终端走 CLI。",
     onThisPage: "本页目录",
     copy: "复制",
     copied: "已复制",
     skill: {
       title: "用 Agent Skill 一键接入",
-      desc: "把下面的仓库地址甩给你的 AI（Claude Code、Cursor 等），它就学会用 demox CLI 帮你部署网站了。",
+      desc: "把下面的仓库地址甩给你的 AI（Claude Code、Cursor 等），它就学会用 demox CLI 帮你部署页面和云函数。",
       open: "查看仓库",
     },
     nav: {
       start: "快速开始",
       mcp: "通过 MCP 接入",
       cli: "通过 CLI 使用",
+      functions: "云函数",
       auth: "认证与凭证",
       files: "文件与限制",
       moderation: "内容审核",
@@ -54,19 +57,20 @@ const t = {
     seoTitle: "Docs - Connect to Demox (MCP & CLI)",
     pageTitle: "Demox Docs",
     pageSubtitle:
-      "Two ways to bring deployment into your workflow: MCP for AI assistants, CLI for the terminal.",
+      "Static pages use demox deploy. Node backends use demox functions push. MCP for assistants, CLI for the terminal.",
     onThisPage: "On this page",
     copy: "Copy",
     copied: "Copied",
     skill: {
       title: "Connect with an Agent Skill",
-      desc: "Hand the repo URL below to your AI (Claude Code, Cursor, etc.) and it learns to deploy your sites with the demox CLI.",
+      desc: "Hand the repo URL below to your AI (Claude Code, Cursor, etc.) and it learns to deploy pages and functions with the demox CLI.",
       open: "View repo",
     },
     nav: {
       start: "Quick Start",
       mcp: "Via MCP",
       cli: "Via CLI",
+      functions: "Functions",
       auth: "Auth & Credentials",
       files: "Files & Limits",
       moderation: "Content scan",
@@ -79,6 +83,7 @@ const SECTIONS: { id: SectionId; icon: React.ComponentType<{ size?: number; clas
   { id: "start", icon: Rocket },
   { id: "mcp", icon: Bot },
   { id: "cli", icon: Terminal },
+  { id: "functions", icon: Server },
   { id: "auth", icon: KeyRound },
   { id: "files", icon: FileArchive },
   { id: "moderation", icon: Shield },
@@ -296,8 +301,8 @@ export const Docs: React.FC = () => {
                   <Section id="start" title={tr.nav.start} icon={Rocket} refCb={reg("start")}>
                     <p className="text-[var(--stitch-muted)] leading-relaxed mb-6">
                       {isZh
-                        ? "Demox 提供两种接入方式，共用同一套账号与部署能力，选择最适合你的："
-                        : "Demox offers two ways to connect, sharing the same account and deployment capabilities. Pick what fits you:"}
+                        ? "静态页面用 demox deploy。Node 后端改成 handler 后用 demox functions push。MCP 和 CLI 共用同一套账号："
+                        : "Static pages use demox deploy. Rewrite a Node backend as handlers, then demox functions push. MCP and CLI share one account:"}
                     </p>
                     <div className="grid sm:grid-cols-2 gap-4">
                       <button
@@ -328,8 +333,8 @@ export const Docs: React.FC = () => {
                         </h3>
                         <p className="text-sm text-[var(--stitch-muted)]">
                           {isZh
-                            ? "一条命令把目录或 ZIP 部署到全球 CDN。"
-                            : "One command to ship a folder or ZIP to the global CDN."}
+                            ? "一条命令发页面；Node 后端再用 functions push。"
+                            : "One command for pages; functions push for a Node backend."}
                         </p>
                       </button>
                     </div>
@@ -379,8 +384,8 @@ export const Docs: React.FC = () => {
                     <div className="rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-5 space-y-3">
                       <p className="text-zinc-200 font-mono text-sm">
                         {isZh
-                          ? "“把我的 ./dist 目录部署到 Demox”"
-                          : '"Deploy my ./dist folder to Demox"'}
+                          ? "“把 ./dist 部署到 Demox，再把 ./api/hello 推成云函数 hello”"
+                          : '"Deploy ./dist to Demox, then push ./api/hello as function hello"'}
                       </p>
                       <div className="text-sm text-[var(--stitch-muted)] space-y-1 border-t border-[var(--stitch-line)] pt-3">
                         <p className="text-zinc-500">{isZh ? "AI 助手：" : "Assistant:"}</p>
@@ -400,6 +405,11 @@ export const Docs: React.FC = () => {
                       code={`# 全局安装\nnpm install -g @demox-site/cli@latest\n\n# 或免安装直接用\nnpx @demox-site/cli@latest --help`}
                       {...copyProps}
                     />
+                    <p className="text-sm text-[var(--stitch-muted)] mt-3">
+                      {isZh
+                        ? "functions / env / alias 需要 CLI 1.1.6 及以上（npm 当前 latest 已包含）。"
+                        : "functions / env / alias need CLI 1.1.6 or newer (included in the current npm latest)."}
+                    </p>
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
                       {isZh ? "2. 登录" : "2. Log in"}
                     </h3>
@@ -412,7 +422,7 @@ export const Docs: React.FC = () => {
                     </h3>
                     <CodeBlock
                       lang="bash"
-                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID\n\n# 页面水印（仅专业用户及以上）\ndemox watermark hide WEBSITE_ID\ndemox watermark show WEBSITE_ID`}
+                      code={`# 部署目录、ZIP、PDF 或文档\ndemox deploy ./dist\ndemox deploy ./website.zip\ndemox deploy ./document.pdf\ndemox deploy ./notes.md --template warm\n\n# 指定名称 / 更新现有网站\ndemox deploy ./dist --name my-site\ndemox deploy ./dist --id WEBSITE_ID\n\n# Node 云函数：先 push，再设环境变量\ndemox functions push ./api/hello --id WEBSITE_ID --slug hello\ndemox env set --id WEBSITE_ID --slug hello API_KEY=secret\ndemox functions alias set --id WEBSITE_ID --slug hello production --version 2\ndemox functions invoke --id WEBSITE_ID --slug hello --body '{"ping":true}'\n\n# 自定义子域名（5-63 位）\ndemox domain set WEBSITE_ID my-demo\ndemox domain clear WEBSITE_ID\n\n# 页面水印（仅专业用户及以上）\ndemox watermark hide WEBSITE_ID\ndemox watermark show WEBSITE_ID`}
                       {...copyProps}
                     />
                     <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
@@ -424,6 +434,10 @@ export const Docs: React.FC = () => {
                         ["demox logout", isZh ? "登出并删除本地 Token" : "Log out and remove local token"],
                         ["demox status", isZh ? "查看登录状态" : "Show login status"],
                         ["demox deploy <path>", isZh ? "部署目录、ZIP、PDF 或文档" : "Deploy folder, ZIP, PDF, or docs"],
+                        ["demox functions push <path>", isZh ? "上传函数代码为新版本（不改别名）" : "Upload a function version (aliases stay put)"],
+                        ["demox functions alias set ...", isZh ? "把别名指向指定版本" : "Point an alias at a version"],
+                        ["demox env set --id --slug KEY=value", isZh ? "设置该函数的环境变量" : "Set that function's env vars"],
+                        ["demox functions invoke", isZh ? "按别名调用函数，默认 production" : "Invoke by alias, default production"],
                         ["demox domain set <id> <subdomain>", isZh ? "设置自定义子域名" : "Set custom subdomain"],
                         ["demox domain clear <id>", isZh ? "清除自定义子域名" : "Clear custom subdomain"],
                         ["demox watermark hide <id>", isZh ? "隐藏页面水印（仅专业用户及以上）" : "Hide page watermark (professional and above)"],
@@ -443,6 +457,55 @@ export const Docs: React.FC = () => {
                         </div>
                       ))}
                     </div>
+                  </Section>
+
+                  <Section id="functions" title={tr.nav.functions} icon={Server} refCb={reg("functions")}>
+                    <p className="text-[var(--stitch-muted)] leading-relaxed mb-6">
+                      {isZh
+                        ? "每个站点可以挂 Node 云函数。页面里 fetch('/api/标识') 会转到对应函数。入口文件是 index.js / index.cjs / index.mjs，不要 Express listen。"
+                        : "Each site can host Node functions. fetch('/api/slug') on the page is routed to that function. The entry file is index.js / index.cjs / index.mjs — not Express listen."}
+                    </p>
+                    <CodeBlock
+                      lang="js"
+                      code={`module.exports = async function handler(request, env) {
+  return {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ok: true, input: request.body })
+  };
+};`}
+                      {...copyProps}
+                    />
+                    <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
+                      {isZh ? "发布与更新" : "Publish and update"}
+                    </h3>
+                    <p className="text-[var(--stitch-muted)] text-sm mb-3">
+                      {isZh
+                        ? "必须先 push 出函数，再设环境变量。首次成功上传会创建 v1，并把 production、develop 都指向 v1。再 push 只增加版本，不会改别名。"
+                        : "Push the function first, then set env. The first successful upload creates v1 and points production and develop at v1. Later pushes add versions and do not move aliases."}
+                    </p>
+                    <CodeBlock
+                      lang="bash"
+                      code={`demox functions push ./api/hello --id WEBSITE_ID --slug hello
+demox env set --id WEBSITE_ID --slug hello DATABASE_URL=...
+demox functions alias set --id WEBSITE_ID --slug hello production --version 2
+demox functions invoke --id WEBSITE_ID --slug hello --alias production --body '{"ping":true}'`}
+                      {...copyProps}
+                    />
+                    <h3 className="font-semibold text-zinc-200 mt-8 mb-3">
+                      {isZh ? "调用地址" : "Invoke URL"}
+                    </h3>
+                    <p className="text-[var(--stitch-muted)] text-sm mb-3">
+                      {isZh
+                        ? "函数 HTTP 地址是 https://api.demox.site/{站点ID}/{别名}/api/{标识}。站点页面上的 fetch('/api/标识') 走 production 别名。"
+                        : "The HTTP address is https://api.demox.site/{siteId}/{alias}/api/{slug}. fetch('/api/slug') on the site uses the production alias."}
+                    </p>
+                    <CodeBlock
+                      lang="text"
+                      code={`https://api.demox.site/WEBSITE_ID/production/api/hello
+https://api.demox.site/WEBSITE_ID/develop/api/hello`}
+                      {...copyProps}
+                    />
                   </Section>
 
                   {/* 认证与凭证（MCP / CLI 共享） */}
@@ -580,6 +643,24 @@ export const Docs: React.FC = () => {
                           isZh
                             ? "打开 /content-scan，或 GET https://api.demox.site/website/content-scan/phrases。AI 可先读 github.com/demox-site/skill。"
                             : "Open /content-scan, or GET https://api.demox.site/website/content-scan/phrases. Agents should read github.com/demox-site/skill first.",
+                        ],
+                        [
+                          isZh ? "Node 后端怎么发布？" : "How do I publish a Node backend?",
+                          isZh
+                            ? "改成 handler(request, env)，用 demox functions push。环境变量按函数设置。要用新版本，把 production 或 develop 指过去。调用地址是 https://api.demox.site/{站点ID}/{别名}/api/{标识}。"
+                            : "Export handler(request, env) and run demox functions push. Env is per function. To serve a new version, retarget production or develop. The URL is https://api.demox.site/{siteId}/{alias}/api/{slug}.",
+                        ],
+                        [
+                          isZh ? "为什么 push 之后页面还是旧逻辑？" : "Why is the page still on old code after push?",
+                          isZh
+                            ? "push 只上传新版本，不会改别名。站点域名始终走 production。执行 demox functions alias set --id ... --slug ... production --version N。"
+                            : "push only uploads a version; it does not move aliases. The site domain always uses production. Run demox functions alias set --id ... --slug ... production --version N.",
+                        ],
+                        [
+                          isZh ? "发布失败该看哪条错误？" : "Which deploy error should I act on?",
+                          isZh
+                            ? "对照 /deploy-troubleshooting。缺 index.html 是 MISSING_ENTRYPOINT，屏蔽词是 CONTENT_BLOCKED，私有站点未授权是 Access denied。"
+                            : "See /deploy-troubleshooting. Missing index.html is MISSING_ENTRYPOINT, blocklist hits are CONTENT_BLOCKED, and unauthorized private sites return Access denied.",
                         ],
                       ].map(([q, a]) => (
                         <div key={q}>

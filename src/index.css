@@ -484,6 +484,269 @@
     background: var(--stitch-blue-soft);
   }
 
+  .site-page-head {
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+    margin-bottom: 1.5rem;
+  }
+
+  @media (min-width: 768px) {
+    .site-page-head {
+      flex-direction: row;
+      align-items: end;
+      justify-content: space-between;
+      gap: 1.5rem;
+    }
+  }
+
+  .site-page-kicker {
+    color: var(--stitch-muted);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .site-page-title {
+    margin-top: 0.35rem;
+    color: var(--stitch-ink);
+    font-size: clamp(1.7rem, 3vw, 2.15rem);
+    font-weight: 750;
+    letter-spacing: -0.045em;
+    line-height: 1.05;
+  }
+
+  .site-page-desc {
+    margin-top: 0.45rem;
+    max-width: 36rem;
+    color: var(--stitch-muted);
+    font-size: 0.92rem;
+    line-height: 1.6;
+  }
+
+  .site-url-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 2.75rem;
+    padding: 0.28rem 0.32rem 0.28rem 0.42rem;
+    border: 1px solid var(--stitch-line);
+    border-radius: 999px;
+    background:
+      linear-gradient(180deg, var(--stitch-surface-strong), color-mix(in srgb, var(--stitch-surface) 70%, var(--stitch-bg-2)));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 1px 0 rgba(17, 17, 17, 0.04);
+  }
+
+  .dark .site-url-bar {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 1px 0 rgba(0, 0, 0, 0.35);
+  }
+
+  .site-url-bar-lg {
+    min-height: 3.15rem;
+    padding: 0.34rem 0.4rem 0.34rem 0.5rem;
+  }
+
+  .site-url-bar[data-busy="true"] {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .site-url-bar-lock {
+    display: grid;
+    height: 1.85rem;
+    width: 1.85rem;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--stitch-blue-soft);
+    color: var(--stitch-ink);
+  }
+
+  .site-url-bar-lock[data-private="true"] {
+    color: var(--stitch-muted);
+  }
+
+  .site-url-bar-host {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--stitch-ink);
+    font-family: ui-monospace, "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+    font-size: 0.92rem;
+    font-weight: 560;
+    letter-spacing: -0.025em;
+  }
+
+  .site-url-bar-lg .site-url-bar-host {
+    font-size: 1.02rem;
+  }
+
+  .site-url-bar-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .site-url-bar-actions button {
+    display: grid;
+    height: 2.5rem;
+    width: 2.5rem;
+    place-items: center;
+    border-radius: 999px;
+    color: var(--stitch-muted);
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
+  }
+
+  .site-url-bar-actions button:hover,
+  .site-url-bar-actions button:focus-visible {
+    background: var(--stitch-blue-soft);
+    color: var(--stitch-ink);
+    outline: none;
+  }
+
+  .site-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .site-list-row {
+    width: 100%;
+    padding: 0.95rem 1rem 0.9rem;
+    border: 1px solid var(--stitch-line);
+    border-radius: 1.4rem;
+    background: var(--stitch-surface);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  }
+
+  .site-list-row:hover,
+  .site-list-row:focus-visible {
+    border-color: color-mix(in srgb, var(--stitch-ink) 55%, var(--stitch-line));
+    box-shadow: 0 16px 40px rgba(17, 17, 17, 0.08);
+    transform: translateY(-1px);
+    outline: none;
+  }
+
+  .site-list-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.7rem;
+    margin-top: 0.7rem;
+    color: var(--stitch-muted);
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  .site-list-name {
+    color: var(--stitch-ink);
+    font-weight: 600;
+  }
+
+  .site-tag {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--stitch-line);
+    border-radius: 999px;
+    padding: 0.12rem 0.5rem;
+    font-size: 0.68rem;
+    color: var(--stitch-muted);
+  }
+
+  .site-settings-grid {
+    display: grid;
+    gap: 1rem;
+  }
+
+  @media (min-width: 900px) {
+    .site-settings-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  .site-settings-group {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.85rem;
+    border: 1px solid var(--stitch-line);
+    border-radius: 1.45rem;
+    background: var(--stitch-surface);
+    padding: 1.1rem 1.15rem 1.15rem;
+  }
+
+  .site-settings-group h3 {
+    color: var(--stitch-ink);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .site-settings-group .site-settings-hint {
+    margin-top: 0.2rem;
+    color: var(--stitch-muted);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 450;
+  }
+
+  .site-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 3rem;
+    padding: 0.7rem 0.1rem;
+  }
+
+  .site-setting-row + .site-setting-row {
+    border-top: 1px solid var(--stitch-line);
+  }
+
+  .site-alt-host {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: var(--stitch-muted);
+    font-family: ui-monospace, "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+    font-size: 0.78rem;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .site-url-bar[data-busy="true"]::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+      animation: site-url-shimmer 1.4s ease infinite;
+      pointer-events: none;
+    }
+
+    .dark .site-url-bar[data-busy="true"]::after {
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+    }
+  }
+
+  @keyframes site-url-shimmer {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
+  }
+
   .stitch-status-public {
     border-color: var(--stitch-line);
     background: var(--stitch-ink);

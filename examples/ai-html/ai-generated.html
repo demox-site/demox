@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>夜班车 · 本周五江岸 3 号泊位</title>
+  <meta name="description" content="夜班车：一辆停在江边的听音车厢。本周五 22:00 发车，40 个座位。" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231a2744'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='14' fill='%23f0a020' font-family='monospace'%3ENB%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --enamel: #1a2744;
+      --sodium: #f0a020;
+      --ticket: #f6e7c1;
+      --vinyl: #8b2e2e;
+      --glass: #9ec0c9;
+      --asphalt: #0c1018;
+      --ink: #1b140c;
+      --display: "Barlow Condensed", "PingFang SC", sans-serif;
+      --led: "Share Tech Mono", ui-monospace, monospace;
+      --body: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      min-height: 100dvh;
+      color: var(--ticket);
+      background: var(--asphalt);
+      font-family: var(--body);
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: 3.5rem;
+    }
+    a { color: inherit; }
+
+    .ribbon {
+      margin: 0;
+      padding: 0.55rem 1.1rem;
+      font-family: var(--led);
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      color: var(--enamel);
+      background: var(--sodium);
+    }
+
+    .board {
+      position: relative;
+      padding: clamp(1.4rem, 4vw, 2.4rem) clamp(1rem, 4vw, 2rem) 1.2rem;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(240, 160, 32, 0.16) 1px, transparent 0) 0 0 / 8px 8px,
+        linear-gradient(180deg, #15203a, var(--enamel));
+      border-bottom: 8px solid #0e1730;
+    }
+
+    .route-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.7rem 1.1rem;
+    }
+
+    .route {
+      font-family: var(--led);
+      font-size: clamp(1.6rem, 5vw, 2.4rem);
+      color: var(--sodium);
+      letter-spacing: 0.12em;
+    }
+
+    .blink {
+      color: var(--sodium);
+      animation: blink 1.2s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .dest {
+      font-family: var(--display);
+      font-weight: 800;
+      font-size: clamp(2.4rem, 8vw, 5.2rem);
+      line-height: 0.9;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .clock {
+      margin: 0.8rem 0 0;
+      font-family: var(--led);
+      color: var(--glass);
+      letter-spacing: 0.14em;
+    }
+
+    main {
+      width: min(920px, calc(100% - 2rem));
+      margin: -1.4rem auto 3rem;
+    }
+
+    .ticket {
+      display: grid;
+      grid-template-columns: 1fr;
+      background: var(--ticket);
+      color: var(--ink);
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    }
+
+    .ticket-main,
+    .stub {
+      padding: 1.4rem 1.3rem 1.5rem;
+    }
+
+    .eyebrow {
+      margin: 0 0 0.35rem;
+      font-family: var(--led);
+      font-size: 0.78rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--vinyl);
+    }
+
+    h1 {
+      margin: 0 0 0.5rem;
+      font-family: var(--display);
+      font-size: clamp(2.4rem, 7vw, 4rem);
+      line-height: 0.88;
+      letter-spacing: 0.01em;
+    }
+
+    .lede {
+      margin: 0 0 1.3rem;
+      max-width: 34em;
+      line-height: 1.6;
+    }
+
+    .stops {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px dashed rgba(27, 20, 12, 0.28);
+    }
+
+    .stops li {
+      display: grid;
+      grid-template-columns: 4.6rem 1fr;
+      gap: 0.8rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px dashed rgba(27, 20, 12, 0.28);
+    }
+
+    .time {
+      font-family: var(--led);
+      color: var(--vinyl);
+    }
+
+    .act small {
+      display: block;
+      margin-top: 0.15rem;
+      color: #6a5a42;
+    }
+
+    .stub {
+      position: relative;
+      background: #f0d7a4;
+    }
+
+    .stub::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -7px;
+      height: 14px;
+      background: radial-gradient(circle at 8px 7px, var(--asphalt) 6px, transparent 7px) 0 0 / 16px 14px;
+    }
+
+    label {
+      display: block;
+      margin: 0 0 0.85rem;
+      font-size: 0.92rem;
+    }
+
+    label span {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-family: var(--led);
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border: 0;
+      border-bottom: 2px solid var(--ink);
+      background: transparent;
+      font: inherit;
+      color: var(--ink);
+    }
+
+    input:focus,
+    select:focus {
+      outline: 2px solid var(--sodium);
+      outline-offset: 3px;
+    }
+
+    .punch {
+      width: 100%;
+      margin-top: 0.4rem;
+      padding: 0.75rem 1rem;
+      border: 0;
+      background: var(--enamel);
+      color: var(--ticket);
+      font-family: var(--display);
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .punch:hover,
+    .punch:focus-visible {
+      background: var(--vinyl);
+    }
+
+    .done {
+      display: none;
+      margin: 0;
+      line-height: 1.55;
+    }
+
+    .ticket.is-booked .form { display: none; }
+    .ticket.is-booked .done { display: block; }
+
+    .fine {
+      width: min(920px, calc(100% - 2rem));
+      margin: 0 auto 2.5rem;
+      color: var(--glass);
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+
+    @media (min-width: 800px) {
+      .ticket {
+        grid-template-columns: 1.45fr 0.9fr;
+      }
+      .stub::before {
+        left: -7px;
+        right: auto;
+        top: 0;
+        bottom: 0;
+        width: 14px;
+        height: auto;
+        background: radial-gradient(circle at 7px 8px, var(--asphalt) 6px, transparent 7px) 0 0 / 14px 16px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .blink { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <p class="ribbon">Demox 公开示例 · 单文件 HTML，CLI / MCP 直接发布</p>
+
+  <header class="board">
+    <div class="route-row">
+      <span class="route">NB-7</span>
+      <span class="blink" aria-hidden="true">●</span>
+      <span class="dest">江岸 3 号泊位</span>
+    </div>
+    <p class="clock">FRI 22:00 → 01:30</p>
+  </header>
+
+  <main>
+    <section class="ticket" id="ticket">
+      <div class="ticket-main">
+        <p class="eyebrow">Listening room on a retired bus</p>
+        <h1>夜班车</h1>
+        <p class="lede">
+          一辆不再跑线路的车厢，停在江边。车里只有座位、唱片和窗外的水声。本周五发车，满员 40 人。
+        </p>
+        <ol class="stops">
+          <li>
+            <span class="time">22:10</span>
+            <span class="act">陈南<small>口白与钢弦，不插电</small></span>
+          </li>
+          <li>
+            <span class="time">23:00</span>
+            <span class="act">盐田磁带<small>现场混音，带两盘本周新带</small></span>
+          </li>
+          <li>
+            <span class="time">00:20</span>
+            <span class="act">闭麦听河<small>灯只留过道，车门开一条缝</small></span>
+          </li>
+        </ol>
+      </div>
+      <aside class="stub">
+        <p class="eyebrow">留座</p>
+        <form class="form" id="form">
+          <label>
+            <span>名字</span>
+            <input name="name" required maxlength="20" autocomplete="name" />
+          </label>
+          <label>
+            <span>人数</span>
+            <select name="seats" required>
+              <option value="1">1 座</option>
+              <option value="2">2 座</option>
+            </select>
+          </label>
+          <label>
+            <span>车次</span>
+            <select name="night" required>
+              <option value="本周五">本周五</option>
+              <option value="下周五">下周五</option>
+            </select>
+          </label>
+          <button class="punch" type="submit">剪票</button>
+        </form>
+        <p class="done" id="done"></p>
+      </aside>
+    </section>
+  </main>
+
+  <p class="fine">
+    车内备茶与水，不设酒单。自带耳机可选。禁烟。找不到车就沿江步道走到第三组路灯。这是一份 AI 生成的单页 HTML，用 Demox 发布，没有单独的服务器。
+  </p>
+
+  <script>
+    document.getElementById("form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      var data = new FormData(event.target);
+      var name = String(data.get("name") || "").trim();
+      var seats = data.get("seats");
+      var night = data.get("night");
+      document.getElementById("ticket").classList.add("is-booked");
+      document.getElementById("done").textContent =
+        name + "，" + night + " 已留 " + seats + " 座。到站报名字即可，不用打印。";
+    });
+  </script>
+</body>
+</html>

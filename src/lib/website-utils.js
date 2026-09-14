@@ -75,26 +75,60 @@ export const generateWebsiteId = () => {
  * formatTimestamp
  * 将时间戳或日期对象格式化为精确到秒的本地时间字符串
  */
-export const formatTimestamp = (ts) => {
-  if (!ts) return "";
-  // 兼容映射层的 { $date: number } 形态
-  if (ts && typeof ts === "object" && "$date" in ts) {
-    ts = ts.$date;
+export const toMillis = (ts) => {
+  if (!ts && ts !== 0) return 0;
+  let value = ts;
+  if (value && typeof value === "object" && "$date" in value) {
+    value = value.$date;
   }
   const d =
-    ts instanceof Date
-      ? ts
-      : typeof ts === "number"
-      ? new Date(ts)
-      : new Date(String(ts));
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, {
+    value instanceof Date
+      ? value
+      : typeof value === "number"
+      ? new Date(value)
+      : new Date(String(value));
+  const ms = d.getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+};
+
+export const formatTimestamp = (ts) => {
+  const ms = toMillis(ts);
+  if (!ms) return "";
+  return new Date(ms).toLocaleString(undefined, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit"
+  });
+};
+
+export const formatRelativeTime = (ts, lang = "zh", now = Date.now()) => {
+  const ms = toMillis(ts);
+  if (!ms) return "";
+  const delta = Math.max(0, now - ms);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const zh = lang === "zh";
+  if (delta < minute) return zh ? "刚刚" : "just now";
+  if (delta < hour) {
+    const n = Math.floor(delta / minute);
+    return zh ? `${n} 分钟前` : `${n}m ago`;
+  }
+  if (delta < day) {
+    const n = Math.floor(delta / hour);
+    return zh ? `${n} 小时前` : `${n}h ago`;
+  }
+  if (delta < 7 * day) {
+    const n = Math.floor(delta / day);
+    return zh ? `${n} 天前` : `${n}d ago`;
+  }
+  return new Date(ms).toLocaleDateString(zh ? "zh-CN" : "en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
   });
 };
 
@@ -161,3 +195,11 @@ export const getSiteDomains = (w) => {
   }
   return list;
 };
+
+export const getPrimaryDomain = (w) => getSiteDomains(w)[0] || null;
+
+export const isSiteBusy = (website, deploying = {}) =>
+  Boolean(
+    website &&
+      (website.status === "processing" || deploying[website._id] || deploying[website.websiteId])
+  );

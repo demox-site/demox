@@ -4,10 +4,10 @@ const crypto = require('crypto');
 const { createJwtAuthenticator } = require('./auth.js');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
-const { QuickJSFunctionRuntime } = require('./runtime-quickjs.js');
+const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, createHttpNodeInvoker } = require('./runtime-nodejs.js');
 const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized } = require('./errors.js');
-const { CosBundleStore } = require('./bundle-store.js');
+const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
   loadSystemManifest,
@@ -15,12 +15,18 @@ const {
   createSystemFunctionRouter,
   applySiteScope
 } = require('./system-router.js');
-const { readWebsiteScope, requireWebsiteId, isPlatformSite, publicSystemFunctions } = require('./site-binding.js');
+const { readWebsiteScope, requireWebsiteId, isPlatformSite, publicSystemFunctions, platformWebsiteId } = require('./site-binding.js');
+const { isTimerEvent, timerNameOf } = require('./function-events.js');
+const { seedPlatformSiteFunctions, systemFunctionSlug } = require('./platform-site.js');
+
+function createDefaultRuntime({ logger = console, nodeInvoke = null } = {}) {
+  return new NodejsFunctionRuntime({ invoke: nodeInvoke || createLocalNodeInvoker({ logger }), logger });
+}
 
 function createFunctionHttpHandler({
   repository = new InMemoryFunctionRepository(),
   bundleStore = new InMemoryBundleStore(),
-  runtime = new QuickJSFunctionRuntime(),
+  runtime = createDefaultRuntime(),
   authenticate = null,
   publicBaseUrl = process.env.FUNCTION_PUBLIC_BASE_URL || 'https://api.demox.site',
   logger = console
@@ -28,7 +34,7 @@ function createFunctionHttpHandler({
   const service = new FunctionService({ repository, bundleStore, runtime, authenticate, publicBaseUrl, logger });
   const authenticateManagement = authenticate || lazyJwtAuthenticator();
 
-  return async function main(event = {}, context = {}) {
+  async function main(event = {}, context = {}) {
     try {
       event = applySiteScope(event);
       const method = String(event.httpMethod || event.requestContext?.http?.method || 'POST').toUpperCase();
@@ -39,7 +45,12 @@ function createFunctionHttpHandler({
 
       if (isInvokeRoute(path, action)) {
         const functionId = routeFunctionId(path) || body.functionId;
-        return responseFromInvoke(await service.invoke({ functionId, event: { ...event, body: event.body }, context }));
+        return responseFromInvoke(await service.invoke({
+          functionId,
+          event: { ...event, body: event.body },
+          context,
+          alias: body.alias || event.queryStringParameters?.alias
+        }));
       }
 
       const scope = readWebsiteScope(event, body);
@@ -48,7 +59,8 @@ function createFunctionHttpHandler({
           websiteId: requireWebsiteId(scope.websiteId),
           slug: siteApiSlug(path) || body.slug,
           event: { ...event, body: event.body },
-          context
+          context,
+          alias: scope.env || 'production'
         }));
       }
       if (isListRoute(path, action, method) && scope.kind === 'system') {
@@ -68,6 +80,10 @@ function createFunctionHttpHandler({
           websiteId: scope.websiteId,
           name: body.name,
           slug: body.slug,
+          runtime: body.runtime,
+          routes: body.routes,
+          triggers: body.triggers,
+          timerName: body.timerName || body.timer_name,
           limits: body.limits,
           env: body.env
         });
@@ -75,11 +91,13 @@ function createFunctionHttpHandler({
       }
       if (isGetEnvRoute(path, action, method)) {
         const websiteId = requireWebsiteId(scope.websiteId);
+        await service.assertWebsiteOwner(user.userId, websiteId);
         const env = await service.getWebsiteEnv(websiteId);
         return jsonResponse(200, { success: true, websiteId, env });
       }
       if (isPutEnvRoute(path, action, method)) {
         const websiteId = requireWebsiteId(scope.websiteId);
+        await service.assertWebsiteOwner(user.userId, websiteId);
         const env = await service.putWebsiteEnv(websiteId, body.env);
         return jsonResponse(200, { success: true, websiteId, env });
       }
@@ -106,19 +124,117 @@ function createFunctionHttpHandler({
         const published = await service.publishVersion({ ownerId: user.userId, functionId, version: body.version });
         return jsonResponse(200, { success: true, ...published });
       }
+      if (isGetFunctionEnvRoute(path, action, method)) {
+        const env = await service.getFunctionEnv({ ownerId: user.userId, functionId });
+        return jsonResponse(200, { success: true, functionId, env });
+      }
+      if (isPutFunctionEnvRoute(path, action, method)) {
+        const env = await service.putFunctionEnv({ ownerId: user.userId, functionId, env: body.env });
+        return jsonResponse(200, { success: true, functionId, env });
+      }
+      if (isAliasListRoute(path, action, method)) {
+        const aliases = await service.listAliases({ ownerId: user.userId, functionId });
+        return jsonResponse(200, { success: true, functionId, aliases });
+      }
+      if (isAliasDeleteRoute(path, action, method)) {
+        const deleted = await service.deleteAlias({
+          ownerId: user.userId,
+          functionId,
+          alias: aliasNameFromPath(path) || body.alias
+        });
+        return jsonResponse(200, { success: true, ...deleted });
+      }
+      if (isAliasSetRoute(path, action, method)) {
+        const alias = await service.setAlias({
+          ownerId: user.userId,
+          functionId,
+          alias: aliasNameFromPath(path) || body.alias,
+          version: body.version
+        });
+        return jsonResponse(200, { success: true, alias });
+      }
       throw badRequest('无法识别的函数接口', 'UNKNOWN_FUNCTION_ROUTE');
     } catch (error) {
       // User code errors may contain secrets; keep them out of platform logs.
       logger.error?.('函数接口请求失败:', error.code || 'INTERNAL_ERROR');
       return errorResponse(error, event);
     }
-  };
+  }
+
+  main.service = service;
+  main.tryInvokeUserRoute = (event, context) => tryInvokeUserRoute(service, event, context);
+  return main;
+}
+
+function isManagementPath(path) {
+  return path === '/functions' || path.startsWith('/functions/') || path === '/env';
+}
+
+async function tryInvokeUserRoute(service, event = {}, context = {}) {
+  if (isTimerEvent(event)) {
+    const record = await service.findPublishedByTimer(timerNameOf(event));
+    if (!record) return null;
+    return responseFromInvoke(await service.invoke({ functionId: record.functionId, event, context }));
+  }
+
+  const body = parseBody(event);
+  const path = normalizePath(event.path || event.rawPath || event.requestContext?.http?.path || body.path || '/');
+  if (isManagementPath(path)) return null;
+
+  const scope = readWebsiteScope(event, body);
+  let websiteId = scope.websiteId;
+  if (!websiteId && path.startsWith('/api/')) return null;
+  if (!websiteId) websiteId = platformWebsiteId();
+
+  if (isSiteApiRoute(path, body.action)) {
+    try {
+      return responseFromInvoke(await service.invokeBySlug({
+        websiteId: requireWebsiteId(websiteId || scope.websiteId),
+        slug: siteApiSlug(path) || body.slug,
+        event,
+        context,
+        alias: scope.env || 'production'
+      }));
+    } catch (error) {
+      if (error?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  if (!websiteId) return null;
+  const record = await service.findPublishedByRoute(websiteId, path);
+  if (!record) return null;
+  return responseFromInvoke(await service.invoke({
+    functionId: record.functionId,
+    event,
+    context,
+    alias: scope.env || 'production'
+  }));
+}
+
+async function invokePublishedSystemFunction(service, entry, event, context) {
+  if (!service || typeof service.invokeBySlug !== 'function') return null;
+  const slug = systemFunctionSlug(entry);
+  if (!slug) return null;
+  try {
+    return responseFromInvoke(await service.invokeBySlug({
+      websiteId: platformWebsiteId(),
+      slug,
+      event,
+      context
+    }));
+  } catch (error) {
+    if (error?.statusCode === 404 || error?.code === 'FUNCTION_NOT_PUBLISHED' || error?.code === 'BUNDLE_MISSING') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
- * Route Demox's trusted system functions and user-authored functions through
- * one SCF handler. System entries are selected only from the checked-in
- * manifest; user requests can never select a trusted Node.js runtime.
+ * Route user-authored functions and Demox system backends through one HTTP
+ * entry. Manifest paths (/auth, /website, /deploy, platform timers) prefer
+ * the published platform-site function source, then fall back in-process.
  */
 function createPlatformHandler({
   userHandler = null,
@@ -126,6 +242,7 @@ function createPlatformHandler({
   systemEntries = loadSystemManifest(),
   systemRouterOptions = {},
   logger = console,
+  seedPlatformSite = false,
   ...functionOptions
 } = {}) {
   const resolvedUserHandler = userHandler || createFunctionHttpHandler({ logger, ...functionOptions });
@@ -134,25 +251,53 @@ function createPlatformHandler({
     entries: systemEntries,
     logger
   });
-  if (!systemHandler) bindInProcessSystemBackends(resolvedSystemHandler, logger);
 
-  return async function platformMain(event = {}, context = {}) {
+  let seedOnce = null;
+  async function platformMain(event = {}, context = {}) {
+    if (seedPlatformSite && resolvedUserHandler.service && !seedOnce) {
+      seedOnce = seedPlatformSiteFunctions({
+        service: resolvedUserHandler.service,
+        logger
+      }).catch((error) => {
+        seedOnce = null;
+        logger.warn?.('平台站点函数种子失败:', error.message);
+      });
+    }
+    if (seedOnce) await seedOnce.catch(() => {});
+
     const scopedEvent = applySiteScope(event, systemEntries);
     const systemEntry = resolveSystemFunction(scopedEvent, systemEntries);
-    if (systemEntry || isTimerEvent(scopedEvent)) {
+    if (systemEntry) {
+      const published = await invokePublishedSystemFunction(
+        resolvedUserHandler.service,
+        systemEntry,
+        scopedEvent,
+        context
+      );
+      if (published) return published;
+      return resolvedSystemHandler(scopedEvent, context);
+    }
+    if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
+      const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
+      if (userHit) return userHit;
+    }
+    if (isTimerEvent(scopedEvent)) {
       return resolvedSystemHandler(scopedEvent, context);
     }
     return resolvedUserHandler(scopedEvent, context);
-  };
+  }
+
+  if (!systemHandler) bindInProcessSystemBackends(platformMain, logger);
+  return platformMain;
 }
 
-function bindInProcessSystemBackends(systemHandler, logger = console) {
+function bindInProcessSystemBackends(invoke, logger = console) {
   try {
     const mcp = require(require('path').join(__dirname, '..', 'mcp-api'));
     if (typeof mcp.setBackendInvoker !== 'function') return false;
     mcp.setBackendInvoker(async (url, data, token) => {
       const target = new URL(String(url), 'https://api.demox.site');
-      return systemHandler({
+      return invoke({
         httpMethod: 'POST',
         path: target.pathname || '/',
         headers: {
@@ -167,18 +312,6 @@ function bindInProcessSystemBackends(systemHandler, logger = console) {
     logger.warn?.('系统函数进程内回源未启用:', error.message);
     return false;
   }
-}
-
-function isTimerEvent(event = {}) {
-  const type = String(event.Type || event.type || event.triggerType || '').trim().toLowerCase();
-  if (type) return type === 'timer' || type === 'timed' || type === 'schedule';
-  return Boolean(
-    (event.TriggerName || event.triggerName) &&
-    !event.httpMethod &&
-    !event.path &&
-    !event.rawPath &&
-    !event.requestContext?.http
-  );
 }
 
 function lazyJwtAuthenticator() {
@@ -254,6 +387,38 @@ function isPublishRoute(path, action, method) {
   return action === 'publish_function' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/publish$/.test(path) && method === 'POST');
 }
 
+function isGetFunctionEnvRoute(path, action, method) {
+  return action === 'get_function_env' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/env$/.test(path) && method === 'GET');
+}
+
+function isPutFunctionEnvRoute(path, action, method) {
+  return action === 'put_function_env' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/env$/.test(path) && method === 'POST');
+}
+
+function isAliasListRoute(path, action, method) {
+  return action === 'list_function_aliases' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/aliases$/.test(path) && method === 'GET');
+}
+
+function isAliasSetRoute(path, action, method) {
+  return action === 'set_function_alias' || (
+    method === 'POST' && (
+      /^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/aliases$/.test(path)
+      || /^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/aliases\/[a-z][a-z0-9-]{0,31}$/.test(path)
+    )
+  );
+}
+
+function isAliasDeleteRoute(path, action, method) {
+  return action === 'delete_function_alias' || (
+    method === 'DELETE' && /^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/aliases\/[a-z][a-z0-9-]{0,31}$/.test(path)
+  );
+}
+
+function aliasNameFromPath(path) {
+  const match = String(path || '').match(/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/aliases\/([a-z][a-z0-9-]{0,31})$/);
+  return match ? match[1] : '';
+}
+
 function isSourceRoute(path, action, method) {
   return action === 'get_function_source' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/source$/.test(path) && method === 'GET');
 }
@@ -310,23 +475,40 @@ function corsHeaders() {
   };
 }
 
+function createProductionNodeInvoker(logger = console) {
+  const mode = String(process.env.FUNCTIONS_NODE_RUNTIME_MODE || '').trim().toLowerCase();
+  if (mode === 'local') return createLocalNodeInvoker({ logger });
+  if (mode === 'scf') {
+    return createScfNodeInvoker({
+      functionName: process.env.FUNCTIONS_NODE_RUNTIME || 'demox-user-nodejs',
+      namespace: process.env.FUNCTIONS_RUNTIME_NAMESPACE || 'demox',
+      logger
+    });
+  }
+  const url = String(process.env.FUNCTIONS_NODE_RUNTIME_URL || '').trim();
+  const secret = String(process.env.RUNTIME_INVOKE_SECRET || '').trim();
+  if (url && secret) return createHttpNodeInvoker({ url, secret, logger });
+  return createLocalNodeInvoker({ logger });
+}
+
 function createProductionHandler({ publicBaseUrl, logger = console, database, bundleStore } = {}) {
   const databaseAdapter = database || createMysqlDatabaseFromEnv();
   const repository = createMysqlFunctionRepository(databaseAdapter);
   const bucket = process.env.FUNCTIONS_COS_BUCKET;
   const region = process.env.FUNCTIONS_COS_REGION || process.env.COS_REGION;
   if (!bundleStore && (!bucket || !region)) throw new Error('生产函数服务缺少 FUNCTIONS_COS_BUCKET/FUNCTIONS_COS_REGION');
-  const productionBundleStore = bundleStore || new CosBundleStore({
+  const productionBundleStore = new MemoryCachedBundleStore(bundleStore || new CosBundleStore({
     bucket,
     region,
     secretId: process.env.FUNCTIONS_COS_SECRET_ID || process.env.COS_SECRET_ID || process.env.TENCENTCLOUD_SECRETID,
     secretKey: process.env.FUNCTIONS_COS_SECRET_KEY || process.env.COS_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY,
     securityToken: process.env.TENCENTCLOUD_SESSIONTOKEN || process.env.COS_SESSION_TOKEN
-  });
+  }));
+  const nodeInvoke = createProductionNodeInvoker(logger);
   return createFunctionHttpHandler({
     repository,
     bundleStore: productionBundleStore,
-    runtime: new QuickJSFunctionRuntime({ logger }),
+    runtime: createDefaultRuntime({ logger, nodeInvoke }),
     authenticate: createJwtAuthenticator(),
     publicBaseUrl: publicBaseUrl || process.env.FUNCTION_PUBLIC_BASE_URL,
     logger
@@ -420,6 +602,8 @@ function wrapMysqlDatabase(adapter) {
           }
           await withTimeout(ensureWebsiteBinding(adapter), 8000, '函数表迁移超时');
           await withTimeout(ensureWebsiteEnvTable(adapter), 8000, '站点环境变量表创建超时');
+          await withTimeout(ensureRuntimeColumns(adapter), 8000, '函数运行时列迁移超时');
+          await withTimeout(ensureFunctionAliasTable(adapter), 8000, '函数别名表创建超时');
         } catch (error) {
           schemaReady = null;
           throw error;
@@ -441,6 +625,17 @@ function wrapMysqlDatabase(adapter) {
   };
 }
 
+async function ensureFunctionAliasTable(adapter) {
+  const tables = await adapter.query("SHOW TABLES LIKE 'demox_function_aliases'");
+  if (tables.length) return;
+  const fs = require('fs');
+  const path = require('path');
+  const sql = fs.readFileSync(path.join(__dirname, 'migrations/004_create_function_aliases.sql'), 'utf8');
+  for (const statement of sql.split(';').map((item) => item.trim()).filter(Boolean)) {
+    await adapter.query(statement);
+  }
+}
+
 async function ensureWebsiteEnvTable(adapter) {
   const tables = await adapter.query("SHOW TABLES LIKE 'demox_website_envs'");
   if (tables.length) return;
@@ -449,6 +644,22 @@ async function ensureWebsiteEnvTable(adapter) {
   const sql = fs.readFileSync(path.join(__dirname, 'migrations/002_create_website_envs.sql'), 'utf8');
   for (const statement of sql.split(';').map((item) => item.trim()).filter(Boolean)) {
     await adapter.query(statement);
+  }
+}
+
+async function ensureRuntimeColumns(adapter) {
+  const columns = await adapter.query(
+    `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'demox_functions' AND COLUMN_NAME = 'runtime'`
+  );
+  if (columns.length) return;
+  await adapter.query("ALTER TABLE demox_functions ADD COLUMN runtime VARCHAR(16) NOT NULL DEFAULT 'nodejs' AFTER slug");
+  await adapter.query('ALTER TABLE demox_functions ADD COLUMN routes_json JSON NULL AFTER env_json');
+  await adapter.query('ALTER TABLE demox_functions ADD COLUMN triggers_json JSON NULL AFTER routes_json');
+  await adapter.query('ALTER TABLE demox_functions ADD COLUMN timer_name VARCHAR(64) NULL AFTER triggers_json');
+  const timerIndex = await adapter.query("SHOW INDEX FROM demox_functions WHERE Key_name = 'uq_demox_functions_timer_name'");
+  if (!timerIndex.length) {
+    await adapter.query('ALTER TABLE demox_functions ADD UNIQUE KEY uq_demox_functions_timer_name (timer_name)');
   }
 }
 
@@ -477,7 +688,10 @@ function createConfiguredDefaultHandler() {
   }
   if (process.env.FUNCTIONS_COS_BUCKET && (process.env.FUNCTIONS_COS_REGION || process.env.COS_REGION)) {
     try {
-      return createPlatformHandler({ userHandler: createProductionHandler() });
+      return createPlatformHandler({
+        userHandler: createProductionHandler(),
+        seedPlatformSite: process.env.FUNCTIONS_SEED_PLATFORM_SITE !== 'false'
+      });
     } catch (error) {
       return async (event) => errorResponse(new FunctionApiError(error.message, 'FUNCTION_SERVICE_NOT_CONFIGURED', 503), event);
     }
@@ -496,10 +710,14 @@ module.exports = {
   createPlatformHandler,
   bindInProcessSystemBackends,
   createProductionHandler,
+  createProductionNodeInvoker,
   createMysqlDatabaseFromEnv,
+  createDefaultRuntime,
   parseBody,
   normalizePath,
   routeFunctionId,
   isTimerEvent,
-  ensureWebsiteBinding
+  tryInvokeUserRoute,
+  ensureWebsiteBinding,
+  ensureRuntimeColumns
 };

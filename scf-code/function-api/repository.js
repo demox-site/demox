@@ -6,12 +6,20 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+const FUNCTION_COLUMNS = `function_id, owner_user_id, website_id, name, slug, status, published_version,
+                timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
+                max_code_bytes, max_invocations_per_minute, env_json,
+                allowed_outbound_hosts_json, runtime, routes_json, triggers_json, timer_name,
+                created_at, updated_at`;
+
 class InMemoryFunctionRepository {
   constructor() {
     this.functions = new Map();
     this.versions = new Map();
     this.usage = [];
     this.websiteEnvs = new Map();
+    this.websiteOwners = new Map();
+    this.aliases = new Map();
     this.nextVersionId = 1;
   }
 
@@ -25,8 +33,12 @@ class InMemoryFunctionRepository {
       slug: record.slug,
       status: 'active',
       publishedVersion: null,
-      limits: normalizeLimits(record.limits),
+      limits: normalizeLimits(record.limits, record.runtime),
       env: { ...(record.env || {}) },
+      runtime: record.runtime || 'nodejs',
+      routes: [...(record.routes || [])],
+      triggers: [...(record.triggers || ['http'])],
+      timerName: record.timerName || null,
       allowedOutboundHosts: [],
       createdAt: record.createdAt || new Date().toISOString(),
       updatedAt: record.createdAt || new Date().toISOString()
@@ -35,6 +47,10 @@ class InMemoryFunctionRepository {
       (item) => item.websiteId === functionRecord.websiteId && item.slug === functionRecord.slug
     );
     if (duplicate) throw new Error('该函数标识已存在');
+    if (functionRecord.timerName) {
+      const timerTaken = [...this.functions.values()].find((item) => item.timerName === functionRecord.timerName);
+      if (timerTaken) throw new Error('该定时触发名称已存在');
+    }
     this.functions.set(functionRecord.functionId, functionRecord);
     return clone(functionRecord);
   }
@@ -47,6 +63,13 @@ class InMemoryFunctionRepository {
     const record = [...this.functions.values()].find(
       (item) => item.websiteId === String(websiteId) && item.slug === String(slug)
     );
+    return clone(record || null);
+  }
+
+  async getFunctionByTimerName(timerName) {
+    const name = String(timerName || '').trim();
+    if (!name) return null;
+    const record = [...this.functions.values()].find((item) => item.timerName === name);
     return clone(record || null);
   }
 
@@ -98,17 +121,65 @@ class InMemoryFunctionRepository {
       .map(clone);
   }
 
-  async publishVersion(functionId, versionNumber) {
+  async markVersionAvailable(functionId, versionNumber) {
     const target = this.versions.get(`${functionId}:${Number(versionNumber)}`);
     if (!target) return null;
-    for (const item of this.versions.values()) {
-      if (item.functionId === functionId && item.status === 'published') item.status = 'archived';
-    }
     target.status = 'published';
     const functionRecord = this.functions.get(functionId);
-    functionRecord.publishedVersion = target.version;
+    const latest = Number(functionRecord.publishedVersion || 0);
+    if (target.version > latest) functionRecord.publishedVersion = target.version;
     functionRecord.updatedAt = new Date().toISOString();
+    return clone(target);
+  }
+
+  async publishVersion(functionId, versionNumber) {
+    const target = await this.markVersionAvailable(functionId, versionNumber);
+    if (!target) return null;
+    await this.ensureDefaultAliases(functionId, target.version);
+    await this.setAlias(functionId, 'production', target.version);
+    const functionRecord = this.functions.get(functionId);
     return clone({ function: functionRecord, version: target });
+  }
+
+  async listAliases(functionId) {
+    return [...this.aliases.values()]
+      .filter((item) => item.functionId === functionId)
+      .sort((a, b) => a.alias.localeCompare(b.alias))
+      .map(clone);
+  }
+
+  async getAlias(functionId, alias) {
+    return clone(this.aliases.get(`${functionId}:${alias}`) || null);
+  }
+
+  async setAlias(functionId, alias, versionNumber) {
+    const version = this.versions.get(`${functionId}:${Number(versionNumber)}`);
+    if (!version || version.status === 'failed') return null;
+    const record = { functionId, alias: String(alias), version: Number(versionNumber) };
+    this.aliases.set(`${functionId}:${alias}`, record);
+    return clone(record);
+  }
+
+  async deleteAlias(functionId, alias) {
+    return this.aliases.delete(`${functionId}:${alias}`);
+  }
+
+  async ensureDefaultAliases(functionId, versionNumber) {
+    if (!(await this.getAlias(functionId, 'production'))) {
+      await this.setAlias(functionId, 'production', versionNumber);
+    }
+    if (!(await this.getAlias(functionId, 'develop'))) {
+      await this.setAlias(functionId, 'develop', versionNumber);
+    }
+    return this.listAliases(functionId);
+  }
+
+  async putFunctionEnv(functionId, env) {
+    const record = this.functions.get(functionId);
+    if (!record) return null;
+    record.env = { ...(env || {}) };
+    record.updatedAt = new Date().toISOString();
+    return clone(record.env);
   }
 
   async recordInvocation(record) {
@@ -123,6 +194,23 @@ class InMemoryFunctionRepository {
   async putWebsiteEnv(websiteId, env) {
     this.websiteEnvs.set(String(websiteId), { ...(env || {}) });
     return this.getWebsiteEnv(websiteId);
+  }
+
+  async getWebsiteOwner(websiteId) {
+    if (!this.websiteOwners.has(String(websiteId))) return null;
+    return this.websiteOwners.get(String(websiteId));
+  }
+
+  async updateFunctionSpec(functionId, spec = {}) {
+    const record = this.functions.get(functionId);
+    if (!record) return null;
+    if (spec.name) record.name = spec.name;
+    if (spec.routes) record.routes = [...spec.routes];
+    if (spec.triggers) record.triggers = [...spec.triggers];
+    if (spec.timerName !== undefined) record.timerName = spec.timerName || null;
+    if (spec.limits) record.limits = normalizeLimits(spec.limits, record.runtime);
+    record.updatedAt = new Date().toISOString();
+    return clone(record);
   }
 }
 
@@ -142,8 +230,9 @@ function createMysqlFunctionRepository({ query, transaction }) {
         `INSERT INTO demox_functions
           (function_id, owner_user_id, website_id, name, slug, status, published_version,
            timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
-           max_code_bytes, max_invocations_per_minute, env_json, allowed_outbound_hosts_json)
-         VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           max_code_bytes, max_invocations_per_minute, env_json, allowed_outbound_hosts_json,
+           runtime, routes_json, triggers_json, timer_name)
+         VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.functionId,
           String(record.ownerId),
@@ -157,7 +246,11 @@ function createMysqlFunctionRepository({ query, transaction }) {
           record.limits.maxCodeBytes,
           record.limits.maxInvocationsPerMinute,
           JSON.stringify(record.env || {}),
-          JSON.stringify(record.allowedOutboundHosts || [])
+          JSON.stringify(record.allowedOutboundHosts || []),
+          record.runtime || 'nodejs',
+          JSON.stringify(record.routes || []),
+          JSON.stringify(record.triggers || ['http']),
+          record.timerName || null
         ]
       );
       return this.getFunction(record.functionId);
@@ -165,10 +258,7 @@ function createMysqlFunctionRepository({ query, transaction }) {
 
     async getFunction(functionId) {
       const rows = await query(
-        `SELECT function_id, owner_user_id, website_id, name, slug, status, published_version,
-                timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
-                max_code_bytes, max_invocations_per_minute, env_json,
-                allowed_outbound_hosts_json, created_at, updated_at
+        `SELECT ${FUNCTION_COLUMNS}
            FROM demox_functions WHERE function_id = ? LIMIT 1`,
         [functionId]
       );
@@ -178,10 +268,7 @@ function createMysqlFunctionRepository({ query, transaction }) {
 
     async getFunctionByWebsiteSlug(websiteId, slug) {
       const rows = await query(
-        `SELECT function_id, owner_user_id, website_id, name, slug, status, published_version,
-                timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
-                max_code_bytes, max_invocations_per_minute, env_json,
-                allowed_outbound_hosts_json, created_at, updated_at
+        `SELECT ${FUNCTION_COLUMNS}
            FROM demox_functions WHERE website_id = ? AND slug = ? LIMIT 1`,
         [String(websiteId), String(slug)]
       );
@@ -189,12 +276,21 @@ function createMysqlFunctionRepository({ query, transaction }) {
       return mapFunctionRow(rows[0]);
     },
 
+    async getFunctionByTimerName(timerName) {
+      const name = String(timerName || '').trim();
+      if (!name) return null;
+      const rows = await query(
+        `SELECT ${FUNCTION_COLUMNS}
+           FROM demox_functions WHERE timer_name = ? LIMIT 1`,
+        [name]
+      );
+      if (!rows.length) return null;
+      return mapFunctionRow(rows[0]);
+    },
+
     async listFunctions(websiteId) {
       const rows = await query(
-        `SELECT function_id, owner_user_id, website_id, name, slug, status, published_version,
-                timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
-                max_code_bytes, max_invocations_per_minute, env_json,
-                allowed_outbound_hosts_json, created_at, updated_at
+        `SELECT ${FUNCTION_COLUMNS}
            FROM demox_functions WHERE website_id = ? ORDER BY created_at DESC`,
         [String(websiteId)]
       );
@@ -267,32 +363,86 @@ function createMysqlFunctionRepository({ query, transaction }) {
       return rows.map(mapVersionRow);
     },
 
+    async markVersionAvailable(functionId, versionNumber) {
+      await query(
+        "UPDATE demox_function_versions SET status = 'published' WHERE function_id = ? AND version = ? AND status <> 'failed'",
+        [functionId, Number(versionNumber)]
+      );
+      await query(
+        `UPDATE demox_functions
+            SET published_version = GREATEST(COALESCE(published_version, 0), ?), updated_at = CURRENT_TIMESTAMP
+          WHERE function_id = ?`,
+        [Number(versionNumber), functionId]
+      );
+      return this.getVersion(functionId, versionNumber);
+    },
+
     async publishVersion(functionId, versionNumber) {
-      return transaction(async (conn) => {
-        const [versions] = await conn.query(
-          'SELECT id, function_id, version, bundle_key, sha256, size_bytes, entrypoint, status, created_at FROM demox_function_versions WHERE function_id = ? AND version = ? LIMIT 1 FOR UPDATE',
-          [functionId, Number(versionNumber)]
-        );
-        if (!versions.length) return null;
-        await conn.query(
-          `UPDATE demox_function_versions SET status = CASE WHEN version = ? THEN 'published' ELSE 'archived' END
-             WHERE function_id = ?`,
-          [Number(versionNumber), functionId]
-        );
-        await conn.query(
-          'UPDATE demox_functions SET published_version = ?, updated_at = CURRENT_TIMESTAMP WHERE function_id = ?',
-          [Number(versionNumber), functionId]
-        );
-        const [functions] = await conn.query(
-          `SELECT function_id, owner_user_id, website_id, name, slug, status, published_version,
-                  timeout_ms, memory_limit_bytes, max_body_bytes, max_response_bytes,
-                  max_code_bytes, max_invocations_per_minute, env_json,
-                  allowed_outbound_hosts_json, created_at, updated_at
-             FROM demox_functions WHERE function_id = ? LIMIT 1`,
-          [functionId]
-        );
-        return { function: mapFunctionRow(functions[0]), version: mapVersionRow({ ...versions[0], status: 'published' }) };
-      });
+      const version = await this.markVersionAvailable(functionId, versionNumber);
+      if (!version) return null;
+      await this.ensureDefaultAliases(functionId, version.version);
+      await this.setAlias(functionId, 'production', version.version);
+      return { function: await this.getFunction(functionId), version };
+    },
+
+    async listAliases(functionId) {
+      const rows = await query(
+        'SELECT function_id, alias, version, updated_at FROM demox_function_aliases WHERE function_id = ? ORDER BY alias ASC',
+        [functionId]
+      );
+      return rows.map((row) => ({
+        functionId: row.function_id,
+        alias: row.alias,
+        version: Number(row.version),
+        updatedAt: row.updated_at
+      }));
+    },
+
+    async getAlias(functionId, alias) {
+      const rows = await query(
+        'SELECT function_id, alias, version, updated_at FROM demox_function_aliases WHERE function_id = ? AND alias = ? LIMIT 1',
+        [functionId, String(alias)]
+      );
+      if (!rows.length) return null;
+      return { functionId: rows[0].function_id, alias: rows[0].alias, version: Number(rows[0].version), updatedAt: rows[0].updated_at };
+    },
+
+    async setAlias(functionId, alias, versionNumber) {
+      const version = await this.getVersion(functionId, versionNumber);
+      if (!version || version.status === 'failed') return null;
+      await query(
+        `INSERT INTO demox_function_aliases (function_id, alias, version)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE version = VALUES(version), updated_at = CURRENT_TIMESTAMP`,
+        [functionId, String(alias), Number(versionNumber)]
+      );
+      return this.getAlias(functionId, alias);
+    },
+
+    async deleteAlias(functionId, alias) {
+      const result = await query(
+        'DELETE FROM demox_function_aliases WHERE function_id = ? AND alias = ?',
+        [functionId, String(alias)]
+      );
+      return Boolean(result?.affectedRows);
+    },
+
+    async ensureDefaultAliases(functionId, versionNumber) {
+      await query(
+        `INSERT IGNORE INTO demox_function_aliases (function_id, alias, version)
+         VALUES (?, 'production', ?), (?, 'develop', ?)`,
+        [functionId, Number(versionNumber), functionId, Number(versionNumber)]
+      );
+      return this.listAliases(functionId);
+    },
+
+    async putFunctionEnv(functionId, env) {
+      await query(
+        'UPDATE demox_functions SET env_json = ?, updated_at = CURRENT_TIMESTAMP WHERE function_id = ?',
+        [JSON.stringify(env || {}), functionId]
+      );
+      const record = await this.getFunction(functionId);
+      return record ? record.env : null;
     },
 
     async recordInvocation(record) {
@@ -322,6 +472,47 @@ function createMysqlFunctionRepository({ query, transaction }) {
         [String(websiteId), payload]
       );
       return this.getWebsiteEnv(websiteId);
+    },
+
+    async getWebsiteOwner(websiteId) {
+      try {
+        const rows = await query(
+          'SELECT user_id FROM websites WHERE website_id = ? LIMIT 1',
+          [String(websiteId)]
+        );
+        if (!rows.length) return null;
+        return rows[0].user_id == null ? null : String(rows[0].user_id);
+      } catch {
+        return null;
+      }
+    },
+
+    async updateFunctionSpec(functionId, spec = {}) {
+      const current = await this.getFunction(functionId);
+      if (!current) return null;
+      const limits = spec.limits ? normalizeLimits(spec.limits, current.runtime) : current.limits;
+      await query(
+        `UPDATE demox_functions
+            SET name = ?, routes_json = ?, triggers_json = ?, timer_name = ?,
+                timeout_ms = ?, memory_limit_bytes = ?, max_body_bytes = ?,
+                max_response_bytes = ?, max_code_bytes = ?, max_invocations_per_minute = ?,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE function_id = ?`,
+        [
+          spec.name || current.name,
+          JSON.stringify(spec.routes || current.routes || []),
+          JSON.stringify(spec.triggers || current.triggers || ['http']),
+          spec.timerName !== undefined ? (spec.timerName || null) : current.timerName,
+          limits.timeoutMs,
+          limits.memoryLimitBytes,
+          limits.maxBodyBytes,
+          limits.maxResponseBytes,
+          limits.maxCodeBytes,
+          limits.maxInvocationsPerMinute,
+          functionId
+        ]
+      );
+      return this.getFunction(functionId);
     }
   };
 }
@@ -336,6 +527,8 @@ function parseJson(value, fallback) {
 }
 
 function mapFunctionRow(row) {
+  const runtime = row.runtime === 'quickjs' || !row.runtime ? 'nodejs' : row.runtime;
+  const legacyQuickjs = row.runtime === 'quickjs' || row.runtime == null;
   return {
     id: row.id,
     functionId: row.function_id,
@@ -346,14 +539,18 @@ function mapFunctionRow(row) {
     status: row.status,
     publishedVersion: row.published_version == null ? null : Number(row.published_version),
     limits: normalizeLimits({
-      timeoutMs: row.timeout_ms,
-      memoryLimitBytes: row.memory_limit_bytes,
+      timeoutMs: legacyQuickjs && Number(row.timeout_ms) <= 1000 ? undefined : row.timeout_ms,
+      memoryLimitBytes: legacyQuickjs && Number(row.memory_limit_bytes) <= 16 * 1024 * 1024 ? undefined : row.memory_limit_bytes,
       maxBodyBytes: row.max_body_bytes,
       maxResponseBytes: row.max_response_bytes,
       maxCodeBytes: row.max_code_bytes,
       maxInvocationsPerMinute: row.max_invocations_per_minute
-    }),
+    }, runtime),
     env: parseJson(row.env_json, {}),
+    runtime,
+    routes: parseJson(row.routes_json, []),
+    triggers: parseJson(row.triggers_json, ['http']),
+    timerName: row.timer_name || null,
     allowedOutboundHosts: parseJson(row.allowed_outbound_hosts_json, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at

@@ -10,8 +10,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-muted selection:text-foreground flex flex-col">
       <MainHeader />
-      <main className="flex-1">
-        <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-10 md:py-16">
+      <main className="min-w-0 flex-1">
+        <div className="max-w-7xl mx-auto w-full min-w-0 px-4 sm:px-6 lg:px-8 py-10 md:py-16">
           {children}
         </div>
       </main>

@@ -1,122 +1,64 @@
-import React, { useState } from "react";
-import { tokenManager, userManager } from "../api";
+import React, { useEffect, useMemo, useState } from "react";
+import { authApi, tokenManager, userManager } from "../api";
 import { Button } from "@/components/ui";
 import { Check, CheckCircle, Loader2, Lock, XCircle } from "lucide-react";
 import { EmailLoginForm } from "@/components/EmailLoginForm";
-
-// 解析 OAuth 参数。browser history 下走 ?client_id=...；
-// 兼容旧的 hash 形式(#/mcp-login?...)，避免历史链接失效。
-function getOAuthParams() {
-  const search = window.location.search;
-  if (search && search.length > 1) return new URLSearchParams(search);
-  const hash = window.location.hash;
-  const queryIndex = hash.indexOf("?");
-  if (queryIndex === -1) return new URLSearchParams();
-  return new URLSearchParams(hash.substring(queryIndex + 1));
-}
+import {
+  buildOAuthErrorCallback,
+  completeMcpAuthorization,
+  parseMcpOAuthRequest,
+  readOAuthSearchParams
+} from "../lib/mcp-oauth";
 
 export function MCPLogin() {
   const [status, setStatus] = useState<"pending" | "logging" | "success" | "error">(
     "pending"
   );
   const [errorMessage, setErrorMessage] = useState("");
-
-  const params = getOAuthParams();
-  const clientId = params.get("client_id");
-  const redirectUri = params.get("redirect_uri");
-  const state = params.get("state");
-  const scope = params.get("scope");
-
-  // 验证客户端
-  const validateClient = () => {
-    if (!clientId) {
-      return "缺少客户端 ID";
-    }
-
-    // 官方客户端配置（硬编码，避免数据库权限问题）
-    const officialClients: Record<string, { isActive: boolean; redirectUris: string[] }> = {
-      "demox-mcp-client": {
-        isActive: true,
-        redirectUris: [
-          "http://localhost:39897/callback",
-          "http://localhost:*/callback"
-        ]
-      }
-    };
-
-    const clientConfig = officialClients[clientId];
-    if (!clientConfig) {
-      return "无效的客户端 ID";
-    }
-
-    if (!clientConfig.isActive) {
-      return "客户端未激活";
-    }
-
-    // 支持通配符匹配
-    const isValidRedirect = clientConfig.redirectUris.some(pattern => {
-      if (pattern.includes('*')) {
-        const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-        return regex.test(redirectUri || '');
-      }
-      return pattern === redirectUri;
-    });
-
-    if (!isValidRedirect) {
-      return "无效的回调地址";
-    }
-
-    return null;
-  };
+  const parsed = useMemo(
+    () => parseMcpOAuthRequest(readOAuthSearchParams(window.location)),
+    []
+  );
 
   const handleLoginSuccess = async () => {
+    if (!parsed.ok) {
+      setStatus("error");
+      setErrorMessage(parsed.error);
+      return;
+    }
     try {
       setStatus("logging");
-
-      // 获取 Token 和用户信息
-      const accessToken = tokenManager.get();
-      const user = userManager.get();
-
-      if (!accessToken || !user) {
+      if (!tokenManager.get() || !userManager.get()) {
         throw new Error("登录状态异常");
       }
-
-      console.log("[MCPLogin] 获取到 Token 和用户信息", { userId: user.userId, hasToken: !!accessToken });
-
-      // 构建回调 URL
-      const callbackUrl = new URL(redirectUri || "");
-      callbackUrl.searchParams.set("access_token", accessToken);
-      callbackUrl.searchParams.set("refresh_token", accessToken);
-      callbackUrl.searchParams.set("user_id", user.userId);
-      callbackUrl.searchParams.set("state", state || "");
-
-      console.log("[MCPLogin] 准备跳转到回调地址");
-
+      const callback = await completeMcpAuthorization(parsed.request, (payload) =>
+        authApi.oauthAuthorize(payload)
+      );
       setStatus("success");
-
-      // 延迟跳转（让用户看到成功页面）
       setTimeout(() => {
-        window.location.href = callbackUrl.toString();
+        window.location.href = callback;
       }, 1500);
     } catch (error: any) {
-      console.error("登录失败:", error);
+      if (parsed.ok) {
+        window.location.href = buildOAuthErrorCallback(
+          parsed.request.redirectUri,
+          "server_error",
+          error.message || "登录失败，请重试",
+          parsed.request.state
+        );
+        return;
+      }
       setStatus("error");
       setErrorMessage(error.message || "登录失败，请重试");
     }
   };
 
-  // 验证参数
-  const validationError = validateClient();
-  if (validationError && status === "pending") {
-    // 首次加载时验证
-    if (!clientId || !redirectUri || !state) {
+  useEffect(() => {
+    if (!parsed.ok) {
       setStatus("error");
-      setErrorMessage("缺少必需的 OAuth 参数");
-    } else if (validationError) {
-      setStatus("error");
-      setErrorMessage(validationError);
+      setErrorMessage(parsed.error);
     }
-  }
+  }, [parsed]);
 
   // 成功页面
   if (status === "success") {

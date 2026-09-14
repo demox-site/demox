@@ -91,8 +91,47 @@ class CosBundleStore {
   }
 }
 
+class MemoryCachedBundleStore {
+  constructor(inner, { maxEntries = 64 } = {}) {
+    if (!inner || typeof inner.getBuffer !== 'function') {
+      throw new TypeError('MemoryCachedBundleStore 需要 getBuffer');
+    }
+    this.inner = inner;
+    this.maxEntries = maxEntries;
+    this.cache = new Map();
+  }
+
+  put(key, body, options) {
+    this.cache.delete(key);
+    if (typeof this.inner.put !== 'function') return Promise.resolve({ key });
+    return this.inner.put(key, body, options);
+  }
+
+  async getBuffer(key) {
+    const hit = this.cache.get(key);
+    if (hit) {
+      this.cache.delete(key);
+      this.cache.set(key, hit);
+      return Buffer.from(hit);
+    }
+    const buffer = await this.inner.getBuffer(key);
+    this.cache.set(key, Buffer.from(buffer));
+    while (this.cache.size > this.maxEntries) {
+      const oldest = this.cache.keys().next().value;
+      this.cache.delete(oldest);
+    }
+    return buffer;
+  }
+
+  delete(key) {
+    this.cache.delete(key);
+    if (typeof this.inner.delete !== 'function') return Promise.resolve();
+    return this.inner.delete(key);
+  }
+}
+
 function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-module.exports = { bundleKey, InMemoryBundleStore, CosBundleStore, sha256 };
+module.exports = { bundleKey, InMemoryBundleStore, CosBundleStore, MemoryCachedBundleStore, sha256 };

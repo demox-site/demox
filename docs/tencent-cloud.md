@@ -16,37 +16,45 @@
 
 | 函数 | 命名空间 | 作用 | live 源 | 触发器 |
 |------|----------|------|---------|--------|
-| `demox-website-api` | `demox` | 站点/项目/存储桶/审核等业务 | `scf-code/website-api/` | HTTP + 定时 `analytics-rollup-5m`（每 5 分钟） |
-| `demox-auth-api` | `demox` | 登录、OAuth | `scf-deploy-packages/auth-api/` | HTTP |
-| `demox-mcp-api` | `demox` | CLI / MCP / `/deploy` | `scf-code/mcp-api/` | HTTP |
-| `demox-cert-renew` | `demox` | `*.demox.site` Let's Encrypt 续期 | `scf-code/cert-renew/` | 定时 `monthly-renew`（每月 1 号 03:17） |
-| `demox-function-api` | `demox` | 统一入口：系统函数 + 用户云函数 | `scf-code/function-api/` | HTTP `api.demox.site`；定时 `analytics-rollup-5m`、`monthly-renew` |
+| `demox-function-api` | `demox` | 统一入口：路由 + 平台控制面 | `scf-code/function-api/` | HTTP `api.demox.site`；定时 `analytics-rollup-5m`、`monthly-renew` |
+| `demox-user-nodejs` | `demox` | 用户 / 平台站点 Node 运行时 | `scf-code/function-api/runtime-nodejs*.js` | 仅内网 HTTP，由路由器调用 |
+| `demox-website-api` | `demox` | **回滚用**，不要再更新 | `scf-code/website-api/` | HTTP；定时器应关闭 |
+| `demox-auth-api` | `demox` | **回滚用**，不要再更新 | `scf-deploy-packages/auth-api/` | HTTP |
+| `demox-mcp-api` | `demox` | **回滚用**，不要再更新 | `scf-code/mcp-api/` | HTTP |
+| `demox-cert-renew` | `demox` | **回滚用**，不要再更新 | `scf-code/cert-renew/` | 定时器应关闭 |
 
-四个函数都绑定运行角色 `demox-runtime-role`，Handler 均为 `index.main`。`demox-website-api` 和 `demox-auth-api` 绑定 VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`。统一入口若要承接这两套后端，必须沿用同一 VPC，内存至少 512 MB，超时至少 300 秒。完整环境变量名清单见 `scf-code/function-api/live-config.json`（不含值）。
+`demox-function-api` 绑定运行角色 `demox-runtime-role`，VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`，内存 512 MB，超时 300 秒。`demox-user-nodejs` 在同一 VPC，无平台密钥。完整环境变量名清单见 `scf-code/function-api/live-config.json`（不含值）。
 
-### 统一入口迁移（开发中）
+### 业务代码怎么发
 
-`scf-code/function-api/index.js` 已提供一个共享入口：固定清单中的 auth、website、MCP 路径先由受信任系统函数处理，`/functions/:functionId/invoke` 再进入 QuickJS/WASM 用户函数运行时。MCP 在统一包内通过进程内回源调用 Auth/Website，不再走 `*.tencentscf.com` HTTP。`scripts/package-unified-scf.mjs` 默认只生成迁移清单，只有 `--apply` 才生成本地 SCF 包。`api.demox.site` 与两个定时器已经切到 `demox-function-api`；旧四个函数仍保留作回滚，其定时器应保持关闭。
-
-`demox-cert-renew` 的 live `$LATEST` 已从腾讯云回收并写入 `scf-code/cert-renew/`。本地入口是可测试的重构，不是线上字节副本；哈希与差异见 `scf-code/cert-renew/SOURCE.md` 和 `scf-code/function-api/live-parity.json`。`demox-website-api`、`demox-auth-api`、`demox-mcp-api` 的入口在 2026-08-31 与 live `$LATEST` 字节一致。VPC、环境变量合并、staging 调用和回滚尚未验证，因此不能视为已替换线上四个函数。
-
-`api.demox.site` 是 SCF 自定义域名，路径已全部指到命名空间 `demox`（`/auth`、`/website`、`/deploy` 等）。前端环境变量 `VITE_DEMOX_API_URL=https://api.demox.site`。
-
-### 部署代码（只改代码、不改环境变量）
-
-大包不要走命令行 base64，用 `--cli-input-json`。JSON 里必须带 `"Namespace": "demox"`。
+Auth / Website / MCP / 证书续期是平台站点 `EPX2UU43` 上的 Demox 云函数，**不要**再对旧的四支 SCF 做 `UpdateFunctionCode`。改入口文件后：
 
 ```bash
-tccli scf GetFunction --FunctionName demox-website-api --Namespace demox --region ap-guangzhou
+demox functions push ./scf-deploy-packages/auth-api --id EPX2UU43 --slug auth
+demox functions push ./scf-code/website-api --id EPX2UU43 --slug website
+demox functions push ./scf-code/mcp-api --id EPX2UU43 --slug mcp
+demox functions push ./scf-code/cert-renew --id EPX2UU43 --slug cert-renew
 ```
 
-改环境变量是全量覆盖：先 `GetFunction` 读出全部变量再合并。详见仓库内 Agent 部署记忆与 `AGENTS.md`。
+主站静态资源：`demox deploy ./dist --id EPX2UU43`。
+
+只有改路由器、运行时、内网 hop 或 `/deploy` 协议时，才用 `scripts/package-unified-scf.mjs --apply` 和 `scripts/deploy-function-api.mjs --unified --apply`。旧四支函数仍保留作回滚，定时器保持关闭。
+
+`api.demox.site` 是 SCF 自定义域名，路径全部指到 `demox-function-api`。前端环境变量 `VITE_DEMOX_API_URL=https://api.demox.site`。
+
+### 部署运行时（只改发布能力本身）
+
+大包不要走命令行 base64。JSON 里必须带 `"Namespace": "demox"`。改环境变量是全量覆盖：先 `GetFunction` 读出全部变量再合并。详见 `AGENTS.md`。
+
+```bash
+tccli scf GetFunction --FunctionName demox-function-api --Namespace demox --region ap-guangzhou
+```
 
 ## 已打 `codename=demox` 的专属资源
 
 | 产品 | 资源 |
 |------|------|
-| SCF | 命名空间 `demox`；上述 4 个函数；自定义域名 `api.demox.site` |
+| SCF | 命名空间 `demox`；`demox-function-api`、`demox-user-nodejs` 及四支回滚函数；自定义域名 `api.demox.site` |
 | EdgeOne | zone `demox.site`（`zone-3kplfkbflnd6`） |
 | COS | `resource-game-1307257815`（站点默认回源桶，成都）；`demox-analytics-raw-1307257815` |
 | CI | `resource-game-1307257815` 数据万象 |
@@ -62,7 +70,15 @@ tccli scf GetFunction --FunctionName demox-website-api --Namespace demox --regio
 |------|----------|------|
 | MySQL `cdb-fg5tqemn` | `codename=phosa` | 共享实例，库里还有 jipulse / casdoor 等，不只 `demox` |
 
+## HTTPS
+
+EdgeOne 站点 `zone-3kplfkbflnd6`（`demox.site` / `*.demox.site`）开启强制 HTTPS：HTTP 请求 301 到同 URL 的 HTTPS，并下发 HSTS（`max-age=31536000; includeSubDomains`，不开 preload）。`api.demox.site` 是 SCF 自定义域名，本身已 301 到 HTTPS。不要把 HTTP→HTTPS 写进 `subdomain-router`（该函数挂全站，见 P0 禁令）。
+
+## P0 事故
+
+- 2026-09-14：未知子域名 404 误伤 `www` 和全部用户站点。边缘函数 `ef-1281msyw` 已回滚。禁令与核对清单见 [incidents/2026-09-14-p0-unknown-subdomain-404-outage.md](incidents/2026-09-14-p0-unknown-subdomain-404-outage.md) 和 `AGENTS.md`。
+
 ## 已知未改项
 
 - 根域名 `demox.site` 与 `*.demox.site` 共用同一张 Let's Encrypt 证书（SAN 含 apex）。`demox-cert-renew` 绑定时必须同时写入这两个主机，否则 apex HTTPS 会回落到 `*.cdn.myqcloud.com`。对外主站仍建议走 `https://www.demox.site`。
-- 前端主站发布仍走 GitHub Actions → Demox `/deploy`，不会自动更新上述云函数。
+- 前端主站发布走 `git push origin master`，GitHub Action 执行 `demox deploy ./dist --id EPX2UU43`，不会自动更新业务云函数；业务云函数走 `demox functions push`。

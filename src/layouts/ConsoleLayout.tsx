@@ -290,12 +290,6 @@ export const ConsoleLayout: React.FC = () => {
           path: `/console/projects/${currentProjectId}/members`,
           label: t.members,
           icon: UsersRound
-        },
-        {
-          key: "settings",
-          path: `/console/projects/${currentProjectId}/settings`,
-          label: t.projectSettings,
-          icon: Settings2
         }
       ]
     : [];

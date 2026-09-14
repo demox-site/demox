@@ -15,6 +15,9 @@ import { FeishuLink } from "../pages/FeishuLink";
 import { SiteAuth } from "../pages/SiteAuth";
 import AiStaticSiteGuide from "../pages/AiStaticSiteGuide";
 import ContentScanPage from "../pages/ContentScanPage";
+import WhenToUseDemox from "../pages/WhenToUseDemox";
+import DeployTroubleshooting from "../pages/DeployTroubleshooting";
+import HowDemoxHostsItself from "../pages/HowDemoxHostsItself";
 
 export const routers = [
   {
@@ -37,6 +40,18 @@ export const routers = [
   {
     id: "ai-static-site-deployment",
     component: AiStaticSiteGuide
+  },
+  {
+    id: "when-to-use-demox",
+    component: WhenToUseDemox
+  },
+  {
+    id: "deploy-troubleshooting",
+    component: DeployTroubleshooting
+  },
+  {
+    id: "how-demox-hosts-itself",
+    component: HowDemoxHostsItself
   },
   {
     id: "layout-demo",

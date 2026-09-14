@@ -97,7 +97,7 @@ async function request<T>(baseUrl: string, path: string, options: RequestOptions
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.error || data.message || "请求失败");
+    throw new Error(data.error_description || data.message || data.error || "请求失败");
   }
 
   return data;
@@ -484,6 +484,22 @@ export const authApi = {
   // 验证Token
   verifyToken: async () => {
     return request<{ valid: boolean; userId: string }>(AUTH_API_URL, "/auth/verify");
+  },
+
+  oauthAuthorize: async (payload: {
+    client_id: string;
+    redirect_uri: string;
+    response_type?: string;
+    scope?: string;
+    state?: string;
+    code_challenge?: string;
+    code_challenge_method?: string;
+  }) => {
+    return request<{ success: boolean; code: string; redirect_uri?: string }>(
+      AUTH_API_URL,
+      "/oauth/authorize",
+      { method: "POST", body: payload }
+    );
   }
 };
 
@@ -1380,9 +1396,11 @@ export type SiteFunction = {
   invokeUrl: string | null;
   routes?: string[];
   triggers?: string[];
+  timerName?: string | null;
   editable?: boolean;
   createdAt?: string;
   updatedAt?: string;
+  aliases?: Array<{ alias: string; version: number }>;
   env?: string;
   limits?: {
     timeoutMs?: number;
@@ -1406,10 +1424,16 @@ export const functionsApi = {
     `/functions?kind=system&host=${encodeURIComponent(host)}`,
     { method: "GET" }
   ),
-  create: (websiteId: string, name: string, slug: string) => request<{ success: boolean; function: SiteFunction }>(
+  create: (websiteId: string, name: string, slug: string, options?: {
+    runtime?: string;
+    routes?: string[];
+    triggers?: string[];
+    timerName?: string;
+    limits?: SiteFunction["limits"];
+  }) => request<{ success: boolean; function: SiteFunction }>(
     FUNCTIONS_API_URL,
     scopedFunctionPath(websiteId, "/functions"),
-    { method: "POST", body: { websiteId, name, slug } }
+    { method: "POST", body: { websiteId, name, slug, ...options } }
   ),
   getEnv: (websiteId: string) => request<{ success: boolean; websiteId: string; env: Record<string, string> }>(
     FUNCTIONS_API_URL,
@@ -1420,6 +1444,31 @@ export const functionsApi = {
     FUNCTIONS_API_URL,
     scopedFunctionPath(websiteId, "/env"),
     { method: "POST", body: { env } }
+  ),
+  getFunctionEnv: (functionId: string) => request<{ success: boolean; functionId: string; env: Record<string, string> }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/env`,
+    { method: "GET" }
+  ),
+  putFunctionEnv: (functionId: string, env: Record<string, string>) => request<{ success: boolean; functionId: string; env: Record<string, string> }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/env`,
+    { method: "POST", body: { env } }
+  ),
+  listAliases: (functionId: string) => request<{ success: boolean; aliases: Array<{ alias: string; version: number }> }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/aliases`,
+    { method: "GET" }
+  ),
+  setAlias: (functionId: string, alias: string, version: number) => request<{ success: boolean; alias: { alias: string; version: number } }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/aliases/${encodeURIComponent(alias)}`,
+    { method: "POST", body: { version } }
+  ),
+  deleteAlias: (functionId: string, alias: string) => request<{ success: boolean; alias: string; deleted: boolean }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/aliases/${encodeURIComponent(alias)}`,
+    { method: "DELETE" }
   ),
   listVersions: (functionId: string) => request<{ success: boolean; versions: Array<{
     version: number;

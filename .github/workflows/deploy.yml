@@ -1,20 +1,18 @@
 name: Deploy to Demox (self-hosted)
 
-# 自托管部署：构建 dist/ 后，用 Demox 自己的 /deploy 接口原地更新站点 EPX2UU43。
-# 取代原 coscli→COS 流程。鉴权用长期 CI token(DEMOX_TOKEN)，详见仓库 Secrets。
+# 主站正式发布：push master 后构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
+# 鉴权用仓库 Secrets 里的 DEMOX_TOKEN。不要把 token 写进代码。
 on:
   push:
     branches: [master]
   workflow_dispatch:
 
 env:
-  # 被 demox 平台托管的「demox 主站」自身的站点 ID（固定，原地更新）
   WEBSITE_ID: EPX2UU43
-  WEBSITE_NAME: demox-site
-  # website-api 的 /deploy 端点（与 cli 默认 cloudFunctionUrl 一致）
-  DEPLOY_URL: ${{ vars.DEMOX_DEPLOY_URL }}
   VITE_DEMOX_API_URL: ${{ vars.VITE_DEMOX_API_URL }}
   VITE_DEMOX_SITE_URL: ${{ vars.VITE_DEMOX_SITE_URL }}
+  VITE_DEMOX_SITE_ID: EPX2UU43
+  VITE_DEMOX_FUNCTION_ENV: production
   VITE_FEISHU_APP_ID: ${{ vars.VITE_FEISHU_APP_ID }}
   VITE_FEISHU_REDIRECT_URI: ${{ vars.VITE_FEISHU_REDIRECT_URI }}
 
@@ -36,7 +34,6 @@ jobs:
           : "${VITE_DEMOX_API_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_API_URL}"
           : "${VITE_DEMOX_SITE_URL:?请在 GitHub Actions Variables 中配置 VITE_DEMOX_SITE_URL}"
           : "${VITE_FEISHU_APP_ID:?请在 GitHub Actions Variables 中配置 VITE_FEISHU_APP_ID}"
-          # npm 网络偶发 ECONNRESET，加重试与超时
           npm config set fetch-retries 5
           npm config set fetch-retry-factor 2
           npm config set fetch-retry-mintimeout 20000
@@ -44,7 +41,7 @@ jobs:
           npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
-      - name: Deploy dist/ via Demox API
+      - name: Deploy dist with Demox CLI
         env:
           DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
         run: |
@@ -52,11 +49,5 @@ jobs:
           if [ -z "${DEMOX_TOKEN:-}" ]; then
             echo "::error::缺少 DEMOX_TOKEN secret"; exit 1
           fi
-
-          # 1) 打包 dist/（zip 根 = dist 内容，与 cli deploy 一致）
-          ( cd dist && zip -qr /tmp/deploy.zip . )
-          echo "zip size: $(du -h /tmp/deploy.zip | cut -f1)"
-
-          # 2) 通过固定 2MiB 分块上传；单个请求不再随 ZIP 总体积增长。
-          : "${DEPLOY_URL:?请在 GitHub Actions Variables 中配置 DEMOX_DEPLOY_URL}"
-          node scripts/deploy-chunked.mjs
+          npm install -g @demox-site/cli@1.1.6
+          demox deploy ./dist --id "${WEBSITE_ID}"

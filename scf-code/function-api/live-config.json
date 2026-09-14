@@ -13,6 +13,14 @@
       "subnetId": "subnet-nzrl3bbq",
       "reason": "website-api and auth-api both reach private MySQL through this VPC."
     },
+    "runtimePool": {
+      "nodejs": {
+        "functionName": "demox-user-nodejs",
+        "handler": "runtime-nodejs.main",
+        "secrets": false,
+        "note": "Router invokes this Event function. Do not copy JWT_SECRET or MYSQL_* onto it."
+      }
+    },
     "environmentKeys": [
       "ACME_EMAIL",
       "ANALYTICS_HASH_SALT",

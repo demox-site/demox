@@ -28,7 +28,7 @@ require.cache[dbModulePath] = {
 };
 
 const { main } = require('./index.cjs');
-const { sign } = require('./shared/jwt.cjs');
+const { sign, verify } = require('./shared/jwt.cjs');
 
 function request(path, body = {}) {
   return main({ path, httpMethod: 'POST', body });
@@ -487,4 +487,189 @@ test('current user keeps lifetime pro in effective roles', async () => {
   assert.deepEqual(body.user.roles, ['user', 'pro']);
   assert.equal(body.user.membership.hasPro, true);
   assert.equal(body.user.membership.proLifetime, true);
+});
+
+const crypto = require('node:crypto');
+
+function pkcePair() {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier, 'ascii').digest('base64url');
+  return { verifier, challenge };
+}
+
+function oauthStore() {
+  const codes = new Map();
+  const refresh = new Map();
+  return async (sql, params = []) => {
+    if (sql.includes('INSERT INTO oauth_clients')) return { affectedRows: 1 };
+    if (sql.includes('INSERT INTO oauth_auth_codes')) {
+      codes.set(params[0], {
+        user_id: params[1],
+        client_id: params[2],
+        redirect_uri: params[3],
+        expires_at: params[4],
+        scopes: JSON.parse(params[5]),
+        code_challenge: params[6]
+      });
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('FROM oauth_auth_codes')) {
+      const row = codes.get(params[0]);
+      if (row && row.client_id === params[1] && row.redirect_uri === params[2]) return [row];
+      return [];
+    }
+    if (sql.includes('DELETE FROM oauth_auth_codes')) {
+      codes.delete(params[0]);
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('FROM users WHERE id = ?')) {
+      return [{ id: params[0], email: 'user@example.com' }];
+    }
+    if (sql.includes('INSERT INTO oauth_refresh_tokens')) {
+      refresh.set(params[0], {
+        user_id: params[1],
+        client_id: params[2],
+        expires_at: params[3],
+        scopes: JSON.parse(params[4])
+      });
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('FROM oauth_refresh_tokens')) {
+      const row = refresh.get(params[0]);
+      if (row && row.client_id === params[1]) return [row];
+      return [];
+    }
+    if (sql.includes('DELETE FROM oauth_refresh_tokens')) {
+      refresh.delete(params[0]);
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+}
+
+test('oauth authorize requires a logged-in user', async () => {
+  queryImpl = oauthStore();
+  const response = await main({
+    path: '/oauth/authorize',
+    httpMethod: 'POST',
+    body: { client_id: 'demox-mcp-client' }
+  });
+  assert.equal(response.statusCode, 401);
+  assert.equal(JSON.parse(response.body).error, 'login_required');
+});
+
+test('oauth authorize issues a code and token exchange requires matching PKCE', async () => {
+  const { verifier, challenge } = pkcePair();
+  queryImpl = oauthStore();
+  const session = sign({ userId: 'user-1', email: 'user@example.com' }, '1h');
+  const authorize = await main({
+    path: '/oauth/authorize',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${session}` },
+    body: {
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      response_type: 'code',
+      state: 'state-with-at-least-16',
+      scope: 'website:deploy website:list website:delete website:update',
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
+    }
+  });
+  const issued = JSON.parse(authorize.body);
+  assert.equal(authorize.statusCode, 200, authorize.body);
+  assert.equal(typeof issued.code, 'string');
+  assert.match(issued.redirect_uri, /[?&]code=/);
+  assert.doesNotMatch(issued.redirect_uri, /access_token=/);
+
+  const denied = await main({
+    path: '/oauth/token',
+    httpMethod: 'POST',
+    body: {
+      grant_type: 'authorization_code',
+      code: issued.code,
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      code_verifier: pkcePair().verifier
+    }
+  });
+  assert.equal(denied.statusCode, 400);
+  assert.equal(JSON.parse(denied.body).error, 'invalid_grant');
+
+  const authorizeAgain = await main({
+    path: '/oauth/authorize',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${session}` },
+    body: {
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      response_type: 'code',
+      state: 'state-with-at-least-16',
+      scope: 'website:deploy website:list website:delete website:update',
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
+    }
+  });
+  const code = JSON.parse(authorizeAgain.body).code;
+  const token = await main({
+    path: '/oauth/token',
+    httpMethod: 'POST',
+    body: {
+      grant_type: 'authorization_code',
+      code,
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      code_verifier: verifier
+    }
+  });
+  const body = JSON.parse(token.body);
+  assert.equal(token.statusCode, 200, token.body);
+  assert.equal(body.token_type, 'Bearer');
+  assert.equal(body.user_id, 'user-1');
+  assert.equal(body.expires_in, 3600);
+  assert.ok(body.refresh_token);
+  assert.equal(verify(body.access_token).userId, 'user-1');
+});
+
+test('oauth token refresh rotates the refresh token', async () => {
+  const { verifier, challenge } = pkcePair();
+  queryImpl = oauthStore();
+  const session = sign({ userId: 'user-1', email: 'user@example.com' }, '1h');
+  const authorize = await main({
+    path: '/oauth/authorize',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${session}` },
+    body: {
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      response_type: 'code',
+      state: 'state-with-at-least-16',
+      scope: 'website:deploy website:list website:delete website:update',
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
+    }
+  });
+  const first = JSON.parse((await main({
+    path: '/oauth/token',
+    httpMethod: 'POST',
+    body: {
+      grant_type: 'authorization_code',
+      code: JSON.parse(authorize.body).code,
+      client_id: 'demox-mcp-client',
+      redirect_uri: 'http://localhost:39897/callback',
+      code_verifier: verifier
+    }
+  })).body);
+  const refreshed = JSON.parse((await main({
+    path: '/oauth/token',
+    httpMethod: 'POST',
+    body: {
+      grant_type: 'refresh_token',
+      refresh_token: first.refresh_token,
+      client_id: 'demox-mcp-client'
+    }
+  })).body);
+  assert.ok(refreshed.access_token);
+  assert.ok(refreshed.refresh_token);
+  assert.notEqual(refreshed.refresh_token, first.refresh_token);
 });

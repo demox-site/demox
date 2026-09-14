@@ -12,6 +12,24 @@ export const websiteMatchesProject = (website, projectId, enableProjectFilter = 
   );
 };
 
+export const websiteMatchesSearch = (website, query) => {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  const hosts = Array.isArray(website?.customHosts) ? website.customHosts : [];
+  const fields = [
+    website?.name,
+    website?.fileName,
+    website?.websiteId,
+    website?._id,
+    website?.url,
+    website?.subdomain,
+    website?.subdomainDomain,
+    ...(Array.isArray(website?.tags) ? website.tags : []),
+    ...hosts
+  ];
+  return fields.some((value) => String(value || "").toLowerCase().includes(q));
+};
+
 export const extractProjectTags = (
   websites,
   projectId,
@@ -40,6 +58,7 @@ export function useFilters({
   enableProjectFilter = true
 }) {
   const [selectedTags, setSelectedTags] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedUserIds, setSelectedUserIds] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(
     () => normalizeProjectId(projectId) || null
@@ -62,6 +81,10 @@ export function useFilters({
       return next.length === prev.length ? prev : next;
     });
   }, [allTags]);
+
+  useEffect(() => {
+    setSearchQuery("");
+  }, [scopedProjectId]);
 
   // 标签筛选 ---------------------------------------------------------------
   const toggleFilterTag = (tag) => {
@@ -108,14 +131,17 @@ export function useFilters({
           (w.userId && selectedUserIds.includes(w.userId));
         const projectOk =
           websiteMatchesProject(w, scopedProjectId, enableProjectFilter);
-        return tagOk && userOk && projectOk;
+        const searchOk = websiteMatchesSearch(w, searchQuery);
+        return tagOk && userOk && projectOk && searchOk;
       }),
-    [websites, activeSelectedTags, selectedUserIds, scopedProjectId, enableProjectFilter]
+    [websites, activeSelectedTags, selectedUserIds, scopedProjectId, enableProjectFilter, searchQuery]
   );
 
   return {
     allTags,
     selectedTags: activeSelectedTags,
+    searchQuery,
+    setSearchQuery,
     selectedUserIds,
     selectedProjectId: scopedProjectId,
     selectProjectId,

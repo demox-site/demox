@@ -92,13 +92,13 @@ export default function SiteSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-zinc-900 border-zinc-800 max-w-lg">
+      <DialogContent className="max-w-lg border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] sm:rounded-[1.5rem]">
         <DialogHeader>
-          <DialogTitle className="text-zinc-100 flex items-center gap-2">
-            <Search className="w-5 h-5 text-zinc-400" />
+          <DialogTitle className="flex items-center gap-2 text-[var(--stitch-ink)]">
+            <Search className="h-5 w-5 text-[var(--stitch-muted)]" />
             {lang === "zh" ? "SEO 设置" : "SEO Settings"}
           </DialogTitle>
-          <DialogDescription className="text-zinc-400">
+          <DialogDescription className="text-[var(--stitch-muted)]">
             {lang === "zh"
               ? "自定义分享到微信/Twitter/搜索引擎时的标题、描述和配图。留空则使用站点名称或不注入。"
               : "Customize title, description and preview image when shared to WeChat/Twitter/search engines. Leave empty to use site name or skip."}
@@ -107,13 +107,13 @@ export default function SiteSettingsDialog({
 
         <div className="space-y-4">
           {siteUrl && (
-            <div className="px-3 py-2 rounded bg-zinc-950 border border-zinc-800">
-              <span className="text-xs text-zinc-500">{lang === "zh" ? "当前站点" : "Site"}</span>
+            <div className="rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-2">
+              <span className="text-xs text-[var(--stitch-muted)]">{lang === "zh" ? "当前站点" : "Site"}</span>
               <a
                 href={siteUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="block text-sm text-zinc-200 font-mono truncate hover:underline"
+                className="block truncate font-mono text-sm text-[var(--stitch-ink)] hover:underline"
               >
                 {siteUrl}
               </a>
@@ -121,7 +121,7 @@ export default function SiteSettingsDialog({
           )}
 
           <div className="space-y-2">
-            <Label className="text-zinc-300">
+            <Label>
               {lang === "zh" ? "SEO 标题" : "SEO Title"}
             </Label>
             <Input
@@ -129,15 +129,15 @@ export default function SiteSettingsDialog({
               onChange={(e) => setSeoTitle(e.target.value)}
               placeholder={website?.name || (lang === "zh" ? "留空使用站点名称" : "Leave empty to use site name")}
               maxLength={255}
-              className="bg-zinc-950 border-zinc-800 text-zinc-100 placeholder:text-zinc-600"
+              className="rounded-xl border-[var(--stitch-line)] bg-[var(--stitch-surface)]"
             />
-            <p className="text-xs text-zinc-600">
+            <p className="text-xs text-[var(--stitch-muted)]">
               {lang === "zh" ? "显示在浏览器标签和搜索结果标题。最多 255 字符。" : "Shown in browser tab and search results. Max 255 chars."}
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label className="text-zinc-300">
+            <Label>
               {lang === "zh" ? "SEO 描述" : "Description"}
             </Label>
             <Textarea
@@ -146,15 +146,15 @@ export default function SiteSettingsDialog({
               placeholder={lang === "zh" ? "一句话描述这个页面" : "One sentence describing this page"}
               maxLength={500}
               rows={3}
-              className="bg-zinc-950 border-zinc-800 text-zinc-100 placeholder:text-zinc-600 resize-none"
+              className="resize-none rounded-xl border-[var(--stitch-line)] bg-[var(--stitch-surface)]"
             />
-            <p className="text-xs text-zinc-600">
+            <p className="text-xs text-[var(--stitch-muted)]">
               {lang === "zh" ? "显示在搜索结果和社交分享摘要中。最多 500 字符。" : "Shown in search results and social share previews. Max 500 chars."}
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label className="text-zinc-300">
+            <Label>
               {lang === "zh" ? "OG 配图 URL" : "OG Image URL"}
             </Label>
             <Input
@@ -162,9 +162,9 @@ export default function SiteSettingsDialog({
               onChange={(e) => setOgImage(e.target.value)}
               placeholder="https://example.com/cover.png"
               maxLength={500}
-              className="bg-zinc-950 border-zinc-800 text-zinc-100 placeholder:text-zinc-600"
+              className="rounded-xl border-[var(--stitch-line)] bg-[var(--stitch-surface)]"
             />
-            <p className="text-xs text-zinc-600">
+            <p className="text-xs text-[var(--stitch-muted)]">
               {lang === "zh"
                 ? "分享到微信/Twitter 时的预览图。建议 1200×630，填完整 URL。"
                 : "Preview image when shared to WeChat/Twitter. Recommended 1200×630. Full URL required."}
@@ -176,17 +176,17 @@ export default function SiteSettingsDialog({
               variant="outline"
               onClick={() => onOpenChange(false)}
               disabled={saving}
-              className="border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-100 hover:text-zinc-900"
+              className="stitch-action rounded-full"
             >
               {lang === "zh" ? "取消" : "Cancel"}
             </Button>
             <Button
               onClick={handleSave}
               disabled={saving}
-              className="bg-zinc-100 text-black hover:bg-zinc-300"
+              className="stitch-primary rounded-full"
             >
               {saving ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
               {lang === "zh" ? "保存" : "Save"}
             </Button>

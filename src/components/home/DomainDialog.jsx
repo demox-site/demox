@@ -1,5 +1,4 @@
 import React from "react";
-// @ts-ignore;
 import {
   Button,
   Dialog,
@@ -10,22 +9,8 @@ import {
   Input
 } from "@/components/ui";
 import { DEFAULT_OFFICIAL_DOMAIN, normalizeOfficialDomain } from "@/lib/official-domains";
-// @ts-ignore;
 import { Link2, Pencil, X, Loader2, Copy, Check, XCircle } from "lucide-react";
 
-/**
- * DomainDialog
- * 自定义子域名前缀的设置弹窗（绑定/解绑/实时可用性检测）。
- * 状态由父组件持有，这里只渲染与回调。
- * @param {{
- *   open:boolean, onOpenChange:(o:boolean)=>void,
- *   domainInfo:{subdomain:string,domain:string}|null, setDomainInfo:Function,
- *   domainInput:string, setDomainInput:Function, domainSuffix:string, setDomainSuffix:Function,
- *   domainCheck:{status:string,message:string}, domainBusy:boolean,
- *   onBind:()=>void, onUnbind:()=>void, onCopy:(text:string)=>void,
- *   t:Record<string,string>
- * }} props
- */
 export default function DomainDialog({
   open,
   onOpenChange,
@@ -47,13 +32,13 @@ export default function DomainDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-zinc-900 border-zinc-800">
+      <DialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] sm:rounded-[1.5rem]">
         <DialogHeader>
-          <DialogTitle className="text-zinc-100 flex items-center gap-2">
-            <Link2 className="w-5 h-5 text-zinc-400" />
+          <DialogTitle className="flex items-center gap-2 text-[var(--stitch-ink)]">
+            <Link2 className="h-5 w-5 text-[var(--stitch-muted)]" />
             {t.domainDialogTitle}
           </DialogTitle>
-          <DialogDescription className="text-zinc-400">
+          <DialogDescription className="text-[var(--stitch-muted)]">
             {t.domainDialogDesc}
           </DialogDescription>
         </DialogHeader>
@@ -61,38 +46,39 @@ export default function DomainDialog({
         <div className="space-y-4">
           {domainInfo && domainInfo.subdomain ? (
             <div className="space-y-4">
-              <p className="text-xs text-zinc-500">{t.domainCnameTip}</p>
-              <div className="flex items-center gap-2 px-3 py-2 rounded bg-zinc-950 border border-zinc-800">
-                <span className="w-2 h-2 rounded-full bg-green-500"></span>
+              <p className="text-xs text-[var(--stitch-muted)]">{t.domainCnameTip}</p>
+              <div className="flex items-center gap-2 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-2">
+                <span className="h-2 w-2 rounded-full bg-[var(--stitch-ink)]" />
                 <a
                   href={`https://${activeHost}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-zinc-200 text-sm font-mono truncate hover:underline flex-1"
+                  className="flex-1 truncate font-mono text-sm text-[var(--stitch-ink)] hover:underline"
                 >
                   {activeHost}
                 </a>
                 <button
+                  type="button"
                   onClick={() => onCopy(`https://${activeHost}`)}
-                  className="text-zinc-500 hover:text-zinc-200"
+                  className="text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
                   title={t.domainCopy}
                 >
-                  <Copy className="w-4 h-4" />
+                  <Copy className="h-4 w-4" />
                 </button>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-	                <Button
-	                  variant="outline"
-	                  size="sm"
-	                  onClick={() => {
-	                    setDomainInfo(null);
-	                    setDomainInput(domainInfo.subdomain);
-	                    setDomainSuffix(activeDomain);
-	                  }}
-                  className="border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-100 hover:text-zinc-900"
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDomainInfo(null);
+                    setDomainInput(domainInfo.subdomain);
+                    setDomainSuffix(activeDomain);
+                  }}
+                  className="stitch-action rounded-full"
                 >
-                  <Pencil className="w-4 h-4 mr-2" />
+                  <Pencil className="mr-2 h-4 w-4" />
                   {t.editName}
                 </Button>
                 <Button
@@ -100,12 +86,12 @@ export default function DomainDialog({
                   size="sm"
                   onClick={onUnbind}
                   disabled={domainBusy}
-                  className="border-zinc-800 bg-zinc-900 text-red-400 hover:bg-red-950/40 hover:text-red-300 hover:border-red-900"
+                  className="rounded-full border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
                 >
                   {domainBusy ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <X className="w-4 h-4 mr-2" />
+                    <X className="mr-2 h-4 w-4" />
                   )}
                   {t.domainUnbindButton}
                 </Button>
@@ -113,67 +99,62 @@ export default function DomainDialog({
             </div>
           ) : (
             <div className="space-y-3">
-              <label className="text-sm text-zinc-400">{t.domainInputLabel}</label>
+              <label className="text-sm text-[var(--stitch-muted)]">{t.domainInputLabel}</label>
               <div className="flex items-center gap-2">
                 <div
-                  className={`flex items-center flex-1 rounded bg-zinc-950 border overflow-hidden focus-within:border-zinc-600 ${
+                  className={`flex flex-1 items-center overflow-hidden rounded-full border ${
                     domainCheck.status === "taken" || domainCheck.status === "invalid"
-                      ? "border-red-500/70"
+                      ? "border-red-400"
                       : domainCheck.status === "ok"
-                      ? "border-green-500/60"
-                      : "border-zinc-800"
+                      ? "border-[var(--stitch-ink)]"
+                      : "border-[var(--stitch-line)]"
                   }`}
                 >
-	                  <Input
-	                    value={domainInput}
-                    onChange={(e) =>
+                  <Input
+                    value={domainInput}
+                    onChange={(event) =>
                       setDomainInput(
-                        e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")
+                        event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")
                       )
                     }
                     placeholder={t.domainInputPlaceholder}
-                    className="border-0 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0 focus-visible:ring-offset-0"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && domainCheck.status === "ok" && !domainBusy) onBind();
+                    className="border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && domainCheck.status === "ok" && !domainBusy) onBind();
                     }}
-	                  />
-	                  <span className="h-10 flex items-center border-l border-zinc-800 bg-zinc-950 px-3 text-sm font-mono text-zinc-400">
-	                    .{DEFAULT_OFFICIAL_DOMAIN}
-	                  </span>
-	                </div>
+                  />
+                  <span className="flex h-10 items-center border-l border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 font-mono text-sm text-[var(--stitch-muted)]">
+                    .{DEFAULT_OFFICIAL_DOMAIN}
+                  </span>
+                </div>
                 <Button
                   onClick={onBind}
                   disabled={domainBusy || !domainInput.trim() || domainCheck.status !== "ok"}
-                  className="bg-zinc-100 text-black hover:bg-zinc-300 shrink-0 disabled:opacity-40"
+                  className="stitch-primary shrink-0 rounded-full"
                 >
-                  {domainBusy ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    t.domainBindButton
-                  )}
+                  {domainBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : t.domainBindButton}
                 </Button>
               </div>
-              {/* 检测状态行 */}
               {domainCheck.status === "checking" && (
-                <p className="text-xs text-zinc-500 flex items-center gap-1">
-                  <Loader2 className="w-3 h-3 animate-spin" />
+                <p className="flex items-center gap-1 text-xs text-[var(--stitch-muted)]">
+                  <Loader2 className="h-3 w-3 animate-spin" />
                   {t.domainChecking}
                 </p>
               )}
               {domainCheck.status === "ok" && domainInput.trim() && (
-                <p className="text-xs text-green-500 flex items-center gap-1">
-                  <Check className="w-3 h-3" />
+                <p className="flex items-center gap-1 text-xs text-emerald-600">
+                  <Check className="h-3 w-3" />
                   {t.domainAvailable}
                 </p>
               )}
               {(domainCheck.status === "taken" || domainCheck.status === "invalid") && (
-                <p className="text-xs text-red-400 flex items-center gap-1">
-                  <XCircle className="w-3 h-3" />
+                <p className="flex items-center gap-1 text-xs text-red-500">
+                  <XCircle className="h-3 w-3" />
                   {domainCheck.message || (domainCheck.status === "taken" ? t.domainTaken : t.domainHint)}
                 </p>
               )}
               {domainCheck.status === "idle" && (
-                <p className="text-xs text-zinc-600">{t.domainHint}</p>
+                <p className="text-xs text-[var(--stitch-muted)]">{t.domainHint}</p>
               )}
             </div>
           )}

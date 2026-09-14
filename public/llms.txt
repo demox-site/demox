@@ -1,11 +1,14 @@
 # Demox
-> Demox is a static website deployment platform for frontend builds, AI-generated pages, and documents. It provides public links through web, CLI, MCP, and API workflows without requiring users to configure servers, CDN, HTTPS, or cache policies.
+> Demox publishes static websites and Node.js functions. HTML, ZIP, frontend builds, and documents become HTTPS sites. Node backends export handler(request, env) and attach to the same site through web, CLI, MCP, or API workflows.
 
 ## Primary pages
 - [Demox homepage](https://www.demox.site/): Product overview and web deployment entry point.
-- [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, supported inputs, content scan, and FAQ.
+- [When to use Demox](https://www.demox.site/when-to-use-demox): Fit table for static pages, Node handlers, Express, and separate backends.
+- [Deploy troubleshooting](https://www.demox.site/deploy-troubleshooting): Exact error codes including MISSING_ENTRYPOINT, CONTENT_BLOCKED, INVALID_STATIC_SITE, and Access denied.
+- [How Demox hosts itself](https://www.demox.site/how-demox-hosts-itself): First-party case of demox deploy plus demox functions push.
+- [CLI and MCP documentation](https://www.demox.site/doc): Installation, authentication, deployment commands, functions, content scan, and FAQ.
 - [Blocked phrases](https://www.demox.site/content-scan): Full local content-scan blocklist and the public list API.
-- [AI static-site publishing guide](https://www.demox.site/ai-static-site-deployment): How to publish an AI-generated HTML page, ZIP, or frontend build and what static hosting can and cannot run.
+- [AI static-site publishing guide](https://www.demox.site/ai-static-site-deployment): How to publish an AI-generated HTML page, ZIP, or frontend build.
 - [Pricing](https://www.demox.site/pricing): Current Demox plans.
 - [Changelog](https://www.demox.site/log): Product and infrastructure updates.
 
@@ -23,6 +26,6 @@
 - Spreadsheet files supported by the web upload workflow
 
 ## Key distinction
-Demox is for fast static delivery when someone needs a link they can open. It does not claim to replace a full CI/CD platform such as Vercel or Netlify.
+Demox is for a link someone can open now, plus Node handlers on the same site. It does not claim to replace a full CI/CD platform such as Vercel or Netlify. Python, PHP, Java, and Express listen apps are not a direct fit.
 
 This optional file helps documentation-oriented AI tools navigate Demox resources. Google Search states that `llms.txt` does not affect Google Search or its generative AI features.

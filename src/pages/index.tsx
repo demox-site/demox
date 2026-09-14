@@ -10,7 +10,8 @@ import {
   ExternalLink,
   Code2,
   FileText,
-  Sparkles
+  Sparkles,
+  Server
 } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
@@ -24,7 +25,7 @@ const translations = {
       version: `v${siteConfig.version} 现已发布`,
       title_start: "上传构建产物，立刻获得一个能打开的链接",
       title_end: "",
-      desc: "适合前端 Demo、AI 生成页面、客户评审、PDF/Markdown/DOCX 网页化。无需服务器、CDN、HTTPS 配置。",
+      desc: "适合前端 Demo、AI 生成页面、客户评审、文档网页化，以及改成 handler 的 Node 接口。页面走 demox deploy，函数走 demox functions push。",
       start_btn: "立即上传",
       examples_btn: "看 30 秒示例"
     },
@@ -37,7 +38,7 @@ const translations = {
       uploading: "上传至边缘网络...",
       uploading_done: "完成 (1.2s)",
       success: "成功！已部署至：",
-      url: "https://project-gamma.demox.site"
+      url: "https://example-vite.demox.site"
     },
     examples: {
       title: "30 秒看完三个真实示例",
@@ -48,28 +49,28 @@ const translations = {
           tag: "前端项目",
           title: "Vite + React 构建产物",
           desc: "npm run build 后打包 dist 为 zip，拖拽上传即得链接。",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-vite.demox.site",
           cmd: "cd my-app && npm run build && demox deploy ./dist"
         },
         {
           tag: "Markdown 转网页",
           title: "文档变可分享网页",
           desc: "上传 .md 文件，内置模板渲染为带目录的网页，适合文档/笔记/草稿。",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-md.demox.site",
           cmd: "demox deploy README.md"
         },
         {
           tag: "AI 发布页面",
           title: "AI 生成页面一键发布",
           desc: "Claude/Cursor/v0 生成 HTML 后，CLI 或 MCP 直接发布，跳过服务器配置。",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-ai.demox.site",
           cmd: "demox deploy ./ai-generated.html"
         }
       ]
     },
     useCases: {
       title: "我能用它做什么",
-      subtitle: "四种最常见的发布场景，全部 30 秒拿到链接。",
+      subtitle: "静态页面和 Node 接口都能发。不确定的话先看适用场景。",
       try_btn: "立即试试",
       items: [
         {
@@ -91,6 +92,11 @@ const translations = {
           id: "docs-to-web",
           title: "文档网页化",
           desc: "PDF / Markdown / DOCX 一键转为带目录的可分享网页，适合文档、笔记、草稿。"
+        },
+        {
+          id: "node-functions",
+          title: "Node 云函数",
+          desc: "把接口改成 handler(request, env)，demox functions push 后页面用 fetch('/api/标识') 调用。"
         }
       ]
     },
@@ -134,7 +140,7 @@ const translations = {
       version: `v${siteConfig.version} is now live`,
       title_start: "Upload your build,",
       title_end: "get a link that opens.",
-      desc: "For frontend demos, AI-generated pages, client previews, and turning PDF/Markdown/DOCX into web pages. No server, CDN, or HTTPS config.",
+      desc: "For frontend demos, AI-generated pages, client previews, documents, and Node handlers. Pages use demox deploy; functions use demox functions push.",
       start_btn: "Upload now",
       examples_btn: "See 30s examples"
     },
@@ -147,7 +153,7 @@ const translations = {
       uploading: "Uploading to Edge Network...",
       uploading_done: "Done (1.2s)",
       success: "Success! Deployed to:",
-      url: "https://project-gamma.demox.site"
+      url: "https://example-vite.demox.site"
     },
     examples: {
       title: "Three real examples in 30 seconds",
@@ -158,28 +164,28 @@ const translations = {
           tag: "Frontend project",
           title: "Vite + React build output",
           desc: "Run npm run build, zip the dist folder, drag and drop to get a link.",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-vite.demox.site",
           cmd: "cd my-app && npm run build && demox deploy ./dist"
         },
         {
           tag: "Markdown to web",
           title: "Docs as a shareable page",
           desc: "Upload a .md file; built-in templates render it as a page with a table of contents.",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-md.demox.site",
           cmd: "demox deploy README.md"
         },
         {
           tag: "AI-published page",
           title: "Ship AI-generated pages instantly",
           desc: "After Claude/Cursor/v0 generates HTML, publish via CLI or MCP — no server setup.",
-          url: "https://project-gamma.demox.site",
+          url: "https://example-ai.demox.site",
           cmd: "demox deploy ./ai-generated.html"
         }
       ]
     },
     useCases: {
       title: "What can I use it for?",
-      subtitle: "Four common publishing scenarios — get a link in 30 seconds for each.",
+      subtitle: "Static pages and Node APIs both ship here. Check the fit table if you are unsure.",
       try_btn: "Try it now",
       items: [
         {
@@ -201,6 +207,11 @@ const translations = {
           id: "docs-to-web",
           title: "Docs to Web",
           desc: "Turn PDF / Markdown / DOCX into a shareable web page with a table of contents — great for docs, notes, drafts."
+        },
+        {
+          id: "node-functions",
+          title: "Node functions",
+          desc: "Export handler(request, env), push with demox functions push, then call fetch('/api/{slug}') from the page."
         }
       ]
     },
@@ -275,7 +286,7 @@ const CloudHostLanding: React.FC = () => {
 
   return (
     <MainLayout>
-      <section className="pt-24 pb-20 md:pt-32 md:pb-32 px-4 relative overflow-hidden">
+      <section className="pt-24 pb-20 md:pt-32 md:pb-32 px-4 relative overflow-x-clip">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,var(--grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--grid-line)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] -z-10" />
 
         <div className="max-w-4xl mx-auto text-center">
@@ -287,7 +298,7 @@ const CloudHostLanding: React.FC = () => {
           </div>
 
           <h1
-            className={`font-bold tracking-tight mb-6 bg-clip-text text-transparent bg-gradient-to-b from-zinc-100 to-zinc-500 ${
+            className={`font-bold tracking-tight mb-6 break-words bg-clip-text text-transparent bg-gradient-to-b from-zinc-100 to-zinc-500 ${
               lang === "zh"
                 ? "text-3xl md:text-4xl lg:text-5xl"
                 : "text-5xl md:text-7xl"
@@ -304,7 +315,7 @@ const CloudHostLanding: React.FC = () => {
             )}
           </h1>
 
-          <p className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed">
+          <p className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed break-words [overflow-wrap:anywhere]">
             {t.hero.desc}
           </p>
 
@@ -445,15 +456,21 @@ const CloudHostLanding: React.FC = () => {
             <h2 className="text-3xl md:text-4xl font-bold mb-4 text-white">
               {t.useCases.title}
             </h2>
-            <p className="text-zinc-400">{t.useCases.subtitle}</p>
+            <p className="text-zinc-400">
+              {t.useCases.subtitle}{" "}
+              <a href="/when-to-use-demox" className="text-[var(--stitch-ink)] underline underline-offset-4">
+                {lang === "zh" ? "适用场景" : "When to use"}
+              </a>
+            </p>
           </div>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {t.useCases.items.map((uc, i) => {
               const icon =
                 i === 0 ? <Package className="w-5 h-5" />
                 : i === 1 ? <Sparkles className="w-5 h-5" />
                 : i === 2 ? <UploadCloud className="w-5 h-5" />
-                : <FileText className="w-5 h-5" />;
+                : i === 3 ? <FileText className="w-5 h-5" />
+                : <Server className="w-5 h-5" />;
               return (
                 <div
                   key={uc.id}

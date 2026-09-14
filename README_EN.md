@@ -82,15 +82,21 @@ npm install -g @demox-site/cli@latest
 # Login
 demox login
 
-# Deploy
+# Deploy the frontend
 demox deploy ./dist
 
 # Deploy documents (PDF, Markdown, DOCX auto-converted to web pages)
 demox deploy ./document.pdf
 demox deploy ./notes.md --template warm
+
+# Push a Node cloud function (reuse the same --id after creating the site)
+demox functions push ./api/hello --id WEBSITE_ID --slug hello
+demox env set --id WEBSITE_ID --slug hello API_KEY=secret
+demox functions alias set --id WEBSITE_ID --slug hello production --version 2
+demox functions invoke --id WEBSITE_ID --slug hello --body '{"ping":true}'
 ```
 
-See [CLI README](../cli/README.md) for full usage.
+Static pages use `demox deploy`. Node backends use `demox functions push`. The handler is `module.exports = async function handler(request, env)`; the page calls `fetch('/api/{slug}')`. See [CLI README](../cli/README.md) and the [Node backend skill](./skills/node-backend-cli/SKILL.md).
 
 ### MCP Server (AI Tool Integration)
 
@@ -227,6 +233,8 @@ Demox is built on Tencent Cloud infrastructure:
 - **COS** for static asset storage
 - **EdgeOne** for CDN, HTTPS, wildcard domains, and edge routing
 
+Business backends (auth, websites, deploy, cert renew) are Demox site functions on `EPX2UU43`. Update them with `demox functions push`, not Tencent `UpdateFunctionCode`. The router (`demox-function-api`) and Node runtime (`demox-user-nodejs`) change only when the publish path itself changes.
+
 Cloud functions handle:
 
 - Authentication and role checks
@@ -235,6 +243,7 @@ Cloud functions handle:
 - Custom subdomain routing
 - Traffic metrics
 - Basic cost estimation
+- User Node handlers at `/api/{slug}`
 
 Edge functions handle:
 

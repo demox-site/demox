@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -17,6 +17,7 @@ const apply = process.argv.includes("--apply");
 const unified = process.argv.includes("--unified");
 const disableLegacyTimers = process.argv.includes("--disable-legacy-timers");
 const functionName = "demox-function-api";
+const nodeRuntimeName = "demox-user-nodejs";
 const namespace = "demox";
 const region = "ap-guangzhou";
 const cosBucket = "demox-analytics-raw-1307257815";
@@ -101,18 +102,44 @@ async function mergeLiveEnv() {
   return merged;
 }
 
+function parseHttpTriggerDesc(trigger) {
+  try {
+    return JSON.parse(trigger.TriggerDesc || "{}");
+  } catch {
+    return {};
+  }
+}
+
 function httpTriggerUrl(fn) {
   for (const trigger of fn.Triggers || []) {
     if (trigger.Type !== "http") continue;
-    try {
-      const desc = JSON.parse(trigger.TriggerDesc || "{}");
-      const url = desc.NetConfig?.ExtranetUrl || desc.NetConfig?.Url || "";
-      if (url) return String(url).replace(/\/+$/, "");
-    } catch {
-      // Keep looking at other triggers.
-    }
+    const desc = parseHttpTriggerDesc(trigger);
+    const url = desc.NetConfig?.ExtranetUrl || desc.NetConfig?.Url || "";
+    if (url) return String(url).replace(/\/+$/, "");
   }
   return fallbackPublicBaseUrl;
+}
+
+function intranetTriggerUrl(fn) {
+  for (const trigger of fn.Triggers || []) {
+    if (trigger.Type !== "http") continue;
+    const net = parseHttpTriggerDesc(trigger).NetConfig || {};
+    const intranet = String(net.IntranetUrl || net.InternalUrl || "").replace(/\/+$/, "");
+    if (intranet) return intranet;
+    const url = String(net.Url || "").replace(/\/+$/, "");
+    if (url && (/\.in\./i.test(url) || net.EnableExtranet === false)) return url;
+  }
+  return "";
+}
+
+async function resolveInvokeSecret() {
+  const [router, runtime] = await Promise.all([
+    scf.GetFunction({ FunctionName: functionName, Namespace: namespace }).catch(() => null),
+    scf.GetFunction({ FunctionName: nodeRuntimeName, Namespace: namespace }).catch(() => null)
+  ]);
+  return envMap(router || {}).RUNTIME_INVOKE_SECRET
+    || envMap(runtime || {}).RUNTIME_INVOKE_SECRET
+    || randomBytes(32).toString("hex");
 }
 
 async function uploadZip(artifact) {
@@ -136,8 +163,7 @@ async function uploadZip(artifact) {
 
 const scf = createClient(tencentcloud.scf.v20180416.Client, region);
 
-async function ensureFunction(copied) {
-  const current = await scf.GetFunction({ FunctionName: functionName, Namespace: namespace }).catch(() => null);
+function routerEnvironment(copied, current, { secret, runtimeUrl } = {}) {
   const publicBaseUrl = current ? httpTriggerUrl(current) : fallbackPublicBaseUrl;
   const environment = {
     ...copied,
@@ -147,8 +173,19 @@ async function ensureFunction(copied) {
     AUTH_API_URL: unified ? "https://api.demox.site/auth" : `${publicBaseUrl}/auth`,
     WEBSITE_API_URL: unified ? "https://api.demox.site" : publicBaseUrl,
     DEMOX_SITE_WEBSITE_ID: "EPX2UU43",
-    FUNCTION_ENV: "production"
+    DEMOX_PLATFORM_WEBSITE_ID: "EPX2UU43",
+    FUNCTION_ENV: "production",
+    FUNCTIONS_NODE_RUNTIME: nodeRuntimeName,
+    FUNCTIONS_RUNTIME_NAMESPACE: namespace,
+    RUNTIME_INVOKE_SECRET: secret
   };
+  if (runtimeUrl) environment.FUNCTIONS_NODE_RUNTIME_URL = runtimeUrl;
+  return environment;
+}
+
+async function ensureFunction(copied, hop = {}) {
+  const current = await scf.GetFunction({ FunctionName: functionName, Namespace: namespace }).catch(() => null);
+  const environment = routerEnvironment(copied, current, hop);
   const exists = Boolean(current);
   const cosBucketName = cosBucket.replace(/-\d+$/, "");
   if (!exists) {
@@ -196,16 +233,107 @@ async function ensureFunction(copied) {
   return { exists, environmentKeys: Object.keys(environment).sort() };
 }
 
-async function waitActive() {
+async function waitActive(name = functionName) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const current = await scf.GetFunction({ FunctionName: functionName, Namespace: namespace });
+    const current = await scf.GetFunction({ FunctionName: name, Namespace: namespace });
     if (current.Status === "Active") return current;
     if (current.Status === "CreateFailed" || current.Status === "UpdateFailed") {
-      throw new Error(`函数状态失败: ${current.Status} ${current.StatusDesc || ""}`);
+      throw new Error(`函数状态失败: ${name} ${current.Status} ${current.StatusDesc || ""}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 3000));
   }
-  throw new Error("等待 demox-function-api Active 超时");
+  throw new Error(`等待 ${name} Active 超时`);
+}
+
+async function applyRouterHop(copied, hop) {
+  const current = await scf.GetFunction({ FunctionName: functionName, Namespace: namespace });
+  const environment = routerEnvironment(copied, current, hop);
+  await scf.UpdateFunctionConfiguration({
+    FunctionName: functionName,
+    Namespace: namespace,
+    Environment: { Variables: Object.entries(environment).map(([Key, Value]) => ({ Key, Value })) }
+  });
+  return { environmentKeys: Object.keys(environment).sort() };
+}
+
+async function ensureNodeRuntime({ secret } = {}) {
+  const handler = unified ? "runtime-nodejs.main" : "runtime-nodejs-handler.main";
+  const current = await scf.GetFunction({ FunctionName: nodeRuntimeName, Namespace: namespace }).catch(() => null);
+  const cosBucketName = cosBucket.replace(/-\d+$/, "");
+  const code = {
+    CosBucketName: cosBucketName,
+    CosObjectName: cosKey,
+    CosBucketRegion: cosRegion
+  };
+  const environment = {
+    Variables: [
+      { Key: "FUNCTION_RUNTIME", Value: "nodejs" },
+      { Key: "RUNTIME_INVOKE_SECRET", Value: secret }
+    ]
+  };
+  if (!current) {
+    await scf.CreateFunction({
+      FunctionName: nodeRuntimeName,
+      Runtime: "Nodejs18.15",
+      Handler: handler,
+      Description: "Demox user Node.js runtime pool; invoked only by demox-function-api",
+      MemorySize: 512,
+      Timeout: 300,
+      Namespace: namespace,
+      Type: "Event",
+      Code: code,
+      VpcConfig: { VpcId: vpcId, SubnetId: subnetId },
+      PublicNetConfig: { PublicNetStatus: "ENABLE", EipConfig: { EipStatus: "DISABLE" } },
+      Environment: environment,
+      Tags: [{ Key: "codename", Value: "demox" }]
+    });
+  } else {
+    await scf.UpdateFunctionCode({
+      FunctionName: nodeRuntimeName,
+      Namespace: namespace,
+      Handler: handler,
+      CosBucketName: cosBucketName,
+      CosObjectName: cosKey,
+      CosBucketRegion: cosRegion
+    });
+    await waitActive(nodeRuntimeName);
+    await scf.UpdateFunctionConfiguration({
+      FunctionName: nodeRuntimeName,
+      Namespace: namespace,
+      MemorySize: 512,
+      Timeout: 300,
+      VpcConfig: { VpcId: vpcId, SubnetId: subnetId },
+      PublicNetConfig: { PublicNetStatus: "ENABLE", EipConfig: { EipStatus: "DISABLE" } },
+      Environment: environment
+    });
+  }
+  return waitActive(nodeRuntimeName);
+}
+
+async function ensureNodeRuntimeHttpTrigger() {
+  let current = await scf.GetFunction({ FunctionName: nodeRuntimeName, Namespace: namespace });
+  const existing = (current.Triggers || []).some((item) => item.Type === "http");
+  if (!existing) {
+    await scf.CreateTrigger({
+      FunctionName: nodeRuntimeName,
+      Namespace: namespace,
+      TriggerName: "runtime-http",
+      Type: "http",
+      Qualifier: "$LATEST",
+      Enable: "OPEN",
+      TriggerDesc: JSON.stringify({
+        AuthType: "NONE",
+        NetConfig: { EnableExtranet: false, EnableIntranet: true }
+      })
+    });
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    current = await scf.GetFunction({ FunctionName: nodeRuntimeName, Namespace: namespace });
+    const url = intranetTriggerUrl(current);
+    if (url) return { created: !existing, url };
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return { created: !existing, url: "" };
 }
 
 async function ensureHttpTrigger() {
@@ -354,8 +482,20 @@ if (!apply) {
 }
 
 const copied = await uploadZip(artifact);
-const created = await ensureFunction(copied);
+const secret = await resolveInvokeSecret();
+let runtimeUrl = intranetTriggerUrl(
+  await scf.GetFunction({ FunctionName: nodeRuntimeName, Namespace: namespace }).catch(() => ({ Triggers: [] }))
+);
+const created = await ensureFunction(copied, { secret, runtimeUrl });
 const active = await waitActive();
+const nodeRuntime = await ensureNodeRuntime({ secret });
+const runtimeHttp = await ensureNodeRuntimeHttpTrigger();
+if (runtimeHttp.url && runtimeHttp.url !== runtimeUrl) {
+  runtimeUrl = runtimeHttp.url;
+  const hop = await applyRouterHop(copied, { secret, runtimeUrl });
+  created.environmentKeys = hop.environmentKeys;
+  await waitActive();
+}
 const trigger = await ensureHttpTrigger();
 const timers = unified ? await ensureTimerTriggers() : { created: [], existing: [] };
 const domain = await ensureCustomDomain();
@@ -366,6 +506,8 @@ console.log(JSON.stringify({
   existed: created.exists,
   environmentKeys: created.environmentKeys,
   status: active.Status,
+  nodeRuntime: { name: nodeRuntimeName, status: nodeRuntime.Status, handler: nodeRuntime.Handler },
+  runtimeHop: { url: runtimeUrl || null, secretSet: Boolean(secret), created: runtimeHttp.created },
   trigger,
   timers,
   domain,

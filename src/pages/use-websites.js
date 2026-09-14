@@ -102,8 +102,8 @@ export function useWebsites({ t, handleAuthError, projectId }) {
     setEditingName("");
   };
 
-  const saveEditName = async (website) => {
-    const name = String(editingName || "").trim();
+  const saveEditName = async (website, nextName) => {
+    const name = String(nextName ?? editingName ?? "").trim();
     if (!name) {
       toast({
         title: t.nameEmptyTitle,
@@ -145,8 +145,8 @@ export function useWebsites({ t, handleAuthError, projectId }) {
     setEditingTagsValue("");
   };
 
-  const saveEditTags = async (website) => {
-    const tags = parseTags(editingTagsValue);
+  const saveEditTags = async (website, nextValue) => {
+    const tags = parseTags(nextValue ?? editingTagsValue);
     if (tags.length > 20) {
       toast({
         title: "标签过多",

@@ -2,8 +2,10 @@
 
 /**
  * Renew the Demox wildcard certificate with Let's Encrypt DNS-01, upload it
- * to Tencent SSL, and bind it to EdgeOne. The timer exits without writes when
- * the current certificate is outside the configured renewal window.
+ * to Tencent SSL, and bind it to EdgeOne plus the SCF custom domain
+ * api.demox.site. The timer exits without writes when the current certificate
+ * is outside the configured renewal window, except to sync SCF if it still
+ * points at a stale certificate.
  */
 
 const nodeCrypto = require('crypto');
@@ -19,6 +21,7 @@ const CONFIG = {
   dnspodDomain: process.env.DNSPOD_DOMAIN || 'demox.site',
   zoneId: process.env.EDGEONE_ZONE_ID || process.env.TEO_ZONE_ID || 'zone-3kplfkbflnd6',
   region: process.env.SCF_REGION || 'ap-guangzhou',
+  scfCustomDomain: process.env.SCF_CUSTOM_DOMAIN || 'api.demox.site',
   dnsPropagationMs: parseInteger(process.env.DNS_PROPAGATION_MS, 25_000)
 };
 
@@ -112,6 +115,9 @@ function createApis(callApi = callTencentCloudApi) {
     }),
     teo: (action, payload) => callApi({
       service: 'teo', host: 'teo.tencentcloudapi.com', version: '2022-09-01', action, payload
+    }),
+    scf: (action, payload) => callApi({
+      service: 'scf', host: 'scf.tencentcloudapi.com', version: '2018-04-16', action, payload
     })
   };
 }
@@ -197,19 +203,63 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
     });
   }
 
+  function mapScfEndpoints(domain) {
+    return (domain.EndpointsConfig || []).map((item) => ({
+      Namespace: item.Namespace,
+      FunctionName: item.FunctionName,
+      Qualifier: item.Qualifier,
+      PathMatch: item.PathMatch,
+      ...(item.PathRewrite ? { PathRewrite: item.PathRewrite } : {})
+    }));
+  }
+
+  async function bindToScf(certId) {
+    const domainName = config.scfCustomDomain;
+    if (!domainName) return { updated: false, reason: 'no_domain' };
+    const domain = await apis.scf('GetCustomDomain', { Domain: domainName });
+    const current = domain.CertConfig?.CertificateId || null;
+    if (current === certId) return { updated: false, reason: 'already_bound', certId };
+    const endpoints = mapScfEndpoints(domain);
+    if (!endpoints.length) {
+      throw new Error(`SCF 自定义域名 ${domainName} 没有路由，拒绝更新证书`);
+    }
+    const payload = {
+      Domain: domainName,
+      Protocol: domain.Protocol || 'HTTPS',
+      CertConfig: { CertificateId: certId },
+      EndpointsConfig: endpoints
+    };
+    if (domain.WafConfig) payload.WafConfig = domain.WafConfig;
+    await apis.scf('UpdateCustomDomain', payload);
+    return { updated: true, previousCertId: current, certId };
+  }
+
   async function renew({ force = false } = {}) {
     const { days, certId } = await getCurrentCertExpiry();
     logger.log?.(`当前证书 certId=${certId || '(无)'} 剩余天数=${days === null ? '未知' : days}`);
     if (!force && days !== null && days > config.thresholdDays) {
+      if (certId) {
+        const scfBind = await bindToScf(certId);
+        if (scfBind.updated) {
+          return {
+            renewed: false,
+            reason: 'scf_cert_synced',
+            remainingDays: days,
+            oldScfCertId: scfBind.previousCertId,
+            newCertId: certId
+          };
+        }
+      }
       return { renewed: false, reason: 'not_due', remainingDays: days, threshold: config.thresholdDays };
     }
     const { cert, key } = await issueCertificate();
     const newCertId = await uploadToSsl(cert, key);
     await bindToEdgeOne(newCertId);
+    await bindToScf(newCertId);
     return { renewed: true, oldCertId: certId, newCertId, previousRemainingDays: days };
   }
 
-  return { renew, getCurrentCertExpiry, addTxtRecord, removeTxtRecord, issueCertificate, uploadToSsl, bindToEdgeOne };
+  return { renew, getCurrentCertExpiry, addTxtRecord, removeTxtRecord, issueCertificate, uploadToSsl, bindToEdgeOne, bindToScf };
 }
 
 function parseForce(event = {}) {

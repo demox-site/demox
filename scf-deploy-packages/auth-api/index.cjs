@@ -111,9 +111,12 @@ function redactSensitiveFields(body) {
     'newPassword',
     'code',
     'codeVerifier',
+    'code_verifier',
     'codeChallenge',
+    'code_challenge',
     'ticket',
     'token',
+    'refresh_token',
     'client_secret'
   ]);
 
@@ -1900,61 +1903,201 @@ async function handleRefreshToken(event) {
   };
 }
 
+const OFFICIAL_OAUTH_CLIENT = Object.freeze({
+  id: 'demox-mcp-client',
+  redirectUris: Object.freeze(['http://localhost:39897/callback', 'http://localhost:*/callback']),
+  scopes: Object.freeze(['website:deploy', 'website:list', 'website:delete', 'website:update'])
+});
+const OAUTH_ACCESS_TTL_SECONDS = 3600;
+const OAUTH_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
+const OAUTH_CODE_TTL_MS = 10 * 60 * 1000;
+
+function oauthError(status, error, description) {
+  return {
+    statusCode: status,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ error, error_description: description, message: description })
+  };
+}
+
+function oauthRedirectAllowed(patterns, redirectUri) {
+  const value = String(redirectUri || '');
+  return (patterns || []).some((pattern) => {
+    if (String(pattern).includes('*')) {
+      const regex = new RegExp(`^${String(pattern).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
+      return regex.test(value);
+    }
+    return pattern === value;
+  });
+}
+
+function parseOAuthScopes(scope, allowed) {
+  const scopes = [...new Set(String(scope || '').split(/\s+/).filter(Boolean))];
+  const allowedScopes = allowed && allowed.length ? allowed : [...OFFICIAL_OAUTH_CLIENT.scopes];
+  if (!scopes.length) return [...allowedScopes];
+  if (scopes.some((item) => !allowedScopes.includes(item))) return null;
+  return scopes;
+}
+
+function isMissingMysqlColumn(error) {
+  return error?.code === 'ER_BAD_FIELD_ERROR' || /Unknown column/i.test(String(error?.message || ''));
+}
+
+async function ensureOfficialOAuthClient() {
+  await query(
+    `INSERT INTO oauth_clients (id, client_secret, redirect_uris, scopes, client_name)
+     VALUES (?, '', ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       redirect_uris = VALUES(redirect_uris),
+       scopes = VALUES(scopes),
+       client_name = VALUES(client_name)`,
+    [
+      OFFICIAL_OAUTH_CLIENT.id,
+      JSON.stringify(OFFICIAL_OAUTH_CLIENT.redirectUris),
+      JSON.stringify(OFFICIAL_OAUTH_CLIENT.scopes),
+      'Demox MCP / CLI'
+    ]
+  );
+}
+
+async function resolveOAuthClient(clientId) {
+  if (clientId === OFFICIAL_OAUTH_CLIENT.id) {
+    await ensureOfficialOAuthClient();
+    return { id: OFFICIAL_OAUTH_CLIENT.id, public: true, redirectUris: [...OFFICIAL_OAUTH_CLIENT.redirectUris], scopes: [...OFFICIAL_OAUTH_CLIENT.scopes] };
+  }
+  const rows = await query('SELECT id, client_secret, redirect_uris, scopes FROM oauth_clients WHERE id = ?', [clientId]);
+  if (!rows.length) return null;
+  const row = rows[0];
+  const redirectUris = Array.isArray(row.redirect_uris) ? row.redirect_uris : [];
+  const scopes = Array.isArray(row.scopes) ? row.scopes : [...OFFICIAL_OAUTH_CLIENT.scopes];
+  return {
+    id: row.id,
+    public: !row.client_secret,
+    redirectUris,
+    scopes,
+    clientSecret: row.client_secret
+  };
+}
+
+async function insertAuthCode({ code, userId, clientId, redirectUri, expiresAt, scopes, codeChallenge }) {
+  const params = [code, userId, clientId, redirectUri, expiresAt, JSON.stringify(scopes), codeChallenge];
+  try {
+    await query(
+      `INSERT INTO oauth_auth_codes (code, user_id, client_id, redirect_uri, expires_at, scopes, code_challenge)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      params
+    );
+  } catch (error) {
+    if (!isMissingMysqlColumn(error)) throw error;
+    await query('ALTER TABLE oauth_auth_codes ADD COLUMN code_challenge VARCHAR(128) NULL');
+    await query(
+      `INSERT INTO oauth_auth_codes (code, user_id, client_id, redirect_uri, expires_at, scopes, code_challenge)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      params
+    );
+  }
+}
+
+async function loadAuthCode(code, clientId, redirectUri) {
+  try {
+    return await query(
+      `SELECT user_id, scopes, expires_at, code_challenge FROM oauth_auth_codes
+       WHERE code = ? AND client_id = ? AND redirect_uri = ?`,
+      [code, clientId, redirectUri]
+    );
+  } catch (error) {
+    if (!isMissingMysqlColumn(error)) throw error;
+    await query('ALTER TABLE oauth_auth_codes ADD COLUMN code_challenge VARCHAR(128) NULL');
+    return loadAuthCode(code, clientId, redirectUri);
+  }
+}
+
+function readScopeList(value) {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === 'string');
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+    } catch {
+      return value.split(/\s+/).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+async function issueOAuthTokens({ userId, clientId, scopes }) {
+  const users = await query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+  if (!users.length) return oauthError(400, 'invalid_grant', '授权用户不存在');
+  const accessToken = sign({ userId, email: users[0].email, scopes }, `${OAUTH_ACCESS_TTL_SECONDS}s`);
+  const refreshToken = generateRandomString(64);
+  const refreshExpiresAt = new Date(Date.now() + OAUTH_REFRESH_TTL_SECONDS * 1000);
+  await query(
+    `INSERT INTO oauth_refresh_tokens (token, user_id, client_id, expires_at, scopes)
+     VALUES (?, ?, ?, ?, ?)`,
+    [refreshToken, userId, clientId, refreshExpiresAt, JSON.stringify(scopes)]
+  );
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      expires_in: OAUTH_ACCESS_TTL_SECONDS,
+      refresh_expires_in: OAUTH_REFRESH_TTL_SECONDS,
+      token_type: 'Bearer',
+      scope: scopes.join(' '),
+      user_id: userId
+    })
+  };
+}
+
 /**
- * OAuth 2.0 授权码模式 - 获取授权码
+ * OAuth 2.0 授权码模式 - 发放授权码。Node CLI/MCP 只接受 code 回调。
  */
 async function handleOAuthAuthorize(event) {
-  const { client_id, redirect_uri, response_type = 'code', scope, state } = event.body || event;
+  const body = event.body || event;
+  const clientId = body.client_id;
+  const redirectUri = body.redirect_uri;
+  const responseType = body.response_type || 'code';
+  const state = body.state;
+  const codeChallenge = body.code_challenge;
+  const codeChallengeMethod = body.code_challenge_method;
 
-  // 验证token（获取当前用户）
   const user = authenticate(event);
-  if (!user) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '未登录' })
-    };
+  if (!user?.userId) return oauthError(401, 'login_required', '未登录');
+
+  const client = await resolveOAuthClient(clientId);
+  if (!client) return oauthError(401, 'invalid_client', '无效的客户端 ID');
+  if (responseType !== 'code') return oauthError(400, 'unsupported_response_type', '仅支持 authorization code');
+  if (!oauthRedirectAllowed(client.redirectUris, redirectUri)) {
+    return oauthError(400, 'invalid_redirect_uri', '无效的回调地址');
+  }
+  const scopes = parseOAuthScopes(body.scope, client.scopes);
+  if (!scopes) return oauthError(400, 'invalid_scope', 'OAuth scope 无效');
+  if (!state || !/^[A-Za-z0-9._~-]{16,128}$/.test(state)) {
+    return oauthError(400, 'invalid_state', 'OAuth state 格式无效');
+  }
+  if (client.public && (codeChallengeMethod !== 'S256' || !isValidPkceChallenge(codeChallenge))) {
+    return oauthError(400, 'invalid_request', '缺少有效的 OAuth PKCE 参数');
+  }
+  if (codeChallenge && (codeChallengeMethod !== 'S256' || !isValidPkceChallenge(codeChallenge))) {
+    return oauthError(400, 'invalid_request', 'OAuth PKCE 参数无效');
   }
 
-  // 验证客户端
-  const clients = await query(
-    'SELECT id, redirect_uris FROM oauth_clients WHERE id = ?',
-    [client_id]
-  );
-
-  if (clients.length === 0) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '客户端验证失败' })
-    };
-  }
-
-  const client = clients[0];
-  // MySQL JSON类型会自动解析为JavaScript对象
-  const redirectUris = Array.isArray(client.redirect_uris) ? client.redirect_uris : [client.redirect_uris];
-
-  // 验证redirect_uri
-  if (!redirectUris.includes(redirect_uri)) {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '无效的回调地址' })
-    };
-  }
-
-  // 生成授权码
   const code = generateRandomString(64);
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10分钟过期
+  await insertAuthCode({
+    code,
+    userId: user.userId,
+    clientId: client.id,
+    redirectUri,
+    expiresAt: new Date(Date.now() + OAUTH_CODE_TTL_MS),
+    scopes,
+    codeChallenge: codeChallenge || null
+  });
 
-  await query(
-    `INSERT INTO oauth_auth_codes (code, user_id, client_id, redirect_uri, expires_at, scopes)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [code, user.userId, client_id, redirect_uri, expiresAt, JSON.stringify(scope ? scope.split(' ') : [])]
-  );
-
-  // 返回授权码
-  const authUrl = `${redirect_uri}?code=${code}${state ? '&state=' + state : ''}`;
+  const callback = new URL(redirectUri);
+  callback.searchParams.set('code', code);
+  callback.searchParams.set('state', state);
 
   return {
     statusCode: 200,
@@ -1962,107 +2105,70 @@ async function handleOAuthAuthorize(event) {
     body: JSON.stringify({
       success: true,
       code,
-      redirect_uri: authUrl
+      redirect_uri: callback.toString()
     })
   };
 }
 
 /**
- * OAuth 2.0 授权码模式 - 交换访问令牌
+ * OAuth 2.0 Token：authorization_code + PKCE，以及 refresh_token。
  */
 async function handleOAuthToken(event) {
-  const { grant_type = 'authorization_code', code, client_id, client_secret, redirect_uri } = event.body || event;
-
-  // 参数验证
-  if (!code || !client_id || !client_secret || !redirect_uri) {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '缺少必要参数' })
-    };
+  const body = event.body || event;
+  const grantType = body.grant_type || 'authorization_code';
+  const clientId = body.client_id;
+  const client = await resolveOAuthClient(clientId);
+  if (!client) return oauthError(401, 'invalid_client', '无效的客户端 ID');
+  if (!client.public && body.client_secret !== client.clientSecret) {
+    return oauthError(401, 'invalid_client', '客户端验证失败');
   }
 
-  if (grant_type !== 'authorization_code') {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '不支持的授权类型' })
-    };
+  if (grantType === 'refresh_token') {
+    const refreshToken = body.refresh_token;
+    if (!refreshToken) return oauthError(400, 'invalid_request', '缺少 refresh_token');
+    const rows = await query(
+      `SELECT user_id, scopes, expires_at FROM oauth_refresh_tokens WHERE token = ? AND client_id = ?`,
+      [refreshToken, client.id]
+    );
+    if (!rows.length) return oauthError(400, 'invalid_grant', '刷新令牌无效');
+    if (new Date(rows[0].expires_at) < new Date()) {
+      await query('DELETE FROM oauth_refresh_tokens WHERE token = ?', [refreshToken]);
+      return oauthError(400, 'invalid_grant', '刷新令牌已过期');
+    }
+    await query('DELETE FROM oauth_refresh_tokens WHERE token = ?', [refreshToken]);
+    return issueOAuthTokens({
+      userId: rows[0].user_id,
+      clientId: client.id,
+      scopes: readScopeList(rows[0].scopes)
+    });
   }
 
-  // 验证客户端
-  const clients = await query(
-    'SELECT id FROM oauth_clients WHERE id = ? AND client_secret = ?',
-    [client_id, client_secret]
-  );
-
-  if (clients.length === 0) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '客户端验证失败' })
-    };
+  if (grantType !== 'authorization_code') {
+    return oauthError(400, 'unsupported_grant_type', '不支持的授权类型');
   }
 
-  // 查询授权码
-  const authCodes = await query(
-    `SELECT user_id, scopes, expires_at FROM oauth_auth_codes
-     WHERE code = ? AND client_id = ? AND redirect_uri = ?`,
-    [code, client_id, redirect_uri]
-  );
-
-  if (authCodes.length === 0) {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '授权码无效' })
-    };
+  const { code, redirect_uri: redirectUri, code_verifier: codeVerifier } = body;
+  if (!code || !redirectUri) return oauthError(400, 'invalid_request', '缺少必要参数');
+  if (client.public && !isValidPkceVerifier(codeVerifier)) {
+    return oauthError(400, 'invalid_request', '缺少有效的 OAuth PKCE 参数');
   }
 
-  const authCode = authCodes[0];
-
-  // 检查是否过期
-  if (new Date(authCode.expires_at) < new Date()) {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '授权码已过期' })
-    };
-  }
-
-  // 删除已使用的授权码
+  const authCodes = await loadAuthCode(code, client.id, redirectUri);
   await query('DELETE FROM oauth_auth_codes WHERE code = ?', [code]);
+  if (!authCodes.length) return oauthError(400, 'invalid_grant', '授权码无效');
+  const authCode = authCodes[0];
+  if (new Date(authCode.expires_at) < new Date()) return oauthError(400, 'invalid_grant', '授权码已过期');
+  if (authCode.code_challenge) {
+    if (!isValidPkceVerifier(codeVerifier) || !safeStringEqual(authCode.code_challenge, createPkceChallenge(codeVerifier))) {
+      return oauthError(400, 'invalid_grant', 'PKCE 校验失败');
+    }
+  }
 
-  // MySQL JSON类型会自动解析为JavaScript对象
-  const scopes = Array.isArray(authCode.scopes) ? authCode.scopes : [];
-
-  // 生成访问令牌
-  const accessToken = sign({
+  return issueOAuthTokens({
     userId: authCode.user_id,
-    scopes: scopes
-  }, '1h');
-
-  const refreshToken = generateRandomString(64);
-  const refreshTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30天
-
-  // 保存刷新令牌
-  // MySQL JSON字段可以直接插入JavaScript数组
-  await query(
-    `INSERT INTO oauth_refresh_tokens (token, user_id, client_id, expires_at, scopes)
-     VALUES (?, ?, ?, ?, ?)`,
-    [refreshToken, authCode.user_id, client_id, refreshTokenExpiresAt, JSON.stringify(scopes)]
-  );
-
-  return {
-    statusCode: 200,
-    headers: getCORSHeaders(),
-    body: JSON.stringify({
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expires_in: 3600,
-      token_type: 'Bearer'
-    })
-  };
+    clientId: client.id,
+    scopes: readScopeList(authCode.scopes)
+  });
 }
 
 /**

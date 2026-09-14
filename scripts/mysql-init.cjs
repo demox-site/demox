@@ -144,6 +144,7 @@ async function initDatabase() {
         redirect_uri VARCHAR(500) NOT NULL,
         expires_at TIMESTAMP NOT NULL,
         scopes JSON,
+        code_challenge VARCHAR(128) NULL,
         INDEX idx_expires_at (expires_at),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (client_id) REFERENCES oauth_clients(id) ON DELETE CASCADE

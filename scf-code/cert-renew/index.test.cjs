@@ -14,8 +14,26 @@ function config(overrides = {}) {
     dnspodDomain: 'demox.site',
     zoneId: 'zone-test',
     region: 'ap-guangzhou',
+    scfCustomDomain: 'api.demox.site',
     dnsPropagationMs: 0,
     ...overrides
+  };
+}
+
+function scfDomain({ certId = 'cert-old', endpoints = true, waf = false } = {}) {
+  return {
+    Domain: 'api.demox.site',
+    Protocol: 'HTTPS',
+    CertConfig: certId ? { CertificateId: certId } : {},
+    EndpointsConfig: endpoints
+      ? [{
+          Namespace: 'demox',
+          FunctionName: 'demox-function-api',
+          Qualifier: '$LATEST',
+          PathMatch: '/*'
+        }]
+      : [],
+    ...(waf ? { WafConfig: { WafOpen: 'OPEN' } } : {})
   };
 }
 
@@ -42,7 +60,11 @@ test('renewal exits without writes while the certificate is outside the threshol
         };
       },
       dnspod: async (action) => { calls.push(['dnspod', action]); },
-      ssl: async (action) => { calls.push(['ssl', action]); }
+      ssl: async (action) => { calls.push(['ssl', action]); },
+      scf: async (action) => {
+        calls.push(['scf', action]);
+        return scfDomain({ certId: 'cert-old' });
+      }
     },
     logger: { log() {}, warn() {} }
   });
@@ -50,7 +72,10 @@ test('renewal exits without writes while the certificate is outside the threshol
   const result = await service.renew();
   assert.equal(result.renewed, false);
   assert.equal(result.reason, 'not_due');
-  assert.deepEqual(calls, [['teo', 'DescribeAccelerationDomains']]);
+  assert.deepEqual(calls, [
+    ['teo', 'DescribeAccelerationDomains'],
+    ['scf', 'GetCustomDomain']
+  ]);
 });
 
 test('forced renewal writes DNS challenge, uploads SSL, and binds EdgeOne in order', async () => {
@@ -69,6 +94,11 @@ test('forced renewal writes DNS challenge, uploads SSL, and binds EdgeOne in ord
     ssl: async (action, payload) => {
       calls.push(['ssl', action, payload]);
       return { CertificateId: 'cert-new' };
+    },
+    scf: async (action, payload) => {
+      calls.push(['scf', action, payload]);
+      if (action === 'GetCustomDomain') return scfDomain({ certId: 'cert-old', waf: true });
+      return {};
     }
   };
   const fakeAcme = {
@@ -102,12 +132,79 @@ test('forced renewal writes DNS challenge, uploads SSL, and binds EdgeOne in ord
     ['dnspod', 'CreateRecord'],
     ['dnspod', 'DeleteRecord'],
     ['ssl', 'UploadCertificate'],
-    ['teo', 'ModifyHostsCertificate']
+    ['teo', 'ModifyHostsCertificate'],
+    ['scf', 'GetCustomDomain'],
+    ['scf', 'UpdateCustomDomain']
   ]);
   assert.equal(calls[1][2].SubDomain, '_acme-challenge');
   assert.equal(calls[4][2].ZoneId, 'zone-test');
   assert.deepEqual(calls[4][2].Hosts, ['*.demox.site', 'demox.site']);
   assert.deepEqual(calls[4][2].ServerCertInfo, [{ CertId: 'cert-new' }]);
+  assert.equal(calls[6][2].Domain, 'api.demox.site');
+  assert.equal(calls[6][2].CertConfig.CertificateId, 'cert-new');
+  assert.equal(calls[6][2].WafConfig.WafOpen, 'OPEN');
+  assert.equal(calls[6][2].EndpointsConfig.length, 1);
+});
+
+test('when EdgeOne is not due, SCF custom domain is synced to the current cert', async () => {
+  const calls = [];
+  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  const service = __private.createRenewService({
+    config: config(),
+    apis: {
+      teo: async (action) => {
+        calls.push(['teo', action]);
+        return {
+          AccelerationDomains: [{
+            DomainName: '*.demox.site',
+            Certificate: { List: [{ Type: 'upload', CertId: 'cert-current', ExpireTime: future }] }
+          }]
+        };
+      },
+      scf: async (action, payload) => {
+        calls.push(['scf', action, payload]);
+        if (action === 'GetCustomDomain') return scfDomain({ certId: 'cert-stale', waf: true });
+        return {};
+      },
+      ssl: async (action) => { calls.push(['ssl', action]); },
+      dnspod: async (action) => { calls.push(['dnspod', action]); }
+    },
+    logger: { log() {}, warn() {} }
+  });
+
+  const result = await service.renew();
+  assert.equal(result.renewed, false);
+  assert.equal(result.reason, 'scf_cert_synced');
+  assert.equal(result.oldScfCertId, 'cert-stale');
+  assert.equal(result.newCertId, 'cert-current');
+  assert.ok(result.remainingDays >= 59);
+  assert.deepEqual(calls.map((item) => item.slice(0, 2)), [
+    ['teo', 'DescribeAccelerationDomains'],
+    ['scf', 'GetCustomDomain'],
+    ['scf', 'UpdateCustomDomain']
+  ]);
+  assert.equal(calls[2][2].CertConfig.CertificateId, 'cert-current');
+  assert.equal(calls[2][2].WafConfig.WafOpen, 'OPEN');
+  assert.deepEqual(calls[2][2].EndpointsConfig, [{
+    Namespace: 'demox',
+    FunctionName: 'demox-function-api',
+    Qualifier: '$LATEST',
+    PathMatch: '/*'
+  }]);
+});
+
+test('SCF certificate bind refuses to update a domain with no routes', async () => {
+  const service = __private.createRenewService({
+    config: config(),
+    apis: {
+      scf: async () => scfDomain({ endpoints: false })
+    },
+    logger: { log() {}, warn() {} }
+  });
+  await assert.rejects(
+    () => service.bindToScf('cert-new'),
+    /没有路由/
+  );
 });
 
 test('challenge cleanup failure does not hide a successful issuance flow', async () => {
