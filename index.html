@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title data-seo="title">Demox - AI 生成网页静态发布 | Static Site Deployment</title>
+    <title data-seo="title">Demox - 静态网站与 Node 云函数发布 | Static Sites and Functions</title>
     <meta
       data-seo="description"
       data-rh="true"
       name="description"
-      content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。"
+      content="Demox 把 HTML、ZIP 和前端构建产物发布为 HTTPS 静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。"
     />
     <meta data-seo="robots" data-rh="true" name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <link data-seo="canonical" data-rh="true" rel="canonical" href="https://www.demox.site/" />
-    <meta data-seo="og-title" data-rh="true" property="og:title" content="Demox - AI 生成网页静态发布 | Static Site Deployment" />
-    <meta data-seo="og-description" data-rh="true" property="og:description" content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。" />
+    <meta data-seo="og-title" data-rh="true" property="og:title" content="Demox - 静态网站与 Node 云函数发布 | Static Sites and Functions" />
+    <meta data-seo="og-description" data-rh="true" property="og:description" content="Demox 把 HTML、ZIP 和前端构建产物发布为 HTTPS 静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。" />
     <meta data-seo="og-url" data-rh="true" property="og:url" content="https://www.demox.site/" />
     <meta data-rh="true" property="og:type" content="website" />
     <meta data-rh="true" property="og:site_name" content="Demox" />
@@ -22,10 +22,14 @@
     <meta property="og:image:height" content="630" />
     <meta data-rh="true" property="og:image:alt" content="Demox static site deployment platform" />
     <meta data-rh="true" name="twitter:card" content="summary_large_image" />
-    <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - AI 生成网页静态发布 | Static Site Deployment" />
-    <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。" />
+    <meta data-seo="twitter-title" data-rh="true" name="twitter:title" content="Demox - 静态网站与 Node 云函数发布 | Static Sites and Functions" />
+    <meta data-seo="twitter-description" data-rh="true" name="twitter:description" content="Demox 把 HTML、ZIP 和前端构建产物发布为 HTTPS 静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。" />
     <meta data-rh="true" name="twitter:image" content="https://www.demox.site/og-image.png" />
     <meta name="theme-color" content="#f7f7f5" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/demox-logo.png" />
+    <link rel="privacy-policy" href="https://www.demox.site/privacy" />
+    <link rel="preconnect" href="https://cdn.gpteng.co" crossorigin />
     <script data-seo="schema" type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -36,7 +40,7 @@
             "name": "Demox",
             "url": "https://www.demox.site/",
             "logo": "https://www.demox.site/demox-logo.png",
-            "sameAs": ["https://github.com/demox-site/demox"]
+            "sameAs": ["https://github.com/demox-site/demox", "https://github.com/demox-site/skill", "https://x.com/a_phos"]
           },
           {
             "@type": "WebSite",
@@ -52,15 +56,15 @@
             "name": "Demox",
             "url": "https://www.demox.site/",
             "applicationCategory": "DeveloperApplication",
-            "description": "A static website deployment platform for frontend builds, AI-generated pages, and documents, available through web, CLI, MCP, and API workflows.",
+            "description": "A deployment platform for static websites and Node.js functions. Frontend builds, AI-generated pages, and documents become HTTPS sites; Node backends export handler(request, env) and run as per-function cloud functions through web, CLI, MCP, and API workflows.",
             "publisher": { "@id": "https://www.demox.site/#organization" }
           },
           {
             "@type": "WebPage",
             "@id": "https://www.demox.site/#webpage",
-            "name": "Demox - AI 生成网页静态发布 | Static Site Deployment",
+            "name": "Demox - 静态网站与 Node 云函数发布 | Static Sites and Functions",
             "url": "https://www.demox.site/",
-            "description": "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
+            "description": "Demox 把 HTML、ZIP 和前端构建产物发布为 HTTPS 静态网站，并把 Node handler 作为云函数挂到同一站点。支持网页、CLI、MCP 与 API。",
             "isPartOf": { "@id": "https://www.demox.site/#website" },
             "about": { "@id": "https://www.demox.site/#software" },
             "inLanguage": ["en", "zh-CN"]
@@ -71,7 +75,7 @@
     <style data-seo="fallback-style">
       html, body { margin: 0; min-height: 100%; background: #ffffff; }
       html.dark, html.dark body { background: #09090b; }
-      [data-crawlable-fallback] { min-height: 100vh; overflow: hidden; color: #111111; background: radial-gradient(circle at 18% 8%, rgba(17,17,17,.08), transparent 25rem), radial-gradient(circle at 84% 0%, rgba(17,17,17,.04), transparent 24rem), linear-gradient(180deg, #f7f7f5, #ffffff 48%, #f7f7f5); font: 16px/1.65 "Google Sans Text", "Avenir Next", ui-sans-serif, system-ui, sans-serif; }
+      [data-crawlable-fallback] { min-height: 100vh; overflow: visible; color: #111111; background: radial-gradient(circle at 18% 8%, rgba(17,17,17,.08), transparent 25rem), radial-gradient(circle at 84% 0%, rgba(17,17,17,.04), transparent 24rem), linear-gradient(180deg, #f7f7f5, #ffffff 48%, #f7f7f5); font: 16px/1.65 "Google Sans Text", "Avenir Next", ui-sans-serif, system-ui, sans-serif; }
       [data-crawlable-fallback] * { box-sizing: border-box; }
       [data-crawlable-fallback] a { color: inherit; text-decoration: none; }
       [data-crawlable-fallback] .fallback-header { display: flex; align-items: center; justify-content: space-between; min-height: 65px; padding: 0 24px; border-bottom: 1px solid rgba(17,17,17,.14); background: rgba(255,255,255,.78); }
@@ -88,12 +92,21 @@
       [data-crawlable-fallback] .fallback-action-primary { border-color: #111111; background: #111111; color: #ffffff; }
       [data-crawlable-fallback] .fallback-details { max-width: 850px; margin: 0 auto 72px; padding: 34px; border: 1px solid rgba(17,17,17,.12); border-radius: 24px; background: rgba(255,255,255,.86); box-shadow: 0 24px 70px rgba(0,0,0,.08); }
       [data-crawlable-fallback] .fallback-details h2 { margin: 0 0 12px; color: #18181b; font-size: 25px; line-height: 1.25; letter-spacing: -.025em; }
-      [data-crawlable-fallback] .fallback-details p { margin: 0; color: #52525b; }
+      [data-crawlable-fallback] .fallback-skip { position: absolute; left: -999px; top: 12px; padding: 8px 12px; border-radius: 8px; background: #111; color: #fff; }
+      [data-crawlable-fallback] .fallback-skip:focus { left: 16px; z-index: 10; }
+      [data-crawlable-fallback] .fallback-details h3 { margin: 20px 0 8px; color: #18181b; font-size: 18px; line-height: 1.35; }
+      [data-crawlable-fallback] .fallback-details p { margin: 0 0 12px; color: #52525b; }
+      [data-crawlable-fallback] .fallback-details ol, [data-crawlable-fallback] .fallback-details ul { margin: 0 0 12px; padding-left: 1.25em; color: #52525b; }
       [data-crawlable-fallback] .fallback-details section { margin-top: 28px; padding-top: 28px; border-top: 1px solid rgba(17,17,17,.12); }
+      [data-crawlable-fallback] .fallback-footer { max-width: 850px; margin: 0 auto 48px; padding: 0 24px 32px; color: #52525b; font-size: 14px; }
+      [data-crawlable-fallback] .fallback-footer a { text-decoration: underline; text-underline-offset: 3px; }
       [data-crawlable-fallback].fallback-simple { min-height: auto; max-width: 760px; margin: 64px auto; padding: 40px; border: 1px solid rgba(17,17,17,.12); border-radius: 24px; background: rgba(255,255,255,.88); box-shadow: 0 24px 70px rgba(0,0,0,.08); }
       [data-crawlable-fallback].fallback-simple h1, [data-crawlable-fallback].fallback-simple h2 { color: #18181b; line-height: 1.2; letter-spacing: -.025em; }
       [data-crawlable-fallback].fallback-simple a { color: #166534; text-decoration: underline; text-underline-offset: 3px; }
       [data-crawlable-fallback].fallback-simple pre { overflow-x: auto; padding: 18px; border-radius: 12px; background: #f4f4f5; }
+      [data-crawlable-fallback] table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+      [data-crawlable-fallback] th, [data-crawlable-fallback] td { border: 1px solid rgba(17,17,17,.12); padding: 10px 12px; text-align: left; vertical-align: top; }
+      [data-crawlable-fallback] th { background: #f4f4f5; }
       @media (max-width: 640px) { [data-crawlable-fallback] .fallback-header { padding: 0 18px; } [data-crawlable-fallback] .fallback-nav { gap: 14px; } [data-crawlable-fallback] .fallback-hero { padding: 72px 20px 70px; } [data-crawlable-fallback] .fallback-hero h1 { font-size: 43px; } [data-crawlable-fallback] .fallback-summary { font-size: 18px; } [data-crawlable-fallback] .fallback-action { width: 100%; } [data-crawlable-fallback] .fallback-details { margin: 0 16px 48px; padding: 24px; } [data-crawlable-fallback].fallback-simple { margin: 24px 16px; padding: 24px; } }
     </style>
     <script>
@@ -133,27 +146,28 @@
           <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
           <nav class="fallback-nav" aria-label="Main pages">
             <a href="/pricing">Pricing</a>
+            <a href="/when-to-use-demox">When to use</a>
             <a href="/log">Changelog</a>
             <a href="/doc">Docs</a>
           </nav>
         </header>
         <section class="fallback-hero" lang="zh-CN">
-          <div class="fallback-eyebrow"><span class="fallback-dot"></span>AI 静态网站发布</div>
-          <h1>AI 生成网页怎样快速发布成静态网站？</h1>
-          <p class="fallback-summary"><strong>直接答案：</strong>把 AI 生成的单个 HTML 文件，或根目录包含 <code>index.html</code> 的 dist、build 目录或 ZIP 上传到 Demox，就能获得带 HTTPS 和 CDN 的公开链接。支持网页、CLI、MCP 和 API，无需自行配置服务器。</p>
+          <div class="fallback-eyebrow"><span class="fallback-dot"></span>静态网站与 Node 云函数</div>
+          <h1>AI 生成网页和 Node 接口怎样发布到 Demox？</h1>
+          <p class="fallback-summary"><strong>直接答案：</strong>静态页面把单个 HTML，或根目录含 <code>index.html</code> 的 dist、build、ZIP 上传到 Demox，获得带 HTTPS 和 CDN 的链接。Node 后端改成 <code>handler(request, env)</code> 后走 <code>demox functions push</code>。网页、CLI、MCP 和 API 都可以。</p>
           <div class="fallback-actions">
             <a class="fallback-action fallback-action-primary" href="/console/projects">上传并发布</a>
-            <a class="fallback-action" href="/ai-static-site-deployment">查看完整指南</a>
+            <a class="fallback-action" href="/when-to-use-demox">判断是否适合</a>
           </div>
         </section>
         <section class="fallback-details" aria-label="About Demox">
           <section lang="zh-CN">
             <h2>Demox 是什么？</h2>
-            <p>Demox 是一个静态网站部署平台，让前端开发者和 AI 工作流把 HTML、静态构建目录、ZIP 或文档直接变成可分享链接。它适合前端 Demo、交互原型、客户评审和文档页面；需要运行 Node.js、Python、PHP、Java 或连接私密数据库的项目，仍需独立后端。</p>
+            <p>Demox 把 HTML、静态构建目录、ZIP 或文档变成可分享的 HTTPS 站点，并把 Node handler 作为云函数挂到同一站点。它适合前端 Demo、AI 生成页面、客户评审、文档页，以及已改成 handler 的 Node 接口。Python、PHP、Java、Express listen，以及必须直连私密数据库或常驻进程的服务，仍需独立后端或先改造。</p>
           </section>
           <section lang="en">
             <h2>What is Demox?</h2>
-            <p>Demox turns an HTML file, static build directory, ZIP archive, or document into a shareable HTTPS site through the web console, CLI, MCP, or API.</p>
+            <p>Demox turns an HTML file, static build, ZIP, or document into a shareable HTTPS site, and hosts Node handler(request, env) functions on the same site through the web console, CLI, MCP, or API.</p>
           </section>
         </section>
       </main>

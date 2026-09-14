@@ -16,10 +16,34 @@ export const MainFooter: React.FC = () => {
 
           <div className="flex flex-col md:flex-row items-center gap-4 md:gap-8 text-sm text-[var(--stitch-muted)]">
             <a
+              href="/when-to-use-demox"
+              className="hover:text-[var(--stitch-ink)] transition-colors"
+            >
+              适用场景
+            </a>
+            <a
+              href="/deploy-troubleshooting"
+              className="hover:text-[var(--stitch-ink)] transition-colors"
+            >
+              发布排错
+            </a>
+            <a
               href="/content-scan"
               className="hover:text-[var(--stitch-ink)] transition-colors"
             >
               屏蔽词表
+            </a>
+            <a
+              href="/privacy"
+              className="hover:text-[var(--stitch-ink)] transition-colors"
+            >
+              Privacy
+            </a>
+            <a
+              href="/terms"
+              className="hover:text-[var(--stitch-ink)] transition-colors"
+            >
+              Terms
             </a>
             <a
               href="mailto:phosa@qq.com"

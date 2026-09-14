@@ -6,49 +6,124 @@ const SITE_URL = "https://www.demox.site";
 const INDEX_ROBOTS = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
 const NOINDEX_ROBOTS = "noindex, nofollow";
 
+const HOME_FAQ = [
+  {
+    question: "What is Demox?",
+    answer: "Demox is a host for static websites and small Node functions. Upload HTML, a ZIP, or a dist folder. You get a public HTTPS URL on a CDN.",
+  },
+  {
+    question: "How do I deploy a static site?",
+    answer: "Put index.html at the root of the folder or ZIP. Log in, then upload in the web console or run demox deploy ./dist.",
+  },
+  {
+    question: "Can I run Express, Python, or PHP?",
+    answer: "Not as-is. Rewrite a Node backend as handler(request, env) and push it with demox functions push. Python, PHP, and Java need another host.",
+  },
+  {
+    question: "Does Demox replace Vercel or Netlify?",
+    answer: "No. Demox is for fast public links and small Node functions. It does not claim to replace a full CI/CD platform.",
+  },
+  {
+    question: "Where is the privacy policy?",
+    answer: "Read https://www.demox.site/privacy. Login uses essential cookies. Demox does not sell personal data. Contact phosa@qq.com.",
+  },
+];
+
+const HOME_HOWTO_STEPS = [
+  "Build or export the site so the root folder contains index.html.",
+  "Sign in at www.demox.site or with the Demox CLI.",
+  "Upload the folder in the console, or run demox deploy ./dist.",
+  "Open the HTTPS URL in a private window and confirm the page loads.",
+];
+
+const crawlableFooter = `
+  <footer class="fallback-footer">
+    <p><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:phosa@qq.com">Contact phosa@qq.com</a> · <a href="https://github.com/demox-site/demox">GitHub</a></p>
+    <p>Demox uses essential cookies for login. It does not use advertising cookies and does not sell personal data. Read the privacy policy for data handling and retention.</p>
+  </footer>`;
+
 const homeFallback = `
 <main data-crawlable-fallback>
+  <a class="fallback-skip" href="#demox-overview">Skip to main content</a>
   <header class="fallback-header">
     <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
     <nav class="fallback-nav" aria-label="Main pages">
       <a href="/pricing">Pricing</a>
+      <a href="/when-to-use-demox">When to use</a>
       <a href="/ai-static-site-deployment">Guide</a>
-      <a href="/log">Changelog</a>
       <a href="/doc">Docs</a>
+      <a href="/privacy">Privacy</a>
     </nav>
   </header>
-  <section class="fallback-hero" lang="zh-CN">
-    <div class="fallback-eyebrow"><span class="fallback-dot"></span>AI 静态网站发布</div>
-    <h1>AI 生成网页怎样快速发布成静态网站？</h1>
-    <p class="fallback-summary"><strong>直接答案：</strong>把 AI 生成的单个 HTML 文件，或根目录包含 <code>index.html</code> 的 dist、build 目录或 ZIP 上传到 Demox，就能获得带 HTTPS 和 CDN 的公开链接。支持网页、CLI、MCP 和 API，无需自行配置服务器。</p>
+  <section id="demox-overview" class="fallback-hero" lang="en">
+    <div class="fallback-eyebrow"><span class="fallback-dot"></span>Static sites and Node functions</div>
+    <h1>How do you publish a site with Demox?</h1>
+    <p class="fallback-summary"><strong>Direct answer:</strong> Upload one HTML file, or a folder or ZIP with <code>index.html</code> at the root. Demox returns an HTTPS link on a CDN. For a Node API, export <code>handler(request, env)</code> and run <code>demox functions push</code>.</p>
     <div class="fallback-actions">
-      <a class="fallback-action fallback-action-primary" href="/console/projects">上传并发布</a>
-      <a class="fallback-action" href="/ai-static-site-deployment">查看完整指南</a>
+      <a class="fallback-action fallback-action-primary" href="/console/projects">Upload and publish</a>
+      <a class="fallback-action" href="/when-to-use-demox">See if it fits</a>
     </div>
   </section>
-  <section class="fallback-details" aria-label="About Demox">
+  <section class="fallback-details" aria-label="About Demox" lang="en">
+    <section>
+      <h2>What is Demox?</h2>
+      <p>Demox is a hosting platform for static websites and small Node functions. You upload files. You get a shareable HTTPS URL. You do not rent a server, issue a certificate, or configure a CDN by hand.</p>
+      <p>Use it for frontend demos, AI-generated HTML, review links, and document pages. Use it for Node backends only after they export <code>handler(request, env)</code>. Demox does not replace a full CI/CD platform.</p>
+    </section>
+    <section>
+      <h2>How do you deploy a static site?</h2>
+      <ol>
+        <li>Build or export the site so the root folder contains <code>index.html</code>.</li>
+        <li>Sign in at <a href="https://www.demox.site/">www.demox.site</a> or with the Demox CLI.</li>
+        <li>Upload the folder in the console, or run <code>demox deploy ./dist</code>.</li>
+        <li>Open the HTTPS URL in a private window and confirm the page loads.</li>
+      </ol>
+      <p>The same flow works for a single HTML file, a ZIP, and PDF, Markdown, TXT, or DOCX files. CLI, MCP, and the web console all publish to the same site.</p>
+    </section>
+    <section>
+      <h2>What can you host, and what should you skip?</h2>
+      <p>Good fits include AI HTML, React or Vue dist folders, ZIP archives, and documents. Good fits also include Node handlers that you push with <code>demox functions push</code>.</p>
+      <p>Skip Express apps that call <code>listen</code>. Skip Python, PHP, and Java services. Skip apps that must keep a private database socket open. Those need another host, or you must rewrite the backend first. See <a href="/when-to-use-demox">when to use Demox</a>.</p>
+    </section>
+    <section>
+      <h2>How Demox hosts itself</h2>
+      <p>The public site is a normal Demox site. Pages ship with <code>demox deploy</code>. Auth, website, MCP, and certificate jobs ship with <code>demox functions push</code>. That case study is on <a href="/how-demox-hosts-itself">how Demox hosts itself</a>.</p>
+    </section>
+    <section>
+      <h2>Frequently asked questions</h2>
+      ${HOME_FAQ.map((item) => `<h3>${item.question}</h3><p>${item.answer}</p>`).join("\n      ")}
+    </section>
     <section lang="zh-CN">
       <h2>Demox 是什么？</h2>
-      <p>Demox 是一个静态网站部署平台，让前端开发者和 AI 工作流把 HTML、静态构建目录、ZIP 或文档直接变成可分享链接。它适合前端 Demo、交互原型、客户评审和文档页面；需要运行 Node.js、Python、PHP、Java 或连接私密数据库的项目，仍需独立后端。</p>
-    </section>
-    <section lang="en">
-      <h2>What is Demox?</h2>
-      <p>Demox turns an HTML file, static build directory, ZIP archive, or document into a shareable HTTPS site through the web console, CLI, MCP, or API.</p>
+      <p>Demox 把 HTML、静态构建目录、ZIP 或文档变成可分享的 HTTPS 站点，并把 Node handler 作为云函数挂到同一站点。它适合前端 Demo、AI 生成页面、客户评审、文档页，以及已改成 <code>handler(request, env)</code> 的 Node 接口。Python、PHP、Java、Express listen，以及必须直连私密数据库或常驻进程的服务，仍需独立后端或先改造。Demox 不声称替代完整 CI/CD 平台。</p>
     </section>
   </section>
+  ${crawlableFooter}
 </main>`;
 
 export const PUBLIC_PAGES = {
   "": {
-    title: "Demox - AI 生成网页静态发布 | Static Site Deployment",
-    description: "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
+    title: "Demox — Publish static sites and Node functions",
+    description: "Demox publishes HTML, ZIP, and frontend builds as HTTPS static sites. Node backends export handler(request, env) and run as cloud functions via web, CLI, MCP, or API.",
     fallback: homeFallback,
+    faq: HOME_FAQ,
+    howTo: {
+      name: "Publish a static site with Demox",
+      description: "Upload HTML or a build folder and get an HTTPS CDN URL.",
+      steps: HOME_HOWTO_STEPS,
+    },
   },
   index: {
-    title: "Demox - AI 生成网页静态发布 | Static Site Deployment",
-    description: "Demox 将 AI 生成的 HTML、ZIP 和前端构建产物发布为带 HTTPS 和 CDN 的静态网站，支持网页、CLI、MCP 与 API。",
+    title: "Demox — Publish static sites and Node functions",
+    description: "Demox publishes HTML, ZIP, and frontend builds as HTTPS static sites. Node backends export handler(request, env) and run as cloud functions via web, CLI, MCP, or API.",
     canonicalPath: "/",
     fallback: homeFallback,
+    faq: HOME_FAQ,
+    howTo: {
+      name: "Publish a static site with Demox",
+      description: "Upload HTML or a build folder and get an HTTPS CDN URL.",
+      steps: HOME_HOWTO_STEPS,
+    },
   },
   pricing: {
     title: "Demox Pricing - Static Site Deployment Plans",
@@ -57,8 +132,8 @@ export const PUBLIC_PAGES = {
   },
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",
-    description: "Deploy static sites with the Demox CLI or from MCP-compatible AI assistants such as Claude Code and Cursor. Includes authentication, file support, content scan, and examples.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>用 CLI 或 MCP 发布静态网站</h1><p><strong>直接答案：</strong>AI 生成网页后，先得到单个 HTML 或包含 <code>index.html</code> 的 dist、build、ZIP，再用 Demox CLI、MCP 或网页端上传，成功后获得公开 HTTPS 链接。</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist</code></pre><h2>MCP quick start</h2><p>运行 <code>npx -y @demox-site/mcp-server@latest</code> 作为 MCP server。第一次部署会打开浏览器完成 OAuth 授权。也可以把本页链接交给能访问网页、读取本地文件并执行工具的 AI 助手。</p><p>支持目录、ZIP、HTML、PDF、Markdown、TXT、DOCX 和表格。静态发布不能代替 Node.js、Python、PHP 或 Java 后端；不要把 Token 和数据库密码放进前端文件。<a href="https://github.com/demox-site/skill">查看 Demox Agent Skill</a>。完整屏蔽词见 <a href="/content-scan">内容审核屏蔽词</a>，接口 <code>GET https://api.demox.site/website/content-scan/phrases</code>。</p></main>`,
+    description: "Deploy static pages with demox deploy and Node backends with demox functions push. Covers CLI, MCP, per-function env, aliases, and invoke URLs.",
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>用 CLI 或 MCP 发布静态网站和云函数</h1><p><strong>直接答案：</strong>页面走 <code>demox deploy</code>。Node 后端改成 <code>handler(request, env)</code> 后走 <code>demox functions push</code>。环境变量按函数设置。首次上传创建 v1，production 和 develop 都指向 v1；再上传不会改别名。</p><h2>CLI quick start</h2><pre><code>npm install -g @demox-site/cli@latest\ndemox login\ndemox deploy ./dist --name my-site\ndemox functions push ./api/hello --id WEBSITE_ID --slug hello\ndemox env set --id WEBSITE_ID --slug hello API_KEY=secret\ndemox functions alias set --id WEBSITE_ID --slug hello production --version 2</code></pre><p>函数调用地址：<code>https://api.demox.site/{站点ID}/{别名}/api/{标识}</code>。页面里 <code>fetch('/api/标识')</code> 走 production。functions / env / alias 需要 CLI 1.1.6 及以上。</p><h2>MCP quick start</h2><p>运行 <code>npx -y @demox-site/mcp-server@latest</code> 作为 MCP server。第一次部署会打开浏览器完成 OAuth 授权。也可以把本页链接交给能访问网页、读取本地文件并执行工具的 AI 助手。</p><p>支持目录、ZIP、HTML、PDF、Markdown、TXT、DOCX。Node 后端不要 Express listen。不要把 Token 和数据库密码放进前端文件。<a href="https://github.com/demox-site/skill">查看 Demox Agent Skill</a>。完整屏蔽词见 <a href="/content-scan">内容审核屏蔽词</a>。</p></main>`,
   },
   "content-scan": {
     title: "Demox 屏蔽词表 - 内容审核公开接口",
@@ -70,10 +145,10 @@ export const PUBLIC_PAGES = {
     description: "从单个 HTML、ZIP 或前端构建产物出发，用网页、CLI、MCP 或 AI 助手发布静态网站并获得 HTTPS 链接。",
     article: {
       datePublished: "2026-08-18",
-      dateModified: "2026-08-24",
+      dateModified: "2026-09-14",
       inLanguage: "zh-CN",
     },
-    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 静态网站发布指南 · 更新于 2026-08-24 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>先确认 AI 产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。这个流程不需要配置服务器，适合演示、评审和分享。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。若页面引用 CSS、图片或字体，请把资源放在同一个目录并使用相对路径。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>先执行 React、Vue、Vite 等项目的生产构建，再上传构建目录或 ZIP。入口文件应位于上传目录或 ZIP 根目录，资源 base path 也要按静态托管方式配置。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它先检查静态产物，再通过 CLI、MCP 或 Agent Skill 发布。只会聊天的 AI 可以说明步骤，却不能代替你读取文件或执行上传。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及只在浏览器运行或调用已有远程 API 的前端，都适合静态发布。</p><h2>哪些项目不适合直接静态发布？</h2><p>必须运行 Node.js、Python、PHP 或 Java 服务，直接连接数据库，执行服务端任务，或依赖服务器端渲染且没有静态导出结果的应用，需要先改造或选择能运行后端的平台。静态网站可以调用允许跨域访问的公开 HTTPS API，但不能把私密凭据放在浏览器代码中。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但前提是 AI 助手能访问网页、读取本地文件并执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，但不能把私密凭据放在前端代码中。需要保密的业务逻辑仍应放在独立后端。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 静态网站发布指南 · 更新于 2026-09-14 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>先确认 AI 产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。需要接口时，把 Node 后端改成 <code>handler(request, env)</code> 后走 <code>demox functions push</code>。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。若页面引用 CSS、图片或字体，请把资源放在同一个目录并使用相对路径。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>先执行 React、Vue、Vite 等项目的生产构建，再上传构建目录或 ZIP。入口文件应位于上传目录或 ZIP 根目录，资源 base path 也要按静态托管方式配置。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它先检查静态产物，再通过 CLI、MCP 或 Agent Skill 发布。只会聊天的 AI 可以说明步骤，却不能代替你读取文件或执行上传。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及已改成 <code>handler(request, env)</code> 的 Node 接口，都适合发布。完整对照见 <a href="/when-to-use-demox">什么时候该用 Demox</a>。</p><h2>哪些项目不适合直接静态发布？</h2><p>Python、PHP、Java，Express <code>listen</code>，必须直连私密数据库或常驻进程，以及没有静态导出的服务端渲染应用，需要先改造或选择能运行该后端的平台。失败原文见 <a href="/deploy-troubleshooting">发布排错</a>。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但前提是 AI 助手能访问网页、读取本地文件并执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，也可以把 Node handler 发到同一站点后用 <code>fetch('/api/标识')</code>。不要把私密凭据放在前端代码中。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
   },
   terms: {
     title: "Demox Terms of Service",
@@ -83,12 +158,47 @@ export const PUBLIC_PAGES = {
   privacy: {
     title: "Demox Privacy Policy",
     description: "Read how Demox handles account data, uploaded website files, access logs, cookies, security, and data retention.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Privacy Policy</h1><p>This policy explains how Demox handles account information, uploaded website files, access logs, cookies, security controls, and data retention. Open this page in a browser to read the complete privacy policy.</p><p><a href="/">Return to Demox</a>.</p></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox Privacy Policy</h1><p>Last updated 21 July 2026.</p><p>Demox collects account email, login logs, and the files you upload so we can host your site. We use that data to run accounts, deploy sites, review content for the public blocklist, and keep the service secure.</p><p>Login uses essential cookies. Demox does not use advertising cookies and does not sell personal data. You can ask us to delete an account by emailing <a href="mailto:phosa@qq.com">phosa@qq.com</a>.</p><p>This page is the cookie policy and the privacy policy. Open it in a browser for the full Chinese text covering account data, uploads, access logs, security, and retention.</p><p><a href="/">Return to Demox</a> · <a href="/terms">Terms of Service</a></p></main>`,
   },
   log: {
     title: "Demox Changelog - Product and Infrastructure Updates",
     description: "Follow Demox updates across static deployment, CLI and MCP workflows, site security, analytics, domains, and platform infrastructure.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><h1>Demox 更新日志</h1><p><time datetime="2026-08-24">内容摘要更新于 2026-08-24</time>。这里记录 Demox 静态网站发布、AI 工作流、站点访问和平台基础设施的真实变更。</p><h2>近期更新主题</h2><ul><li><strong>静态发布：</strong>支持 HTML、ZIP 和前端构建产物，并通过 CLI、MCP 或网页端发布。</li><li><strong>AI 工作流：</strong>MCP server 和 Agent Skill 可以让具备工具权限的 AI 助手协助部署。</li><li><strong>站点管理：</strong>支持公开/私有站点、官方子域名、重新部署和访问分析。</li><li><strong>平台基础设施：</strong>持续改进边缘发布、认证、路由、缓存和资源管理。</li></ul><p><a href="/ai-static-site-deployment">阅读 AI 静态网站发布指南</a>，或<a href="/doc">查看 CLI 和 MCP 文档</a>。</p></article></main>`,
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><h1>Demox 更新日志</h1><p><time datetime="2026-09-14">内容摘要更新于 2026-09-14</time>。这里记录 Demox 静态网站发布、Node 云函数、AI 工作流、站点访问和平台基础设施的真实变更。</p><h2>近期更新主题</h2><ul><li><strong>静态发布：</strong>支持 HTML、ZIP 和前端构建产物，并通过 CLI、MCP 或网页端发布。</li><li><strong>Node 云函数：</strong>入口是 handler(request, env)。首次 push 创建 v1，production 和 develop 指向 v1；之后 push 不改别名。</li><li><strong>AI 工作流：</strong>MCP server 和 Agent Skill 可以让具备工具权限的 AI 助手协助部署。</li><li><strong>站点管理：</strong>支持公开/私有站点、官方子域名、重新部署和访问分析。</li></ul><p><a href="/when-to-use-demox">判断是否适合 Demox</a>，<a href="/deploy-troubleshooting">对照发布错误</a>，或<a href="/doc">查看 CLI 和 MCP 文档</a>。</p></article></main>`,
+  },
+  "when-to-use-demox": {
+    title: "什么时候该用 Demox，什么时候不该用 | Demox",
+    description: "对照静态页面、Node handler、Express listen 和独立后端，判断项目是否适合 Demox。",
+    article: {
+      datePublished: "2026-09-14",
+      dateModified: "2026-09-14",
+      inLanguage: "zh-CN",
+    },
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>适用场景 · 更新于 2026-09-14 · Demox 团队</p><h1>什么时候该用 Demox，什么时候不该用？</h1><p><strong>直接答案：</strong>Demox 适合两类产物。一类是静态网站：单个 HTML、根目录含 index.html 的 dist/build/ZIP，以及 PDF、Markdown、TXT、DOCX。另一类是 Node 接口：改成 handler(request, env) 后用 demox functions push 挂到同一站点。Python、PHP、Java、Express listen，以及必须直连私密数据库或常驻进程的服务，不适合直接上传。Demox 不声称替代完整 CI/CD 平台。</p><h2>按你手里的产物判断</h2><table><thead><tr><th>你手里有什么</th><th>适合 Demox？</th><th>怎么发</th></tr></thead><tbody><tr><td>AI 生成的单个 HTML</td><td>适合</td><td>网页上传或 demox deploy</td></tr><tr><td>React / Vue / Vite dist</td><td>适合</td><td>demox deploy ./dist</td></tr><tr><td>PDF、Markdown、DOCX</td><td>适合</td><td>网页上传或 demox deploy</td></tr><tr><td>Node handler(request, env)</td><td>适合</td><td>demox functions push</td></tr><tr><td>Express listen</td><td>不适合直接上传</td><td>先改成 handler</td></tr><tr><td>Python / PHP / Java</td><td>目前不适合</td><td>独立后端</td></tr></tbody></table><h2>Demox 自己也是这样发布的</h2><p>主站是平台上的一个普通站点。页面走 demox deploy，业务后端走 demox functions push。详见 <a href="/how-demox-hosts-itself">Demox 怎样用自己部署自己</a>。发布失败对照 <a href="/deploy-troubleshooting">排错页</a>。</p></article></main>`,
+  },
+  "deploy-troubleshooting": {
+    title: "Demox 发布失败排错 | 对照错误原文",
+    description: "对照 MISSING_ENTRYPOINT、CONTENT_BLOCKED、INVALID_STATIC_SITE 和 Access denied 等原文处理 Demox 发布失败。",
+    article: {
+      datePublished: "2026-09-14",
+      dateModified: "2026-09-14",
+      inLanguage: "zh-CN",
+    },
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>部署排错 · 更新于 2026-09-14 · Demox 团队</p><h1>Demox 发布失败时，该看哪一条错误？</h1><p><strong>直接答案：</strong>先读失败信息里的 code 和原文。缺根目录 index.html 是 MISSING_ENTRYPOINT。包无法当静态站点打开是 INVALID_STATIC_SITE。命中屏蔽词是 CONTENT_BLOCKED，文案会写出具体词。私有站点未授权是 Access denied。functions push 成功但页面仍旧，是因为 push 不改别名。</p><h2>缺少根目录 index.html</h2><p>code：<code>MISSING_ENTRYPOINT</code>。原文：Artifact 缺少根目录 index.html。把 index.html 放到上传目录或 ZIP 根目录；React/Vue 先构建。</p><h2>内容审核拦截</h2><p>code：<code>CONTENT_BLOCKED</code>。原文：发布失败：{文件} 未通过安全审核，文件名或文件内容含有违规词「{词}」。请修改后重试。改掉写出的那个词。词表：<a href="/content-scan">/content-scan</a> 或 GET https://api.demox.site/website/content-scan/phrases。</p><h2>私有站点 Access denied</h2><p>未登录会跳登录；登录后仍无权限则返回 Access denied。把访问者加成项目成员，或改回公开。</p><h2>push 之后仍是旧逻辑</h2><p>push 只创建版本。执行 demox functions alias set --id 站点ID --slug 标识 production --version N。CLI 需要 1.1.6 及以上。</p></article></main>`,
+  },
+  "how-demox-hosts-itself": {
+    title: "Demox 怎样用自己部署自己 | 第一方案例",
+    description: "主站用 demox deploy 发页面，用 demox functions push 发 Node 后端。这是仓库记录的现行发布方式。",
+    article: {
+      datePublished: "2026-09-14",
+      dateModified: "2026-09-14",
+      inLanguage: "zh-CN",
+    },
+    fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>第一方案例 · 更新于 2026-09-14 · Demox 团队</p><h1>Demox 怎样用自己部署自己？</h1><p><strong>直接答案：</strong>主站是平台上的一个普通站点。前端 npm run build 后执行 demox deploy ./dist。鉴权、站点、MCP 和证书续期用 demox functions push 按 slug 更新。函数环境变量按函数设置；首次上传创建 v1，production 和 develop 指向 v1，之后再上传不改别名。本页不提供访问量或可用性数字。</p><h2>发布时实际执行的命令</h2><pre><code>npm run build
+demox deploy ./dist --id EPX2UU43
+demox functions push ./scf-deploy-packages/auth-api --id EPX2UU43 --slug auth
+demox functions push ./scf-code/website-api --id EPX2UU43 --slug website
+demox functions push ./scf-code/mcp-api --id EPX2UU43 --slug mcp
+demox functions push ./scf-code/cert-renew --id EPX2UU43 --slug cert-renew</code></pre><h2>这个案例能证明什么</h2><p>能证明静态页面和 Node handler 可以挂在同一站点，且 Demox 自己走这条路径。不能证明任意 Express 或 Python 应用可以零改动迁入。完整边界见 <a href="/when-to-use-demox">适用场景</a>。</p></article></main>`,
   },
 };
 
@@ -123,16 +233,31 @@ function pageUrl(route, canonicalPath) {
   return route ? `${SITE_URL}/${route}` : `${SITE_URL}/`;
 }
 
-function schemaForPage({ title, description, url, article }) {
-  const graph = [
-    {
-      "@type": "Organization",
-      "@id": `${SITE_URL}/#organization`,
-      name: "Demox",
-      url: `${SITE_URL}/`,
-      logo: `${SITE_URL}/demox-logo.png`,
-      sameAs: ["https://github.com/demox-site/demox"],
+function organizationSchema() {
+  return {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": `${SITE_URL}/#organization`,
+    name: "Demox",
+    url: `${SITE_URL}/`,
+    email: "phosa@qq.com",
+    logo: `${SITE_URL}/demox-logo.png`,
+    sameAs: [
+      "https://github.com/demox-site/demox",
+      "https://github.com/demox-site/skill",
+      "https://x.com/a_phos",
+    ],
+    contactPoint: {
+      "@type": "ContactPoint",
+      email: "phosa@qq.com",
+      contactType: "customer support",
+      availableLanguage: ["en", "zh-CN"],
     },
+  };
+}
+
+function schemaDocuments({ title, description, url, article, faq, howTo }) {
+  const graph = [
     {
       "@type": "WebSite",
       "@id": `${SITE_URL}/#website`,
@@ -147,7 +272,7 @@ function schemaForPage({ title, description, url, article }) {
       name: "Demox",
       url: `${SITE_URL}/`,
       applicationCategory: "DeveloperApplication",
-      description: "A static website deployment platform for frontend builds, AI-generated pages, and documents, available through web, CLI, MCP, and API workflows.",
+      description: "A hosting platform for static websites and Node.js functions. Frontend builds, AI-generated pages, and documents become HTTPS sites. Node backends export handler(request, env) and run as cloud functions through web, CLI, MCP, and API workflows.",
       publisher: { "@id": `${SITE_URL}/#organization` },
     },
     {
@@ -158,6 +283,7 @@ function schemaForPage({ title, description, url, article }) {
       description,
       isPartOf: { "@id": `${SITE_URL}/#website` },
       about: { "@id": `${SITE_URL}/#software` },
+      author: { "@id": `${SITE_URL}/#organization` },
       inLanguage: ["en", "zh-CN"],
     },
   ];
@@ -179,7 +305,46 @@ function schemaForPage({ title, description, url, article }) {
     });
   }
 
-  return { "@context": "https://schema.org", "@graph": graph };
+  const documents = [
+    organizationSchema(),
+    { "@context": "https://schema.org", "@graph": graph },
+  ];
+
+  if (faq?.length) {
+    documents.push({
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "@id": `${url}#faq`,
+      mainEntity: faq.map((item) => ({
+        "@type": "Question",
+        name: item.question,
+        acceptedAnswer: { "@type": "Answer", text: item.answer },
+      })),
+    });
+  }
+
+  if (howTo) {
+    documents.push({
+      "@context": "https://schema.org",
+      "@type": "HowTo",
+      "@id": `${url}#howto`,
+      name: howTo.name,
+      description: howTo.description,
+      step: howTo.steps.map((text, index) => ({
+        "@type": "HowToStep",
+        position: index + 1,
+        text,
+      })),
+    });
+  }
+
+  return documents;
+}
+
+function jsonLdScripts(documents) {
+  return documents
+    .map((document) => `<script data-seo="schema" type="application/ld+json">${JSON.stringify(document)}</script>`)
+    .join("\n    ");
 }
 
 export function renderSeoPage(baseHtml, route, config) {
@@ -203,7 +368,14 @@ export function renderSeoPage(baseHtml, route, config) {
   html = replaceRequired(html, /<main data-crawlable-fallback>[\s\S]*?<\/main>/, config.fallback, "crawlable fallback");
 
   const schema = shouldIndex
-    ? `<script data-seo="schema" type="application/ld+json">${JSON.stringify(schemaForPage({ title, description, url, article: config.article }))}</script>`
+    ? jsonLdScripts(schemaDocuments({
+      title,
+      description,
+      url,
+      article: config.article,
+      faq: config.faq,
+      howTo: config.howTo,
+    }))
     : "";
   html = replaceRequired(html, /<script data-seo="schema" type="application\/ld\+json">[\s\S]*?<\/script>/, schema, "schema");
   return html;

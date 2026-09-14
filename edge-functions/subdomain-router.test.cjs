@@ -133,6 +133,125 @@ test('router passes resolved SEO into the hosted HTML response', async () => {
   assert.match(html, /<main>Live<\/main>/);
 });
 
+async function handleSite(url, { resolve = null, originStatus = 200, originBody = '<!doctype html><html><body><main>Live site</main></body></html>' } = {}) {
+  const requests = [];
+  const routerContext = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    console,
+    env: { DEMOX_API_URL: 'https://api.test', DEMOX_HOME_URL: 'https://www.demox.site' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input, init) => {
+      const href = String(input && input.url ? input.url : input);
+      requests.push(href);
+      if (href.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify(resolve || { success: false, message: 'not found' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      const target = new URL(href);
+      if (originStatus === 200 || target.pathname.endsWith('/index.html')) {
+        return new Response(originBody, { status: 200, headers: { 'Content-Type': 'text/html' } });
+      }
+      return new Response('Missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  const response = await routerContext.__testHooks.handle(
+    new Request(url, { headers: { Accept: 'text/html' } }),
+    { waitUntil: () => {}, passThroughOnException: () => {} }
+  );
+  return { response, requests, html: await response.text() };
+}
+
+// P0 2026-09-14：未知子域名 404 不得改写已 resolve 站点。docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
+test('P0: resolved www homepage stays 200 and is not a Demox 404 shell', async () => {
+  const { response, html } = await handleSite('https://www.demox.site/', {
+    resolve: {
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    }
+  });
+  assert.equal(response.status, 200);
+  assert.match(html, /<main>Live site<\/main>/);
+  assert.doesNotMatch(html, /站点未发布/);
+  assert.doesNotMatch(html, /页面不存在/);
+  assert.doesNotMatch(html, /NoSuchKey/);
+});
+
+test('P0: resolved user site homepage stays 200 and is not a Demox 404 shell', async () => {
+  const { response, html } = await handleSite('https://coverage.demox.site/', {
+    resolve: {
+      success: true,
+      path: 'sites/demo/COVERAGE',
+      websiteId: 'COVERAGE',
+      origin: 'sites.demox.site',
+      visibility: 'public'
+    }
+  });
+  assert.equal(response.status, 200);
+  assert.match(html, /<main>Live site<\/main>/);
+  assert.doesNotMatch(html, /站点未发布/);
+  assert.doesNotMatch(html, /页面不存在/);
+});
+
+test('P0: www hardcoded fallback still 200 when resolve misses', async () => {
+  const { response, html } = await handleSite('https://www.demox.site/', {
+    resolve: { success: false, message: 'not found' }
+  });
+  assert.equal(response.status, 200);
+  assert.match(html, /<main>Live site<\/main>/);
+  assert.doesNotMatch(html, /站点未发布/);
+});
+
+test('unknown official subdomain returns Demox 404 and does not fetch origin', async () => {
+  const { response, html, requests } = await handleSite('https://your-demo.demox.site/', {
+    resolve: { success: false, message: 'not found' }
+  });
+  assert.equal(response.status, 404);
+  assert.match(html, /站点未发布/);
+  assert.match(html, /your-demo\.demox\.site/);
+  assert.match(html, /https:\/\/www\.demox\.site/);
+  assert.doesNotMatch(html, /NoSuchKey/);
+  assert.equal(requests.every((href) => href.includes('/resolve-subdomain')), true);
+});
+
+test('unknown official subdomain API returns SITE_NOT_FOUND JSON', async () => {
+  const { response, html, requests } = await handleSite('https://your-demo.demox.site/api/hello', {
+    resolve: { success: false, message: 'not found' }
+  });
+  assert.equal(response.status, 404);
+  assert.deepEqual(JSON.parse(html), {
+    success: false,
+    error: 'SITE_NOT_FOUND',
+    message: 'No site is published at this address'
+  });
+  assert.equal(requests.every((href) => href.includes('/resolve-subdomain')), true);
+});
+
+test('P0: resolved user SPA keeps fallback when the path is missing', async () => {
+  const { response, html } = await handleSite('https://coverage.demox.site/dashboard', {
+    resolve: {
+      success: true,
+      path: 'sites/demo/COVERAGE',
+      websiteId: 'COVERAGE',
+      origin: 'sites.demox.site',
+      visibility: 'public'
+    },
+    originStatus: 404
+  });
+  assert.equal(response.status, 200);
+  assert.match(html, /<main>Live site<\/main>/);
+});
+
 test('hosted site /api routes go to the site function runtime', async () => {
   const requests = [];
   const routerContext = vm.createContext({

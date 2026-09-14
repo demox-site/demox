@@ -16,13 +16,28 @@ test("generates indexable static shells and noindex auth shells", async () => {
 
     const home = await readFile(path.join(distDir, "index.html"), "utf8");
     assert.match(home, /<link data-seo="canonical" data-rh="true" rel="canonical" href="https:\/\/www\.demox\.site\/" \/>/);
-    assert.match(home, /<title data-seo="title">Demox - AI 生成网页静态发布 \| Static Site Deployment<\/title>/);
-    assert.match(home, /<h1>AI 生成网页怎样快速发布成静态网站？<\/h1>/);
-    assert.match(home, /<strong>直接答案：<\/strong>把 AI 生成的单个 HTML 文件/);
+    assert.match(home, /<title data-seo="title">Demox — Publish static sites and Node functions<\/title>/);
+    assert.match(home, /<h1>How do you publish a site with Demox\?<\/h1>/);
+    assert.match(home, /<strong>Direct answer:<\/strong> Upload one HTML file/);
+    assert.match(home, /<h2>What is Demox\?<\/h2>/);
+    assert.match(home, /<h2>Frequently asked questions<\/h2>/);
     assert.match(home, /<h2>Demox 是什么？<\/h2>/);
-    assert.match(home, /href="\/ai-static-site-deployment">查看完整指南<\/a>/);
-    assert.match(home, /href="\/ai-static-site-deployment">Guide<\/a>/);
+    assert.match(home, /href="\/when-to-use-demox">See if it fits<\/a>/);
+    assert.match(home, /href="\/when-to-use-demox">When to use<\/a>/);
+    assert.match(home, /href="\/privacy">Privacy<\/a>/);
+    assert.match(home, /href="\/privacy">Privacy Policy<\/a>/);
+    assert.match(home, /Skip to main content/);
+    assert.match(home, /rel="icon" href="\/favicon.ico"/);
+    assert.match(home, /rel="privacy-policy" href="https:\/\/www\.demox\.site\/privacy"/);
+    assert.match(home, /handler\(request, env\)/);
+    assert.match(home, /"@type":"Organization"/);
     assert.match(home, /"@type":"SoftwareApplication"/);
+    assert.match(home, /"@type":"FAQPage"/);
+    assert.match(home, /"@type":"HowTo"/);
+    const englishWords = (home.match(/<main data-crawlable-fallback>[\s\S]*?<\/main>/)?.[0] || "")
+      .replace(/<[^>]+>/g, " ")
+      .match(/\b[A-Za-z]{2,}\b/g) || [];
+    assert.ok(englishWords.length >= 300, `expected 300+ English words in crawlable homepage, got ${englishWords.length}`);
     assert.match(home, /<div id="root"><\/div>\s*<noscript data-crawlable-fallback-shell>\s*<main data-crawlable-fallback>/);
     assert.doesNotMatch(home, /<div id="root">\s*<main data-crawlable-fallback>/);
 
@@ -33,8 +48,13 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*background(?:-color)?\s*:\s*#09090b/i);
     assert.doesNotMatch(fallbackStyle, /\[data-crawlable-fallback\][^{]*{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i);
     assert.doesNotMatch(fallbackMarkup, /\s(?:hidden|aria-hidden)(?:\s|=|>)/i);
-    const schema = home.match(/<script data-seo="schema" type="application\/ld\+json">([\s\S]*?)<\/script>/)?.[1];
-    assert.doesNotThrow(() => JSON.parse(schema), "homepage JSON-LD should be valid JSON");
+    const schemas = [...home.matchAll(/<script data-seo="schema" type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+      .map((match) => match[1]);
+    assert.ok(schemas.length >= 3, `expected multiple JSON-LD documents, got ${schemas.length}`);
+    for (const schema of schemas) {
+      assert.doesNotThrow(() => JSON.parse(schema), "homepage JSON-LD should be valid JSON");
+    }
+    assert.equal(JSON.parse(schemas[0])["@type"], "Organization");
 
     const docs = await readFile(path.join(distDir, "doc", "index.html"), "utf8");
     assert.match(docs, /href="https:\/\/www\.demox\.site\/doc"/);
@@ -44,7 +64,9 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(contentScan, /href="https:\/\/www\.demox\.site\/content-scan"/);
     assert.match(contentScan, /list_blocked_phrases|content-scan\/phrases/);
     assert.match(docs, /<main data-crawlable-fallback class="fallback-simple" lang="zh-CN">/);
-    assert.match(docs, /<h1>用 CLI 或 MCP 发布静态网站<\/h1>/);
+    assert.match(docs, /<h1>用 CLI 或 MCP 发布静态网站和云函数<\/h1>/);
+    assert.match(docs, /demox functions push/);
+    assert.match(docs, /api\.demox\.site/);
     assert.doesNotMatch(docs, /noindex/);
 
     const guide = await readFile(path.join(distDir, "ai-static-site-deployment", "index.html"), "utf8");
@@ -53,13 +75,27 @@ test("generates indexable static shells and noindex auth shells", async () => {
     assert.match(guide, /<strong>直接答案：<\/strong>先确认 AI 产物是单个 HTML 文件/);
     assert.match(guide, /哪些项目不适合直接静态发布？/);
     assert.match(guide, /"@type":"TechArticle"/);
-    assert.match(guide, /"dateModified":"2026-08-24"/);
+    assert.match(guide, /"dateModified":"2026-09-14"/);
     assert.doesNotMatch(guide, /content="noindex/);
 
     const log = await readFile(path.join(distDir, "log", "index.html"), "utf8");
     assert.match(log, /<h1>Demox 更新日志<\/h1>/);
-    assert.match(log, /2026-08-24/);
-    assert.match(log, /AI 静态网站发布指南/);
+    assert.match(log, /2026-09-14/);
+    assert.match(log, /when-to-use-demox/);
+
+    const whenToUse = await readFile(path.join(distDir, "when-to-use-demox", "index.html"), "utf8");
+    assert.match(whenToUse, /<h1>什么时候该用 Demox，什么时候不该用？<\/h1>/);
+    assert.match(whenToUse, /handler\(request, env\)/);
+    assert.match(whenToUse, /"@type":"TechArticle"/);
+
+    const troubleshooting = await readFile(path.join(distDir, "deploy-troubleshooting", "index.html"), "utf8");
+    assert.match(troubleshooting, /MISSING_ENTRYPOINT/);
+    assert.match(troubleshooting, /CONTENT_BLOCKED/);
+    assert.match(troubleshooting, /Access denied/);
+
+    const selfHost = await readFile(path.join(distDir, "how-demox-hosts-itself", "index.html"), "utf8");
+    assert.match(selfHost, /demox functions push/);
+    assert.match(selfHost, /EPX2UU43/);
 
     const callback = await readFile(path.join(distDir, NOINDEX_ROUTES[0], "index.html"), "utf8");
     assert.match(callback, /content="noindex, nofollow"/);
@@ -80,6 +116,9 @@ test("sitemap contains only generated public routes on the canonical host", asyn
   const paths = [...sitemap.matchAll(/<loc>https:\/\/www\.demox\.site(\/[^<]*)<\/loc>/g)].map((match) => match[1]);
   assert.ok(paths.length > 0);
   assert.ok(paths.includes("/ai-static-site-deployment"));
+  assert.ok(paths.includes("/when-to-use-demox"));
+  assert.ok(paths.includes("/deploy-troubleshooting"));
+  assert.ok(paths.includes("/how-demox-hosts-itself"));
   assert.ok(paths.includes("/content-scan"));
   for (const pathname of paths) {
     const route = pathname.replace(/^\//, "").replace(/\/$/, "");
