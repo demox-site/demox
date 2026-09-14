@@ -16,12 +16,12 @@ test("generates indexable static shells and noindex auth shells", async () => {
 
     const home = await readFile(path.join(distDir, "index.html"), "utf8");
     assert.match(home, /<link data-seo="canonical" data-rh="true" rel="canonical" href="https:\/\/www\.demox\.site\/" \/>/);
-    assert.match(home, /<title data-seo="title">Demox — Publish static sites and Node functions<\/title>/);
-    assert.match(home, /<h1>How do you publish a site with Demox\?<\/h1>/);
-    assert.match(home, /<strong>Direct answer:<\/strong> Upload one HTML file/);
+    assert.match(home, /<title data-seo="title">Free Static Website Hosting with CLI & MCP \| Demox<\/title>/);
+    assert.match(home, /<h1>Deploy AI-generated websites in seconds<\/h1>/);
+    assert.match(home, /<strong>Direct answer:<\/strong> Demox is a free static website hosting platform/);
     assert.match(home, /<h2>What is Demox\?<\/h2>/);
     assert.match(home, /<h2>Frequently asked questions<\/h2>/);
-    assert.match(home, /<h2>Demox 是什么？<\/h2>/);
+    assert.match(home, /免费静态网站发布平台/);
     assert.match(home, /href="\/when-to-use-demox">See if it fits<\/a>/);
     assert.match(home, /href="\/when-to-use-demox">When to use<\/a>/);
     assert.match(home, /href="\/privacy">Privacy<\/a>/);

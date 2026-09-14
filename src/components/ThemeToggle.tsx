@@ -34,8 +34,9 @@ export const ThemeToggle: React.FC<{ size?: number }> = ({ size = 16 }) => {
         <button
           type="button"
           aria-label={t.label}
-          className="text-zinc-400 hover:text-zinc-100 transition-colors flex items-center px-2 py-1 rounded-md hover:bg-zinc-900/50 outline-none"
+          className="text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--stitch-surface-strong)]/50 outline-none"
         >
+          <span className="text-xs font-medium">{t.label}</span>
           <ActiveIcon size={size} />
         </button>
       </DropdownMenuTrigger>
