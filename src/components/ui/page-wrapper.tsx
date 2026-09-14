@@ -68,6 +68,13 @@ export function PageWrapper({
           title: isZh ? '隐私政策' : 'Privacy Policy',
           description: isZh ? 'Demox 隐私政策与数据处理说明' : 'Demox privacy policy and data handling practices',
         };
+      case 'content-scan':
+        return {
+          title: isZh ? '屏蔽词表' : 'Blocklist',
+          description: isZh
+            ? '查看 Demox 部署前本地规则使用的全部屏蔽词，以及公开查询接口。'
+            : 'The complete Demox local blocklist and the public list API.',
+        };
       case 'log':
         return {
           title: isZh ? '更新日志' : 'Changelog',
