@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { useLanguage } from "@/hooks/use-language";
 import { formatTimestamp, getDisplayName, getSiteDomains, hasProOrAboveRole } from "@/lib/website-utils";
 import { translations } from "../home-translations";
+import { ContactWebmaster } from "@/components/ContactWebmaster";
 
 type StatsResponse = {
   success: boolean;
@@ -419,6 +420,13 @@ export default function SiteAnalyticsPage() {
             <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--stitch-muted)]">
               {t.analyticsProRequiredDesc}
             </p>
+            <ContactWebmaster
+              language={language}
+              user={userManager.get()}
+              align="center"
+              hint=""
+              className="mx-auto mt-6 max-w-md border-0 bg-transparent p-0"
+            />
           </div>
         </div>
       </div>

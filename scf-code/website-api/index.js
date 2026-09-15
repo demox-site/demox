@@ -1151,7 +1151,11 @@ async function canHideWebsiteWatermark(userId) {
 }
 
 function proFeatureDenied(code, message) {
-  return ok({ success: false, code, message });
+  return ok({
+    success: false,
+    code,
+    message: `${message}。需要更多技术支持，欢迎联系 phosa@qq.com。`
+  });
 }
 
 /**

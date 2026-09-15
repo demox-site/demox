@@ -17,6 +17,8 @@ import {
   hasProOrAboveRole,
   joinTags
 } from "@/lib/website-utils";
+import { ContactWebmaster } from "@/components/ContactWebmaster";
+import { useLanguage } from "@/hooks/use-language";
 
 function PremiumMark({ t }) {
   return (
@@ -64,6 +66,7 @@ export default function SiteSettingsPanel({
   const isSiteOwner = !website.userId || website.userId === user?.userId;
   const canManageByProject = ["owner", "admin"].includes(website.projectRole || "");
   const canManageSite = isSiteOwner || isPlatformAdmin || canManageByProject;
+  const { language } = useLanguage();
   const canUseProFeatures = hasProOrAboveRole(user?.roles);
   const proHint = t.proFeatureUnavailable || "仅专业用户及以上可用";
   const canMoveProject = canManageSite && Array.isArray(projects) && projects.length > 0;
@@ -126,6 +129,9 @@ export default function SiteSettingsPanel({
             }}
           />
         </div>
+        {!canUseProFeatures ? (
+          <ContactWebmaster language={language} user={user} variant="inline" />
+        ) : null}
       </Group>
 
       <Group title={t.settingsAddress} hint={t.settingsAddressHint}>

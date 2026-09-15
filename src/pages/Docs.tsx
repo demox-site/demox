@@ -104,14 +104,14 @@ const CodeBlock: React.FC<{ code: string; lang?: string; copyLabel: string; copi
     setTimeout(() => setCopied(false), 1800);
   };
   return (
-    <div className="relative group">
+    <div className="group relative max-w-full min-w-0">
       {lang && (
         <span className="absolute top-3 left-4 text-[10px] font-mono uppercase tracking-wider text-zinc-500">
           {lang}
         </span>
       )}
-      <pre className="bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] border border-[var(--stitch-line)] rounded-xl overflow-x-auto text-sm font-mono p-4 pt-8">
-        <code>{code}</code>
+      <pre className="max-w-full bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)] border border-[var(--stitch-line)] rounded-xl overflow-x-auto text-[13px] sm:text-sm font-mono p-4 pt-8">
+        <code className="block w-max min-w-full whitespace-pre">{code}</code>
       </pre>
       <button
         type="button"
@@ -165,9 +165,9 @@ const Section: React.FC<{
     ref={refCb}
     className="scroll-mt-24 border-b border-[var(--stitch-line)] pb-12 mb-12 last:border-0"
   >
-    <h2 className="flex items-center gap-2.5 text-2xl font-bold text-[var(--stitch-ink)] mb-6">
-      <Icon className="text-[var(--stitch-muted)]" size={22} />
-      {title}
+    <h2 className="flex items-start gap-2.5 text-xl sm:text-2xl font-bold text-[var(--stitch-ink)] mb-6">
+      <Icon className="mt-0.5 shrink-0 text-[var(--stitch-muted)]" size={22} />
+      <span className="min-w-0 break-words">{title}</span>
     </h2>
     {children}
   </section>
@@ -207,7 +207,7 @@ export const Docs: React.FC = () => {
   return (
     <MainLayout>
       <Seo title={tr.seoTitle} />
-      <div className="relative z-10">
+      <div className="relative z-10 min-w-0">
         {/* 标题 */}
         <div className="mb-10">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-[var(--stitch-ink)] mb-3">
@@ -242,11 +242,31 @@ export const Docs: React.FC = () => {
           </div>
         </div>
 
+        {/* 移动端横向章节条：必须在内容上方单独成行，不能和正文并排 flex */}
+        <div className="lg:hidden sticky top-16 z-20 -mx-4 sm:-mx-6 mb-6 overflow-x-auto border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]/80 px-4 py-3 backdrop-blur-xl sm:px-6">
+          <div className="flex w-max gap-2">
+            {SECTIONS.map(({ id, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => goTo(id)}
+                className={`flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs transition-colors ${
+                  active === id
+                    ? "bg-[var(--stitch-ink)] font-medium text-[var(--stitch-surface)]"
+                    : "bg-[var(--stitch-surface)] text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)]"
+                }`}
+              >
+                <Icon size={13} />
+                {tr.nav[id]}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="flex gap-10">
-          {/* 侧边栏（桌面端固定） */}
-          <aside className="hidden lg:block w-56 shrink-0">
+          <aside className="hidden w-56 shrink-0 lg:block">
             <nav className="sticky top-24 space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--stitch-muted)] mb-3 px-3">
+              <p className="mb-3 px-3 text-xs font-semibold uppercase tracking-wider text-[var(--stitch-muted)]">
                 {tr.onThisPage}
               </p>
               {SECTIONS.map(({ id, icon: Icon }) => (
@@ -254,10 +274,10 @@ export const Docs: React.FC = () => {
                   key={id}
                   type="button"
                   onClick={() => goTo(id)}
-                  className={`flex items-center gap-2.5 w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                  className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors ${
                     active === id
-                      ? "bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-medium"
-                      : "text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] hover:bg-[var(--stitch-surface)]"
+                      ? "bg-[var(--stitch-ink)] font-medium text-[var(--stitch-surface)]"
+                      : "text-[var(--stitch-muted)] hover:bg-[var(--stitch-surface)] hover:text-[var(--stitch-ink)]"
                   }`}
                 >
                   <Icon size={16} />
@@ -267,29 +287,7 @@ export const Docs: React.FC = () => {
             </nav>
           </aside>
 
-          {/* 移动端横向章节条 */}
-          <div className="lg:hidden -mx-4 px-4 mb-6 overflow-x-auto sticky top-16 z-20 bg-[var(--stitch-surface)]/80 backdrop-blur-xl py-3 border-b border-[var(--stitch-line)]">
-            <div className="flex gap-2 w-max">
-              {SECTIONS.map(({ id, icon: Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => goTo(id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-colors ${
-                    active === id
-                      ? "bg-[var(--stitch-ink)] text-[var(--stitch-surface)] font-medium"
-                      : "text-[var(--stitch-muted)] bg-[var(--stitch-surface)] hover:text-[var(--stitch-ink)]"
-                  }`}
-                >
-                  <Icon size={13} />
-                  {tr.nav[id]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 文档主体 */}
-          <div className="flex-1 min-w-0 max-w-3xl">
+          <div className="min-w-0 max-w-3xl flex-1">
             {(() => {
               const reg = (id: SectionId) => (el: HTMLElement | null) => {
                 if (el) sectionEls.current.set(id, el);
@@ -452,7 +450,7 @@ export const Docs: React.FC = () => {
                             i % 2 ? "bg-[var(--stitch-surface)]" : "bg-[var(--stitch-blue-soft)]"
                           }`}
                         >
-                          <code className="text-xs font-mono text-zinc-200">{cmd}</code>
+                          <code className="break-all text-xs font-mono text-zinc-200">{cmd}</code>
                           <span className="text-xs text-zinc-500">{desc}</span>
                         </div>
                       ))}
@@ -591,7 +589,7 @@ https://api.demox.site/WEBSITE_ID/develop/api/hello`}
                     </p>
                     <p className="text-sm text-[var(--stitch-muted)] mb-4">
                       {isZh ? "专门页面：" : "Dedicated page: "}
-                      <a href="/content-scan" className="text-[var(--stitch-ink)] underline underline-offset-4">
+                      <a href="/content-scan" className="break-all text-[var(--stitch-ink)] underline underline-offset-4">
                         https://www.demox.site/content-scan
                       </a>
                     </p>

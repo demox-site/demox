@@ -1597,7 +1597,7 @@ const AdminDashboard: React.FC = () => {
                             ))}
                           </RadioGroup>
                           <p className="text-xs text-zinc-500">
-                            新开通默认 30 天；未过期会员选「保持当前时效」不会改到期日。后续充值开通复用同一套续期规则。
+                            新开通默认 30 天；未过期会员选「保持当前时效」不会改到期日。来信开通：按登录邮箱找到人，勾选专业用户，选 30/90/365/永久后保存。
                           </p>
                         </fieldset>
                       ) : null}

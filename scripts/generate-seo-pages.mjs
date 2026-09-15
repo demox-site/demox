@@ -145,9 +145,9 @@ export const PUBLIC_PAGES = {
     },
   },
   pricing: {
-    title: "Demox Pricing - Static Site Deployment Plans",
-    description: "See Demox plans for deploying static websites, frontend demos, AI-generated pages, and shareable documents with CDN and HTTPS included.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox pricing</h1><p>The current Demox pricing page lists Basic, Pro, and Enterprise plans. Each plan includes static site deployment, and the Basic plan includes CDN delivery. Open the interactive pricing page for the current plan details.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>.</p></main>`,
+    title: "Demox Pricing - Free Static Site Hosting",
+    description: "Demox stays free for personal static site hosting. Need more technical support? Email phosa@qq.com.",
+    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox is free</h1><p>Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>.</p></main>`,
   },
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",

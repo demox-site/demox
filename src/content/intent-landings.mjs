@@ -17,7 +17,7 @@ export const INTENT_LANDINGS = [
     eyebrow: "Free static hosting",
     h1: "Free static website hosting with CLI and MCP",
     answer:
-      "Demox is a free static website hosting platform. Upload one HTML file, a ZIP, or a dist folder with index.html at the root. You get a public HTTPS URL on a CDN. You do not set up a server, a certificate, or Git. The web console is for drag-and-drop. The CLI command is demox deploy ./dist. MCP-compatible agents such as Claude Code and Cursor can publish through npx -y @demox-site/mcp-server@latest. Current public pricing lists every plan as free. Demox does not replace a full CI/CD platform. Python, PHP, Java, and Express listen apps are not a direct fit.",
+      "Demox is a free static website hosting platform. Upload one HTML file, a ZIP, or a dist folder with index.html at the root. You get a public HTTPS URL on a CDN. You do not set up a server, a certificate, or Git. The web console is for drag-and-drop. The CLI command is demox deploy ./dist. MCP-compatible agents such as Claude Code and Cursor can publish through npx -y @demox-site/mcp-server@latest. Current public pricing lists every plan as free. Need more technical support? Email phosa@qq.com. Demox does not replace a full CI/CD platform. Python, PHP, Java, and Express listen apps are not a direct fit.",
     steps: [
       "Build or export the site so the root folder contains index.html.",
       "Sign in at www.demox.site, or run demox login.",
@@ -25,7 +25,7 @@ export const INTENT_LANDINGS = [
       "Open the HTTPS URL in a private window.",
     ],
     faqs: [
-      { q: "Is Demox free?", a: "The public pricing page lists Basic, Pro, and Enterprise as free. Support the project with a GitHub star if you want to." },
+      { q: "Is Demox free?", a: "Yes. Personal use stays free. Need more technical support? Email phosa@qq.com." },
       { q: "Do I need Git?", a: "No. Drag-and-drop, CLI, and MCP all publish files you already have." },
     ],
     zh: {
@@ -41,7 +41,7 @@ export const INTENT_LANDINGS = [
         "用无痕窗口打开得到的 HTTPS 地址。",
       ],
       faqs: [
-        { q: "Demox 免费吗？", a: "公开价格页里基础版、专业版、尊贵土豪版都是免费。愿意的话可以给 GitHub 仓库点 star。" },
+        { q: "Demox 免费吗？", a: "个人使用继续免费。需要更多技术支持，欢迎联系 phosa@qq.com。" },
         { q: "必须用 Git 吗？", a: "不用。拖拽、CLI、MCP 都是发布你已经有的文件。" },
       ],
     },

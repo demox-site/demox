@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, createElement } from "react";
 import { websiteApi, tokenManager, userManager } from "../api";
 import { useToast } from "@/components/ui";
+import { WebmasterToastAction } from "@/components/ContactWebmaster";
 import {
   sanitizeFileName,
   generateWebsiteId,
@@ -103,7 +104,12 @@ export function useUpload({
         toast({
           title: t.toastLimitReachedTitle,
           description: t.toastLimitReachedDesc(roleLimits.deployment_limit),
-          variant: "destructive"
+          variant: "destructive",
+          action: createElement(WebmasterToastAction, {
+            language: lang,
+            user,
+            label: t.toastLimitReachedAction
+          })
         });
         return;
       }
@@ -116,7 +122,12 @@ export function useUpload({
           description: t.toastFileTooLargeDesc(
             Math.round(roleLimits.max_file_size / 1024 / 1024)
           ),
-          variant: "destructive"
+          variant: "destructive",
+          action: createElement(WebmasterToastAction, {
+            language: lang,
+            user,
+            label: t.toastFileTooLargeAction
+          })
         });
         return;
       }

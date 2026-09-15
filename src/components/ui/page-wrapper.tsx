@@ -27,8 +27,10 @@ export function PageWrapper({
         };
       case 'pricing':
         return {
-          title: isZh ? '会员价格' : 'Pricing',
-          description: isZh ? 'Demox 会员订阅方案' : 'Demox Membership Pricing'
+          title: isZh ? '价格' : 'Pricing',
+          description: isZh
+            ? 'Demox 对个人使用保持免费。需要更多技术支持，欢迎联系我。'
+            : 'Demox stays free for personal use. Need more technical support? Feel free to contact me.'
         };
       case 'ai-static-site-deployment':
         return {

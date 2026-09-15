@@ -3,6 +3,8 @@ import { FeatureIcon } from "@/components/ui/feature-icon";
 import { Star, X, Megaphone, Check } from "lucide-react";
 import { MainLayout } from "@/layouts/MainLayout";
 import { useLanguage } from "@/hooks/use-language";
+import { userManager } from "@/api";
+import { ContactWebmaster } from "@/components/ContactWebmaster";
 
 const pricingTexts = {
   zh: {
@@ -38,6 +40,7 @@ const pricingTexts = {
     xDescription: "告诉我们哪里做得烂",
     shareTitle: "向朋友炫耀",
     shareDescription: "即使他们听不懂你在说什么",
+    contactLine: "需要更多技术支持，欢迎联系我。",
     closingQuote: "“如果非要给我们钱，请把钱拿去买杯咖啡，边喝边写代码。”",
   },
   en: {
@@ -73,6 +76,7 @@ const pricingTexts = {
     xDescription: "Tell us what we got wrong",
     shareTitle: "Show off to your friends",
     shareDescription: "Even if they have no idea what you're talking about",
+    contactLine: "Need more technical support? Feel free to contact me.",
     closingQuote: "“If you insist on giving us money, buy yourself a coffee and write some code while you drink it.”",
   },
 } as const;
@@ -155,6 +159,19 @@ const MemberPrice = () => {
               <button className="w-full py-3 border border-[var(--stitch-line)] text-[var(--stitch-muted)] rounded-xl hover:border-[var(--stitch-ink)] hover:text-[var(--stitch-ink)] transition-colors">
                 {t.plans.enterprise.action}
               </button>
+            </div>
+          </div>
+
+          <div className="mb-24 rounded-[2rem] border border-[var(--stitch-ink)]/20 bg-[var(--stitch-blue-soft)] px-6 py-10 sm:px-10">
+            <div className="mx-auto max-w-2xl text-center">
+              <p className="text-lg text-[var(--stitch-ink)]">{t.contactLine}</p>
+              <ContactWebmaster
+                language={language}
+                user={userManager.get()}
+                hint=""
+                align="center"
+                className="mt-6 border-0 bg-transparent p-0"
+              />
             </div>
           </div>
 

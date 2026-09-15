@@ -1,25 +1,24 @@
 import React, { useEffect, useState } from "react";
-import { websiteApi } from "@/api";
+import { userManager, websiteApi } from "@/api";
 import {
   Card,
   CardHeader,
   CardTitle,
   CardContent,
   CardDescription,
-  Button,
   Progress
 } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
 import { Gauge, HardDrive, FileStack, Rocket, Crown } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
-import { useNavigate } from "react-router-dom";
+import { ContactWebmaster } from "@/components/ContactWebmaster";
 
 const texts = {
   zh: {
     title: "用量与套餐",
     subtitle: "查看当前套餐配额与使用情况。",
     planTitle: "当前套餐",
-    upgrade: "升级套餐",
+    contactHint: "需要更多技术支持，欢迎联系我。",
     quotaTitle: "配额用量",
     storage: "存储空间",
     files: "文件数量",
@@ -38,7 +37,7 @@ const texts = {
     title: "Usage & Plan",
     subtitle: "View your current plan quota and usage.",
     planTitle: "Current plan",
-    upgrade: "Upgrade",
+    contactHint: "Need more technical support? Feel free to contact me.",
     quotaTitle: "Quota usage",
     storage: "Storage",
     files: "Files",
@@ -81,7 +80,6 @@ const pct = (used: number, limit: number | null): number => {
 const UsagePage: React.FC = () => {
   const { language } = useLanguage();
   const t = texts[language];
-  const navigate = useNavigate();
   const [data, setData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -156,27 +154,36 @@ const UsagePage: React.FC = () => {
         <CardHeader>
           <CardTitle>{t.planTitle}</CardTitle>
         </CardHeader>
-        <CardContent className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[var(--stitch-blue-soft)] border border-[var(--stitch-line)] flex items-center justify-center">
-              <Crown className="w-5 h-5 text-[var(--stitch-muted)]" />
-            </div>
-            <div>
-              <span className="text-lg font-bold capitalize">
-                {loading ? t.loading : data?.role?.name || "user"}
-              </span>
-              {!loading && data?.membership?.proLifetime && data.membership.hasPro ? (
-                <p className="mt-1 text-xs text-[var(--stitch-muted)]">{t.membershipLifetime}</p>
-              ) : !loading && data?.membership?.hasPro && data.membership.remainingDays != null ? (
-                <p className="mt-1 text-xs text-[var(--stitch-muted)]">
-                  {t.membershipRemaining.replace("{days}", String(data.membership.remainingDays))}
-                </p>
-              ) : !loading && data?.membership?.proExpired ? (
-                <p className="mt-1 text-xs text-red-400">{t.membershipExpired}</p>
-              ) : null}
+        <CardContent className="space-y-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[var(--stitch-blue-soft)] border border-[var(--stitch-line)] flex items-center justify-center">
+                <Crown className="w-5 h-5 text-[var(--stitch-muted)]" />
+              </div>
+              <div>
+                <span className="text-lg font-bold capitalize">
+                  {loading ? t.loading : data?.role?.name || "user"}
+                </span>
+                {!loading && data?.membership?.proLifetime && data.membership.hasPro ? (
+                  <p className="mt-1 text-xs text-[var(--stitch-muted)]">{t.membershipLifetime}</p>
+                ) : !loading && data?.membership?.hasPro && data.membership.remainingDays != null ? (
+                  <p className="mt-1 text-xs text-[var(--stitch-muted)]">
+                    {t.membershipRemaining.replace("{days}", String(data.membership.remainingDays))}
+                  </p>
+                ) : !loading && data?.membership?.proExpired ? (
+                  <p className="mt-1 text-xs text-red-400">{t.membershipExpired}</p>
+                ) : null}
+              </div>
             </div>
           </div>
-          <Button onClick={() => navigate("/pricing")} className="stitch-action rounded-full">{t.upgrade}</Button>
+          {!loading ? (
+            <ContactWebmaster
+              language={language}
+              user={userManager.get()}
+              hint={t.contactHint}
+              className="bg-[var(--stitch-surface-strong)]"
+            />
+          ) : null}
         </CardContent>
       </Card>
 

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, createElement } from "react";
 import { websiteApi, tokenManager, userManager } from "../api";
 import { useToast } from "@/components/ui";
+import { WebmasterToastAction } from "@/components/ContactWebmaster";
 import { sanitizeFileName, getComparableTimestamp } from "@/lib/website-utils";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 import { buildHtmlSiteZipFile, isSupportedHtml } from "@/lib/html-to-site";
@@ -124,7 +125,12 @@ export function useRedeploy({
         description: t.toastFileTooLargeDesc(
           Math.round(roleLimits.max_file_size / 1024 / 1024)
         ),
-        variant: "destructive"
+        variant: "destructive",
+        action: createElement(WebmasterToastAction, {
+          language: lang,
+          user: userManager.get(),
+          label: t.toastFileTooLargeAction
+        })
       });
       return;
     }
