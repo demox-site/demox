@@ -201,6 +201,9 @@ export const ConsoleLayout: React.FC = () => {
           userId: res.user.id || local.userId,
           email: res.user.email || local.email,
           nickname: res.user.nickname || "",
+          ...(typeof res.user.hasPassword === "boolean"
+            ? { hasPassword: res.user.hasPassword }
+            : {}),
           githubId: res.user.githubId || null,
           githubLogin: res.user.githubLogin || null,
           feishuOpenId: res.user.feishuOpenId || null,

@@ -218,7 +218,7 @@ export const authApi = {
 
   // 验证码登录
   loginWithCode: async (email: string, code: string) => {
-    const data = await request<{ success: boolean; token: string; userId: string; email: string; nickname?: string; isNewUser?: boolean }>(
+    const data = await request<{ success: boolean; token: string; userId: string; email: string; nickname?: string; isNewUser?: boolean; hasPassword?: boolean }>(
       AUTH_API_URL,
       "/auth/login-code",
       { method: "POST", body: { email, code } }
@@ -228,7 +228,13 @@ export const authApi = {
       tokenManager.set(data.token);
       const adminEmails = ["phosa@qq.com"];
       const roles = adminEmails.includes(email) ? ["admin", "user"] : ["user"];
-      userManager.set({ userId: data.userId, email: data.email, nickname: data.nickname || "", roles });
+      userManager.set({
+        userId: data.userId,
+        email: data.email,
+        nickname: data.nickname || "",
+        roles,
+        ...(typeof data.hasPassword === "boolean" ? { hasPassword: data.hasPassword } : {})
+      });
     }
 
     return data;
@@ -454,8 +460,8 @@ export const authApi = {
     );
   },
 
-  // 修改当前用户密码
-  changePassword: async (data: { currentPassword: string; newPassword: string }) => {
+  // 修改或首次设置当前用户密码。尚未设密时可不传 currentPassword。
+  changePassword: async (data: { currentPassword?: string; newPassword: string }) => {
     return request<{ success: boolean; message?: string }>(
       AUTH_API_URL,
       "/auth/change-password",

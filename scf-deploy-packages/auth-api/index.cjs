@@ -215,6 +215,14 @@ async function handleLogin(event) {
   const user = users[0];
   const nickname = await ensureUserNickname(user);
 
+  if (!hasPasswordHash(user.password_hash)) {
+    return {
+      statusCode: 401,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ error: '该账号未设置密码，请使用验证码登录' })
+    };
+  }
+
   // 验证密码
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) {
@@ -355,7 +363,7 @@ async function handleLoginWithCode(event) {
   await query('UPDATE verification_codes SET used_at = NOW() WHERE id = ?', [codes[0].id]);
 
   // 查询用户是否存在
-  const users = await query('SELECT id, email, nickname FROM users WHERE email = ?', [cleanEmail]);
+  const users = await query('SELECT id, email, nickname, password_hash FROM users WHERE email = ?', [cleanEmail]);
 
   let user;
   let isNewUser = false;
@@ -377,7 +385,7 @@ async function handleLoginWithCode(event) {
       [userId, JSON.stringify(['user'])]
     );
 
-    user = { id: userId, email: cleanEmail, nickname };
+    user = { id: userId, email: cleanEmail, nickname, password_hash: '' };
   } else {
     user = users[0];
     user.nickname = await ensureUserNickname(user);
@@ -399,6 +407,7 @@ async function handleLoginWithCode(event) {
       email: user.email,
       nickname: user.nickname,
       isNewUser,
+      hasPassword: hasPasswordHash(user.password_hash),
       message: isNewUser ? '注册成功' : '登录成功'
     })
   };
@@ -1218,6 +1227,17 @@ function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+function hasPasswordHash(hash) {
+  return typeof hash === 'string' && hash.length > 0;
+}
+
+function invalidNewPasswordMessage(newPassword) {
+  if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+    return '新密码长度需在 8-128 个字符之间';
+  }
+  return null;
+}
+
 function normalizeNickname(value) {
   return String(value || '').trim();
 }
@@ -1348,7 +1368,7 @@ async function handleGetCurrentUser(event) {
 
   const users = await query(
     `SELECT id, email, email_verified, github_id, github_login,
-            feishu_open_id, feishu_name, avatar_url, nickname, created_at
+            feishu_open_id, feishu_name, avatar_url, nickname, created_at, password_hash
      FROM users WHERE id = ?`,
     [user.userId]
   );
@@ -1387,6 +1407,7 @@ async function handleGetCurrentUser(event) {
         feishuName: userData.feishu_name,
         avatarUrl: userData.avatar_url,
         nickname,
+        hasPassword: hasPasswordHash(userData.password_hash),
         roles: userRoles,
         membership: {
           hasPro: membership.hasPro,
@@ -1473,8 +1494,8 @@ async function handleUpdateProfile(event) {
 }
 
 /**
- * 修改当前用户密码
- * body: { currentPassword, newPassword }
+ * 修改当前用户密码。验证码/第三方登录账号尚未设密时，只需提交新密码。
+ * body: { currentPassword?, newPassword }
  */
 async function handleChangePassword(event) {
   const current = authenticate(event);
@@ -1488,19 +1509,20 @@ async function handleChangePassword(event) {
 
   const { currentPassword, newPassword } = event.body || event;
 
-  if (!currentPassword || !newPassword) {
+  if (!newPassword) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '请输入当前密码与新密码' })
+      body: JSON.stringify({ error: '请输入新密码' })
     };
   }
 
-  if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128) {
+  const passwordError = invalidNewPasswordMessage(newPassword);
+  if (passwordError) {
     return {
       statusCode: 400,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '新密码长度需在 8-128 个字符之间' })
+      body: JSON.stringify({ error: passwordError })
     };
   }
 
@@ -1514,21 +1536,23 @@ async function handleChangePassword(event) {
   }
 
   const storedHash = users[0].password_hash;
-  if (!storedHash) {
-    return {
-      statusCode: 400,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '当前账号未设置密码，请先通过忘记密码流程设置' })
-    };
-  }
-
-  const valid = await bcrypt.compare(currentPassword, storedHash);
-  if (!valid) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '当前密码错误' })
-    };
+  const alreadyHasPassword = hasPasswordHash(storedHash);
+  if (alreadyHasPassword) {
+    if (!currentPassword) {
+      return {
+        statusCode: 400,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '请输入当前密码' })
+      };
+    }
+    const valid = await bcrypt.compare(currentPassword, storedHash);
+    if (!valid) {
+      return {
+        statusCode: 401,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ error: '当前密码错误' })
+      };
+    }
   }
 
   const newHash = await bcrypt.hash(newPassword, 10);
@@ -1539,7 +1563,7 @@ async function handleChangePassword(event) {
     headers: getCORSHeaders(),
     body: JSON.stringify({
       success: true,
-      message: '密码已更新'
+      message: alreadyHasPassword ? '密码已更新' : '密码已设置'
     })
   };
 }

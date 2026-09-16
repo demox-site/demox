@@ -60,7 +60,10 @@ export function useAuth(t) {
                 feishuName: me.user.feishuName || null,
                 avatarUrl: me.user.avatarUrl || null,
                 roles: u.roles,
-                membership: u.membership
+                membership: u.membership,
+                ...(typeof me.user.hasPassword === "boolean"
+                  ? { hasPassword: me.user.hasPassword }
+                  : {})
               });
             }
           } catch (profileError) {

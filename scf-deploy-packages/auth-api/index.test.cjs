@@ -673,3 +673,127 @@ test('oauth token refresh rotates the refresh token', async () => {
   assert.ok(refreshed.refresh_token);
   assert.notEqual(refreshed.refresh_token, first.refresh_token);
 });
+
+const bcrypt = require('bcryptjs');
+
+test('current user reports hasPassword from stored hash', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM users WHERE id = ?')) {
+      return [{
+        id: 'code-user',
+        email: 'code@example.com',
+        email_verified: 1,
+        github_id: null,
+        github_login: null,
+        feishu_open_id: null,
+        feishu_name: null,
+        avatar_url: null,
+        nickname: 'Code',
+        created_at: '2026-01-01T00:00:00Z',
+        password_hash: ''
+      }];
+    }
+    if (sql.includes('FROM user_roles WHERE user_id')) {
+      return [{ roles: ['user'], pro_expires_at: null }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const token = sign({ userId: 'code-user' }, '1h');
+  const response = await main({
+    path: '/auth/me',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: {}
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200, JSON.stringify(body));
+  assert.equal(body.user.hasPassword, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(body.user, 'password_hash'), false);
+});
+
+test('change-password sets a password for accounts that never had one', async () => {
+  const updates = [];
+  queryImpl = async (sql, params = []) => {
+    if (sql.includes('SELECT password_hash FROM users WHERE id = ?')) {
+      return [{ password_hash: '' }];
+    }
+    if (sql.startsWith('UPDATE users SET password_hash')) {
+      updates.push(params);
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const token = sign({ userId: 'code-user', email: 'code@example.com' }, '1h');
+  const response = await main({
+    path: '/auth/change-password',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { newPassword: 'newpassw0rd' }
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200, JSON.stringify(body));
+  assert.equal(body.success, true);
+  assert.match(body.message, /已设置/);
+  assert.equal(updates.length, 1);
+  assert.equal(await bcrypt.compare('newpassw0rd', updates[0][0]), true);
+});
+
+test('change-password still requires the current password when one exists', async () => {
+  const hash = await bcrypt.hash('oldpassw0rd', 4);
+  const updates = [];
+  queryImpl = async (sql, params = []) => {
+    if (sql.includes('SELECT password_hash FROM users WHERE id = ?')) {
+      return [{ password_hash: hash }];
+    }
+    if (sql.startsWith('UPDATE users SET password_hash')) {
+      updates.push(params);
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const token = sign({ userId: 'pwd-user', email: 'pwd@example.com' }, '1h');
+  const missingCurrent = await main({
+    path: '/auth/change-password',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { newPassword: 'newpassw0rd' }
+  });
+  assert.equal(missingCurrent.statusCode, 400);
+  assert.match(JSON.parse(missingCurrent.body).error, /当前密码/);
+
+  const wrongCurrent = await main({
+    path: '/auth/change-password',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { currentPassword: 'not-it', newPassword: 'newpassw0rd' }
+  });
+  assert.equal(wrongCurrent.statusCode, 401);
+
+  const ok = await main({
+    path: '/auth/change-password',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { currentPassword: 'oldpassw0rd', newPassword: 'newpassw0rd' }
+  });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.equal(updates.length, 1);
+});
+
+test('password login tells code-only accounts to use a verification code', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM users WHERE email')) {
+      return [{ id: 'code-user', email: 'code@example.com', password_hash: '', nickname: 'Code' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  const response = await request('/auth/login', {
+    email: 'code@example.com',
+    password: 'whatever1'
+  });
+  assert.equal(response.statusCode, 401);
+  assert.match(JSON.parse(response.body).error, /未设置密码/);
+});

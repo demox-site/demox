@@ -88,7 +88,10 @@ export const MainHeader: React.FC = () => {
               githubLogin: res.user.githubLogin || null,
               avatarUrl: res.user.avatarUrl || null,
               roles: res.user.roles || currentUser.roles,
-              membership: res.user.membership || currentUser.membership
+              membership: res.user.membership || currentUser.membership,
+              ...(typeof res.user.hasPassword === "boolean"
+                ? { hasPassword: res.user.hasPassword }
+                : {})
             };
             userManager.set(nextUser);
             setUser(nextUser);

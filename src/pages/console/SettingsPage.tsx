@@ -33,9 +33,11 @@ const texts = {
     saved: "已保存",
     passwordTitle: "登录密码",
     passwordDesc: "设置或修改用于密码登录的密码。",
+    passwordDescUnset: "当前账号还没有登录密码，设置后即可使用密码登录。",
     currentPassword: "当前密码",
     newPassword: "新密码",
     confirmPassword: "确认新密码",
+    setPassword: "设置密码",
     updatePassword: "更新密码",
     bindingTitle: "第三方登录",
     bindingDesc: "绑定后可使用第三方账号一键登录。",
@@ -47,9 +49,12 @@ const texts = {
     bound: "已绑定",
     todo: "后端接口待接入",
     passwordUpdated: "密码已更新",
+    passwordSet: "密码已设置",
     passwordMismatch: "两次输入的新密码不一致",
     passwordTooShort: "新密码至少 8 个字符",
     passwordRequired: "请填写所有密码字段",
+    newPasswordRequired: "请填写新密码和确认新密码",
+    currentPasswordRequired: "请输入当前密码",
     passwordFailed: "修改失败",
     confirmUnbind: "确定要解绑 GitHub 吗？",
     confirmUnbindDesc: "解绑后将无法使用 GitHub 一键登录。",
@@ -72,9 +77,11 @@ const texts = {
     saved: "Saved",
     passwordTitle: "Password",
     passwordDesc: "Set or change your login password.",
+    passwordDescUnset: "This account has no login password yet. Set one to sign in with email and password.",
     currentPassword: "Current password",
     newPassword: "New password",
     confirmPassword: "Confirm new password",
+    setPassword: "Set password",
     updatePassword: "Update password",
     bindingTitle: "Third-party login",
     bindingDesc: "Bind an account to enable one-click sign-in.",
@@ -86,9 +93,12 @@ const texts = {
     bound: "Bound",
     todo: "Backend endpoint pending",
     passwordUpdated: "Password updated",
+    passwordSet: "Password set",
     passwordMismatch: "New passwords do not match",
     passwordTooShort: "New password must be at least 8 characters",
     passwordRequired: "Please fill in all password fields",
+    newPasswordRequired: "Enter and confirm the new password",
+    currentPasswordRequired: "Enter your current password",
     passwordFailed: "Update failed",
     confirmUnbind: "Unbind GitHub?",
     confirmUnbindDesc: "You won't be able to sign in with GitHub after unbinding.",
@@ -117,7 +127,11 @@ const SettingsPage: React.FC = () => {
   const [feishuBound, setFeishuBound] = useState<boolean>(!!user?.feishuOpenId);
   const [feishuName, setFeishuName] = useState<string | null>(user?.feishuName || null);
 
-  // 密码表单
+  // 仅当后端明确返回 hasPassword === false 时走「设置密码」；未知则保持「修改密码」，避免旧接口把已有密码账号误判成未设密。
+  const [hasPassword, setHasPassword] = useState<boolean | null>(
+    typeof user?.hasPassword === "boolean" ? user.hasPassword : null
+  );
+  const showSetPassword = hasPassword === false;
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -144,6 +158,9 @@ const SettingsPage: React.FC = () => {
         setFeishuName(u.feishuName || null);
         setNickname(u.nickname || "");
         setAccountEmail(u.email || "");
+        if (typeof u.hasPassword === "boolean") {
+          setHasPassword(u.hasPassword);
+        }
         // 回写本地，保持其它页面一致
         const local = userManager.get() || {};
         userManager.set({
@@ -156,6 +173,7 @@ const SettingsPage: React.FC = () => {
           feishuName: u.feishuName || null,
           avatarUrl: u.avatarUrl || null,
           nickname: u.nickname || "",
+          ...(typeof u.hasPassword === "boolean" ? { hasPassword: u.hasPassword } : {}),
           roles: u.roles || local.roles,
           membership: u.membership || local.membership
         });
@@ -169,8 +187,13 @@ const SettingsPage: React.FC = () => {
   }, []);
 
   const handleChangePassword = async () => {
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      toast({ title: t.passwordRequired, variant: "destructive" });
+    const alreadyHasPassword = !showSetPassword;
+    if (alreadyHasPassword && !currentPassword) {
+      toast({ title: t.currentPasswordRequired, variant: "destructive" });
+      return;
+    }
+    if (!newPassword || !confirmPassword) {
+      toast({ title: t.newPasswordRequired, variant: "destructive" });
       return;
     }
     if (newPassword.length < 8) {
@@ -184,11 +207,16 @@ const SettingsPage: React.FC = () => {
 
     setSavingPassword(true);
     try {
-      await authApi.changePassword({ currentPassword, newPassword });
+      await authApi.changePassword(
+        alreadyHasPassword ? { currentPassword, newPassword } : { newPassword }
+      );
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      toast({ title: t.passwordUpdated });
+      setHasPassword(true);
+      const local = userManager.get() || {};
+      userManager.set({ ...local, hasPassword: true });
+      toast({ title: alreadyHasPassword ? t.passwordUpdated : t.passwordSet });
     } catch (error: any) {
       toast({
         title: t.passwordFailed,
@@ -372,25 +400,29 @@ const SettingsPage: React.FC = () => {
                 {t.passwordTitle}
               </CardTitle>
               <CardDescription className="text-[var(--stitch-muted)]">
-                {t.passwordDesc}
+                {showSetPassword ? t.passwordDescUnset : t.passwordDesc}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 max-w-sm">
-              <div className="space-y-2">
-                <Label className="text-[var(--stitch-ink)]">{t.currentPassword}</Label>
-                <Input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
-                />
-              </div>
+              {!showSetPassword && (
+                <div className="space-y-2">
+                  <Label className="text-[var(--stitch-ink)]">{t.currentPassword}</Label>
+                  <Input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    autoComplete="current-password"
+                    className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
+                  />
+                </div>
+              )}
               <div className="space-y-2">
                 <Label className="text-[var(--stitch-ink)]">{t.newPassword}</Label>
                 <Input
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
                   className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
                 />
               </div>
@@ -400,6 +432,7 @@ const SettingsPage: React.FC = () => {
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
                   className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
                 />
               </div>
@@ -408,7 +441,7 @@ const SettingsPage: React.FC = () => {
                 disabled={savingPassword}
                 className="stitch-primary rounded-full"
               >
-                {savingPassword ? "..." : t.updatePassword}
+                {savingPassword ? "..." : showSetPassword ? t.setPassword : t.updatePassword}
               </Button>
             </CardContent>
           </Card>
