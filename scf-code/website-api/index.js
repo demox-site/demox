@@ -6,6 +6,7 @@
 const AdmZip = require('adm-zip');
 const nodeCrypto = require('crypto');
 const https = require('https');
+const http = require('http');
 const path = require('path');
 let geoip = null;
 try {
@@ -76,6 +77,14 @@ const CUSTOM_DOMAIN_CNAME_TARGET = String(process.env.CUSTOM_DOMAIN_CNAME_TARGET
   .trim()
   .toLowerCase()
   .replace(/\.+$/, '');
+const CUSTOM_DOMAIN_GATEWAY_IPS = new Set(
+  String(process.env.CUSTOM_DOMAIN_GATEWAY_IPS || '119.91.123.2')
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+);
+const CUSTOM_DOMAIN_PROVISION_URL = String(process.env.CUSTOM_DOMAIN_PROVISION_URL || '').trim();
+const CUSTOM_DOMAIN_PROVISION_SECRET = String(process.env.CUSTOM_DOMAIN_PROVISION_SECRET || '').trim();
 const CUSTOM_DOMAIN_STATUS_PENDING = 'pending';
 const CUSTOM_DOMAIN_STATUS_ACTIVE = 'active';
 const VISIBILITY_PUBLIC = 'public';
@@ -202,6 +211,138 @@ function cnamePointsAtOfficialSite(chain) {
       && value !== CUSTOM_DOMAIN_CNAME_TARGET
       && (value === defaultDomain || value.endsWith(`.${defaultDomain}`));
   });
+}
+
+async function defaultLookupCustomDomainGatewayAddresses() {
+  try {
+    const records = await dnsPromises.resolve4(CUSTOM_DOMAIN_CNAME_TARGET);
+    return Array.isArray(records) ? records.map((item) => String(item || '').trim()).filter(Boolean) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function defaultProbeCustomDomainHttps(hostname) {
+  const host = normalizeCustomHostname(hostname);
+  if (!host) return Promise.resolve({ ok: false, reason: 'invalid' });
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        method: 'GET',
+        host,
+        path: '/',
+        timeout: 8000,
+        rejectUnauthorized: true,
+        headers: { 'User-Agent': 'Demox-CustomDomain-Probe' }
+      },
+      (res) => {
+        res.resume();
+        const status = res.statusCode || 0;
+        if (status === 418) {
+          resolve({ ok: false, reason: 'teapot', status });
+          return;
+        }
+        if (status >= 200 && status < 500) {
+          resolve({ ok: true, status });
+          return;
+        }
+        resolve({ ok: false, reason: `http_${status}`, status });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, reason: 'timeout' });
+    });
+    req.on('error', (error) => {
+      resolve({ ok: false, reason: error.code || error.message || 'request_failed' });
+    });
+    req.end();
+  });
+}
+
+function defaultTriggerCustomDomainProvision(hostname) {
+  const host = normalizeCustomHostname(hostname);
+  if (!host || !CUSTOM_DOMAIN_PROVISION_URL || !CUSTOM_DOMAIN_PROVISION_SECRET) {
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+  let parsed;
+  try {
+    parsed = new URL(CUSTOM_DOMAIN_PROVISION_URL);
+  } catch (error) {
+    return Promise.resolve({ ok: false, reason: 'bad_provision_url' });
+  }
+  const body = JSON.stringify({ hostname: host });
+  const transport = parsed.protocol === 'http:' ? http : https;
+  const hostHeader = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(parsed.hostname)
+    ? CUSTOM_DOMAIN_CNAME_TARGET
+    : parsed.hostname;
+  return new Promise((resolve) => {
+    const req = transport.request(
+      {
+        method: 'POST',
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: `${parsed.pathname}${parsed.search}`,
+        timeout: 25000,
+        headers: {
+          Authorization: `Bearer ${CUSTOM_DOMAIN_PROVISION_SECRET}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Host: hostHeader
+        }
+      },
+      (res) => {
+        res.resume();
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, reason: 'timeout' });
+    });
+    req.on('error', (error) => resolve({ ok: false, reason: error.code || error.message }));
+    req.end(body);
+  });
+}
+
+let lookupCustomDomainGatewayAddresses = defaultLookupCustomDomainGatewayAddresses;
+let probeCustomDomainHttps = defaultProbeCustomDomainHttps;
+let triggerCustomDomainProvision = defaultTriggerCustomDomainProvision;
+
+function setCustomDomainRuntime(hooks = {}) {
+  lookupCustomDomainGatewayAddresses = hooks.lookupGatewayAddresses || defaultLookupCustomDomainGatewayAddresses;
+  probeCustomDomainHttps = hooks.probeHttps || defaultProbeCustomDomainHttps;
+  triggerCustomDomainProvision = hooks.provision || defaultTriggerCustomDomainProvision;
+}
+
+async function assertCustomDomainGateway() {
+  if (!CUSTOM_DOMAIN_GATEWAY_IPS.size) return { ok: true, addresses: [] };
+  const addresses = await lookupCustomDomainGatewayAddresses();
+  const matched = addresses.filter((ip) => CUSTOM_DOMAIN_GATEWAY_IPS.has(ip));
+  if (!matched.length) {
+    return {
+      ok: false,
+      reason: 'gateway',
+      message: '平台入口 customers.demox.site 未指向网关，域名还不能生效'
+    };
+  }
+  return { ok: true, addresses: matched };
+}
+
+function customDomainPendingMessage({ matched, chain, gateway, live }) {
+  if (!matched) {
+    if (cnamePointsAtOfficialSite(chain)) {
+      return 'CNAME 不能指向 xxx.demox.site，请改成 customers.demox.site';
+    }
+    return '还没有解析到 customers.demox.site';
+  }
+  if (gateway && gateway.ok === false) {
+    return gateway.message || '平台入口 customers.demox.site 未指向网关，域名还不能生效';
+  }
+  if (live && live.ok === false) {
+    return '解析已指向入口，正在签发 HTTPS 证书，请一两分钟后再点检测';
+  }
+  return '还没有解析到 customers.demox.site';
 }
 
 function getSupportedOfficialBinding(row) {
@@ -3027,8 +3168,19 @@ async function loadFormattedCustomDomain(projectId, domainId, hostname, extra = 
 
 async function refreshCustomDomainStatus(row, routes = []) {
   const lookup = await lookupCustomDomainCname(row.hostname);
-  const nextStatus = lookup.matched ? CUSTOM_DOMAIN_STATUS_ACTIVE : CUSTOM_DOMAIN_STATUS_PENDING;
-  if (nextStatus !== row.status || (lookup.matched && !row.verified_at)) {
+  let gateway = { ok: false, reason: 'unchecked' };
+  let live = { ok: false, reason: 'unchecked' };
+  if (lookup.matched) {
+    gateway = await assertCustomDomainGateway();
+    if (gateway.ok) {
+      await triggerCustomDomainProvision(row.hostname).catch(() => ({ ok: false }));
+      live = await probeCustomDomainHttps(row.hostname);
+    }
+  }
+  const nextStatus = lookup.matched && gateway.ok && live.ok
+    ? CUSTOM_DOMAIN_STATUS_ACTIVE
+    : CUSTOM_DOMAIN_STATUS_PENDING;
+  if (nextStatus !== row.status || (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) || (!lookup.matched && row.verified_at)) {
     await query(
       `UPDATE custom_domains
        SET status = ?, verified_at = CASE WHEN ? = '${CUSTOM_DOMAIN_STATUS_ACTIVE}' THEN COALESCE(verified_at, NOW()) ELSE NULL END, updated_at = NOW()
@@ -3036,10 +3188,17 @@ async function refreshCustomDomainStatus(row, routes = []) {
       [nextStatus, nextStatus, row.id]
     );
     row.status = nextStatus;
-    if (lookup.matched && !row.verified_at) row.verified_at = new Date();
-    if (!lookup.matched) row.verified_at = null;
+    if (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) row.verified_at = new Date();
+    if (nextStatus !== CUSTOM_DOMAIN_STATUS_ACTIVE) row.verified_at = null;
   }
-  return formatCustomDomainForClient(row, routes, { cnameChain: lookup.chain });
+  return formatCustomDomainForClient(row, routes, {
+    cnameChain: lookup.chain,
+    liveOk: !!live.ok,
+    gatewayOk: !!gateway.ok,
+    pendingMessage: nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE
+      ? ''
+      : customDomainPendingMessage({ matched: lookup.matched, chain: lookup.chain, gateway, live })
+  });
 }
 
 async function requireProjectSite(projectId, userId, { websiteId, docId }) {
@@ -3145,11 +3304,10 @@ async function handleAddProjectCustomDomain(event) {
     if (siteAccess.error) return ok({ success: false, message: siteAccess.error });
 
     const lookup = await lookupCustomDomainCname(hostname);
-    const status = lookup.matched ? CUSTOM_DOMAIN_STATUS_ACTIVE : CUSTOM_DOMAIN_STATUS_PENDING;
     const insert = await query(
       `INSERT INTO custom_domains (project_id, hostname, status, created_by, verified_at)
-       VALUES (?, ?, ?, ?, ${lookup.matched ? 'NOW()' : 'NULL'})`,
-      [projectId, hostname, status, String(userId)]
+       VALUES (?, ?, ?, ?, NULL)`,
+      [projectId, hostname, CUSTOM_DOMAIN_STATUS_PENDING, String(userId)]
     );
     await upsertCustomDomainRoute(insert.insertId, '', siteAccess.site.id);
     const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { cnameChain: lookup.chain });
@@ -3158,8 +3316,8 @@ async function handleAddProjectCustomDomain(event) {
       domain,
       cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
       message: lookup.matched
-        ? '域名已绑定到项目，DNS 已指向平台入口'
-        : '域名已绑定到项目。请把根域名和 *.主机 都 CNAME 到 customers.demox.site'
+        ? '域名已绑定到项目。请点检测，确认 HTTPS 可访问后再完成'
+        : '域名已绑定到项目。请把 CNAME 指到 customers.demox.site'
     });
   } catch (error) {
     if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
@@ -3312,10 +3470,8 @@ async function handleVerifyProjectCustomDomain(event) {
       domain,
       cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
       message: domain.status === CUSTOM_DOMAIN_STATUS_ACTIVE
-        ? 'DNS 已指向平台入口'
-        : cnamePointsAtOfficialSite(domain.cnameChain)
-          ? 'CNAME 不能指向 xxx.demox.site，请改成 customers.demox.site'
-          : '还没有解析到 customers.demox.site'
+        ? '自定义域名已可访问'
+        : (domain.pendingMessage || '还没有解析到 customers.demox.site')
     });
   } catch (error) {
     console.error('校验项目自定义域名失败:', error);
@@ -7666,6 +7822,7 @@ function getCORSHeaders() {
   };
 }
 
+exports.setCustomDomainRuntime = setCustomDomainRuntime;
 exports.buildOriginPurgeTargets = buildOriginPurgeTargets;
 exports.websiteStoragePrefix = websiteStoragePrefix;
 exports.websitePrefixFromTarget = websitePrefixFromTarget;

@@ -12,8 +12,18 @@ ORIGIN_SUFFIX="${ORIGIN_SUFFIX:-demox.site}"
 EMAIL="${ACME_EMAIL:-admin@demox.site}"
 PREFIX=demox-custom
 CHANGED=0
+FILTER_HOST=""
+if [[ "${1:-}" == "--host" ]]; then
+  FILTER_HOST="$(printf '%s' "${2:-}" | tr 'A-Z' 'a-z')"
+  if [[ ! "$FILTER_HOST" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+    echo "invalid host" >&2
+    exit 1
+  fi
+fi
 
-mkdir -p "$WEBROOT" "$NGINX_DIR"
+mkdir -p "$WEBROOT" "$NGINX_DIR" /var/run
+exec 9>/var/run/demox-customer-proxy.lock
+flock -w 120 9 || exit 0
 
 mysql_query() {
   mysql -N -h "$MYSQL_HOST" -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" "-p${MYSQL_PASSWORD}" \
@@ -54,7 +64,6 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    http2 on;
     server_name ${host};
     ssl_certificate /etc/letsencrypt/live/${host}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${host}/privkey.pem;
@@ -86,8 +95,10 @@ reload_nginx() {
 
 ensure_gateway() {
   local conf="$NGINX_DIR/${PREFIX}-gateway.conf"
-  if [[ ! -f "$conf" ]]; then
-    cat >"$conf" <<EOF
+  if grep -q '_demox/provision' "$conf" 2>/dev/null; then
+    return 0
+  fi
+  cat >"$conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -95,17 +106,28 @@ server {
     location /.well-known/acme-challenge/ {
         root ${WEBROOT};
     }
+    location = /_demox/provision {
+        proxy_pass http://127.0.0.1:7391;
+        proxy_read_timeout 90s;
+        proxy_set_header Host \$host;
+        proxy_set_header Authorization \$http_authorization;
+        proxy_set_header Content-Type \$content_type;
+    }
     location / {
         default_type text/plain;
         return 200 "Demox custom domain gateway\\n";
     }
 }
 EOF
-    CHANGED=1
-  fi
+  CHANGED=1
 }
 
 ensure_gateway
+
+SQL_EXTRA=""
+if [[ -n "$FILTER_HOST" ]]; then
+  SQL_EXTRA="AND cd.hostname = '${FILTER_HOST}'"
+fi
 
 points_at_gateway() {
   local host="$1" hop current
@@ -152,10 +174,17 @@ SELECT cd.hostname, w.website_id
 FROM custom_domains cd
 JOIN custom_domain_routes r ON r.custom_domain_id = cd.id AND r.label = ''
 JOIN websites w ON w.id = r.website_id
-WHERE cd.status = 'active'
-  AND cd.hostname NOT LIKE '%.demox.site'
+WHERE cd.hostname NOT LIKE '%.demox.site'
   AND cd.hostname NOT LIKE '%aigc.sx.cn'
+  ${SQL_EXTRA}
 ")
+
+if [[ -n "$FILTER_HOST" ]]; then
+  if [[ "$CHANGED" -eq 1 ]]; then
+    reload_nginx
+  fi
+  exit 0
+fi
 
 shopt -s nullglob
 for conf in "$NGINX_DIR/${PREFIX}-"*.conf; do

@@ -63,7 +63,8 @@ require.cache[githubModulePath] = {
   }
 };
 
-const { main } = require('./index.js');
+const websiteApi = require('./index.js');
+const { main, setCustomDomainRuntime } = websiteApi;
 const { sign } = require('./shared/jwt.js');
 
 function request(action, body = {}, userId = 'user-feishu', tokenEmail = `${userId}@demox.example`) {
@@ -86,6 +87,11 @@ function ownerAccessQueries(sql) {
 }
 
 test.beforeEach(() => {
+  setCustomDomainRuntime({
+    lookupGatewayAddresses: async () => ['119.91.123.2'],
+    probeHttps: async () => ({ ok: true, status: 200 }),
+    provision: async () => ({ ok: true })
+  });
   directoryImpl = {
     getUser: async (openId) => ({ open_id: openId, name: 'Feishu Person', status: { is_resigned: false } }),
     getDepartment: async (id) => ({ open_department_id: id, name: 'Engineering', status: { is_deleted: false } }),
@@ -1469,6 +1475,69 @@ test('project custom domain verify marks active when CNAME hits the shared entra
     assert.equal(body.domain.status, 'active');
     assert.deepEqual(body.domain.cnameChain, ['customers.demox.site']);
     assert.equal(updates[0][0], 'active');
+    assert.match(body.message, /可访问/);
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+});
+
+test('project custom domain stays pending when the shared CNAME target is not the gateway', async () => {
+  dns.promises.resolveCname = async (hostname) => {
+    if (hostname === 'demox.aigc.sx.cn') return ['customers.demox.site.'];
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  setCustomDomainRuntime({
+    lookupGatewayAddresses: async () => ['1.1.1.1'],
+    probeHttps: async () => ({ ok: true, status: 200 }),
+    provision: async () => ({ ok: true })
+  });
+  queryImpl = async (sql) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) return [{ ...projectDomainRow }];
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains') && sql.includes('SET status = ?')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const body = JSON.parse((await request('verify_project_custom_domain', {
+      projectId: 42,
+      domainId: 17
+    }, 'project-owner')).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.domain.status, 'pending');
+    assert.match(body.message, /网关/);
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+});
+
+test('project custom domain stays pending until HTTPS actually serves the site', async () => {
+  dns.promises.resolveCname = async (hostname) => {
+    if (hostname === 'demox.aigc.sx.cn') return ['customers.demox.site.'];
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  setCustomDomainRuntime({
+    lookupGatewayAddresses: async () => ['119.91.123.2'],
+    probeHttps: async () => ({ ok: false, reason: 'teapot', status: 418 }),
+    provision: async () => ({ ok: true })
+  });
+  queryImpl = async (sql) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) return [{ ...projectDomainRow }];
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains') && sql.includes('SET status = ?')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const body = JSON.parse((await request('verify_project_custom_domain', {
+      projectId: 42,
+      domainId: 17
+    }, 'project-owner')).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.domain.status, 'pending');
+    assert.match(body.message, /签发 HTTPS/);
   } finally {
     dns.promises.resolveCname = originalResolveCname;
   }

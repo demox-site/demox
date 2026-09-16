@@ -1,0 +1,12 @@
+[Unit]
+Description=Demox custom domain provisioner
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/demox-customer-proxy/provision.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
