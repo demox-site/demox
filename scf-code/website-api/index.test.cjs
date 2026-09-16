@@ -1412,6 +1412,36 @@ test('website list exposes custom hosts for the site card links', async () => {
   assert.equal(listed.websites[0].url, 'https://demox.aigc.sx.cn/');
 });
 
+test('project custom domain verify rejects CNAME to an official demox.site host', async () => {
+  dns.promises.resolveCname = async (hostname) => {
+    if (hostname === 'markdown.frostplume.top') return ['podfwngc.demox.site.'];
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  queryImpl = async (sql) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) {
+      return [{ ...projectDomainRow, hostname: 'markdown.frostplume.top', status: 'pending' }];
+    }
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains') && sql.includes('SET status = ?')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  try {
+    const body = JSON.parse((await request('verify_project_custom_domain', {
+      projectId: 42,
+      domainId: 17
+    }, 'project-owner')).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.domain.status, 'pending');
+    assert.match(body.message, /customers\.demox\.site/);
+    assert.match(body.message, /不能指向/);
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+});
+
 test('project custom domain verify marks active when CNAME hits the shared entrance', async () => {
   dns.promises.resolveCname = async (hostname) => {
     if (hostname === 'demox.aigc.sx.cn') return ['customers.demox.site.'];

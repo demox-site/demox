@@ -195,6 +195,15 @@ async function lookupCustomDomainCname(hostname) {
   return { matched: false, chain };
 }
 
+function cnamePointsAtOfficialSite(chain) {
+  return (chain || []).some((host) => {
+    const value = normalizeDomainValue(host);
+    return value
+      && value !== CUSTOM_DOMAIN_CNAME_TARGET
+      && (value === defaultDomain || value.endsWith(`.${defaultDomain}`));
+  });
+}
+
 function getSupportedOfficialBinding(row) {
   const label = String(row?.subdomain || '').trim().toLowerCase();
   const stored = normalizeDomainValue(row?.subdomain_domain || row?.subdomainDomain) || defaultDomain;
@@ -3304,7 +3313,9 @@ async function handleVerifyProjectCustomDomain(event) {
       cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
       message: domain.status === CUSTOM_DOMAIN_STATUS_ACTIVE
         ? 'DNS 已指向平台入口'
-        : '还没有解析到 customers.demox.site'
+        : cnamePointsAtOfficialSite(domain.cnameChain)
+          ? 'CNAME 不能指向 xxx.demox.site，请改成 customers.demox.site'
+          : '还没有解析到 customers.demox.site'
     });
   } catch (error) {
     console.error('校验项目自定义域名失败:', error);
