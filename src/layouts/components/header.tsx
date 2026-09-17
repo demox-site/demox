@@ -4,7 +4,7 @@ import { authApi, userManager } from "@/api";
 import { AuthDialog } from "@/components/AuthDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLanguage } from "@/hooks/use-language";
-import logo from "@/assets/logo.png";
+import logo from "@/assets/logo.svg";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -135,7 +135,7 @@ export const MainHeader: React.FC = () => {
               <img
                 src={logo}
                 alt="Demox"
-                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300 invert dark:invert-0"
+                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300 dark:invert"
               />
             </button>
 
