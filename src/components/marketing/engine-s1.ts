@@ -121,14 +121,18 @@ export function initS1(root: HTMLElement): () => void {
     if(inn){ show = n>inn[0];
       el.textContent = n>=inn[1] ? el.getAttribute('data-full') : (n>inn[0] ? s.slice(inn[0],Math.min(n,inn[1])) : '');
     } else show = n>=Math.min(s.length, b==='logo'?8:s.length);
-    if(show && !el.classList.contains('on')){ el.classList.add('on'); onReveal(el); }
-    if(show){ lastBlock=el; if(cur===i) Beam.aim(lineEls[i], el); }
+    if(show && !reduce && !html.classList.contains('init') && n<s.length) show=false;   /* build-as-you-type: block appears when its line is done */
+    if(show && !el.classList.contains('on') && !el._fly){
+      if(reduce || html.classList.contains('init')) el.classList.add('on');
+      else { el._fly=true; flyOne(i, el, function(){ el._fly=false; if(typed[i]>=s.length){ el.classList.add('on'); onReveal(el); } }); }
+    }
+    if(show && el.classList.contains('on')){ lastBlock=el; if(cur===i) Beam.aim(lineEls[i], el); }
     if(!show && el.classList.contains('on')) el.classList.remove('on');
   }
   function onReveal(el){
     if(html.classList.contains('init')) return;
     pageRefresh(); follow(el);
-    Beam.fire({size:3.4, trail:150, dur:560, onArrive:function(){ land(el); Beam.burst(1); }});
+    setTimeout(function(){ land(el); },200); Beam.burst(.8);
   }
   function land(el){ el.classList.add('land'); setTimeout(function(){el.classList.remove('land');},140); }
   function pageRefresh(){ refreshEl.classList.remove('go'); void refreshEl.offsetWidth; refreshEl.classList.add('go'); }
@@ -339,48 +343,34 @@ export function initS1(root: HTMLElement): () => void {
     }
   }
 
-  /* ---------- deploy flight: typed code lines lift off the editor and fly into the preview, where their block materializes ---------- */
-  function flight(){
-    if(reduce) return Promise.resolve();
+  /* ---------- per-line flight: the finished line lifts off the editor and flies into its section of the preview ---------- */
+  function flyOne(i, b, done){
     var g0=gen, st=$id('stage'), S=st.getBoundingClientRect(), mob=window.matchMedia('(max-width:900px)').matches;
     var layer=st.querySelector('.s1-fly'); if(!layer){ layer=document.createElement('div'); layer.className='s1-fly'; layer.setAttribute('aria-hidden','true'); st.appendChild(layer); }
-    pageTop();
     var nr=nodeEl.getBoundingClientRect(), mx=nr.left+nr.width/2-S.left, my=nr.top+nr.height/2-S.top;
-    var cr=codeEl.getBoundingClientRect(), pr=pageEl.getBoundingClientRect();
-    var items=[]; LINES.forEach(function(l,i){ if(l[1]&&blocks[l[1]]&&typed[i]>0) items.push(i); });
-    var cap=mob?10:14; if(items.length>cap){ var pick=[]; for(var q=0;q<cap;q++) pick.push(items[Math.round(q*(items.length-1)/(cap-1))]); items=pick; }
-    var fs=items.map(function(i,k){
-      var le=lineEls[i], r=le.lastChild.getBoundingClientRect(), sx, sy;
-      if(r.height && r.bottom>cr.top+4 && r.top<cr.bottom-4){ sx=r.left-S.left; sy=r.top-S.top; } else { sx=cr.left-S.left+44; sy=cr.bottom-S.top-26; }
-      var txt=LINES[i][0].trim(), mx2=mob?22:34; if(txt.length>mx2) txt=txt.slice(0,mx2-1)+'…';
-      var el=document.createElement('span'); el.className='s1-f'+(k===0?' lead':''); el.textContent=txt;
-      el.style.transform='translate3d('+sx+'px,'+sy+'px,0)'; el.style.opacity='0'; layer.appendChild(el);
-      var b=blocks[LINES[i][1]]; b.classList.add('pre');
-      var br=b.getBoundingClientRect(), tx=br.left+br.width/2-S.left, ty=Math.max(pr.top+16,Math.min(pr.bottom-16,br.top+Math.min(br.height,60)/2))-S.top;
-      return {i:i,el:el,b:b,sx:sx,sy:sy,tx:tx,ty:ty,w:el.offsetWidth,h:el.offsetHeight,t0:k*(mob?95:80),dur:mob?720:860,
-        rot:(k%2?1:-1)*(4+Math.random()*8), cx:mob?mx+(k%2?1:-1)*(40+Math.random()*50):mx+(Math.random()-.5)*60, cy:mob?my:my-90-Math.random()*90, done:false, lifted:false};
-    });
-    return new Promise(function(res){
-      var t0=performance.now();
-      function end(){ fs.forEach(function(f){ f.b.classList.remove('pre'); lineEls[f.i].classList.remove('lift'); }); layer.innerHTML=''; res(); }
-      function tick(now){
-        if(g0!==gen){ end(); return; }
-        var left=0;
-        for(var n=0;n<fs.length;n++){
-          var f=fs[n]; if(f.done) continue; left++;
-          var p=(now-t0-f.t0)/f.dur; if(p<0) continue;
-          if(!f.lifted){ f.lifted=true; lineEls[f.i].classList.add('lift'); }
-          if(p>=1){ f.done=true; f.el.style.opacity='0'; f.b.classList.remove('pre'); lineEls[f.i].classList.remove('lift');
-            (function(b){ setTimeout(function(){ land(b); },260); })(f.b); Beam.burst(.7); Beam.kick(.8); continue; }
-          var e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2, u=1-e, sc=1-.45*e;
-          var x=u*u*f.sx+2*u*e*f.cx+e*e*(f.tx-f.w/2), y=u*u*f.sy+2*u*e*f.cy+e*e*(f.ty-f.h/2);
-          f.el.style.transform='translate3d('+x.toFixed(1)+'px,'+y.toFixed(1)+'px,0) rotate('+(Math.sin(Math.PI*e)*f.rot).toFixed(2)+'deg) scale('+sc.toFixed(3)+')';
-          f.el.style.opacity=String(p<.08?p/.08:p>.82?Math.max(0,(1-p)/.18):1);
-        }
-        if(left) requestAnimationFrame(tick); else { layer.innerHTML=''; res(); }
-      }
+    var cr=codeEl.getBoundingClientRect(), pr=pageEl.getBoundingClientRect(), le=lineEls[i], r=le.lastChild.getBoundingClientRect();
+    var sx=r.height?r.left-S.left:cr.left-S.left+44, sy=r.height?Math.min(r.top,cr.bottom-24)-S.top:cr.bottom-S.top-26;
+    var txt=LINES[i][0].trim(), mx2=mob?22:34; if(txt.length>mx2) txt=txt.slice(0,mx2-1)+'…';
+    var el=document.createElement('span'); el.className='s1-f'+(i%3===0?' lead':''); el.textContent=txt;
+    el.style.transform='translate3d('+sx+'px,'+sy+'px,0)'; el.style.opacity='0'; layer.appendChild(el);
+    follow(b);
+    var br=b.getBoundingClientRect();
+    var tx=br.left+br.width/2-S.left, ty=Math.max(pr.top+16,Math.min(pr.bottom-16,br.top+Math.min(br.height,60)/2))-S.top;
+    var w=el.offsetWidth, h=el.offsetHeight, dur=mob?620:720, rot=(i%2?1:-1)*(4+Math.random()*6);
+    var cx=mob?mx+(i%2?1:-1)*(40+Math.random()*40):mx+(Math.random()-.5)*50, cy=mob?my:my-70-Math.random()*70;
+    le.classList.add('lift'); var t0=performance.now();
+    function fin(){ el.remove(); le.classList.remove('lift'); }
+    function tick(now){
+      if(g0!==gen){ fin(); b._fly=false; return; }
+      var p=(now-t0)/dur;
+      if(p>=1){ fin(); Beam.kick(.6); done(); return; }
+      var e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2, u=1-e, sc=1-.45*e;
+      var x=u*u*sx+2*u*e*cx+e*e*(tx-w/2), y=u*u*sy+2*u*e*cy+e*e*(ty-h/2);
+      el.style.transform='translate3d('+x.toFixed(1)+'px,'+y.toFixed(1)+'px,0) rotate('+(Math.sin(Math.PI*e)*rot).toFixed(2)+'deg) scale('+sc.toFixed(3)+')';
+      el.style.opacity=String(p<.1?p/.1:p>.85?Math.max(0,(1-p)/.15):1);
       requestAnimationFrame(tick);
-    });
+    }
+    requestAnimationFrame(tick);
   }
   async function deploy(){
     setCur(-1);
@@ -388,12 +378,11 @@ export function initS1(root: HTMLElement): () => void {
     for(var k=1;k<=cmd.length;k++){ term([PROMPT+'<span class="w">'+cmd.slice(0,k)+'</span><i class="caret"></i>']); await sleep(18+Math.random()*22); }
     await sleep(160);
     setState('deploying');
-    var fl=flight();
     var head=PROMPT+'<span class="w">'+cmd+'</span>';
     term([head,'<span class="dim">打包资源...</span>']);
     await sleep(520);
     term([head,'<span class="dim">打包资源...</span> 完成 (0.4s)','<span class="dim">上传至边缘网络...</span>']);
-    await sleep(820); await fl;
+    await sleep(820);
     term([head,'<span class="dim">上传至边缘网络...</span> 完成 (1.2s)','<span class="ok">✓ 成功！已部署至：</span><span class="w">'+URL_LIVE.replace('https://','')+'</span>']);
     setState('live'); pageRefresh(); pageTop();
   }
