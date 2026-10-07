@@ -347,11 +347,12 @@ export function initS1(root: HTMLElement): () => void {
   function flyOne(i, b, done){
     var g0=gen, st=$id('stage'), S=st.getBoundingClientRect(), mob=window.matchMedia('(max-width:900px)').matches;
     var layer=st.querySelector('.s1-fly'); if(!layer){ layer=document.createElement('div'); layer.className='s1-fly'; layer.setAttribute('aria-hidden','true'); st.appendChild(layer); }
-    var nr=nodeEl.getBoundingClientRect(), mx=nr.left+nr.width/2-S.left, my=nr.top+nr.height/2-S.top;
+    var er=$id('editor').getBoundingClientRect(), wr=$id('browser').getBoundingClientRect();
+    var mx=mob?(er.left+er.right)/2-S.left:(er.right+wr.left)/2-S.left, my=mob?(er.bottom+wr.top)/2-S.top:(er.top+er.bottom)/2-S.top;
     var cr=codeEl.getBoundingClientRect(), pr=pageEl.getBoundingClientRect(), le=lineEls[i], r=le.lastChild.getBoundingClientRect();
     var sx=r.height?r.left-S.left:cr.left-S.left+44, sy=r.height?Math.min(r.top,cr.bottom-24)-S.top:cr.bottom-S.top-26;
     var txt=LINES[i][0].trim(), mx2=mob?22:34; if(txt.length>mx2) txt=txt.slice(0,mx2-1)+'…';
-    var el=document.createElement('span'); el.className='s1-f'+(i%3===0?' lead':''); el.textContent=txt;
+    var el=document.createElement('span'); el.className='s1-f'; el.textContent=txt;
     el.style.transform='translate3d('+sx+'px,'+sy+'px,0)'; el.style.opacity='0'; layer.appendChild(el);
     follow(b);
     var br=b.getBoundingClientRect();
@@ -424,7 +425,7 @@ export function initS1(root: HTMLElement): () => void {
   __on(window,'resize',function(){Beam.geom(); scrollCode(); if(editing){ metrics(); syncScroll(); }});
   var stage=$id('stage');
   stage.addEventListener('transitionend',function(e){ if(e.target.classList.contains('tilt')) Beam.geom(); });
-  if(!reduce){ Beam.start(); loop(); }
+  if(!reduce){ loop(); }   /* beam + node removed: tokens fly editor → preview directly */
 
   /* ---------- interaction: hover a code line ↔ its block; gentle parallax ---------- */
   function hl(b,on){
