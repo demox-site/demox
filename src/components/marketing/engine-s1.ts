@@ -326,7 +326,7 @@ export function initS1(root: HTMLElement): () => void {
   /* v6: every await goes through sleep(); bumping `gen` aborts the running loop at its next tick (used by edit mode) */
   var gen=0, ABORT={abort:true};
   function sleep(ms){ var g=gen; return new Promise(function(r){setTimeout(r,ms);}).then(function(){ if(g!==gen) throw ABORT; }); }
-  function charDelay(c,fast){ if(c===' ') return 3; if(/[\u4e00-\u9fff，。·¥–]/.test(c)) return 22+Math.random()*14; return fast?(3+Math.random()*3):(5+Math.random()*5); }
+  function charDelay(c,fast){ if(c===' ') return 3; if(/[\u4e00-\u9fff，。·¥–]/.test(c)) return 18+Math.random()*10; return fast?(3+Math.random()*3):(4+Math.random()*4); }
   async function typeAll(){
     for(var i=0;i<LINES.length;i++){
       var s=LINES[i][0]; setCur(i);
