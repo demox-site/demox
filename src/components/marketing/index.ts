@@ -1,3 +1,3 @@
-export { HeroEditorDemo } from "./HeroEditorDemo";
-export { GlobeNodes } from "./GlobeNodes";
-export { WorksGallery } from "./WorksGallery";
+export { HeroStage } from "./HeroStage";
+export { GlobeStage } from "./GlobeStage";
+export { GalleryStage } from "./GalleryStage";

@@ -15,12 +15,7 @@ import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
 import { track } from "@/lib/track";
 import { INTENT_LANDINGS } from "@/content/intent-landings.mjs";
-import {
-  HeroEditorDemo,
-  GlobeNodes,
-  WorksGallery,
-} from "@/components/marketing";
-import "@/components/marketing/marketing.css";
+import { HeroStage, GlobeStage, GalleryStage } from "@/components/marketing";
 
 const translations = {
   zh: {
@@ -195,17 +190,15 @@ const CloudHostLanding: React.FC = () => {
           </div>
         </div>
 
-        <HeroEditorDemo language={lang} />
+        <HeroStage />
       </section>
 
       {/* Screen 2 — global edge nodes */}
-      <div className="border-t border-[var(--stitch-line)]">
-        <GlobeNodes language={lang} />
-      </div>
+      <GlobeStage />
 
       {/* Screen 3 — gallery wall (真实 + 示例) */}
-      <div className="border-t border-[var(--stitch-line)] -mx-4 sm:-mx-6 lg:-mx-8">
-        <WorksGallery language={lang} onUpload={openUpload} />
+      <div className="-mx-4 sm:-mx-6 lg:-mx-8">
+        <GalleryStage onUpload={openUpload} />
       </div>
 
       {/* Intent guides (SEO) */}
