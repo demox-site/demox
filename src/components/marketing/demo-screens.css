@@ -554,3 +554,17 @@
 .dx-mk .s3-pv>.pv-cf2{padding:0;overflow:hidden;background:#f6efe4}
 .dx-mk .pv-cf2 .cq{width:1040px;transform:scale(.5385);transform-origin:0 0;pointer-events:none}
 .dx-mk .pv-cf2 .nav{position:relative}
+
+/* merged from the old 「30 秒看完三个真实示例」 section — 示例 previews */
+.dx-mk .pv-vite{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;height:100%;padding:22px;background:#fafafa}
+.dx-mk .pv-vite .tm{padding:16px 18px;border-radius:12px;background:#111;color:#d4d4d8;font:14px/1.75 var(--font-mono);white-space:nowrap;overflow:hidden}
+.dx-mk .pv-vite .tm .g{color:#a1a1aa}.dx-mk .pv-vite .tm .d{color:#71717a}.dx-mk .pv-vite .tm .ok{color:#4ade80}
+.dx-mk .pv-vite .ap{display:flex;flex-direction:column;justify-content:center;gap:12px;padding:18px;border-radius:12px;background:#fff;border:1px solid rgba(17,17,17,.1)}
+.dx-mk .pv-vite .ap .bt{align-self:flex-start;font-size:15px;font-weight:600;color:#fff;background:#111;border-radius:10px;padding:9px 16px}
+.dx-mk .pv-md{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;height:100%;padding:22px;background:#f6f6f4}
+.dx-mk .pv-md .src{margin:0;padding:16px;border-radius:12px;background:#fff;border:1px dashed rgba(17,17,17,.18);font:14px/1.6 var(--font-mono);color:#52525b;white-space:pre;overflow:hidden}
+.dx-mk .pv-md .ar{font-size:26px;color:#a1a1aa}
+.dx-mk .pv-md .out{display:flex;flex-direction:column;gap:9px;padding:18px;border-radius:12px;background:#fff;border:1px solid rgba(17,17,17,.1);box-shadow:0 8px 24px rgba(17,17,17,.06)}
+.dx-mk .pv-md .out h4{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.dx-mk .pv-md .out b{font-size:15px;color:#27272a}
+.dx-mk .pv-vite .ap .ln.s{width:60%}
