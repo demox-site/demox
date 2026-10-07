@@ -583,4 +583,4 @@
 .dx-mk[data-state=live] .url{box-shadow:none}
 @media (max-width:1100px){.dx-mk .stage{grid-template-columns:minmax(0,1fr) 32px minmax(0,1fr)}}
 @media (max-width:900px){.dx-mk .stage{display:flex}.dx-mk .link{height:16px!important}}
-.dx-mk .s3-pv>img.s3-shot{display:block;object-fit:cover;object-position:top;pointer-events:none;user-select:none}
+.dx-mk .s3-pv>img.s3-shot{display:block;max-width:none;width:560px;height:270px;object-fit:cover;object-position:top;pointer-events:none;user-select:none}
