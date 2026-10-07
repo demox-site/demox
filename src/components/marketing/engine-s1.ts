@@ -65,7 +65,7 @@ export function initS1(root: HTMLElement): () => void {
   var pageEl=$id('page'), hostEl=$id('cfHost'), shadow=hostEl.attachShadow({mode:'open'});
   shadow.innerHTML='<style>:host{display:block}'+COFFEE_CSS+
     '.cf .blk{opacity:0;transform:translateY(8px);transition:opacity .4s,transform .45s cubic-bezier(.2,.7,.2,1),box-shadow .7s ease-out,outline-color .6s;outline:1px dashed transparent;outline-offset:4px}'+
-    '.cf .blk.on{opacity:1;transform:none}.cf .blk.hl{outline-color:rgba(200,116,44,.5)}'+
+    '.cf .blk.on{opacity:1;transform:none}.cf .blk.on.pre{opacity:.1;transform:scale(.965);filter:blur(1.5px)}.cf .blk{transition:opacity .4s,transform .45s cubic-bezier(.2,.7,.2,1),filter .4s,box-shadow .7s ease-out,outline-color .6s}.cf .blk.hl{outline-color:rgba(200,116,44,.5)}'+
     '.cf .blk.land{box-shadow:0 0 0 4px rgba(34,197,94,.25),0 0 28px rgba(34,197,94,.32);transition:none}'+
     '.cf .nav{position:relative}.cf .lk{display:flex}</style><div class="cq"><div class="cf">'+renderBody()+'</div></div>';
   var cfEl=shadow.querySelector('.cf');
@@ -338,17 +338,62 @@ export function initS1(root: HTMLElement): () => void {
       await sleep(LINES[i][1]?70:20);
     }
   }
+
+  /* ---------- deploy flight: typed code lines lift off the editor and fly into the preview, where their block materializes ---------- */
+  function flight(){
+    if(reduce) return Promise.resolve();
+    var g0=gen, st=$id('stage'), S=st.getBoundingClientRect(), mob=window.matchMedia('(max-width:900px)').matches;
+    var layer=st.querySelector('.s1-fly'); if(!layer){ layer=document.createElement('div'); layer.className='s1-fly'; layer.setAttribute('aria-hidden','true'); st.appendChild(layer); }
+    pageTop();
+    var nr=nodeEl.getBoundingClientRect(), mx=nr.left+nr.width/2-S.left, my=nr.top+nr.height/2-S.top;
+    var cr=codeEl.getBoundingClientRect(), pr=pageEl.getBoundingClientRect();
+    var items=[]; LINES.forEach(function(l,i){ if(l[1]&&blocks[l[1]]&&typed[i]>0) items.push(i); });
+    var cap=mob?10:14; if(items.length>cap){ var pick=[]; for(var q=0;q<cap;q++) pick.push(items[Math.round(q*(items.length-1)/(cap-1))]); items=pick; }
+    var fs=items.map(function(i,k){
+      var le=lineEls[i], r=le.lastChild.getBoundingClientRect(), sx, sy;
+      if(r.height && r.bottom>cr.top+4 && r.top<cr.bottom-4){ sx=r.left-S.left; sy=r.top-S.top; } else { sx=cr.left-S.left+44; sy=cr.bottom-S.top-26; }
+      var txt=LINES[i][0].trim(), mx2=mob?22:34; if(txt.length>mx2) txt=txt.slice(0,mx2-1)+'…';
+      var el=document.createElement('span'); el.className='s1-f'+(k===0?' lead':''); el.textContent=txt;
+      el.style.transform='translate3d('+sx+'px,'+sy+'px,0)'; el.style.opacity='0'; layer.appendChild(el);
+      var b=blocks[LINES[i][1]]; b.classList.add('pre');
+      var br=b.getBoundingClientRect(), tx=br.left+br.width/2-S.left, ty=Math.max(pr.top+16,Math.min(pr.bottom-16,br.top+Math.min(br.height,60)/2))-S.top;
+      return {i:i,el:el,b:b,sx:sx,sy:sy,tx:tx,ty:ty,w:el.offsetWidth,h:el.offsetHeight,t0:k*(mob?95:80),dur:mob?720:860,
+        rot:(k%2?1:-1)*(4+Math.random()*8), cx:mob?mx+(k%2?1:-1)*(40+Math.random()*50):mx+(Math.random()-.5)*60, cy:mob?my:my-90-Math.random()*90, done:false, lifted:false};
+    });
+    return new Promise(function(res){
+      var t0=performance.now();
+      function end(){ fs.forEach(function(f){ f.b.classList.remove('pre'); lineEls[f.i].classList.remove('lift'); }); layer.innerHTML=''; res(); }
+      function tick(now){
+        if(g0!==gen){ end(); return; }
+        var left=0;
+        for(var n=0;n<fs.length;n++){
+          var f=fs[n]; if(f.done) continue; left++;
+          var p=(now-t0-f.t0)/f.dur; if(p<0) continue;
+          if(!f.lifted){ f.lifted=true; lineEls[f.i].classList.add('lift'); }
+          if(p>=1){ f.done=true; f.el.style.opacity='0'; f.b.classList.remove('pre'); lineEls[f.i].classList.remove('lift');
+            (function(b){ setTimeout(function(){ land(b); },260); })(f.b); Beam.burst(.7); Beam.kick(.8); continue; }
+          var e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2, u=1-e, sc=1-.45*e;
+          var x=u*u*f.sx+2*u*e*f.cx+e*e*(f.tx-f.w/2), y=u*u*f.sy+2*u*e*f.cy+e*e*(f.ty-f.h/2);
+          f.el.style.transform='translate3d('+x.toFixed(1)+'px,'+y.toFixed(1)+'px,0) rotate('+(Math.sin(Math.PI*e)*f.rot).toFixed(2)+'deg) scale('+sc.toFixed(3)+')';
+          f.el.style.opacity=String(p<.08?p/.08:p>.82?Math.max(0,(1-p)/.18):1);
+        }
+        if(left) requestAnimationFrame(tick); else { layer.innerHTML=''; res(); }
+      }
+      requestAnimationFrame(tick);
+    });
+  }
   async function deploy(){
     setCur(-1);
     var cmd='demox deploy ./dist';
     for(var k=1;k<=cmd.length;k++){ term([PROMPT+'<span class="w">'+cmd.slice(0,k)+'</span><i class="caret"></i>']); await sleep(18+Math.random()*22); }
     await sleep(160);
     setState('deploying');
+    var fl=flight();
     var head=PROMPT+'<span class="w">'+cmd+'</span>';
     term([head,'<span class="dim">打包资源...</span>']);
     await sleep(520);
     term([head,'<span class="dim">打包资源...</span> 完成 (0.4s)','<span class="dim">上传至边缘网络...</span>']);
-    await sleep(820);
+    await sleep(820); await fl;
     term([head,'<span class="dim">上传至边缘网络...</span> 完成 (1.2s)','<span class="ok">✓ 成功！已部署至：</span><span class="w">'+URL_LIVE.replace('https://','')+'</span>']);
     setState('live'); pageRefresh(); pageTop();
   }

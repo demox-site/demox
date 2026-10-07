@@ -568,3 +568,10 @@
 .dx-mk .pv-md .out h4{font-size:24px;font-weight:700;letter-spacing:-.02em}
 .dx-mk .pv-md .out b{font-size:15px;color:#27272a}
 .dx-mk .pv-vite .ap .ln.s{width:60%}
+
+/* deploy flight */
+.dx-mk .s1-fly{position:absolute;inset:0;pointer-events:none;z-index:30;overflow:visible;contain:layout style}
+.dx-mk .s1-f{position:absolute;left:0;top:0;font:12px/18px var(--font-mono);color:var(--stitch-ink);background:var(--stitch-surface);border:1px solid var(--stitch-line);border-radius:6px;padding:1px 7px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.08);will-change:transform,opacity;transform-origin:50% 50%}
+.dx-mk .s1-f.lead::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,.7);margin-right:6px;vertical-align:1px}
+.dx-mk .ln .src{transition:opacity .2s}.dx-mk .ln.lift .src{opacity:.25}
+@media (max-width:720px){.dx-mk .s1-f{font-size:10.5px;line-height:16px;padding:0 6px}}
