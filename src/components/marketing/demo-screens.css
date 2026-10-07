@@ -546,4 +546,11 @@
   .dx-mk .s1-chip i{animation:none}
   .dx-mk .s3-stage{touch-action:auto}
   .dx-mk .s3-mbk,.dx-mk .s3-dlg{transition:none}
-}
+}/* Screen 1 preview: shared coffee page (coffee-page.mjs) rendered in a shadow root, scaled to the panel */
+.dx-mk .page{padding:0;background:#f6efe4}
+.dx-mk .page .cf-host{position:absolute;left:0;top:0;transform-origin:0 0;transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+.dx-mk .page .refresh{z-index:2}
+@media (prefers-reduced-motion:reduce){.dx-mk .page .cf-host{transition:none}}
+.dx-mk .s3-pv>.pv-cf2{padding:0;overflow:hidden;background:#f6efe4}
+.dx-mk .pv-cf2 .cq{width:1040px;transform:scale(.5385);transform-origin:0 0;pointer-events:none}
+.dx-mk .pv-cf2 .nav{position:relative}

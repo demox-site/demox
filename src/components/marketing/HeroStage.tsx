@@ -34,22 +34,7 @@ const Markup = React.memo(function Markup() {
           <span className="state" id="stateTag">预览</span></div>
         <div className="page" id="page" aria-hidden="true">
           <div className="refresh" id="refresh" />
-          <div className="blk" data-b="nav"><div><div className="box s-nav"><b>Coffee<span className="dt">.</span></b><em data-t>菜单</em><em>门店</em><em className="pl">预订</em></div></div></div>
-          <div className="s-hero">
-            <div className="s-copy">
-              <div className="blk" data-b="ey"><div><div className="box s-ey" data-t /></div></div>
-              <div className="blk" data-b="h1"><div><div className="box s-h1" data-t /></div></div>
-              <div className="blk" data-b="p"><div><div className="box s-p" data-t /></div></div>
-              <div className="blk" data-b="btn"><div><div className="box s-btn" data-t /></div></div>
-            </div>
-            <div className="blk" data-b="cover"><div><div className="box s-cover" aria-hidden="true"><i className="dr" /><i className="ds" /><i className="cup" /><i className="hd" /><i className="sm" /><i className="sm b" /></div></div></div>
-          </div>
-          <div className="s-cards">
-            <div className="blk s-card" data-b="c1"><div><div className="box"><span data-t /></div></div></div>
-            <div className="blk s-card" data-b="c2"><div><div className="box"><span data-t /></div></div></div>
-            <div className="blk s-card" data-b="c3"><div><div className="box"><span data-t /></div></div></div>
-          </div>
-          <div className="blk" data-b="foot"><div><div className="box s-foot" data-t /></div></div>
+          <div className="cf-host" id="cfHost" />
         </div>
         <div className="s1-out" id="s1Out"><div className="s1-bar" id="s1Bar" /></div>
       </div>

@@ -2,6 +2,8 @@
 /* Ported verbatim from the approved demox-hero-demo (v6-interactive + v7.1 content).
    Scoped to `root`; returns a cleanup that stops all loops and window/document listeners. */
 
+import { COFFEE_LINES, COFFEE_CSS, renderBody, coffeeSandboxDocument } from './coffee-page.mjs';
+
 export function initS1(root: HTMLElement): () => void {
   var __dead=false, __L=[];
   function __on(t,e,f,o){ t.addEventListener(e,f,o); __L.push([t,e,f,o]); }
@@ -17,23 +19,7 @@ export function initS1(root: HTMLElement): () => void {
 
   /* ---------- the "AI-generated" source, typed from zero every loop ---------- */
   // [code, blockId, revealAt(optional: reveal once this many chars are typed)]
-  var LINES = [
-    ['<!doctype html>'],
-    ['<nav><b>Coffee.</b> <a>菜单</a> <a>门店</a> <a>预订</a></nav>', 'nav', 5],
-    ['<section class="hero">'],
-    ['  <span class="eyebrow">手冲咖啡馆 · 每日现烘</span>', 'ey'],
-    ['  <h1>好咖啡，慢慢来</h1>', 'h1'],
-    ['  <p>每天清晨现烘，一杯一杯手冲。</p>', 'p'],
-    ['  <button>预订座位</button>', 'btn'],
-    ['  <div class="pour" aria-hidden="true"></div>', 'cover'],
-    ['</section>'],
-    ['<ul class="cards">'],
-    ['  <li>云南日晒</li>', 'c1'],
-    ['  <li>埃塞俄比亚水洗</li>', 'c2'],
-    ['  <li>哥伦比亚蜜处理</li>', 'c3'],
-    ['</ul>'],
-    ['<footer>© 2026 Coffee.</footer>', 'foot']
-  ];
+  var LINES = COFFEE_LINES;   // shared with coffee.demox.site (coffee-page.mjs)
   var URL_LIVE = 'https://coffee.demox.site';
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -65,7 +51,7 @@ export function initS1(root: HTMLElement): () => void {
   }
   var TOK = LINES.map(function(l){return tokenize(l[0]);});
   var INNER = LINES.map(function(l){
-    var s=l[0], b=l[1]; if(!b || l[2]!=null) return null;
+    var s=l[0], b=l[1]; if(!b || !l[3]) return null;
     var o=s.indexOf('>'), c=s.lastIndexOf('</');
     if(o<0||c<0||c<o) return null;
     return [o+1,c];
@@ -75,7 +61,27 @@ export function initS1(root: HTMLElement): () => void {
       termEl=$id('term'), urlEl=$id('url'),
       stateTag=$id('stateTag'), nodeLabel=$id('nodeLabel'),
       refreshEl=$id('refresh'), nodeEl=$id('node');
-  var blocks={}; [].forEach.call(root.querySelectorAll('.blk'),function(el){blocks[el.getAttribute('data-b')]=el;});
+  /* live preview = the real coffee page in a shadow root, rendered at a virtual viewport and scaled down */
+  var pageEl=$id('page'), hostEl=$id('cfHost'), shadow=hostEl.attachShadow({mode:'open'});
+  shadow.innerHTML='<style>:host{display:block}'+COFFEE_CSS+
+    '.cf .blk{opacity:0;transform:translateY(8px);transition:opacity .4s,transform .45s cubic-bezier(.2,.7,.2,1),box-shadow .7s ease-out,outline-color .6s;outline:1px dashed transparent;outline-offset:4px}'+
+    '.cf .blk.on{opacity:1;transform:none}.cf .blk.hl{outline-color:rgba(200,116,44,.5)}'+
+    '.cf .blk.land{box-shadow:0 0 0 4px rgba(34,197,94,.25),0 0 28px rgba(34,197,94,.32);transition:none}'+
+    '.cf .nav{position:relative}.cf .lk{display:flex}</style><div class="cq"><div class="cf">'+renderBody()+'</div></div>';
+  var cfEl=shadow.querySelector('.cf');
+  var blocks={}; LINES.forEach(function(l){ if(!l[1]) return; var el=cfEl.querySelector(l[2]); if(el){ el.classList.add('blk'); el.setAttribute('data-b',l[1]); if(l[3]) el.setAttribute('data-full',el.textContent); blocks[l[1]]=el; } });
+  var VW=1040, K=1, pageOff=0;
+  function fit(){ var w=pageEl.clientWidth; if(!w) return; VW = window.innerWidth<720 ? 390 : 1040; K=w/VW; hostEl.style.width=VW+'px'; applyOff(); }
+  function applyOff(){ hostEl.style.transform='translateY('+(-pageOff)+'px) scale('+K+')'; }
+  function follow(el){              // keep the block that just landed in view, like scrolling the real page
+    var vis=pageEl.clientHeight; if(!vis) return;
+    var top=(el.getBoundingClientRect().top-hostEl.getBoundingClientRect().top)/K*K, h=el.getBoundingClientRect().height;
+    var want=pageOff; if(top+h>pageOff+vis-12) want=top+h-vis+24; if(top<pageOff) want=Math.max(0,top-12);
+    var max=Math.max(0,hostEl.getBoundingClientRect().height-vis); want=Math.min(max,Math.max(0,want));
+    if(want!==pageOff){ pageOff=want; applyOff(); }
+  }
+  function pageTop(){ if(pageOff){ pageOff=0; applyOff(); } }
+  fit(); if('ResizeObserver' in window){ var __ro=new ResizeObserver(fit); __ro.observe(pageEl); }
   var lineEls=[];
   LINES.forEach(function(l,i){
     var d=document.createElement('div'); d.className='ln'; if(l[1]) d.setAttribute('data-b',l[1]);
@@ -100,7 +106,7 @@ export function initS1(root: HTMLElement): () => void {
     cur=i;
     if(i>=0){lineEls[i].classList.add('cur'); renderLine(i,true);}
     scrollCode();
-    if(typeof Beam!=='undefined') Beam.aim(i>=0?lineEls[i]:termEl, i>=0?(lastBlock||blocks.nav):root.querySelector('.chrome'));
+    if(typeof Beam!=='undefined') Beam.aim(i>=0?lineEls[i]:termEl, i>=0?(lastBlock||blocks.logo):root.querySelector('.chrome'));
   }
   function scrollCode(){
     var lh=lineEls[0].offsetHeight||20, vis=codeEl.clientHeight-24, last=cur;
@@ -111,17 +117,17 @@ export function initS1(root: HTMLElement): () => void {
   function syncBlock(i){
     var b=LINES[i][1]; if(!b) return;
     var el=blocks[b], s=LINES[i][0], n=typed[i], inn=INNER[i], show;
-    if(LINES[i][2]!=null) show = n>=LINES[i][2];
-    else if(inn){ show = n>inn[0];
-      var te=el.querySelector('[data-t]'); if(te) te.textContent = n>inn[0] ? s.slice(inn[0],Math.min(n,inn[1])) : '';
-    } else show = n>=s.length;
+    if(!el) return;
+    if(inn){ show = n>inn[0];
+      el.textContent = n>=inn[1] ? el.getAttribute('data-full') : (n>inn[0] ? s.slice(inn[0],Math.min(n,inn[1])) : '');
+    } else show = n>=Math.min(s.length, b==='logo'?8:s.length);
     if(show && !el.classList.contains('on')){ el.classList.add('on'); onReveal(el); }
     if(show){ lastBlock=el; if(cur===i) Beam.aim(lineEls[i], el); }
     if(!show && el.classList.contains('on')) el.classList.remove('on');
   }
   function onReveal(el){
     if(html.classList.contains('init')) return;
-    pageRefresh();
+    pageRefresh(); follow(el);
     Beam.fire({size:3.4, trail:150, dur:560, onArrive:function(){ land(el); Beam.burst(1); }});
   }
   function land(el){ el.classList.add('land'); setTimeout(function(){el.classList.remove('land');},140); }
@@ -320,7 +326,7 @@ export function initS1(root: HTMLElement): () => void {
   /* v6: every await goes through sleep(); bumping `gen` aborts the running loop at its next tick (used by edit mode) */
   var gen=0, ABORT={abort:true};
   function sleep(ms){ var g=gen; return new Promise(function(r){setTimeout(r,ms);}).then(function(){ if(g!==gen) throw ABORT; }); }
-  function charDelay(c,fast){ if(c===' ') return 8; if(/[\u4e00-\u9fff，。·]/.test(c)) return 36+Math.random()*26; return fast?(7+Math.random()*6):(11+Math.random()*13); }
+  function charDelay(c,fast){ if(c===' ') return 3; if(/[\u4e00-\u9fff，。·¥–]/.test(c)) return 22+Math.random()*14; return fast?(3+Math.random()*3):(5+Math.random()*5); }
   async function typeAll(){
     for(var i=0;i<LINES.length;i++){
       var s=LINES[i][0]; setCur(i);
@@ -329,7 +335,7 @@ export function initS1(root: HTMLElement): () => void {
         typed[i]++; renderLine(i,true); syncBlock(i);
       }
       setCharge((i+1)/LINES.length);
-      await sleep(LINES[i][1]?130:40);
+      await sleep(LINES[i][1]?70:20);
     }
   }
   async function deploy(){
@@ -344,10 +350,10 @@ export function initS1(root: HTMLElement): () => void {
     term([head,'<span class="dim">打包资源...</span> 完成 (0.4s)','<span class="dim">上传至边缘网络...</span>']);
     await sleep(820);
     term([head,'<span class="dim">上传至边缘网络...</span> 完成 (1.2s)','<span class="ok">✓ 成功！已部署至：</span><span class="w">'+URL_LIVE.replace('https://','')+'</span>']);
-    setState('live'); pageRefresh();
+    setState('live'); pageRefresh(); pageTop();
   }
   async function clearAll(){
-    setState('editing'); setCharge(0); lastBlock=null;
+    setState('editing'); setCharge(0); lastBlock=null; pageTop();
     for(var i=LINES.length-1;i>=0;i--){
       typed[i]=0; lineEls[i].classList.remove('cur'); renderLine(i,false); syncBlock(i);
       scrollCode(); await sleep(22);
@@ -394,8 +400,8 @@ export function initS1(root: HTMLElement): () => void {
   }
   linesEl.addEventListener('mouseover',function(e){var l=e.target.closest('.ln');hl(l&&l.getAttribute('data-b'),true);});
   linesEl.addEventListener('mouseout',function(e){var l=e.target.closest('.ln');hl(l&&l.getAttribute('data-b'),false);});
-  $id('page').addEventListener('mouseover',function(e){var b=e.target.closest('.blk');hl(b&&b.getAttribute('data-b'),true);});
-  $id('page').addEventListener('mouseout',function(e){var b=e.target.closest('.blk');hl(b&&b.getAttribute('data-b'),false);});
+  $id('page').addEventListener('mouseover',function(e){var t0=e.composedPath&&e.composedPath()[0]; var b=t0&&t0.closest&&t0.closest('.blk');hl(b&&b.getAttribute('data-b'),true);});
+  $id('page').addEventListener('mouseout',function(e){var t0=e.composedPath&&e.composedPath()[0]; var b=t0&&t0.closest&&t0.closest('.blk');hl(b&&b.getAttribute('data-b'),false);});
   if(!reduce && window.matchMedia('(hover:hover) and (pointer:fine)').matches){
     var raf=0;
     __on(window,'pointermove',function(e){
@@ -487,25 +493,7 @@ export function initS1(root: HTMLElement): () => void {
   }
 
   /* ---- sandboxed preview ---- */
-  var COVER="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='120' viewBox='0 0 600 120'%3E%3Crect width='600' height='120' fill='%23f6efe4'/%3E%3Ccircle cx='480' cy='60' r='44' fill='%23d9c3a5'/%3E%3Cpath d='M452 52h56l-16 28h-24z' fill='%23c8742c'/%3E%3Cpath d='M456 82h48c0 18-8 30-24 30s-24-12-24-30z' fill='%23fbf7f0'/%3E%3C/svg%3E";
-  var BASE='<!doctype html><html><head><meta charset="utf-8">'+
-    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: blob:; media-src data: blob:; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; font-src data:">'+
-    '<meta name="viewport" content="width=device-width,initial-scale=1"><style>'+
-    'html{background:#f6efe4}body{margin:0;padding:12px 18px 10px;font:13px/1.6 ui-sans-serif,system-ui,sans-serif,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC";color:#2b1d14;background:radial-gradient(45% 55% at 82% 58%,rgba(217,195,165,.45),transparent 72%),#f6efe4;-webkit-font-smoothing:antialiased}'+
-    'nav{display:flex;align-items:center;gap:12px;font-size:12px;color:#5a3d29;padding-bottom:10px;border-bottom:1px solid rgba(43,29,20,.1);margin:0 -18px 10px;padding-left:18px;padding-right:18px}nav b{font:700 15px/1 Georgia,"Times New Roman","Songti SC","Noto Serif SC",serif;color:#2b1d14;letter-spacing:-.01em;margin-right:auto}'+
-    '.eyebrow,span.eyebrow{display:block;font-size:10px;letter-spacing:.18em;color:#8a6446;margin-bottom:6px}'+
-    'h1{font:700 22px/1.15 "Songti SC","STSong","Noto Serif SC","Noto Serif CJK SC",Georgia,serif;letter-spacing:.04em;margin:0;color:#2b1d14}p{font-size:12px;color:#6f5a49;margin:6px 0 0;letter-spacing:.03em}'+
-    'button{margin-top:10px;font:600 12px/1 inherit;color:#fff;background:#c8742c;border:0;border-radius:999px;padding:9px 16px;cursor:pointer;box-shadow:0 8px 18px -8px rgba(200,116,44,.75);letter-spacing:.04em}'+
-    'img{display:block;max-width:100%}img.cover{width:100%;height:86px;margin-top:12px;border-radius:12px;object-fit:cover;background:#d9c3a5}'+
-    '.pour,div.pour{position:relative;height:100px;margin-top:8px;border-radius:50%;width:100px;margin-left:auto;margin-right:0;background:radial-gradient(circle at 35% 30%,#ecd9bd,#d9c3a5 55%,#c9ab86)}'+
-    '.pour::before{content:"";position:absolute;left:50%;top:14%;width:36%;height:18%;margin-left:-18%;background:linear-gradient(135deg,#e7b98a,#c8742c);clip-path:polygon(0 0,100% 0,72% 100%,28% 100%)}'+
-    '.pour::after{content:"";position:absolute;left:50%;top:48%;width:48%;height:32%;margin-left:-28%;border-radius:4px 4px 40% 40%;background:#fbf7f0;box-shadow:14px 4px 0 -2px #fbf7f0}'+
-    'ul{list-style:none;margin:10px 0 0;padding:0}ul.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}'+
-    'ul.cards li{border:1px solid rgba(43,29,20,.12);border-radius:10px;padding:9px 10px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#fbf7f0;font-family:"Songti SC","Noto Serif SC",Georgia,serif}'+
-    'footer{margin-top:10px;font-size:10px;color:#6f5a49}a{color:inherit}'+
-    '@media (max-width:420px){body{padding:10px 14px 10px}h1{font-size:18px}ul.cards{gap:6px}ul.cards li{font-size:10px;padding:7px}}'+
-    '</style></head><body>';
-  function buildDoc(src){ return BASE+src.replace(/(src\s*=\s*["']?)beans\.jpg/gi,'$1'+COVER); }
+  function buildDoc(src){ return coffeeSandboxDocument(src); }
   function render(fx){
     var f=document.createElement('iframe');
     f.className='s1-frame'; f.setAttribute('sandbox','allow-scripts'); f.setAttribute('title','你的代码 · 实时预览');
@@ -601,7 +589,7 @@ export function initS1(root: HTMLElement): () => void {
     armIdle();
   });
 
-  __cleanup=function(){ try{ gen++; }catch(_){} };
+  __cleanup=function(){ try{ gen++; }catch(_){} try{ __ro&&__ro.disconnect(); }catch(_){} };
   })();
   return function(){ __dead=true; __L.forEach(function(x){ x[0].removeEventListener(x[1],x[2],x[3]); }); __cleanup(); };
 }
