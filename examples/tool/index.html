@@ -28,6 +28,24 @@ input[type=range]{width:55%;accent-color:var(--acc)}
 .tip{margin-top:18px;padding:14px;border-radius:14px;background:rgba(255,138,91,.08);color:#ffd2bf;font-size:14px}
 footer{color:var(--mute);font-size:13px;padding:30px 0}
 @media(max-width:760px){main{grid-template-columns:1fr}.time b{font-size:52px}}
+
+/* ---- polish v2 ---- */
+body{-webkit-font-smoothing:antialiased;justify-content:center}
+header{position:fixed;top:0;left:50%;transform:translateX(-50%)}
+main{margin-top:0}
+.time b{font-variant-numeric:tabular-nums}
+.card{box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 30px 60px -30px rgba(0,0,0,.6)}
+.modes button{transition:background .2s,color .2s}.modes button:not(.on):hover{color:var(--ink);background:rgba(255,255,255,.1)}
+.ctl button{transition:transform .12s}.ctl button:active{transform:scale(.97)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+#arc{transition:stroke-dashoffset 1s linear}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;align-items:end;height:84px;margin-top:6px}
+.week div{display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end}
+.week i{display:block;width:100%;max-width:22px;border-radius:6px 6px 3px 3px;background:rgba(255,255,255,.08);min-height:4px}
+.week i.on{background:var(--acc)}.week span{font-size:11px;color:var(--mute)}
+kbd{font:12px ui-monospace,monospace;border:1px solid rgba(255,255,255,.25);border-bottom-width:2px;border-radius:5px;padding:0 5px;color:var(--ink)}
+footer{position:fixed;bottom:0}
+@media(max-width:760px){header,footer{position:static;transform:none}body{justify-content:flex-start}}
 </style></head><body>
 <header><div class="logo">晚风<b>·</b>番茄钟</div><small>单文件 HTML · 数据只存在你的浏览器</small></header>
 <main>
@@ -43,7 +61,8 @@ footer{color:var(--mute);font-size:13px;padding:30px 0}
   <label>专注 <input type="range" min="10" max="60" value="25" id="r-focus"><span id="v-focus">25</span></label>
   <label>短休 <input type="range" min="3" max="15" value="5" id="r-short"><span id="v-short">5</span></label>
   <label>长休 <input type="range" min="10" max="30" value="15" id="r-long"><span id="v-long">15</span></label>
-  <div class="tip">每完成 4 个专注，建议来一次长休。按空格键开始 / 暂停。</div>
+  <h2 style="margin-top:22px">最近 7 天</h2><div class="week" id="week"></div>
+  <div class="tip">每完成 4 个专注，建议来一次长休。按 <kbd>空格</kbd> 开始 / 暂停。</div>
  </aside>
 </main>
 <footer>晚风番茄钟 · Demox 公开示例：一个 AI 写好的单页小工具，<code>demox deploy ./tool</code> 发布。</footer>
@@ -51,7 +70,8 @@ footer{color:var(--mute);font-size:13px;padding:30px 0}
 var D={focus:25,short:5,long:15},L={focus:'专注一段',short:'起来走走',long:'好好休息'},m='focus',left=D.focus*60,tot=left,run=null;
 var $=function(i){return document.getElementById(i)},key='wf-'+new Date().toDateString();
 function show(){var mm=Math.floor(left/60),ss=left%60;$('t').textContent=(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss;$('arc').style.strokeDashoffset=326.7*(1-left/tot);document.title=$('t').textContent+' · 晚风番茄钟';}
-function today(){var n=+(localStorage.getItem(key)||0),el=$('today');el.innerHTML=n?Array(n+1).join('<i></i>'):'<em>还没有，先来一个。</em>';}
+function today(){var n=+(localStorage.getItem(key)||0),el=$('today');el.innerHTML=n?Array(n+1).join('<i></i>'):'<em>还没有，先来一个。</em>';week();}
+function week(){var W='日一二三四五六',h='',d=new Date(),max=1,v=[];for(var k=6;k>=0;k--){var x=new Date(d);x.setDate(d.getDate()-k);var c=+(localStorage.getItem('wf-'+x.toDateString())||0);v.push([c,k===0?'今':W[x.getDay()]]);max=Math.max(max,c);}v.forEach(function(a){h+='<div><i class="'+(a[0]?'on':'')+'" style="height:'+Math.max(4,a[0]/max*64)+'px"></i><span>'+a[1]+'</span></div>';});$('week').innerHTML=h;}
 function set(x){m=x;stop();left=tot=D[m]*60;$('lab').textContent=L[m];document.querySelectorAll('.modes button').forEach(function(b){b.classList.toggle('on',b.dataset.m===m)});show();}
 function stop(){clearInterval(run);run=null;$('go').textContent='开始';}
 function go(){if(run){stop();return;}$('go').textContent='暂停';run=setInterval(function(){left--;if(left<=0){stop();if(m==='focus'){localStorage.setItem(key,+(localStorage.getItem(key)||0)+1);today();}set(m==='focus'?'short':'focus');return;}show();},1000);}
