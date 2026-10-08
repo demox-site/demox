@@ -30,7 +30,7 @@ import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Database, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Database, Eye, Flag, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
 
 const DEFAULT_ROLE_META = [
   { id: "admin", name: "管理员", priority: 100, enabled: true },
@@ -159,10 +159,11 @@ const roleBadgeClass = (roleId: string) => {
 const AdminDashboard: React.FC = () => {
   const { toast } = useToast();
   const { section } = useParams<{ section?: string }>();
-  const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" =
+  const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" | "reports" =
     section === "roles" ? "roles"
       : section === "roleLimits" ? "roleLimits"
         : section === "buckets" ? "buckets"
+          : section === "reports" ? "reports"
           : "dashboard";
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -185,6 +186,7 @@ const AdminDashboard: React.FC = () => {
       admins?: number;
       proActive?: number;
       proExpired?: number;
+      reportsOpen?: number;
     };
     traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
     topSites?: Array<{ websiteId: string; name: string; url?: string; owner?: string; views30d?: number; storage?: number }>;
@@ -843,6 +845,113 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const REPORT_REASON_LABEL: Record<string, string> = {
+    porn: "色情低俗",
+    illegal: "违法违规",
+    violence: "暴力恐怖",
+    spam: "欺诈广告",
+    ip: "侵权盗用",
+    other: "其他"
+  };
+  type ReportRow = {
+    id: number;
+    website_id: string;
+    reason: string;
+    note: string;
+    page_url: string;
+    host: string;
+    status: string;
+    created_at: string;
+    site_name?: string;
+    site_url?: string;
+    subdomain?: string;
+    visibility?: string;
+  };
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsList, setReportsList] = useState<ReportRow[]>([]);
+  const [reportsFilter, setReportsFilter] = useState<"open" | "reviewed" | "all">("open");
+  const [inspectReport, setInspectReport] = useState<ReportRow | null>(null);
+  const [disableTarget, setDisableTarget] = useState<ReportRow | null>(null);
+  const [disableReason, setDisableReason] = useState("");
+  const [disableSaving, setDisableSaving] = useState(false);
+  const fetchReports = useCallback(async (status: "open" | "reviewed" | "all" = reportsFilter) => {
+    setReportsLoading(true);
+    try {
+      const res = await adminApi.listSiteReports(status);
+      if (!res.success) throw new Error(res.message || "加载失败");
+      setReportsList(Array.isArray(res.data) ? res.data : []);
+    } catch (e: unknown) {
+      toast({ title: "加载举报失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+      setReportsList([]);
+    } finally {
+      setReportsLoading(false);
+    }
+  }, [reportsFilter, toast]);
+  const markReportReviewed = async (id: number) => {
+    try {
+      const res = await adminApi.updateSiteReport(id, "reviewed");
+      if (!res.success) throw new Error(res.message || "操作失败");
+      fetchReports();
+      fetchPlatformOverview();
+    } catch (e: unknown) {
+      toast({ title: "操作失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    }
+  };
+  const reportSiteUrl = (row: ReportRow) =>
+    row.page_url || row.site_url || (row.host ? `https://${row.host}/` : `https://${String(row.website_id || "").toLowerCase()}.demox.site/`);
+  const canDisableReportedSite = (row: ReportRow) =>
+    String(row.website_id || "").toUpperCase() !== "EPX2UU43" && String(row.subdomain || "").toLowerCase() !== "www";
+  const openDisableDialog = (row: ReportRow) => {
+    if (!canDisableReportedSite(row)) {
+      toast({ title: "不能禁用主站", variant: "destructive" });
+      return;
+    }
+    setDisableReason("");
+    setDisableTarget(row);
+  };
+  const disableReportedSite = async () => {
+    const row = disableTarget;
+    if (!row) return;
+    const reason = disableReason.trim();
+    if (reason.length < 8) {
+      toast({ title: "请填写停用理由", description: "至少 8 个字，将用邮件发给站点所有者。", variant: "destructive" });
+      return;
+    }
+    setDisableSaving(true);
+    try {
+      const res = await adminApi.updateVisibility({
+        websiteId: row.website_id,
+        visibility: "disabled",
+        disableReason: reason,
+        reportId: row.id
+      });
+      if (!res.success) throw new Error(res.message || "禁用失败");
+      toast({
+        title: res.emailed === false ? "站点已禁用，邮件发送失败" : "站点已禁用",
+        description: res.message
+      });
+      setDisableTarget(null);
+      setInspectReport(null);
+      fetchReports();
+      fetchPlatformOverview();
+    } catch (e: unknown) {
+      toast({ title: "禁用失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    } finally {
+      setDisableSaving(false);
+    }
+  };
+  const restoreReportedSite = async (row: ReportRow) => {
+    try {
+      const res = await adminApi.updateVisibility({ websiteId: row.website_id, visibility: "public" });
+      if (!res.success) throw new Error(res.message || "恢复失败");
+      toast({ title: "已恢复公开" });
+      setInspectReport(null);
+      fetchReports();
+    } catch (e: unknown) {
+      toast({ title: "恢复失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    }
+  };
+
   // 注册存储桶弹窗。S3 兼容(R2/OSS/B2/MinIO)需填 endpoint；COS 用 region。
   const BUCKET_DIALOG = (
     <Dialog open={isAddBucketOpen} onOpenChange={setIsAddBucketOpen}>
@@ -929,7 +1038,8 @@ const AdminDashboard: React.FC = () => {
     }
     else if (activeTab === "roleLimits") fetchRoleLimits();
     else if (activeTab === "buckets") fetchBuckets();
-  }, [isAdmin, activeTab, fetchRoles, fetchRoleLimits, fetchBuckets]);
+    else if (activeTab === "reports") fetchReports();
+  }, [isAdmin, activeTab, fetchRoles, fetchRoleLimits, fetchBuckets, fetchReports]);
 
   if (loading) {
     return (
@@ -1025,6 +1135,7 @@ const AdminDashboard: React.FC = () => {
     { label: "项目", value: formatCount(overview?.counts?.projects), hint: overview?.counts?.archivedProjects ? `已归档 ${formatCount(overview.counts.archivedProjects)}` : "运行中", icon: FolderKanban, warn: false },
     { label: "近 30 天访问", value: formatCount(overview?.traffic?.views30d), hint: `近 7 天 ${formatCount(overview?.traffic?.views7d)}`, icon: Eye, warn: false },
     { label: "专业会员", value: formatCount(overview?.counts?.proActive), hint: overview?.counts?.proExpired ? `已过期 ${formatCount(overview.counts.proExpired)}` : "生效中", icon: Crown, warn: false },
+    { label: "待处理举报", value: formatCount(overview?.counts?.reportsOpen), hint: "托管页水印提交", icon: Flag, warn: Number(overview?.counts?.reportsOpen || 0) > 0 },
     { label: "部署存储", value: formatBytes(deployedStorage), hint: `${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`, icon: HardDrive, warn: false },
     {
       label: "存储桶",
@@ -1820,6 +1931,177 @@ const AdminDashboard: React.FC = () => {
                   </div>
                 </DialogContent>
               </Dialog>
+              </div>
+            ) : activeTab === "reports" ? (
+              <div className="space-y-6">
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">站点举报</h1>
+                    <p className="mt-2 text-sm text-zinc-400">查看被举报页面，确认后可禁用该站点。主站不能禁用。</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {(["open", "reviewed", "all"] as const).map((key) => (
+                      <Button
+                        key={key}
+                        variant="outline"
+                        className={`border-zinc-700 ${reportsFilter === key ? "bg-zinc-800 text-zinc-100" : "bg-zinc-900 text-zinc-400"}`}
+                        onClick={() => { setReportsFilter(key); fetchReports(key); }}
+                      >
+                        {key === "open" ? "待处理" : key === "reviewed" ? "已审" : "全部"}
+                      </Button>
+                    ))}
+                    <Button
+                      variant="outline"
+                      className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                      onClick={() => fetchReports()}
+                      disabled={reportsLoading}
+                    >
+                      <RefreshCw className={`mr-2 h-4 w-4 ${reportsLoading ? "animate-spin" : ""}`} />
+                      刷新
+                    </Button>
+                  </div>
+                </div>
+                <Card className="bg-zinc-900 border-zinc-800">
+                  <CardContent className="pt-6">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-zinc-300">
+                        <thead className="text-zinc-500 border-b border-zinc-800">
+                          <tr>
+                            <th className="text-left py-2 pr-4">时间</th>
+                            <th className="text-left py-2 pr-4">站点</th>
+                            <th className="text-left py-2 pr-4">类别</th>
+                            <th className="text-left py-2 pr-4">说明</th>
+                            <th className="text-right py-2">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportsList.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="py-8 text-center text-zinc-500">
+                                {reportsLoading ? "加载中..." : "暂无举报"}
+                              </td>
+                            </tr>
+                          ) : (
+                            reportsList.map((row) => (
+                              <tr key={row.id} className="border-b border-zinc-800/60 align-top">
+                                <td className="py-3 pr-4 whitespace-nowrap text-zinc-400">
+                                  {row.created_at ? new Date(row.created_at).toLocaleString("zh-CN") : "—"}
+                                </td>
+                                <td className="py-3 pr-4">
+                                  <div>{row.site_name || row.website_id}</div>
+                                  <a
+                                    className="text-xs text-emerald-400 hover:underline"
+                                    href={row.page_url || row.site_url || (row.host ? `https://${row.host}/` : "#")}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {row.host || row.page_url || row.website_id}
+                                  </a>
+                                </td>
+                                <td className="py-3 pr-4">{REPORT_REASON_LABEL[row.reason] || row.reason}</td>
+                                <td className="py-3 pr-4 text-zinc-400 max-w-xs break-words">{row.note || "—"}</td>
+                                <td className="py-3 text-right whitespace-nowrap">
+                                  <button className="text-zinc-200 hover:underline mr-3" onClick={() => setInspectReport(row)}>查看</button>
+                                  {row.visibility === "disabled" ? (
+                                    <button className="text-zinc-400 hover:underline mr-3" onClick={() => restoreReportedSite(row)}>恢复</button>
+                                  ) : canDisableReportedSite(row) ? (
+                                    <button className="text-red-400 hover:underline mr-3" onClick={() => openDisableDialog(row)}>禁用</button>
+                                  ) : null}
+                                  {row.status === "open" ? (
+                                    <button className="text-emerald-400 hover:underline" onClick={() => markReportReviewed(row.id)}>标为已审</button>
+                                  ) : (
+                                    <span className="text-zinc-500">已审</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Dialog open={!!disableTarget} onOpenChange={(open) => { if (!open && !disableSaving) setDisableTarget(null); }}>
+                  <DialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100 max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>禁用站点</DialogTitle>
+                      <DialogDescription className="text-zinc-400">
+                        必须填写理由。提交后会按标准格式邮件发给站点所有者，访客将无法打开该站。
+                      </DialogDescription>
+                    </DialogHeader>
+                    {disableTarget ? (
+                      <div className="space-y-3">
+                        <div className="text-sm text-zinc-300">
+                          {disableTarget.site_name || disableTarget.website_id}
+                          <div className="text-xs text-zinc-500 break-all">{reportSiteUrl(disableTarget)}</div>
+                        </div>
+                        <div>
+                          <Label className="text-zinc-300">停用理由</Label>
+                          <textarea
+                            value={disableReason}
+                            onChange={(e) => setDisableReason(e.target.value)}
+                            maxLength={500}
+                            rows={5}
+                            placeholder="写给所有者的停用说明，至少 8 个字"
+                            className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500"
+                          />
+                          <div className="mt-1 text-xs text-zinc-500">{disableReason.trim().length}/500</div>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <Button variant="outline" className="border-zinc-700 bg-zinc-900" disabled={disableSaving} onClick={() => setDisableTarget(null)}>取消</Button>
+                          <Button className="bg-red-700 hover:bg-red-600" disabled={disableSaving} onClick={disableReportedSite}>
+                            {disableSaving ? "提交中..." : "确认禁用并发送邮件"}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </DialogContent>
+                </Dialog>
+                <Dialog open={!!inspectReport} onOpenChange={(open) => { if (!open) setInspectReport(null); }}>
+                  <DialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100 max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>举报详情</DialogTitle>
+                      <DialogDescription className="text-zinc-400">
+                        {inspectReport ? (REPORT_REASON_LABEL[inspectReport.reason] || inspectReport.reason) : ""}
+                      </DialogDescription>
+                    </DialogHeader>
+                    {inspectReport ? (
+                      <div className="space-y-3 text-sm">
+                        <div>
+                          <div className="text-zinc-500">站点</div>
+                          <div>{inspectReport.site_name || inspectReport.website_id}</div>
+                        </div>
+                        <div>
+                          <div className="text-zinc-500">页面</div>
+                          <a className="text-emerald-400 hover:underline break-all" href={reportSiteUrl(inspectReport)} target="_blank" rel="noreferrer">
+                            {reportSiteUrl(inspectReport)}
+                          </a>
+                        </div>
+                        <div>
+                          <div className="text-zinc-500">说明</div>
+                          <div className="text-zinc-300 whitespace-pre-wrap">{inspectReport.note || "无"}</div>
+                        </div>
+                        <div className="text-zinc-500">
+                          {inspectReport.created_at ? new Date(inspectReport.created_at).toLocaleString("zh-CN") : ""}
+                          {inspectReport.visibility === "disabled" ? " · 已禁用" : ""}
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                          <Button variant="outline" className="border-zinc-700 bg-zinc-900" asChild>
+                            <a href={reportSiteUrl(inspectReport)} target="_blank" rel="noreferrer">打开站点</a>
+                          </Button>
+                          {inspectReport.visibility === "disabled" ? (
+                            <Button variant="outline" className="border-zinc-700 bg-zinc-900" onClick={() => restoreReportedSite(inspectReport)}>恢复公开</Button>
+                          ) : canDisableReportedSite(inspectReport) ? (
+                            <Button variant="outline" className="border-red-900 text-red-300" onClick={() => openDisableDialog(inspectReport)}>禁用站点</Button>
+                          ) : null}
+                          {inspectReport.status === "open" ? (
+                            <Button className="bg-emerald-700 hover:bg-emerald-600" onClick={() => { markReportReviewed(inspectReport.id); setInspectReport(null); }}>标为已审</Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </DialogContent>
+                </Dialog>
               </div>
             ) : (
               <div className="space-y-6">

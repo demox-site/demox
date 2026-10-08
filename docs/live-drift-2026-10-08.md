@@ -22,11 +22,13 @@
   - 剥掉 COS 强制下载头。
 - **本分支已把线上 Content 原样提交为 `edge-functions/subdomain-router.js`**，与线上逐字节一致。
 
-## 3. 主站前端 www（EPX2UU43 静态资源）——源码缺失
+## 3. 主站前端 www（EPX2UU43 静态资源）——源码已找回
 
 - 线上 `www.demox.site` 的 bundle（`/assets/index-DRfpVgvc.js`，Last-Modified 2026-09-20 16:53）包含后台「站点举报」管理界面。它会调用 `/website/list-site-reports`（`list_site_reports`）和 `updateSiteReport`，另外还有禁用站点相关的 UI。
-- master 的 `src/` 里没有这些代码。我们手里只有构建产物，**没有源码，所以这里不提交 bundle**。
-- **在任何 www 发布之前**（包括合并到 master 触发 Actions 的 `demox deploy ./dist --id EPX2UU43`），必须先由当初写这部分的人把前端源码找回来，合进 master。否则发布会把举报 / 禁用管理界面从线上删掉。
+- 源码在 phosa 本机仓库 `demox-site/demox`（master 3526f48）未提交的改动里：`src/api.ts`、`src/layouts/ConsoleLayout.tsx`、`src/pages/AdminDashboard.tsx`。同一份工作区里的 website-api `index.js` 与线上 v9 逐字节一致，边缘函数与线上一致。**本分支已原样提交这三个文件。**
+- 验证（2026-10-08）：用本分支的 `src/` 以线上同样的环境变量（`VITE_DEMOX_API_URL=https://api.demox.site`、`VITE_DEMOX_SITE_ID=EPX2UU43`、`VITE_DEMOX_FUNCTION_ENV=production`、`VITE_DEMOX_SITE_URL=https://www.demox.site`）跑 `vite build` + `scripts/generate-seo-pages.mjs`，产物与线上**逐字节一致**：`index-DRfpVgvc.js`（sha256 `fd4480a7…dd48`）、`index-2JOqasvv.css`、`mammoth.browser-BbbDp1Io.js`、`index.html`，另外抽查的 13 个页面（pricing、doc、privacy、llms.txt、sitemap.xml、404.html 等）也一致。
+- 本机 stash `wip-before-pro-seo-release`（2026-08-24）是旧的 WIP：其中已上线的部分 master 里都有（SEO 页面、PKCE、专业版功能等以另一种实现合入），其余部分（workers 策略、`@demox-site/sdk` 重构、后台改版）线上没有，不需要找回。
+- `site_reports` 表的迁移以 `020_add_site_reports.sql` 提交（本地原号 018 与部署锁迁移冲突，019 是画廊）。线上这张表早已由代码自建，迁移是幂等的。
 
 ## 其他
 
