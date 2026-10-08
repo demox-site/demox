@@ -28,6 +28,14 @@ var RESOLVE_RETRY_DELAY_MS = 200;
 var RESOLVE_CACHE_VERSION = 2;
 var RESOLVE_CACHE_PREFIX = 'https://resolve.demox.site/v2/';
 var RESOLVE_NOT_FOUND_MESSAGES = ['not found', 'unsupported official domain', 'missing subdomain'];
+// 旧版本（无版本号）解析缓存 key 前缀。仅在 v2 无条目且后端出错时读取（v1fallback）。
+var RESOLVE_LEGACY_CACHE_PREFIX = 'https://resolve.demox.site/';
+// 回源（站点文件）单次超时与次数。site-3 等 HTTP 源站跨境偶发 ~17s 挂起/重置（2026-10-08 诊断）。
+var ORIGIN_TIMEOUT_MS = 8000;
+var ORIGIN_ATTEMPTS = 2;
+var SITE_UNAVAILABLE_RETRY_AFTER = 10; // 秒
+// 与 website-api RESERVED_LABELS 一致：这些 label 不可能是用户站点（sites.demox.site 是 www 的回源域）。
+var INFRA_LABELS = ['www', 'sites', 'kv-admin', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'static', 'assets', 'blog', 'demox'];
 var VISIBILITY_PRIVATE = 'private';
 var VISIBILITY_DISABLED = 'disabled';
 // EdgeOne response.text() 超过 1MB 抛 OverSize。异常被 passThroughOnException
@@ -307,15 +315,73 @@ function applySiteCacheHeaders(headers, meta, status) {
 // P0 2026-09-14：站点已 resolve 时必须走这里。回源 404 只允许 SPA fallback
 // 或该站点自己的 404.html，禁止当成「站点未发布」。
 // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
+function originDelay(ms) {
+  if (!(ms > 0) || typeof setTimeout !== 'function') return null;
+  let timer = null;
+  const promise = new Promise(function (resolve) { timer = setTimeout(resolve, ms); });
+  return {
+    promise: promise,
+    cancel: function () { if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer); }
+  };
+}
+
+// 站点文件回源：单次 ORIGIN_TIMEOUT_MS 超时，GET/HEAD 失败(抛错或超时)再试一次。
+// 成功后在 meta.originState 记 'ok' 或 'retry'；全部失败抛错（由调用方映射成 503）。
+async function fetchSiteOrigin(url, init, meta) {
+  const method = String((init && init.method) || 'GET').toUpperCase();
+  const attempts = (method === 'GET' || method === 'HEAD') ? Math.max(1, ORIGIN_ATTEMPTS) : 1;
+  let lastError = null;
+  for (let i = 0; i < attempts; i += 1) {
+    const delay = originDelay(ORIGIN_TIMEOUT_MS);
+    try {
+      const attempt = fetch(url, init);
+      const resp = delay
+        ? await Promise.race([
+          attempt,
+          delay.promise.then(function () { throw new Error('origin timeout ' + ORIGIN_TIMEOUT_MS + 'ms'); })
+        ])
+        : await attempt;
+      if (meta && meta.originState !== 'retry') meta.originState = i === 0 ? 'ok' : 'retry';
+      return resp;
+    } catch (e) {
+      lastError = e;
+      if (meta) meta.originState = 'retry';
+    } finally {
+      if (delay) delay.cancel();
+    }
+  }
+  if (meta) meta.originState = 'error';
+  throw lastError || new Error('origin fetch failed');
+}
+
+function isWwwRequest(u) {
+  return String((u && u.hostname) || '').toLowerCase() === WWW_HOST;
+}
+
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
-  const resp = await fetch(buildOriginUrl(req, originPath, u.search, originHost), req);
+  // www（主站）保持原路径：不加超时/重试，异常仍按原逻辑处理。
+  if (isWwwRequest(u)) return rewriteOriginOnce(req, event, u, originPath, sitePath, originHost, meta, false);
+  try {
+    return await rewriteOriginOnce(req, event, u, originPath, sitePath, originHost, meta, true);
+  } catch (e) {
+    try { console.warn('[subdomain-router] origin fetch failed for', u.hostname, (e && e.message) || e); } catch (err) {}
+    if (meta) meta.originState = 'error';
+    return siteUnavailableResponse();
+  }
+}
+
+async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost, meta, hardened) {
+  const originFetch = hardened
+    ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
+    : function (url, init) { return fetch(url, init); };
+  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
     if (u.hostname.toLowerCase() === WWW_HOST && !isWwwSpaRoute(u.pathname)) {
       return serveCustom404(req, event, u, sitePath, originHost, meta);
     }
-    const idxResp = await fetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
+    const idxResp = await originFetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
     if (idxResp.ok) {
       // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
       return withDemoxBadge(req, event, new Response(idxResp.body, {
@@ -395,6 +461,54 @@ function getDefault404Html(meta, u) {
 </div>
 </body>
 </html>`;
+}
+
+// 站点暂时不可用（回源失败 / 解析出错且无可用兜底）。no-store，绝不回落到桶根「站点未发布」。
+function siteUnavailableResponse(route) {
+  const html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<meta name="robots" content="noindex, nofollow">' +
+    '<title>暂时无法访问 · Temporarily unavailable</title>' +
+    '<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif;background:#fafafa;color:#18181b}' +
+    'main{text-align:center;padding:2rem}h1{font-size:1.25rem;margin:0 0 .5rem}p{color:#71717a;margin:.25rem 0}' +
+    'a{color:#18181b}</style></head><body><main>' +
+    '<h1>暂时无法访问，请刷新</h1><p>Temporarily unavailable, please refresh.</p>' +
+    '<p><a href="javascript:location.reload()">刷新 / Refresh</a></p></main></body></html>';
+  const headers = {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Retry-After': String(SITE_UNAVAILABLE_RETRY_AFTER)
+  };
+  if (route) headers['x-demox-route'] = route;
+  return new Response(html, { status: 503, headers: headers });
+}
+
+function withRouteHeader(resp, route) {
+  if (!resp || !route) return resp;
+  try {
+    resp.headers.set('x-demox-route', route);
+    return resp;
+  } catch (e) {
+    try {
+      const copy = new Response(resp.body, resp);
+      copy.headers.set('x-demox-route', route);
+      return copy;
+    } catch (err) {
+      return resp;
+    }
+  }
+}
+
+// label 可能是用户站点（非 www / 非平台保留入口）。只有这类 host 在解析出错时回 503；
+// 平台入口（如 sites.demox.site = www 回源域）保持原逻辑放行回源。
+function isPossibleSiteLabel(label, domain, isCustomHost) {
+  if (isCustomHost) return true;
+  const l = String(label || '').toLowerCase();
+  if (!l) return false;
+  if (INFRA_LABELS.indexOf(l) !== -1) return false;
+  if (l.indexOf('sites-') === 0) return false;
+  return true;
 }
 
 function disabledSitePage() {
@@ -1389,37 +1503,90 @@ async function writeResolveCache(cache, cacheKey, status, resolution) {
   }
 }
 
-async function cachedResolve(cacheKeyUrl, payload, logName) {
+function withResolveState(resolution, state) {
+  resolution.resolveState = state;
+  return resolution;
+}
+
+// 旧版本条目的年龄：只能从缓存响应的 Date / Age 头推断（旧代码没写时间戳）。推断不出来返回 null。
+function legacyEntryAgeMs(resp) {
+  let age = null;
+  try {
+    const date = resp.headers.get('date');
+    const parsed = date ? Date.parse(date) : NaN;
+    if (Number.isFinite(parsed)) age = nowMs() - parsed;
+    const ageHeader = parseInt(resp.headers.get('age') || '', 10);
+    if (Number.isFinite(ageHeader) && ageHeader >= 0) {
+      age = age === null ? ageHeader * 1000 : Math.max(age, ageHeader * 1000);
+    }
+  } catch (e) {
+    age = null;
+  }
+  return age;
+}
+
+// v1fallback：v2 没有条目且后端出错时读旧 key。
+//   - 旧条目是封禁(visibility=disabled) → 按封禁处理（停用页，fail closed，不看年龄）
+//   - 旧条目是「找不到」(path 为空) → 按不存在处理
+//   - 旧条目是正常站点 → 只有能证明写入不超过 RESOLVE_STALE_IF_ERROR_TTL 才用（与 stale 规则一致），否则不用
+// 返回 resolution 或 null（不可用）。
+async function readLegacyFallback(cache, legacyKeyUrl) {
+  if (!cache || !legacyKeyUrl) return null;
+  try {
+    const hit = await cache.match(new Request(legacyKeyUrl));
+    if (!hit) return null;
+    const ageMs = legacyEntryAgeMs(hit);
+    const j = await hit.json();
+    if (!j || typeof j !== 'object' || j.v !== undefined) return null;
+    const resolution = resolutionFromData(j);
+    if (!resolution.path) return emptyResolution();
+    if (resolution.visibility === VISIBILITY_DISABLED) return resolution;
+    if (ageMs !== null && ageMs >= 0 && ageMs < RESOLVE_STALE_IF_ERROR_TTL * 1000) return resolution;
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 返回 resolution，附 resolveState: 'hit' | 'miss' | 'stale' | 'v1fallback' | 'error'
+async function cachedResolve(cacheKeyUrl, payload, logName, legacyKeyUrl) {
   const cacheKey = new Request(cacheKeyUrl);
   let cache = null;
   try { cache = caches.default; } catch (e) { cache = null; }
 
   const cached = await readResolveCache(cache, cacheKey);
   if (cached && isResolveEntryFresh(cached)) {
-    return resolutionFromEntry(cached);
+    return withResolveState(resolutionFromEntry(cached), 'hit');
   }
 
   const result = await lookupResolve(payload);
   if (result.status === 'found' || result.status === 'blocked') {
     await writeResolveCache(cache, cacheKey, result.status, result.resolution);
-    return result.resolution;
+    return withResolveState(result.resolution, 'miss');
   }
   if (result.status === 'not_found') {
     await writeResolveCache(cache, cacheKey, 'not_found', null);
-    return emptyResolution();
+    return withResolveState(emptyResolution(), 'miss');
   }
 
   // 出错：绝不缓存「找不到」。
   if (cached && cached.status === 'blocked') {
     // 已封禁的站点在后端出错时继续显示停用页（fail closed）
-    return resolutionFromData(cached.data);
+    return withResolveState(resolutionFromData(cached.data), 'stale');
   }
   if (cached && isResolveEntryUsableAsStale(cached)) {
     try { console.warn('[subdomain-router] resolve failed, serving stale route for', logName, result.reason); } catch (e) {}
-    return resolutionFromData(cached.data);
+    return withResolveState(resolutionFromData(cached.data), 'stale');
+  }
+  if (!cached) {
+    const legacy = await readLegacyFallback(cache, legacyKeyUrl);
+    if (legacy) {
+      try { console.warn('[subdomain-router] resolve failed, using v1 entry for', logName, result.reason); } catch (e) {}
+      return withResolveState(legacy, 'v1fallback');
+    }
   }
   try { console.warn('[subdomain-router] resolve failed (not cached) for', logName, result.reason); } catch (e) {}
-  return emptyResolution();
+  return withResolveState(emptyResolution(), 'error');
 }
 
 function resolveSiteCacheKey(label, domain) {
@@ -1432,11 +1599,12 @@ function resolveCustomHostCacheKey(hostname) {
 
 async function resolveCustomHost(host) {
   const hostname = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
-  if (!hostname) return emptyResolution();
+  if (!hostname) return withResolveState(emptyResolution(), 'miss');
   return cachedResolve(
     resolveCustomHostCacheKey(hostname),
     { action: 'resolve_subdomain', host: hostname },
-    hostname
+    hostname,
+    RESOLVE_LEGACY_CACHE_PREFIX + 'custom/' + encodeURIComponent(hostname)
   );
 }
 
@@ -1445,11 +1613,27 @@ async function resolveSite(label, domain) {
   return cachedResolve(
     resolveSiteCacheKey(label, suffix),
     { action: 'resolve_subdomain', subdomain: label, domain: suffix },
-    label + '.' + suffix
+    label + '.' + suffix,
+    RESOLVE_LEGACY_CACHE_PREFIX + 'host/' + encodeURIComponent(suffix) + '/' + encodeURIComponent(label)
   );
 }
 
 async function handle(req, event) {
+  const ctx = { siteTraffic: false, resolveState: 'none' };
+  try {
+    return await handleRequest(req, event, ctx);
+  } catch (e) {
+    // 已确认是用户站点流量（非 www）时，任何意外异常都映射成 503，
+    // 绝不让 passThroughOnException 回源到桶根返回「站点未发布」。
+    if (ctx.siteTraffic) {
+      try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
+      return siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
+    }
+    throw e;
+  }
+}
+
+async function handleRequest(req, event, ctx) {
   const u = new URL(req.url);
   const host = u.hostname.toLowerCase();
 
@@ -1466,6 +1650,11 @@ async function handle(req, event) {
   // www.demox.site 不写死：label='www' 走下方通用路由表逻辑（DB websites.subdomain='www'）
   const parsedHost = parseOfficialHost(host);
   const customResolved = parsedHost ? null : await resolveCustomHost(host);
+  if (!parsedHost && customResolved && customResolved.resolveState === 'error') {
+    ctx.siteTraffic = true;
+    ctx.resolveState = 'error';
+    return siteUnavailableResponse('resolve=error; origin=none');
+  }
   if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
   const label = parsedHost ? parsedHost.label : host;
@@ -1481,9 +1670,18 @@ async function handle(req, event) {
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
   // 其他官方域名只匹配用户显式绑定的自定义前缀。
   // 经 website-api resolve + 边缘 Cache。返回 { path, origin }(origin=该站点所属桶的回源域)。
-  let { path, websiteId, origin, visibility, hideWatermark, seo } = customResolved
+  let { path, websiteId, origin, visibility, hideWatermark, seo, resolveState } = customResolved
     ? customResolved
     : await resolveSite(label, domain);
+  const isWwwHost = domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www';
+  ctx.resolveState = resolveState || 'none';
+
+  // 解析出错且没有任何可用兜底：可能是用户站点的 host 回 503（不是 404「站点未发布」）。
+  // www 走下方硬编码兜底；平台入口 label（sites 等）保持原逻辑。
+  if (!path && resolveState === 'error' && !isWwwHost && isPossibleSiteLabel(label, domain, !parsedHost)) {
+    ctx.siteTraffic = true;
+    return siteUnavailableResponse('resolve=error; origin=none');
+  }
 
   // www 是主站基础设施(自托管 demox 本身)，path 固定。
   // resolveSite 偶发失败(SCF 抖动)时绝不放行回源桶根(桶根已清空会白屏)，
@@ -1502,6 +1700,21 @@ async function handle(req, event) {
       status: 404,
       headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
     });
+  }
+
+  if (path && !isWwwHost) {
+    ctx.siteTraffic = true;
+    const meta = {
+      websiteId: websiteId,
+      label: label,
+      domain: domain,
+      hideWatermark: hideWatermark,
+      visibility: visibility,
+      seo: seo,
+      originState: 'none'
+    };
+    const resp = await serveResolvedSite(req, event, u, rest, path, origin, parsedHost, host, meta);
+    return withRouteHeader(resp, 'resolve=' + ctx.resolveState + '; origin=' + meta.originState);
   }
 
   if (path) {
@@ -1542,4 +1755,34 @@ async function handle(req, event) {
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
   return fetch(req);
+}
+
+// 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。
+async function serveResolvedSite(req, event, u, rest, path, origin, parsedHost, host, meta) {
+  const label = meta.label;
+  const domain = meta.domain;
+  if (meta.visibility === VISIBILITY_DISABLED) {
+    return disabledSitePage();
+  }
+  if (meta.visibility === VISIBILITY_PRIVATE) {
+    if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
+      if (req.method !== 'POST') {
+        return new Response('Method Not Allowed', {
+          status: 405,
+          headers: { Allow: 'POST', 'Cache-Control': 'no-store' }
+        });
+      }
+      return completePrivateSiteLogin(req, label, domain);
+    }
+    const access = await checkPrivateSiteAccess(req, label, domain, parsedHost ? '' : host);
+    if (!access.allowed) {
+      if (!access.loginRequired) return accessDeniedPage(req);
+      return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
+    }
+  }
+  if (isSiteApiPath(u.pathname)) {
+    return proxySiteFunction(req, meta.websiteId, u);
+  }
+  // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
+  return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, meta);
 }

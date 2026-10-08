@@ -572,7 +572,7 @@ const LETTERS_FOUND = {
 };
 
 // resolver: (payload, attemptNo) => Response | Promise<Response> | throws
-function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000 }) {
+function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000, origin = null }) {
   const calls = { resolve: [], origin: [] };
   const routerContext = vm.createContext({
     URL,
@@ -594,6 +594,10 @@ function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000 }) {
         return resolver(payload, calls.resolve.length, init);
       }
       calls.origin.push(href);
+      if (origin) {
+        const custom = await origin(href, calls.origin.length, init);
+        if (custom) return custom;
+      }
       if (href.startsWith('http://site-3.demox.site/') || href.startsWith('https://sites.demox.site/')) {
         return new Response('<!doctype html><html><body><main>山间来信</main></body></html>', {
           status: 200,
@@ -609,7 +613,7 @@ function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000 }) {
   });
   vm.runInContext(
     `${source}\nglobalThis.__now = ${now};\nnowMs = function () { return globalThis.__now; };\n` +
-      'RESOLVE_TIMEOUT_MS = 30; RESOLVE_RETRY_DELAY_MS = 1;\n' +
+      'RESOLVE_TIMEOUT_MS = 30; RESOLVE_RETRY_DELAY_MS = 1; ORIGIN_TIMEOUT_MS = 40;\n' +
       'globalThis.__testHooks = { handle, resolveSite };',
     routerContext
   );
@@ -629,6 +633,17 @@ function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000 }) {
   };
 }
 
+// 解析出错且没有可用兜底：503 暂时不可用（no-store），绝不是 404「站点未发布」。
+function assertUnavailable({ response, html }, route = /^resolve=error; origin=none$/) {
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.ok(Number(response.headers.get('Retry-After')) > 0);
+  assert.match(response.headers.get('x-demox-route') || '', route);
+  assert.match(html, /暂时无法访问，请刷新/);
+  assert.match(html, /Temporarily unavailable, please refresh/);
+  assert.doesNotMatch(html, /站点未发布|山间来信/);
+}
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -641,7 +656,7 @@ test('resolve: a network error is never cached as "not found"; the next visit re
     }
   });
   const first = await r.visit('https://letters-from-the-hill.demox.site/');
-  assert.equal(first.response.status, 404); // 无缓存可兜底：仍走原「站点不存在」分支
+  assertUnavailable(first); // 无缓存可兜底：503 暂时不可用，不再落到「站点未发布」
   assert.equal(r.calls.resolve.length, 2, 'one retry after the error');
   assert.equal(r.cache.puts.length, 0, 'errors must not be written to the cache');
 
@@ -659,9 +674,9 @@ test('resolve: a hung backend times out, retries once, and caches nothing', asyn
     })
   });
   const started = Date.now();
-  const { response } = await r.visit('https://coverage.demox.site/');
+  const visited = await r.visit('https://coverage.demox.site/');
   assert.ok(Date.now() - started < 2000, 'bounded by RESOLVE_TIMEOUT_MS * attempts');
-  assert.equal(response.status, 404);
+  assertUnavailable(visited);
   assert.equal(r.calls.resolve.length, 2);
   assert.equal(r.cache.puts.length, 0);
 });
@@ -761,7 +776,7 @@ test('resolve: when the backend errors after the fresh window, the last known ro
   assert.equal(r.cache.puts.length, 1, 'stale fallback does not rewrite the entry');
 
   r.advance(5 * 60_000); // 共 10 分钟：超过 RESOLVE_STALE_IF_ERROR_TTL
-  assert.equal((await r.visit('https://coverage.demox.site/')).response.status, 404);
+  assertUnavailable(await r.visit('https://coverage.demox.site/'));
 });
 
 test('resolve: www keeps its hardcoded fallback when resolve errors', async () => {
@@ -834,9 +849,7 @@ test('stale fallback ends exactly at 10 minutes after the last good lookup', asy
   r.advance(10 * 60_000 - 1);
   assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
   r.advance(1);
-  const { response, html } = await r.visit(ESSAY_URL);
-  assert.equal(response.status, 404);
-  assert.doesNotMatch(html, /山间来信/);
+  assertUnavailable(await r.visit(ESSAY_URL));
 });
 
 test('banned site: the ban replaces the last good entry; when the backend then goes down the site is NOT served from stale', async () => {
@@ -895,9 +908,7 @@ test('deleted site: "not found" replaces the last good entry; when the backend t
   backend.set('down');
   for (const step of [16_000, 60_000, 5 * 60_000]) {
     r.advance(step);
-    const { response, html } = await r.visit(ESSAY_URL);
-    assert.equal(response.status, 404);
-    assert.doesNotMatch(html, /山间来信/);
+    assertUnavailable(await r.visit(ESSAY_URL));
   }
 });
 
@@ -913,7 +924,7 @@ test('deleted site: if writing the "not found" entry fails, the old good entry i
   assert.equal(cache.store.has(ESSAY_KEY), false);
   backend.set('down');
   r.advance(60_000);
-  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
+  assertUnavailable(await r.visit(ESSAY_URL));
 });
 
 test('remaining risk is bounded: if the edge never saw the ban because the backend was down, stale ends at 10 minutes', async () => {
@@ -924,5 +935,187 @@ test('remaining risk is bounded: if the edge never saw the ban because the backe
   r.advance(9 * 60_000);
   assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
   r.advance(60_000);
-  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
+  assertUnavailable(await r.visit(ESSAY_URL));
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-08 诊断：真正的 17s/404 来自站点文件回源（http://site-3.demox.site）挂起/抛错，
+// 异常被 passThroughOnException 回源到桶根「站点未发布」。回源加超时+重试，失败回 503。
+// ---------------------------------------------------------------------------
+
+const LEGACY_ESSAY_KEY = 'https://resolve.demox.site/host/demox.site/letters-from-the-hill';
+
+function routeOf(response) {
+  return response.headers.get('x-demox-route');
+}
+
+test('origin: a throwing site-file fetch becomes 503 no-store (never 404 / 站点未发布), after one retry', async () => {
+  const r = makeRouter({
+    resolver: () => json(LETTERS_FOUND),
+    origin: (href) => {
+      if (href.startsWith('http://site-3.demox.site/')) throw new TypeError('Network connection lost');
+      return null;
+    }
+  });
+  const visited = await r.visit(ESSAY_URL);
+  assertUnavailable(visited, /^resolve=miss; origin=error$/);
+  const siteFetches = r.calls.origin.filter((h) => h.startsWith('http://site-3.demox.site/'));
+  assert.equal(siteFetches.length, 2, 'one retry');
+  assert.equal(r.calls.origin.some((h) => h.startsWith('https://sites.demox.site/') || h === ESSAY_URL), false,
+    'never falls through to the bucket root');
+});
+
+test('origin: a hung fetch times out, the retry succeeds, and the visitor gets 200 with origin=retry', async () => {
+  const r = makeRouter({
+    resolver: () => json(LETTERS_FOUND),
+    origin: (href, n) => (n === 1 ? new Promise(() => {}) : null)
+  });
+  const started = Date.now();
+  const { response, html } = await r.visit(ESSAY_URL);
+  assert.ok(Date.now() - started < 2000, 'bounded by ORIGIN_TIMEOUT_MS * attempts');
+  assert.equal(response.status, 200);
+  assert.match(html, /山间来信/);
+  assert.equal(routeOf(response), 'resolve=miss; origin=retry');
+  assert.equal(r.calls.origin.filter((h) => h.startsWith('http://site-3.demox.site/')).length, 2);
+});
+
+test('origin: two hung fetches → 503 (timeout ~ORIGIN_TIMEOUT_MS each), nothing cached as not found', async () => {
+  const r = makeRouter({ resolver: () => json(LETTERS_FOUND), origin: () => new Promise(() => {}) });
+  assertUnavailable(await r.visit(ESSAY_URL), /^resolve=miss; origin=error$/);
+  assert.equal(r.calls.origin.filter((h) => h.startsWith('http://site-3.demox.site/')).length, 2);
+  assert.equal(JSON.parse(r.cache.store.get(ESSAY_KEY).body).status, 'found', 'resolve entry unaffected');
+});
+
+test('origin: the default timeout is ~8s with one retry', () => {
+  const r = makeRouter({ resolver: () => json(LETTERS_FOUND) });
+  const fresh = vm.createContext({ URL, Request, Response, Headers, console, addEventListener: () => {} });
+  vm.runInContext(`${source}\nglobalThis.__c = { t: ORIGIN_TIMEOUT_MS, a: ORIGIN_ATTEMPTS };`, fresh);
+  assert.equal(fresh.__c.t, 8000);
+  assert.equal(fresh.__c.a, 2);
+  assert.ok(r);
+});
+
+test('origin: a real site 404 from the origin is still the site 404 (not 503), with origin=ok', async () => {
+  const r = makeRouter({
+    resolver: () => json(LETTERS_FOUND),
+    origin: (href) => (href.includes('/missing.png')
+      ? new Response('nope', { status: 404, headers: { 'Content-Type': 'text/plain' } })
+      : null)
+  });
+  const res = await r.ctx.__testHooks.handle(
+    new Request('https://letters-from-the-hill.demox.site/missing.png', { headers: { Accept: 'image/png' } }),
+    { waitUntil: () => {}, passThroughOnException: () => {} }
+  );
+  assert.equal(res.status, 404);
+  assert.equal(routeOf(res), 'resolve=miss; origin=ok');
+});
+
+test('handle: an unexpected throw on site traffic becomes 503, never reaches passThroughOnException', async () => {
+  const r = makeRouter({ resolver: () => json(LETTERS_FOUND) });
+  vm.runInContext('rewriteOrigin = async function () { throw new Error("boom"); };', r.ctx);
+  assertUnavailable(await r.visit(ESSAY_URL), /^resolve=miss; origin=error$/);
+});
+
+test('handle: www keeps its existing path (no 503 mapping, no retry, no route header)', async () => {
+  const r = makeRouter({
+    resolver: () => { throw new TypeError('network error'); },
+    origin: (href) => { if (href.startsWith('https://sites.demox.site/')) throw new TypeError('lost'); return null; }
+  });
+  await assert.rejects(() => r.visit('https://www.demox.site/'), /lost/);
+  assert.equal(r.calls.origin.length, 1, 'www is not retried');
+
+  const ok = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
+  const { response } = await ok.visit('https://www.demox.site/');
+  assert.equal(response.status, 200);
+  assert.equal(routeOf(response), null);
+});
+
+test('handle: platform hosts (sites.demox.site = www origin) keep passthrough when resolve errors', async () => {
+  const r = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
+  const { response } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
+  assert.notEqual(response.status, 503);
+  assert.equal(r.calls.origin.at(-1), 'https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
+});
+
+test('route header: hit / miss / stale are reported on site responses', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal(routeOf((await r.visit(ESSAY_URL)).response), 'resolve=miss; origin=ok');
+  r.advance(10_000);
+  assert.equal(routeOf((await r.visit(ESSAY_URL)).response), 'resolve=hit; origin=ok');
+  backend.set('down');
+  r.advance(120_000);
+  assert.equal(routeOf((await r.visit(ESSAY_URL)).response), 'resolve=stale; origin=ok');
+});
+
+test('v1fallback: v2 miss + backend error + a recent v1 entry → served via the old key', async () => {
+  const cache = fakeCache();
+  const now = 1_000_000_000;
+  cache.store.set(LEGACY_ESSAY_KEY, {
+    body: JSON.stringify(LETTERS_FOUND),
+    headers: { 'content-type': 'application/json', date: new Date(now - 2 * 60_000).toUTCString() }
+  });
+  const r = makeRouter({ cache, now, resolver: () => { throw new TypeError('network error'); } });
+  const { response, html } = await r.visit(ESSAY_URL);
+  assert.equal(response.status, 200);
+  assert.match(html, /山间来信/);
+  assert.equal(routeOf(response), 'resolve=v1fallback; origin=ok');
+  assert.equal(r.cache.puts.length, 0, 'fallback writes nothing');
+  assert.equal(cache.store.has(LEGACY_ESSAY_KEY), true, 'old key untouched');
+});
+
+test('v1fallback: a v1 "found" entry older than the 10-min stale window (or of unknown age) is not used → 503', async () => {
+  for (const headers of [
+    { 'content-type': 'application/json', date: new Date(1_000_000_000 - 10 * 60_000).toUTCString() },
+    { 'content-type': 'application/json', date: new Date(1_000_000_000 - 60_000).toUTCString(), age: '700' },
+    { 'content-type': 'application/json' }
+  ]) {
+    const cache = fakeCache();
+    cache.store.set(LEGACY_ESSAY_KEY, { body: JSON.stringify(LETTERS_FOUND), headers });
+    const r = makeRouter({ cache, now: 1_000_000_000, resolver: () => { throw new TypeError('network error'); } });
+    assertUnavailable(await r.visit(ESSAY_URL));
+  }
+});
+
+test('v1fallback: a banned v1 entry is not revived (disabled page, no origin fetch), whatever its age', async () => {
+  for (const date of [new Date(1_000_000_000 - 60_000).toUTCString(), new Date(0).toUTCString(), null]) {
+    const cache = fakeCache();
+    const headers = { 'content-type': 'application/json' };
+    if (date) headers.date = date;
+    cache.store.set(LEGACY_ESSAY_KEY, { body: JSON.stringify(LETTERS_BANNED), headers });
+    const r = makeRouter({ cache, now: 1_000_000_000, resolver: () => { throw new TypeError('network error'); } });
+    const { response, html } = await r.visit(ESSAY_URL);
+    assert.equal(response.status, 403);
+    assert.match(html, /此站点已被停用/);
+    assert.doesNotMatch(html, /山间来信/);
+    assert.equal(routeOf(response), 'resolve=v1fallback; origin=none');
+    assert.equal(r.calls.origin.length, 0);
+  }
+});
+
+test('v1fallback: a v1 "not found" entry keeps not-found semantics (existing unknown-host branch)', async () => {
+  const cache = fakeCache();
+  cache.store.set(LEGACY_ESSAY_KEY, {
+    body: JSON.stringify({ path: null, websiteId: null, origin: null, visibility: 'public' }),
+    headers: { 'content-type': 'application/json' }
+  });
+  const r = makeRouter({ cache, resolver: () => { throw new TypeError('network error'); } });
+  const { response } = await r.visit(ESSAY_URL);
+  assert.equal(response.status, 404);
+  assert.equal(r.calls.origin.at(-1), ESSAY_URL, 'passthrough as before');
+});
+
+test('v1fallback: v1 is only consulted when there is no v2 entry at all, and never when the backend answers', async () => {
+  const cache = fakeCache();
+  cache.store.set(LEGACY_ESSAY_KEY, {
+    body: JSON.stringify(LETTERS_FOUND),
+    headers: { 'content-type': 'application/json', date: new Date(1_000_000_000).toUTCString() }
+  });
+  const backend = switchableBackend('deleted');
+  const r = makeRouter({ cache, now: 1_000_000_000, resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 404, 'backend answer wins over v1');
+  backend.set('down');
+  r.advance(16_000); // v2 not_found 条目过期但仍在
+  assertUnavailable(await r.visit(ESSAY_URL));
+});
+
