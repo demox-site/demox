@@ -262,7 +262,14 @@ async function trackSiteEvent(req, event, meta, type) {
 }
 
 
-function applySiteCacheHeaders(headers, meta) {
+// 错误响应（含 COS NoSuchKey 404、站点 404.html、Demox 兜底 404）一律 no-store：
+// 否则边缘把 404 缓存 60s，新部署/重部署后的首批访问会持续看到旧 404。
+function isUncacheableStatus(status) {
+  const n = Number(status);
+  return Number.isFinite(n) && n >= 400;
+}
+
+function applySiteCacheHeaders(headers, meta, status) {
   const h = headers instanceof Headers ? headers : new Headers(headers);
   // 2024-01-01 后新建的 COS 桶，默认域名（含 cos-website）会强制
   // Content-Disposition: attachment + x-cos-force-download。浏览器顶层导航会变成下载 HTML。
@@ -273,7 +280,7 @@ function applySiteCacheHeaders(headers, meta) {
     h.delete('content-disposition');
     h.delete('x-cos-force-download');
   }
-  if (meta && meta.visibility === VISIBILITY_PRIVATE) {
+  if ((meta && meta.visibility === VISIBILITY_PRIVATE) || isUncacheableStatus(status)) {
     h.set('Cache-Control', 'no-store');
     h.delete('Age');
     h.delete('Expires');
@@ -324,7 +331,7 @@ async function serveCustom404(req, event, u, sitePath, originHost, meta) {
         const html = await custom404.text();
         const headers = new Headers(custom404.headers);
         headers.set('Content-Type', 'text/html; charset=utf-8');
-        applySiteCacheHeaders(headers, meta);
+        applySiteCacheHeaders(headers, meta, 404);
         return new Response(html, { status: 404, headers });
       }
     } catch (e) {}
@@ -333,7 +340,7 @@ async function serveCustom404(req, event, u, sitePath, originHost, meta) {
   const html = getDefault404Html(meta, u);
   return new Response(html, {
     status: 404,
-    headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta)
+    headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta, 404)
   });
 }
 
@@ -868,7 +875,7 @@ function streamSiteResponse(resp, meta) {
   return new Response(resp.body, {
     status: resp.status,
     statusText: resp.statusText,
-    headers: applySiteCacheHeaders(new Headers(resp.headers), meta)
+    headers: applySiteCacheHeaders(new Headers(resp.headers), meta, resp.status)
   });
 }
 
@@ -882,6 +889,7 @@ async function withDemoxBadge(req, event, resp, meta) {
       (resp.headers.get('Content-Disposition') || '').toLowerCase().includes('attachment');
     const mustRewrite = (meta && meta.visibility === VISIBILITY_PRIVATE) ||
       forceDownload ||
+      (isUncacheableStatus(resp.status) && current !== 'no-store') ||
       !current || current.includes('no-store') ||
       (current.includes('no-cache') && current.indexOf('max-age=') === -1);
     if (!mustRewrite) return resp;
@@ -899,7 +907,7 @@ async function withDemoxBadge(req, event, resp, meta) {
     if (byteLength != null) throw e;
     return streamSiteResponse(resp, meta);
   }
-  const headers = applySiteCacheHeaders(new Headers(resp.headers), meta);
+  const headers = applySiteCacheHeaders(new Headers(resp.headers), meta, resp.status);
   headers.delete('content-length');
   headers.delete('content-encoding');
   headers.delete('etag');
