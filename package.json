@@ -23,7 +23,8 @@
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
     "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
     "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs",
-    "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs"
+    "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
+    "test:changelog": "node --test src/content/changelog.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
