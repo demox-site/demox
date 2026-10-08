@@ -58,11 +58,20 @@ test("2026-10-08 is the newest release and the older entries stay", () => {
   assert.equal(RELEASES.length, 12);
   const first = RELEASES[0];
   assert.equal(first.date, "2026-10-08");
-  assert.equal(first.version, "current");
+  assert.equal(first.version, "v0.9.3");
   assert.equal(first.name.zh, "换了张脸 (New Face)");
   assert.equal(first.name.en, "New Face");
   assert.deepEqual(first.features.map((f) => f.tag), ["Style", "Fix", "Infra"]);
   assert.equal(RELEASES[1].date, "2026-06-22");
   assert.equal(RELEASES[1].name.zh, "偷窥自己 (Know Thy Traffic)");
+  assert.equal(RELEASES[1].version, "v0.9.2");
+  assert.equal(RELEASES[2].date, "2026-06-15");
+  assert.equal(RELEASES[2].version, "v0.9.1");
+});
+
+test("every release has its own explicit version number", () => {
+  const versions = RELEASES.map((r) => r.version);
+  for (const v of versions) assert.match(v, /^v\d+\.\d+\.\d+$/);
+  assert.equal(new Set(versions).size, versions.length);
 });
 

@@ -2,7 +2,7 @@
 // Every user-visible text is a { zh, en } pair (the repo's i18n pattern, accepted by
 // scripts/check-hardcoded-cjk.mjs). Where the old page had no English translation, en repeats
 // the original text, which is exactly what the old page showed in English mode.
-// version: "current" renders as v${siteConfig.version} (same as before the refactor).
+// version: "current" renders as v${siteConfig.version}; prefer an explicit "vX.Y.Z" so old entries keep their number.
 
 export const LOG_SECTION_TITLE = "It Works on My Machine";
 export const LOG_SECTION_SUBTITLE = {
@@ -37,7 +37,7 @@ export const CATEGORY_ORDER = ["feature", "fix", "ux", "infra"];
 
 export const RELEASES = [
   {
-    version: "current",
+    version: "v0.9.3",
     name: {
       zh: "换了张脸 (New Face)",
       en: "New Face",
@@ -96,7 +96,7 @@ export const RELEASES = [
     ],
   },
   {
-    version: "current",
+    version: "v0.9.2",
     name: {
       zh: "偷窥自己 (Know Thy Traffic)",
       en: "Know Thy Traffic",
@@ -155,7 +155,7 @@ export const RELEASES = [
     ],
   },
   {
-    version: "current",
+    version: "v0.9.1",
     name: {
       zh: "边缘门禁 (Edge Gate)",
       en: "Edge Gate",
