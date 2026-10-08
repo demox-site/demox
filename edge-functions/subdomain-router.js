@@ -5,7 +5,7 @@
  * 另可选配一个自定义前缀。两者都查同一张路由表(websites 表):
  *   {label}.{officialDomain} → 调 website-api /resolve-subdomain 查 label+domain→path
  *   (demox.site 下 label 可匹配 websites.subdomain 或 LOWER(website_id))→ 回源 /{path}/{rest}
- * 结果走边缘 Cache(默认 60s)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
+ * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
  * 路由表用现有 MySQL，不用 KV(标准版 EdgeOne 边缘函数无法绑定 Pages KV,
  * 但支持 fetch 子请求)。
@@ -16,7 +16,16 @@
  */
 
 // Backend URLs are read from EdgeOne environment variables for quick rollback.
-var RESOLVE_CACHE_TTL = 60; // 秒
+var RESOLVE_CACHE_TTL = 60; // 秒：命中结果的新鲜期
+var RESOLVE_NEGATIVE_TTL = 15; // 秒：后端明确「不存在」的新鲜期（超时/出错不缓存）
+var RESOLVE_STALE_TTL = 86400; // 秒：解析出错时，过期命中结果最多兜底这么久
+var RESOLVE_TIMEOUT_MS = 6000; // 单次 resolve 子请求超时
+var RESOLVE_ATTEMPTS = 2; // 首次 + 1 次重试
+var RESOLVE_RETRY_DELAY_MS = 200;
+// 解析缓存 key 版本。旧 key（resolve.demox.site/host/... 无版本）上的条目会被直接绕开。
+var RESOLVE_CACHE_VERSION = 2;
+var RESOLVE_CACHE_PREFIX = 'https://resolve.demox.site/v2/';
+var RESOLVE_NOT_FOUND_MESSAGES = ['not found', 'unsupported official domain', 'missing subdomain'];
 var VISIBILITY_PRIVATE = 'private';
 var VISIBILITY_DISABLED = 'disabled';
 // EdgeOne response.text() 超过 1MB 抛 OverSize。异常被 passThroughOnException
@@ -1203,174 +1212,216 @@ async function checkPrivateSiteAccessToken(token, label, domain, host) {
 }
 
 /**
- * 查 label+domain -> { path, origin }，带边缘缓存。
+ * 路由解析：label+domain（或自定义域名 host）-> { path, websiteId, origin, visibility, hideWatermark, seo }。
  * path = 桶内路径前缀；origin = 该站点所属桶的回源域(多云)，为空时回退默认回源域。
- * 用 caches.default 把解析结果缓存 RESOLVE_CACHE_TTL 秒，避免每请求打 SCF。
+ *
+ * 边缘缓存规则（2026-10-08 修复「找不到」被长期缓存）：
+ *   - 只有后端明确回答的结果才缓存：命中(found) 新鲜期 RESOLVE_CACHE_TTL 秒；
+ *     确认不存在(not_found) 只缓存 RESOLVE_NEGATIVE_TTL 秒。
+ *   - 超时 / 网络异常 / 非 2xx / 后端报错(success:false 但不是 not found) 一律不写缓存。
+ *     出错时如果本节点有过期不超过 RESOLVE_STALE_TTL 的命中结果，先用它兜底（stale-if-error），
+ *     否则按原逻辑走「站点不存在」分支（handle 里不变）。
+ *   - 新鲜期写在缓存内容里(cachedAt)由代码判断，不再只依赖 Cache-Control：
+ *     线上观测到旧 key 的条目远超 max-age=60 仍在（letters-from-the-hill 卡「找不到」~18h，
+ *     example-essay 换前缀后仍能访问 ~18h）。
+ *   - key 带版本前缀 RESOLVE_CACHE_PREFIX：发布新版本即绕开旧格式 key 上卡住的条目。
+ *   - 单次查询 RESOLVE_TIMEOUT_MS 超时，最多 RESOLVE_ATTEMPTS 次。
  */
-async function resolveCustomHost(host) {
-  const hostname = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
-  if (!hostname) {
-    return { path: null, websiteId: null, origin: null, visibility: 'public', hideWatermark: false, seo: null };
+function nowMs() {
+  return Date.now();
+}
+
+function emptyResolution() {
+  return { path: null, websiteId: null, origin: null, visibility: 'public', hideWatermark: false, seo: null };
+}
+
+function resolutionFromData(j) {
+  return {
+    path: j && j.path ? j.path : null,
+    websiteId: (j && j.websiteId) || null,
+    origin: (j && j.origin) || null,
+    visibility: (j && j.visibility) || 'public',
+    hideWatermark: !!(j && j.hideWatermark),
+    seo: (j && j.seo) || null
+  };
+}
+
+function resolveSleep(ms) {
+  if (!(ms > 0) || typeof setTimeout !== 'function') return Promise.resolve();
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+// 后端「确实没有这个站点」的回答；其余 success:false 视为后端出错（如数据库异常），不缓存。
+function isResolveNotFoundMessage(message) {
+  const m = String(message || '').trim().toLowerCase();
+  return RESOLVE_NOT_FOUND_MESSAGES.indexOf(m) !== -1;
+}
+
+// 单次查询：返回 { status: 'found' | 'not_found' | 'error', resolution?, reason? }
+async function resolveOnce(payload, signal) {
+  const init = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  };
+  if (signal) init.signal = signal;
+  const resp = await fetch(backendUrl('/resolve-subdomain'), init);
+  if (!resp || !resp.ok) {
+    return { status: 'error', reason: 'http ' + (resp ? resp.status : 'none') };
   }
-  const cacheKey = new Request('https://resolve.demox.site/custom/' + encodeURIComponent(hostname));
+  const data = await resp.json();
+  if (data && data.success && data.path) {
+    return { status: 'found', resolution: resolutionFromData(data) };
+  }
+  if (data && data.success) {
+    return { status: 'not_found' };
+  }
+  if (data && isResolveNotFoundMessage(data.message)) {
+    return { status: 'not_found' };
+  }
+  return { status: 'error', reason: 'backend: ' + String((data && data.message) || 'unknown').slice(0, 200) };
+}
+
+async function resolveOnceWithTimeout(payload, timeoutMs) {
+  let controller = null;
+  try {
+    if (typeof AbortController === 'function') controller = new AbortController();
+  } catch (e) {
+    controller = null;
+  }
+  let timer = null;
+  const attempt = resolveOnce(payload, controller ? controller.signal : null).catch(function (e) {
+    return { status: 'error', reason: (e && (e.name || e.message)) || 'fetch failed' };
+  });
+  if (!(timeoutMs > 0) || typeof setTimeout !== 'function') return attempt;
+  const timeout = new Promise(function (resolve) {
+    timer = setTimeout(function () {
+      try { if (controller) controller.abort(); } catch (e) {}
+      resolve({ status: 'error', reason: 'timeout ' + timeoutMs + 'ms' });
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([attempt, timeout]);
+  } finally {
+    if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer);
+  }
+}
+
+async function lookupResolve(payload) {
+  let result = { status: 'error', reason: 'no attempt' };
+  const attempts = Math.max(1, RESOLVE_ATTEMPTS);
+  for (let i = 0; i < attempts; i += 1) {
+    if (i > 0) await resolveSleep(RESOLVE_RETRY_DELAY_MS);
+    result = await resolveOnceWithTimeout(payload, RESOLVE_TIMEOUT_MS);
+    if (result.status !== 'error') return result;
+  }
+  return result;
+}
+
+async function readResolveCache(cache, cacheKey) {
+  if (!cache) return null;
+  try {
+    const hit = await cache.match(cacheKey);
+    if (!hit) return null;
+    const j = await hit.json();
+    if (!j || j.v !== RESOLVE_CACHE_VERSION || typeof j.cachedAt !== 'number') return null;
+    if (j.status !== 'found' && j.status !== 'not_found') return null;
+    return j;
+  } catch (e) {
+    // EdgeOne cache.match 对过期条目会抛 504，按未命中处理
+    return null;
+  }
+}
+
+function resolveEntryAgeMs(entry) {
+  return nowMs() - entry.cachedAt;
+}
+
+function isResolveEntryFresh(entry) {
+  const age = resolveEntryAgeMs(entry);
+  const ttl = entry.status === 'found' ? RESOLVE_CACHE_TTL : RESOLVE_NEGATIVE_TTL;
+  return age >= 0 && age < ttl * 1000;
+}
+
+function isResolveEntryUsableAsStale(entry) {
+  const age = resolveEntryAgeMs(entry);
+  return entry.status === 'found' && !!(entry.data && entry.data.path) && age >= 0 && age < RESOLVE_STALE_TTL * 1000;
+}
+
+async function writeResolveCache(cache, cacheKey, status, resolution) {
+  if (!cache) return;
+  // 命中结果的物理保留期 = stale 兜底窗口；新鲜期由 cachedAt 在代码里判断。
+  const maxAge = status === 'found' ? RESOLVE_STALE_TTL : RESOLVE_NEGATIVE_TTL;
+  try {
+    const body = JSON.stringify({
+      v: RESOLVE_CACHE_VERSION,
+      status: status,
+      cachedAt: nowMs(),
+      data: status === 'found' ? resolution : null
+    });
+    await cache.put(cacheKey, new Response(body, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=' + maxAge + ', s-maxage=' + maxAge
+      }
+    }));
+  } catch (e) {}
+}
+
+async function cachedResolve(cacheKeyUrl, payload, logName) {
+  const cacheKey = new Request(cacheKeyUrl);
   let cache = null;
   try { cache = caches.default; } catch (e) { cache = null; }
 
-  if (cache) {
-    try {
-      const hit = await cache.match(cacheKey);
-      if (hit) {
-        const j = await hit.json();
-        return {
-          path: j && j.path ? j.path : null,
-          websiteId: (j && j.websiteId) || null,
-          origin: (j && j.origin) || null,
-          visibility: (j && j.visibility) || 'public',
-          hideWatermark: !!(j && j.hideWatermark),
-          seo: (j && j.seo) || null
-        };
-      }
-    } catch (e) {}
+  const cached = await readResolveCache(cache, cacheKey);
+  if (cached && isResolveEntryFresh(cached)) {
+    return cached.status === 'found' ? resolutionFromData(cached.data) : emptyResolution();
   }
 
-  let path = null;
-  let origin = null;
-  let websiteId = null;
-  let visibility = 'public';
-  let hideWatermark = false;
-  let seo = null;
-  try {
-    const resp = await fetch(backendUrl('/resolve-subdomain'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'resolve_subdomain', host: hostname })
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.success && data.path) {
-        path = data.path;
-        websiteId = data.websiteId || null;
-        origin = data.origin || null;
-        visibility = data.visibility || 'public';
-        hideWatermark = !!data.hideWatermark;
-        seo = data.seo || null;
-      }
-    }
-  } catch (e) {
-    path = null;
+  const result = await lookupResolve(payload);
+  if (result.status === 'found') {
+    await writeResolveCache(cache, cacheKey, 'found', result.resolution);
+    return result.resolution;
+  }
+  if (result.status === 'not_found') {
+    await writeResolveCache(cache, cacheKey, 'not_found', null);
+    return emptyResolution();
   }
 
-  if (cache) {
-    try {
-      const body = JSON.stringify({
-        path: path,
-        websiteId: websiteId,
-        origin: origin,
-        visibility: visibility,
-        hideWatermark: hideWatermark,
-        seo: seo
-      });
-      await cache.put(cacheKey, new Response(body, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=' + RESOLVE_CACHE_TTL
-        }
-      }));
-    } catch (e) {}
+  // 出错：绝不缓存「找不到」。
+  if (cached && isResolveEntryUsableAsStale(cached)) {
+    try { console.warn('[subdomain-router] resolve failed, serving stale route for', logName, result.reason); } catch (e) {}
+    return resolutionFromData(cached.data);
   }
+  try { console.warn('[subdomain-router] resolve failed (not cached) for', logName, result.reason); } catch (e) {}
+  return emptyResolution();
+}
 
-  return {
-    path: path,
-    websiteId: websiteId,
-    origin: origin,
-    visibility: visibility,
-    hideWatermark: hideWatermark,
-    seo: seo
-  };
+function resolveSiteCacheKey(label, domain) {
+  return RESOLVE_CACHE_PREFIX + 'host/' + encodeURIComponent(domain) + '/' + encodeURIComponent(label);
+}
+
+function resolveCustomHostCacheKey(hostname) {
+  return RESOLVE_CACHE_PREFIX + 'custom/' + encodeURIComponent(hostname);
+}
+
+async function resolveCustomHost(host) {
+  const hostname = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
+  if (!hostname) return emptyResolution();
+  return cachedResolve(
+    resolveCustomHostCacheKey(hostname),
+    { action: 'resolve_subdomain', host: hostname },
+    hostname
+  );
 }
 
 async function resolveSite(label, domain) {
   const suffix = domain || DEFAULT_OFFICIAL_DOMAIN;
-  const cacheKey = new Request(
-    'https://resolve.demox.site/host/' + encodeURIComponent(suffix) + '/' + encodeURIComponent(label)
+  return cachedResolve(
+    resolveSiteCacheKey(label, suffix),
+    { action: 'resolve_subdomain', subdomain: label, domain: suffix },
+    label + '.' + suffix
   );
-  let cache = null;
-  try { cache = caches.default; } catch (e) { cache = null; }
-
-  if (cache) {
-    try {
-      const hit = await cache.match(cacheKey);
-      if (hit) {
-        const j = await hit.json();
-        return {
-          path: j && j.path ? j.path : null,
-          websiteId: (j && j.websiteId) || null,
-          origin: (j && j.origin) || null,
-          visibility: (j && j.visibility) || 'public',
-          hideWatermark: !!(j && j.hideWatermark),
-          seo: (j && j.seo) || null
-        };
-      }
-    } catch (e) {}
-  }
-
-  // 未命中：调 website-api 解析
-  let path = null;
-  let origin = null;
-  let websiteId = null;
-  let visibility = 'public';
-  let hideWatermark = false;
-  let seo = null;
-  try {
-    const resp = await fetch(backendUrl('/resolve-subdomain'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'resolve_subdomain', subdomain: label, domain: suffix })
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.success && data.path) {
-        path = data.path;
-        websiteId = data.websiteId || null;
-        origin = data.origin || null;
-        visibility = data.visibility || 'public';
-        hideWatermark = !!data.hideWatermark;
-        seo = data.seo || null;
-      }
-    }
-  } catch (e) {
-    path = null;
-  }
-
-  // 写缓存（命中和未命中都缓存，未命中缓存空对象以挡住穿透）
-  if (cache) {
-    try {
-      const body = JSON.stringify({
-        path: path,
-        websiteId: websiteId,
-        origin: origin,
-        visibility: visibility,
-        hideWatermark: hideWatermark,
-        seo: seo
-      });
-      const cacheResp = new Response(body, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=' + RESOLVE_CACHE_TTL
-        }
-      });
-      await cache.put(cacheKey, cacheResp);
-    } catch (e) {}
-  }
-
-  return {
-    path: path,
-    websiteId: websiteId,
-    origin: origin,
-    visibility: visibility,
-    hideWatermark: hideWatermark,
-    seo: seo
-  };
 }
 
 async function handle(req, event) {

@@ -1808,6 +1808,34 @@ test('persistent cache purge failure is surfaced as success=false plus a warning
   }
 });
 
+test('deploy purge targets the versioned (v2) and legacy edge resolve-cache keys', async () => {
+  const seen = [];
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [],
+    sleep: async () => {},
+    runTask: async (task) => { seen.push(task); return { type: task.type, targets: task.targets, failedList: [] }; }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({
+      websiteId: 'LCJAIAC0',
+      subdomain: 'letters-from-the-hill',
+      subdomainDomain: 'demox.site',
+      originHost: 'site-3.demox.site',
+      ownerId: 'u1'
+    });
+    assert.equal(result.success, true);
+    const urlTask = seen.find((t) => t.type === 'purge_url');
+    assert.deepEqual(urlTask.targets.sort(), [
+      'https://resolve.demox.site/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/v2/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill'
+    ]);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
 test('purge FailedList entries count as failure and are retried', async () => {
   let calls = 0;
   websiteApi.setPurgeRuntime({

@@ -533,3 +533,264 @@ test('site 404.html and Demox fallback 404 pages are no-store', async () => {
   assert.equal(fallback.status, 404);
   assert.equal(fallback.headers.get('Cache-Control'), 'no-store');
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-08：resolve 结果缓存。超时/出错绝不缓存「找不到」，不存在只短缓存，
+// 新鲜期由 cachedAt 在代码里判断，key 带版本绕开旧条目。
+// ---------------------------------------------------------------------------
+
+function fakeCache() {
+  const store = new Map();
+  const puts = [];
+  return {
+    store,
+    puts,
+    cache: {
+      match: async (req) => {
+        const key = String(req && req.url ? req.url : req);
+        const entry = store.get(key);
+        return entry ? new Response(entry.body, { headers: entry.headers }) : undefined;
+      },
+      put: async (req, resp) => {
+        const key = String(req && req.url ? req.url : req);
+        const entry = { body: await resp.text(), headers: Object.fromEntries(resp.headers.entries()) };
+        store.set(key, entry);
+        puts.push({ key, ...entry });
+      }
+    }
+  };
+}
+
+const LETTERS_FOUND = {
+  success: true,
+  path: 'sites/1985655011013808129/LCJAIAC0/dist',
+  websiteId: 'LCJAIAC0',
+  origin: 'site-3.demox.site',
+  visibility: 'public',
+  hideWatermark: true
+};
+
+// resolver: (payload, attemptNo) => Response | Promise<Response> | throws
+function makeRouter({ resolver, cache = fakeCache(), now = 1_000_000 }) {
+  const calls = { resolve: [], origin: [] };
+  const routerContext = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    env: { DEMOX_API_URL: 'https://api.test' },
+    caches: { default: cache.cache },
+    addEventListener: () => {},
+    fetch: async (input, init) => {
+      const href = String(input && input.url ? input.url : input);
+      if (href.includes('/resolve-subdomain')) {
+        const payload = JSON.parse(init.body);
+        calls.resolve.push(payload);
+        return resolver(payload, calls.resolve.length, init);
+      }
+      calls.origin.push(href);
+      if (href.startsWith('http://site-3.demox.site/') || href.startsWith('https://sites.demox.site/')) {
+        return new Response('<!doctype html><html><body><main>山间来信</main></body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' }
+        });
+      }
+      // 未知站点 passthrough 回源桶根（线上是 COS「站点未发布」404）
+      return new Response('<title>404 · 站点未发布</title>', {
+        status: 404,
+        headers: { 'Content-Type': 'text/html', 'Cache-Control': 'public, max-age=60' }
+      });
+    }
+  });
+  vm.runInContext(
+    `${source}\nglobalThis.__now = ${now};\nnowMs = function () { return globalThis.__now; };\n` +
+      'RESOLVE_TIMEOUT_MS = 30; RESOLVE_RETRY_DELAY_MS = 1;\n' +
+      'globalThis.__testHooks = { handle, resolveSite };',
+    routerContext
+  );
+  const visit = async (url) => {
+    const response = await routerContext.__testHooks.handle(
+      new Request(url, { headers: { Accept: 'text/html' } }),
+      { waitUntil: () => {}, passThroughOnException: () => {} }
+    );
+    return { response, html: await response.text() };
+  };
+  return {
+    calls,
+    cache,
+    visit,
+    ctx: routerContext,
+    advance: (ms) => { routerContext.__now += ms; }
+  };
+}
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+test('resolve: a network error is never cached as "not found"; the next visit re-resolves and serves 200', async () => {
+  let down = true;
+  const r = makeRouter({
+    resolver: () => {
+      if (down) throw new TypeError('network error');
+      return json(LETTERS_FOUND);
+    }
+  });
+  const first = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(first.response.status, 404); // 无缓存可兜底：仍走原「站点不存在」分支
+  assert.equal(r.calls.resolve.length, 2, 'one retry after the error');
+  assert.equal(r.cache.puts.length, 0, 'errors must not be written to the cache');
+
+  down = false;
+  const second = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(second.response.status, 200);
+  assert.match(second.html, /山间来信/);
+  assert.equal(r.calls.resolve.length, 3);
+});
+
+test('resolve: a hung backend times out, retries once, and caches nothing', async () => {
+  const r = makeRouter({
+    resolver: (payload, n, init) => new Promise((resolve, reject) => {
+      if (init && init.signal) init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    })
+  });
+  const started = Date.now();
+  const { response } = await r.visit('https://coverage.demox.site/');
+  assert.ok(Date.now() - started < 2000, 'bounded by RESOLVE_TIMEOUT_MS * attempts');
+  assert.equal(response.status, 404);
+  assert.equal(r.calls.resolve.length, 2);
+  assert.equal(r.cache.puts.length, 0);
+});
+
+test('resolve: the retry rescues a transient failure and the hit is cached', async () => {
+  const r = makeRouter({
+    resolver: (payload, n) => (n === 1 ? json({ message: 'gateway' }, 502) : json(LETTERS_FOUND))
+  });
+  const { response, html } = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(response.status, 200);
+  assert.match(html, /山间来信/);
+  assert.equal(r.calls.resolve.length, 2);
+  assert.equal(r.cache.puts.length, 1);
+  assert.equal(JSON.parse(r.cache.puts[0].body).status, 'found');
+});
+
+test('resolve: backend success:false with a DB error is treated as an error, not as "not found"', async () => {
+  const r = makeRouter({ resolver: () => json({ success: false, message: 'connect ETIMEDOUT' }) });
+  await r.visit('https://coverage.demox.site/');
+  assert.equal(r.calls.resolve.length, 2);
+  assert.equal(r.cache.puts.length, 0);
+});
+
+test('resolve: a genuine "not found" is cached only briefly (15s) under a versioned key', async () => {
+  let exists = false;
+  const r = makeRouter({
+    resolver: () => (exists ? json(LETTERS_FOUND) : json({ success: false, message: 'not found' }))
+  });
+  const first = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(first.response.status, 404);
+  assert.equal(r.cache.puts.length, 1);
+  const put = r.cache.puts[0];
+  assert.equal(put.key, 'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill');
+  assert.match(put.headers['cache-control'], /max-age=15\b/);
+  assert.equal(JSON.parse(put.body).status, 'not_found');
+
+  exists = true; // 刚设置好前缀
+  r.advance(10_000);
+  const within = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(within.response.status, 404, 'still inside the 15s negative window');
+  assert.equal(r.calls.resolve.length, 1);
+
+  r.advance(6_000);
+  const after = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(after.response.status, 200, 'negative entry expires by cachedAt even if the edge keeps it');
+  assert.equal(r.calls.resolve.length, 2);
+});
+
+test('resolve: legacy unversioned cache entries (the stuck letters-from-the-hill case) are ignored', async () => {
+  const cache = fakeCache();
+  // 旧版本写下的「找不到」：无版本 key、无 cachedAt
+  cache.store.set('https://resolve.demox.site/host/demox.site/letters-from-the-hill', {
+    body: JSON.stringify({ path: null, websiteId: null, origin: null, visibility: 'public' }),
+    headers: { 'content-type': 'application/json', 'cache-control': 'max-age=60' }
+  });
+  // 万一同 key 上也有旧格式内容，也不能被当成命中
+  cache.store.set('https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill', {
+    body: JSON.stringify({ path: null }),
+    headers: { 'content-type': 'application/json' }
+  });
+  const r = makeRouter({ cache, resolver: () => json(LETTERS_FOUND) });
+  const { response, html } = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(response.status, 200);
+  assert.match(html, /山间来信/);
+  assert.equal(r.calls.resolve.length, 1);
+});
+
+test('resolve: a positive entry is fresh for 60s, then re-resolved (old prefix stops serving once the backend says not found)', async () => {
+  let moved = false;
+  const r = makeRouter({
+    resolver: () => (moved ? json({ success: false, message: 'not found' }) : json(LETTERS_FOUND))
+  });
+  assert.equal((await r.visit('https://example-essay.demox.site/')).response.status, 200);
+  moved = true; // domain set 把站点挪到新前缀
+  r.advance(30_000);
+  assert.equal((await r.visit('https://example-essay.demox.site/')).response.status, 200);
+  assert.equal(r.calls.resolve.length, 1);
+  r.advance(31_000);
+  assert.equal((await r.visit('https://example-essay.demox.site/')).response.status, 404);
+  assert.equal(r.calls.resolve.length, 2);
+});
+
+test('resolve: when the backend errors after the fresh window, the last known route is served (stale-if-error)', async () => {
+  let down = false;
+  const r = makeRouter({
+    resolver: () => {
+      if (down) throw new TypeError('network error');
+      return json(LETTERS_FOUND);
+    }
+  });
+  assert.equal((await r.visit('https://coverage.demox.site/')).response.status, 200);
+  down = true;
+  r.advance(5 * 60_000);
+  const { response, html } = await r.visit('https://coverage.demox.site/');
+  assert.equal(response.status, 200);
+  assert.match(html, /山间来信/);
+  assert.equal(r.cache.puts.length, 1, 'stale fallback does not rewrite the entry');
+
+  r.advance(25 * 60 * 60_000); // 超过 RESOLVE_STALE_TTL
+  assert.equal((await r.visit('https://coverage.demox.site/')).response.status, 404);
+});
+
+test('resolve: www keeps its hardcoded fallback when resolve errors', async () => {
+  const r = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
+  const { response } = await r.visit('https://www.demox.site/');
+  assert.equal(response.status, 200);
+  assert.equal(r.cache.puts.length, 0);
+});
+
+test('resolve: custom hosts use the same rules (errors not cached, versioned key)', async () => {
+  let down = true;
+  const r = makeRouter({
+    resolver: (payload) => {
+      assert.equal(payload.host, 'blog.example.com');
+      if (down) throw new TypeError('network error');
+      return json(LETTERS_FOUND);
+    }
+  });
+  await r.visit('https://blog.example.com/');
+  assert.equal(r.cache.puts.length, 0);
+  down = false;
+  const { response } = await r.visit('https://blog.example.com/');
+  assert.equal(response.status, 200);
+  assert.equal(r.cache.puts[0].key, 'https://resolve.demox.site/v2/custom/blog.example.com');
+});
+
+test('resolve: cache.match throwing (EdgeOne 504 on expired entries) is treated as a miss', async () => {
+  const cache = fakeCache();
+  cache.cache.match = async () => { const e = new Error('504'); e.status = 504; throw e; };
+  const r = makeRouter({ cache, resolver: () => json(LETTERS_FOUND) });
+  const { response } = await r.visit('https://letters-from-the-hill.demox.site/');
+  assert.equal(response.status, 200);
+});

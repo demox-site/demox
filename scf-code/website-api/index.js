@@ -827,10 +827,15 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHos
 
   const publicTargets = safeHosts.map(host => `https://${host}/`);
   const prefixTargets = [...publicTargets, ...originTargets];
-  const resolveTargets = Array.from(resolveKeys).map(key => {
+  // 边缘函数解析缓存 key：v2 为当前格式（edge-functions/subdomain-router.js RESOLVE_CACHE_PREFIX），
+  // 旧无版本格式保留，兼容边缘函数回滚到旧版本的情况。
+  const resolveTargets = [];
+  for (const key of resolveKeys) {
     const [domain, label] = key.split('|');
-    return `https://resolve.${defaultDomain}/host/${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
-  });
+    const suffix = `${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
+    resolveTargets.push(`https://resolve.${defaultDomain}/v2/host/${suffix}`);
+    resolveTargets.push(`https://resolve.${defaultDomain}/host/${suffix}`);
+  }
   const tasks = [];
 
   for (const task of [
