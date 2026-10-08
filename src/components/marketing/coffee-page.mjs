@@ -6,7 +6,10 @@
  */
 
 // [code, blockId, selector inside .cf, progressive-text?]
-export const COFFEE_LINES = [
+// zh is the original page (coffee.demox.site); en is used by the homepage hero when the UI language is English.
+// Both variants must keep the same line count, block ids and selectors.
+export const COFFEE_LINES_BY_LANG = {
+  zh: [
   ['<nav class="nav">'],
   ['  <b class="logo">Coffee<i>.</i></b>', 'logo', '.logo'],
   ['  <a href="#beans">菜单</a> <a href="#visit">门店</a>', 'links', '.nav .lk'],
@@ -30,15 +33,46 @@ export const COFFEE_LINES = [
   ['</section>'],
   ['<p class="visit" id="visit"><b>门店</b>每天 08:00–20:00</p>', 'visit', '.visit'],
   ['<footer>© 2026 Coffee. · 示例网站</footer>', 'foot', 'footer', true],
-];
+  ],
+  en: [
+  ['<nav class="nav">'],
+  ['  <b class="logo">Coffee<i>.</i></b>', 'logo', '.logo'],
+  ['  <a href="#beans">Menu</a> <a href="#visit">Visit</a>', 'links', '.nav .lk'],
+  ['  <a class="pill" href="#visit">Book</a>', 'pill', '.pill'],
+  ['</nav>'],
+  ['<section class="hero">'],
+  ['  <div class="copy">'],
+  ['  <span class="eyebrow">Pour-over café · Roasted daily</span>', 'ey', '.eyebrow', true],
+  ['  <h1>Good coffee <em>takes time</em></h1>', 'h1', '.hero h1'],
+  ['  <p>Roasted fresh every morning, brewed one cup at a time.</p>', 'p', '.hero p', true],
+  ['  <a class="btn" href="#visit">Book a table</a>', 'btn', '.btn:not(.ghost)', true],
+  ['  <a class="btn ghost" href="#beans">See today\u2019s beans</a>', 'ghost', '.btn.ghost', true],
+  ['  </div>'],
+  ['  <div class="pour" aria-hidden="true"><i></i></div>', 'pour', '.pour'],
+  ['</section>'],
+  ['<section class="beans" id="beans">'],
+  ['  <h2>Today\u2019s beans</h2>', 'h2', '.beans h2', true],
+  ['  <article><small>Yunnan · Natural</small><h3>Baoshan Typica</h3><p>Berry · Brown sugar</p><b>¥38</b></article>', 'b1', '.beans article:nth-of-type(1)'],
+  ['  <article><small>Ethiopia · Washed</small><h3>Yirgacheffe</h3><p>Jasmine · Citrus</p><b>¥42</b></article>', 'b2', '.beans article:nth-of-type(2)'],
+  ['  <article><small>Colombia · Honey</small><h3>Huila</h3><p>Caramel · Cocoa</p><b>¥36</b></article>', 'b3', '.beans article:nth-of-type(3)'],
+  ['</section>'],
+  ['<p class="visit" id="visit"><b>Hours</b>Open daily 08:00–20:00</p>', 'visit', '.visit'],
+  ['<footer>© 2026 Coffee. · Sample site</footer>', 'foot', 'footer', true],
+  ],
+};
+
+/** Original (zh) lines — coffee.demox.site is built from these */
+export const COFFEE_LINES = COFFEE_LINES_BY_LANG.zh;
+export const coffeeLines = (lang) => COFFEE_LINES_BY_LANG[lang] || COFFEE_LINES;
 
 /** The typed source (what the editor shows) */
 export const COFFEE_BODY = COFFEE_LINES.map((l) => l[0]).join('\n');
+export const coffeeBody = (lang) => coffeeLines(lang).map((l) => l[0]).join('\n');
 
 /** Markup actually rendered: same body, nav links wrapped so they can be revealed as one block */
 export function renderBody(src = COFFEE_BODY) {
   return src.replace(
-    /(<a href="#beans">菜单<\/a> <a href="#visit">门店<\/a>)/,
+    /(<a href="#beans">[^<]*<\/a> <a href="#visit">[^<]*<\/a>)/,
     '<span class="lk">$1</span>'
   );
 }
@@ -81,6 +115,7 @@ export const COFFEE_CSS = `
   background:linear-gradient(180deg,rgba(255,255,255,.35),rgba(255,255,255,.1) 30%,#6b3c1c 30%,#3b2010);box-shadow:inset 0 0 0 2px rgba(255,255,255,.55),0 16px 24px -12px rgba(31,21,14,.5)}
 .cf .pour i{position:absolute;left:calc(50% - 1px);top:36%;width:2px;height:20%;background:linear-gradient(#7a4520,#3b2010);z-index:1}
 .cf .pour i::after{content:"No.07 · 今日手冲";position:absolute;left:-130px;width:260px;top:290%;text-align:center;font:600 11px/1 var(--sans);letter-spacing:.3em;color:var(--brown);white-space:nowrap}
+.cf:lang(en) .pour i::after{content:"No.07 · TODAY'S POUR"}
 .cf .beans{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;padding:48px 48px 56px;max-width:1120px;margin:0 auto;border-top:1px solid var(--line)}
 .cf .beans h2{grid-column:1/-1;font-size:32px;letter-spacing:.06em;margin-bottom:8px}
 .cf .beans article{background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:24px;display:grid;grid-template-columns:1fr auto;gap:8px 16px;align-items:baseline;box-shadow:0 1px 0 var(--line)}
@@ -139,7 +174,7 @@ ${renderBody()}
 }
 
 /** Sandboxed srcdoc for the homepage edit mode (strict CSP, allow-scripts iframe only) */
-export function coffeeSandboxDocument(src) {
+export function coffeeSandboxDocument(src, lang = 'zh') {
   const csp = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:#f5eee3}${COFFEE_CSS}</style></head><body><div class="cq"><div class="cf">${renderBody(src)}</div></div></body></html>`;
+  return `<!doctype html><html lang="${lang === 'en' ? 'en' : 'zh-CN'}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:#f5eee3}${COFFEE_CSS}</style></head><body><div class="cq"><div class="cf">${renderBody(src)}</div></div></body></html>`;
 }

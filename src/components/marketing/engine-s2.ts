@@ -3,7 +3,10 @@
    Scoped to `root`; returns a cleanup that stops all loops and window/document listeners. */
 /* ===================== Screen 2 · 全球节点 — canvas dot-matrix globe ===================== */
 
-export function initS2(root: HTMLElement): () => void {
+import { marketingStrings } from './marketing-translations';
+
+export function initS2(root: HTMLElement, lang: 'zh' | 'en' = 'zh'): () => void {
+  const T = marketingStrings(lang).s2;
   var __dead=false, __L=[];
   function __on(t,e,f,o){ t.addEventListener(e,f,o); __L.push([t,e,f,o]); }
   var __raf=window.requestAnimationFrame.bind(window);
@@ -111,7 +114,7 @@ export function initS2(root: HTMLElement): () => void {
     if(state!==lastState){
       lastState=state;
       card.className='s2-card '+(state==='live'?'live':'busy');
-      stEl.textContent = state==='upload'?'上传至边缘网络...':(state==='spread'?'自动分发至全球边缘节点':'即刻访问 · 已部署');
+      stEl.textContent = state==='upload'?T.cardUpload:(state==='spread'?T.cardSpread:T.cardLive);
       $id('s2url').textContent = state==='live'?'https://coffee.demox.site':'coffee.demox.site';
     }
     bar.style.width=(prog*100).toFixed(1)+'%';

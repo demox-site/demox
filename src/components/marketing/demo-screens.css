@@ -32,7 +32,7 @@
 .dx-mk .browser .dots i{background:rgba(17,17,17,.13)}
 .dx-mk .tab{font:12px var(--font-mono);color:#d4d4d4;padding:5px 10px;border-radius:7px;background:rgba(255,255,255,.06);display:flex;align-items:center;gap:7px}
 .dx-mk .tab b{width:6px;height:6px;border-radius:50%;background:#a3a3a3;transition:background .3s}
-.dx-mk .ed-tag{margin-left:auto;font:11px var(--font-mono);color:#737373}
+.dx-mk .ed-tag{margin-left:auto;font:11px var(--font-mono);color:#737373;white-space:nowrap}
 .dx-mk .code{position:relative;flex:1;min-height:0;overflow:hidden;padding:12px 0;font:13px/20px var(--font-mono);
   -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22px,#000 100%);mask-image:linear-gradient(180deg,transparent 0,#000 22px,#000 100%)}
 .dx-mk .lines{transition:transform .35s cubic-bezier(.2,.7,.2,1)}
