@@ -263,6 +263,21 @@
     @media (prefers-reduced-motion: reduce) {
       .blink { animation: none; }
     }
+
+    /* ---- polish v2 ---- */
+    body { -webkit-font-smoothing: antialiased; min-height: 100dvh; display: flex; flex-direction: column;
+      background-image: linear-gradient(90deg, transparent calc(50% - 2px), rgba(245, 197, 66, .18) calc(50% - 2px), rgba(245, 197, 66, .18) calc(50% + 2px), transparent calc(50% + 2px));
+      background-size: 100% 46px; background-attachment: fixed; }
+    main { flex: 0 0 auto; }
+    .ticket { box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 30px 80px -20px rgba(0,0,0,.6), 0 0 0 1px rgba(0,0,0,.25); transform: rotate(-.4deg); }
+    .ticket .time, .clock { font-variant-numeric: tabular-nums; }
+    .tips { width: min(920px, calc(100% - 2rem)); margin: 0 auto 1.4rem; display: grid; grid-template-columns: 1fr; gap: .7rem; }
+    .tips div { background: rgba(0,0,0,.32); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: .9rem 1rem; color: var(--glass); backdrop-filter: blur(6px); }
+    .tips b { display: block; font-family: var(--led); font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; color: #f5c542; margin-bottom: .25rem; font-weight: 600; }
+    .tips span { font-size: .92rem; line-height: 1.6; color: #e8e2d4; }
+    .fine { margin-top: auto; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,.08); }
+    @media (min-width: 800px) { .tips { grid-template-columns: repeat(3, 1fr); } main { margin-bottom: 2rem; } }
+    @media (max-width: 799px) { .ticket { transform: none; } }
   </style>
 </head>
 <body>
@@ -328,6 +343,11 @@
     </section>
   </main>
 
+  <section class="tips" aria-label="乘车须知">
+    <div><b>上车点</b><span>江岸路 3 号泊位，看到车头亮黄色「NB-7」就是它。提前 10 分钟到。</span></div>
+    <div><b>带什么</b><span>一副耳机（车上有备用）和一件外套，江边夜里风大。</span></div>
+    <div><b>下车后</b><span>终点在老码头，01:10 有一班接驳车回到起点，不用另外打车。</span></div>
+  </section>
   <p class="fine">
     车内备茶与水，不设酒单。自带耳机可选。禁烟。找不到车就沿江步道走到第三组路灯。这是一份 AI 生成的单页 HTML，用 Demox 发布，没有单独的服务器。
   </p>
