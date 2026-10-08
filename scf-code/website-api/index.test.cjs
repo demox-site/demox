@@ -1674,3 +1674,374 @@ test('staleObjectKeys only removes leftovers under the same website prefix', () 
   assert.deepEqual(staleObjectKeys(existing, keep, ''), []);
   assert.deepEqual(staleObjectKeys(existing, keep, 'sites/'), []);
 });
+
+// ---- deploy lock / overlapping deploys ----
+function createLockDb() {
+  const rows = new Map();
+  let now = 1_000_000;
+  const impl = async (sql, params = []) => {
+    if (sql.includes('CREATE TABLE IF NOT EXISTS website_deploy_locks')) return {};
+    if (sql.includes('INSERT IGNORE INTO website_deploy_locks')) {
+      if (!rows.has(params[0])) rows.set(params[0], { token: '', expires: 0 });
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('UPDATE website_deploy_locks') && sql.includes('expires_at < UTC_TIMESTAMP()')) {
+      const [token, , ttl, id] = params;
+      const row = rows.get(id);
+      if (!row || row.expires >= now) return { affectedRows: 0 };
+      row.token = token; row.expires = now + ttl * 1000;
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('UPDATE website_deploy_locks') && sql.includes('lock_token = ?')) {
+      const [id, token] = params;
+      const row = rows.get(id);
+      if (!row || row.token !== token) return { affectedRows: 0 };
+      row.token = ''; row.expires = 0;
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  return { impl, advance: (ms) => { now += ms; } };
+}
+
+function memoryProvider() {
+  const store = new Map();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  return {
+    store,
+    release: () => release(),
+    gate,
+    provider: {
+      put: async (key, data) => { await gate; store.set(key, data); },
+      list: async (prefix) => [...store.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })),
+      delete: async (key) => { store.delete(key); }
+    }
+  };
+}
+
+function zipEntries(names) {
+  return names.map((entryName) => ({ entryName, isDirectory: false, getData: () => Buffer.from(entryName) }));
+}
+
+async function lockedDeploy(mem, names, prefix) {
+  const lock = await websiteApi.acquireWebsiteDeployLock('SITEA001', 'u1');
+  try {
+    return await websiteApi.deployZipToBucket({}, zipEntries(names), prefix, { ownerId: 'u1', websiteId: 'SITEA001', provider: mem.provider });
+  } finally {
+    await websiteApi.releaseWebsiteDeployLock(lock);
+  }
+}
+
+test('two overlapping deploys to one site: second is rejected and no files from the first are lost', async () => {
+  const db = createLockDb();
+  queryImpl = db.impl;
+  const mem = memoryProvider();
+  const first = lockedDeploy(mem, ['index.html', 'assets/a.js'], 'sites/u1/SITEA001/dist');
+  await new Promise((r) => setImmediate(r));
+  await assert.rejects(
+    lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'),
+    (err) => err.code === 'DEPLOY_IN_PROGRESS'
+  );
+  mem.release();
+  assert.equal(await first, 2);
+  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/a.js', 'sites/u1/SITEA001/dist/index.html']);
+
+  // 锁已释放，下一次串行部署可正常进行并 prune 旧 hash 资源
+  assert.equal(await lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'), 2);
+  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/b.js', 'sites/u1/SITEA001/dist/index.html']);
+});
+
+test('an expired deploy lock (crashed instance) can be taken over after TTL', async () => {
+  const db = createLockDb();
+  queryImpl = db.impl;
+  await websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'); // never released
+  await assert.rejects(websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'), { code: 'DEPLOY_IN_PROGRESS' });
+  db.advance(179 * 1000);
+  await assert.rejects(websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'), { code: 'DEPLOY_IN_PROGRESS' });
+  db.advance(2 * 1000);
+  const lock = await websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1');
+  assert.ok(lock.token);
+});
+
+test('deploy lock TTL defaults to 3 minutes', () => {
+  assert.equal(websiteApi.DEPLOY_LOCK_TTL_SECONDS, 180);
+});
+
+// ---- CDN purge retry / warning ----
+test('cache purge retries with backoff and succeeds after a transient 432 quota error', async () => {
+  const sleeps = [];
+  let calls = 0;
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [10, 20, 40],
+    sleep: async (ms) => { sleeps.push(ms); },
+    runTask: async (task) => {
+      calls++;
+      if (task.type === 'purge_prefix' && calls < 3) throw new Error('HTTP 432 LimitExceeded');
+      return { type: task.type, targets: task.targets, failedList: [] };
+    }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC001', originHost: 'sites.demox.site', ownerId: 'u1' });
+    assert.equal(result.success, true);
+    assert.equal(result.tasks[0].attempts, 3);
+    assert.deepEqual(sleeps, [10, 20]);
+    assert.equal(websiteApi.cachePurgeWarning(result), null);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('persistent cache purge failure is surfaced as success=false plus a warning', async () => {
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [1, 1],
+    sleep: async () => {},
+    runTask: async () => { throw new Error('HTTP 432 quota exceeded'); }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC002', originHost: 'sites.demox.site', ownerId: 'u1' });
+    assert.equal(result.success, false);
+    assert.ok(result.tasks.every((t) => t.success === false && t.attempts === 3));
+    assert.match(websiteApi.cachePurgeWarning(result), /432 quota exceeded/);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('deploy purge targets the versioned (v2) and legacy edge resolve-cache keys', async () => {
+  const seen = [];
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [],
+    sleep: async () => {},
+    runTask: async (task) => { seen.push(task); return { type: task.type, targets: task.targets, failedList: [] }; }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({
+      websiteId: 'LCJAIAC0',
+      subdomain: 'letters-from-the-hill',
+      subdomainDomain: 'demox.site',
+      originHost: 'site-3.demox.site',
+      ownerId: 'u1'
+    });
+    assert.equal(result.success, true);
+    const urlTask = seen.find((t) => t.type === 'purge_url');
+    assert.deepEqual(urlTask.targets.sort(), [
+      'https://resolve.demox.site/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/v2/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill'
+    ]);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('purge FailedList entries count as failure and are retried', async () => {
+  let calls = 0;
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [1],
+    sleep: async () => {},
+    runTask: async (task) => { calls++; return { type: task.type, targets: task.targets, failedList: [{ Target: 'https://x/' }] }; }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC003' });
+    assert.equal(result.success, false);
+    assert.match(websiteApi.cachePurgeWarning(result), /https:\/\/x\//);
+    assert.equal(calls, 4);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+// ---- 封禁 / 删除 / 改前缀：边缘解析缓存（v2 + 旧格式）必须被清理 ----
+
+function capturePurges() {
+  const tasks = [];
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [],
+    sleep: async () => {},
+    runTask: async (task) => { tasks.push(task); return { type: task.type, targets: task.targets, failedList: [] }; }
+  });
+  return {
+    tasks,
+    resolveTargets: () => tasks.filter((t) => t.type === 'purge_url').flatMap((t) => t.targets).sort()
+  };
+}
+
+function lenientSchemaQueries(sql) {
+  if (sql.includes('information_schema.COLUMNS')) return [];
+  if (sql.startsWith('ALTER TABLE') || sql.includes('CREATE TABLE IF NOT EXISTS')) return { affectedRows: 0 };
+  return null;
+}
+
+test('resolve_subdomain for a banned site is a real answer: success:true with visibility=disabled', async () => {
+  queryImpl = async (sql) => {
+    const schema = lenientSchemaQueries(sql);
+    if (schema) return schema;
+    if (sql.includes('FROM websites w')) {
+      return [{
+        path: 'sites/u/LCJAIAC0/dist', user_id: 'u', project_id: null, website_id: 'LCJAIAC0',
+        visibility: 'disabled', hide_watermark: 0, origin_host: 'site-3.demox.site'
+      }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const response = await request('resolve_subdomain', { subdomain: 'letters-from-the-hill', domain: 'demox.site' });
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.success, true);
+  assert.equal(body.visibility, 'disabled');
+  assert.equal(body.path, 'sites/u/LCJAIAC0/dist');
+});
+
+test('resolve_subdomain for a deleted site is a real "not found" (success:false, message "not found")', async () => {
+  queryImpl = async (sql) => {
+    const schema = lenientSchemaQueries(sql);
+    if (schema) return schema;
+    if (sql.includes('FROM websites w')) return [];
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const response = await request('resolve_subdomain', { subdomain: 'letters-from-the-hill', domain: 'demox.site' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { success: false, message: 'not found' });
+});
+
+test('unban (update_visibility) clears v2 + legacy resolve keys, including custom domains', async () => {
+  const purges = capturePurges();
+  try {
+    queryImpl = async (sql) => {
+      if (sql.includes('FROM user_roles')) return [{ roles: JSON.stringify(['admin']), pro_expires_at: null }];
+      if (sql.includes('SELECT * FROM websites')) {
+        return [{ id: 9, website_id: 'LCJAIAC0', subdomain: 'letters-from-the-hill', subdomain_domain: 'demox.site', visibility: 'disabled', user_id: 'u', path: 'sites/u/LCJAIAC0/dist' }];
+      }
+      if (sql.includes('CREATE TABLE IF NOT EXISTS')) return { affectedRows: 0 };
+      if (sql.includes('FROM custom_domain_routes r')) return [{ hostname: 'example.com', label: 'blog' }];
+      if (sql.includes('FROM storage_buckets')) return [];
+      if (sql.startsWith('UPDATE websites SET visibility')) return { affectedRows: 1 };
+      throw new Error(`Unexpected query: ${sql}`);
+    };
+    const token = sign({ userId: 'admin-1', email: 'admin@demox.example' });
+    const response = await main({
+      path: '/website/update-visibility',
+      httpMethod: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: { action: 'update_visibility', websiteId: 'LCJAIAC0', visibility: 'public' }
+    });
+    assert.equal(JSON.parse(response.body).success, true, response.body);
+    assert.deepEqual(purges.resolveTargets(), [
+      'https://resolve.demox.site/custom/blog.example.com',
+      'https://resolve.demox.site/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/v2/custom/blog.example.com',
+      'https://resolve.demox.site/v2/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill'
+    ]);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('delete clears v2 + legacy resolve keys (default, prefix, custom domain) after removing the row', async () => {
+  const purges = capturePurges();
+  const order = [];
+  try {
+    queryImpl = async (sql) => {
+      const access = ownerAccessQueries(sql);
+      if (access) return access;
+      if (sql.includes('SELECT * FROM websites WHERE')) {
+        return [{ id: 9, website_id: 'LCJAIAC0', subdomain: 'letters-from-the-hill', subdomain_domain: 'demox.site', user_id: 'user-feishu', project_id: null, path: 'sites/u/LCJAIAC0/dist' }];
+      }
+      if (sql.includes('FROM storage_buckets')) return [];
+      if (sql.includes('CREATE TABLE IF NOT EXISTS')) return { affectedRows: 0 };
+      if (sql.includes('FROM custom_domain_routes r')) return [{ hostname: 'example.com', label: '' }];
+      if (sql.startsWith('DELETE FROM custom_domain_routes')) { order.push('routes'); return { affectedRows: 1 }; }
+      if (sql.startsWith('DELETE FROM websites')) { order.push('row'); return { affectedRows: 1 }; }
+      return [];
+    };
+    const body = JSON.parse((await request('delete', { websiteId: 'LCJAIAC0' })).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.deepEqual(order, ['routes', 'row']);
+    const targets = purges.resolveTargets();
+    for (const expected of [
+      'https://resolve.demox.site/v2/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/v2/custom/example.com'
+    ]) {
+      assert.ok(targets.includes(expected), `missing ${expected} in ${targets.join(', ')}`);
+    }
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('set_subdomain clears both the old and the new prefix resolve keys (v2 + legacy)', async () => {
+  const purges = capturePurges();
+  try {
+    queryImpl = async (sql) => {
+      const access = ownerAccessQueries(sql);
+      if (access) return access;
+      if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+        return [{ id: 9, website_id: 'LCJAIAC0', subdomain: 'example-essay', subdomain_domain: 'demox.site', user_id: 'user-feishu', project_id: null }];
+      }
+      if (sql.includes('SELECT id FROM websites WHERE LOWER(website_id)')) return [];
+      if (sql.startsWith('UPDATE websites SET subdomain')) return { affectedRows: 1 };
+      return [];
+    };
+    const body = JSON.parse((await request('set_subdomain', { docId: 9, subdomain: 'letters-from-the-hill' })).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.deepEqual(purges.resolveTargets(), [
+      'https://resolve.demox.site/host/demox.site/example-essay',
+      'https://resolve.demox.site/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/host/demox.site/letters-from-the-hill',
+      'https://resolve.demox.site/v2/host/demox.site/example-essay',
+      'https://resolve.demox.site/v2/host/demox.site/lcjaiac0',
+      'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill'
+    ]);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('clear_subdomain clears the removed prefix resolve keys (v2 + legacy)', async () => {
+  const purges = capturePurges();
+  try {
+    queryImpl = async (sql) => {
+      const access = ownerAccessQueries(sql);
+      if (access) return access;
+      if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+        return [{ id: 9, website_id: 'LCJAIAC0', subdomain: 'example-essay', subdomain_domain: 'demox.site', user_id: 'user-feishu', project_id: null }];
+      }
+      if (sql.startsWith('UPDATE websites SET subdomain = NULL')) return { affectedRows: 1 };
+      return [];
+    };
+    const body = JSON.parse((await request('clear_subdomain', { docId: 9 })).body);
+    assert.equal(body.success, true, JSON.stringify(body));
+    const targets = purges.resolveTargets();
+    assert.ok(targets.includes('https://resolve.demox.site/v2/host/demox.site/example-essay'));
+    assert.ok(targets.includes('https://resolve.demox.site/host/demox.site/example-essay'));
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('a failing cache purge never fails set_subdomain; it is surfaced as a warning', async () => {
+  websiteApi.setPurgeRuntime({ retryDelaysMs: [], sleep: async () => {}, runTask: async () => { throw new Error('HTTP 432 quota'); } });
+  try {
+    queryImpl = async (sql) => {
+      const access = ownerAccessQueries(sql);
+      if (access) return access;
+      if (sql.includes('SELECT * FROM websites WHERE id = ?')) {
+        return [{ id: 9, website_id: 'LCJAIAC0', subdomain: null, subdomain_domain: 'demox.site', user_id: 'user-feishu', project_id: null }];
+      }
+      if (sql.includes('SELECT id FROM websites WHERE LOWER(website_id)')) return [];
+      if (sql.startsWith('UPDATE websites SET subdomain')) return { affectedRows: 1 };
+      return [];
+    };
+    const body = JSON.parse((await request('set_subdomain', { docId: 9, subdomain: 'letters-from-the-hill' })).body);
+    assert.equal(body.success, true);
+    assert.match(body.warning, /432 quota/);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
