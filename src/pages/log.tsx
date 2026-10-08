@@ -12,25 +12,31 @@ import {
   LOG_TAGLINE_ACCENT,
   RELEASES,
   categoryOf,
-  translateLogText,
+  pickLang,
 } from "@/content/changelog.mjs";
 import "./log.css";
 
 type Category = "feature" | "fix" | "ux" | "infra";
 type Filter = "all" | Category;
 
+/** A { zh, en } text pair from src/content/changelog.mjs. */
+interface LangText {
+  zh: string;
+  en: string;
+}
+
 interface Feature {
   tag: string;
-  title: string;
-  desc: string;
-  note?: string;
+  title: LangText;
+  desc: LangText;
+  note?: LangText;
 }
 
 interface Release {
   version: string;
-  name: string;
+  name: LangText;
   date: string;
-  dateNote: string;
+  dateNote: LangText;
   features: Feature[];
 }
 
@@ -94,7 +100,7 @@ const CATEGORY_ICON: Record<Category, LucideIcon> = {
 
 const releases = RELEASES as Release[];
 const displayVersion = (version: string) => (version === "current" ? `v${siteConfig.version}` : version);
-const tr = (text: string | undefined, language: Language) => translateLogText(text, language) as string;
+const tr = (text: LangText | string | undefined, language: Language) => pickLang(text, language) as string;
 
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(() =>
@@ -227,7 +233,7 @@ const ReleaseCard: React.FC<{
               <span>{t[cat]}</span>
             </div>
             {list.map((f) => (
-              <div key={f.title} className="dx-log-item">
+              <div key={f.title.zh} className="dx-log-item">
                 <div className="dx-log-ihead">
                   <span className="dx-log-tag">{f.tag}</span>
                   <h3 className="font-semibold text-sm md:text-[15px] text-[var(--stitch-ink)] wrap-any min-w-0">
@@ -421,7 +427,7 @@ const LogPage: React.FC = () => {
             const lit = litPx === null || litRows.has(index);
             return (
               <div
-                key={`${release.version}-${release.date}-${release.name}`}
+                key={`${release.version}-${release.date}-${release.name.zh}`}
                 className="dx-log-row"
                 data-row={index}
                 data-lit={lit}
