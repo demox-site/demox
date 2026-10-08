@@ -7,7 +7,10 @@
    [clone][original set][clones…]; x stays in [-2w,-w) while idle so there is always content on both sides.
    Clicking a 示例 card opens a larger preview (dialog); the three 真实 cards (coffee / www / preview) stay plain links. A drag never opens/navigates. */
 
-export function initS3(root: HTMLElement): () => void {
+import { marketingStrings } from './marketing-translations';
+
+export function initS3(root: HTMLElement, lang: 'zh' | 'en' = 'zh'): () => void {
+  const T = marketingStrings(lang).s3;
   var __dead=false, __L=[];
   function __on(t,e,f,o){ t.addEventListener(e,f,o); __L.push([t,e,f,o]); }
   var __raf=window.requestAnimationFrame.bind(window);
@@ -31,7 +34,7 @@ export function initS3(root: HTMLElement): () => void {
     [].forEach.call(r.tr.querySelector('.s3-set').querySelectorAll('.s3-card'),function(c){
       if(c.tagName==='ARTICLE'){
         c.tabIndex=0; c.setAttribute('role','button'); c.setAttribute('aria-haspopup','dialog');
-        c.setAttribute('aria-label','查看示例：'+c.querySelector('.s3-cap-t b').textContent+'（示意画面，非用户作品）');
+        c.setAttribute('aria-label',T.viewExample+c.querySelector('.s3-cap-t b').textContent+T.srItemOpen+T.modalNote+T.srItemClose);
       } else c.setAttribute('draggable','false');
     });
   });
