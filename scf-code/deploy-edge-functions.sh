@@ -22,7 +22,7 @@
 #   - 边缘函数 subdomain-router = ef-1281msyw
 #   - 触发规则 rule-fxfyqmn5(host=*.demox.site)指向 ef-1281msyw
 #     (原指向老函数 ef-7ej45f3q;ef-7ej45f3q 代码未改,留作回滚)
-#   - website-api(SCF demox-website-api / lam-ixkn6jpq)已含新 action
+#   - website-api(SCF demox-website-api / lam-lfjopvn0，现仅作回滚，勿更新；线上业务代码是 EPX2UU43 站点函数 slug=website)已含新 action
 #   - DB:websites.subdomain + subdomain_domain 列 + uniq_official_subdomain 索引
 #
 # 回滚:把 rule-fxfyqmn5 的 FunctionId 改回 ef-7ej45f3q:

@@ -89,6 +89,7 @@ const CUSTOM_DOMAIN_STATUS_PENDING = 'pending';
 const CUSTOM_DOMAIN_STATUS_ACTIVE = 'active';
 const VISIBILITY_PUBLIC = 'public';
 const VISIBILITY_PRIVATE = 'private';
+const VISIBILITY_DISABLED = 'disabled';
 const PROJECT_ROLE_OWNER = 'owner';
 const PROJECT_ROLE_ADMIN = 'admin';
 const PROJECT_ROLE_MEMBER = 'member';
@@ -511,7 +512,7 @@ async function callTencentCloudApi(opts) {
   const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
 
   if (!secretId || !secretKey) {
-    throw new Error('缺少腾讯云 API 密钥，无法提交缓存清除任务');
+    throw new Error('缺少腾讯云 API 密钥');
   }
 
   const body = JSON.stringify(opts.payload || {});
@@ -597,6 +598,102 @@ async function callTencentCloudApi(opts) {
     throw new Error(`${err.Code || 'TencentCloudError'}: ${err.Message || '请求失败'}`);
   }
   return parsed.Response || parsed;
+}
+
+function encodeSesBody(value) {
+  return Buffer.from(String(value || ''), 'utf8').toString('base64');
+}
+
+async function sendSesEmail({ to, subject, text, html }) {
+  const from = String(process.env.SES_FROM_EMAIL || 'Demox <noreply@mail.demox.site>').trim();
+  const region = String(process.env.SES_REGION || 'ap-hongkong').trim() || 'ap-hongkong';
+  return callTencentCloudApi({
+    service: 'ses',
+    host: 'ses.tencentcloudapi.com',
+    version: '2020-10-02',
+    action: 'SendEmail',
+    region,
+    payload: {
+      FromEmailAddress: from,
+      Destination: [to],
+      Subject: subject,
+      TriggerType: 1,
+      Simple: {
+        Text: encodeSesBody(text),
+        Html: encodeSesBody(html)
+      }
+    }
+  });
+}
+
+function escapeEmailText(value) {
+  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function buildSiteDisabledNotice({ ownerName, siteName, siteUrl, websiteId, reason }) {
+  const greeting = ownerName ? `${ownerName}，你好：` : '你好：';
+  const text = [
+    greeting,
+    '',
+    '你在 Demox 发布的站点已被管理员停用，访客目前无法打开该站点。',
+    '',
+    `站点名称：${siteName}`,
+    `站点地址：${siteUrl}`,
+    `站点 ID：${websiteId}`,
+    '',
+    '停用理由：',
+    reason,
+    '',
+    '如对本次处理有异议，可回复本邮件说明情况。',
+    '',
+    'Demox 团队',
+    'https://www.demox.site/'
+  ].join('\n');
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<body style="margin:0;padding:24px;background:#f4f4f5;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:28px 28px 24px;">
+    <p style="margin:0 0 16px;">${escapeEmailText(greeting)}</p>
+    <p style="margin:0 0 16px;">你在 Demox 发布的站点已被管理员停用，访客目前无法打开该站点。</p>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;">
+      <tr><td style="padding:6px 0;color:#71717a;width:96px;">站点名称</td><td>${escapeEmailText(siteName)}</td></tr>
+      <tr><td style="padding:6px 0;color:#71717a;">站点地址</td><td><a href="${escapeEmailText(siteUrl)}">${escapeEmailText(siteUrl)}</a></td></tr>
+      <tr><td style="padding:6px 0;color:#71717a;">站点 ID</td><td>${escapeEmailText(websiteId)}</td></tr>
+    </table>
+    <p style="margin:0 0 8px;font-weight:700;">停用理由</p>
+    <pre style="margin:0 0 20px;white-space:pre-wrap;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:#f4f4f5;padding:12px 14px;border-radius:10px;">${escapeEmailText(reason)}</pre>
+    <p style="margin:0 0 20px;color:#52525b;font-size:14px;">如对本次处理有异议，可回复本邮件说明情况。</p>
+    <p style="margin:0;font-size:13px;color:#71717a;">Demox 团队<br><a href="https://www.demox.site/">https://www.demox.site/</a></p>
+  </div>
+</body>
+</html>`;
+  return {
+    subject: `【Demox】你的站点「${siteName}」已被停用`,
+    text,
+    html
+  };
+}
+
+let _disableReasonColumnEnsured = false;
+async function ensureWebsiteDisableReasonColumn() {
+  if (_disableReasonColumnEnsured) return;
+  try {
+    const cols = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
+         AND COLUMN_NAME IN ('disable_reason','disabled_at')`
+    );
+    const have = new Set((cols || []).map((row) => row.COLUMN_NAME));
+    if (!have.has('disable_reason')) {
+      await query("ALTER TABLE websites ADD COLUMN disable_reason VARCHAR(500) NULL");
+    }
+    if (!have.has('disabled_at')) {
+      await query('ALTER TABLE websites ADD COLUMN disabled_at TIMESTAMP NULL');
+    }
+  } catch (e) {
+    console.warn('ensureWebsiteDisableReasonColumn skipped:', e.message);
+  }
+  _disableReasonColumnEnsured = true;
 }
 
 async function createEdgeOnePurgeTask({ type, targets, method }) {
@@ -801,6 +898,9 @@ exports.main = async (event, context) => {
       list_blocked_phrases: handleListBlockedPhrases,
       check_site_access: handleCheckSiteAccess,
       track_site_event: handleTrackSiteEvent,
+      report_site: handleReportSite,
+      list_site_reports: handleListSiteReports,
+      update_site_report: handleUpdateSiteReport,
       get_site_stats: handleGetSiteStats,
       get_site_access_logs: handleGetSiteAccessLogs,
       rollup_site_analytics: handleRollupSiteAnalytics,
@@ -954,6 +1054,12 @@ exports.main = async (event, context) => {
       return await handleCheckSiteAccess(event);
     } else if (pathUrl.includes('/track-site-event') || pathUrl.includes('/analytics/track')) {
       return await handleTrackSiteEvent(event);
+    } else if (pathUrl.includes('/list-site-reports')) {
+      return await handleListSiteReports(event);
+    } else if (pathUrl.includes('/update-site-report')) {
+      return await handleUpdateSiteReport(event);
+    } else if (pathUrl.includes('/report-site')) {
+      return await handleReportSite(event);
     } else if (pathUrl.includes('/site-stats') || pathUrl.includes('/analytics/stats')) {
       return await handleGetSiteStats(event);
     } else if (pathUrl.includes('/site-access-logs') || pathUrl.includes('/analytics/access-logs')) {
@@ -1986,8 +2092,8 @@ async function handleUpdateWebsiteVisibility(event) {
   const docId = normalizePositiveId(body.docId || body.id);
   const websiteId = body.websiteId ? String(body.websiteId).trim() : '';
   const rawVisibility = String(body.visibility || '').trim().toLowerCase();
-  if (![VISIBILITY_PUBLIC, VISIBILITY_PRIVATE].includes(rawVisibility)) {
-    return ok({ success: false, message: 'visibility 只能是 public 或 private' });
+  if (![VISIBILITY_PUBLIC, VISIBILITY_PRIVATE, VISIBILITY_DISABLED].includes(rawVisibility)) {
+    return ok({ success: false, message: 'visibility 只能是 public、private 或 disabled' });
   }
   if (!docId && !websiteId) {
     return ok({ success: false, message: '缺少 docId 或 websiteId' });
@@ -1995,11 +2101,90 @@ async function handleUpdateWebsiteVisibility(event) {
 
   try {
     const site = await getWebsiteByIdentity({ docId, websiteId });
-    if (!site || !(await canUserManageSite(userId, site))) {
+    if (!site) {
       return ok({ success: false, message: '站点不存在或无权限' });
     }
+    const current = normalizeVisibility(site.visibility);
+    const needsAdmin = rawVisibility === VISIBILITY_DISABLED || current === VISIBILITY_DISABLED;
+    if (needsAdmin) {
+      if (!(await checkAdmin(userId))) {
+        return ok({ success: false, message: '仅管理员可禁用或恢复被禁用的站点' });
+      }
+    } else if (!(await canUserManageSite(userId, site))) {
+      return ok({ success: false, message: '站点不存在或无权限' });
+    }
+    if (rawVisibility === VISIBILITY_DISABLED && isProtectedOfficialSite(site)) {
+      return ok({ success: false, message: '不能禁用 Demox 主站' });
+    }
 
-    await query('UPDATE websites SET visibility = ?, updated_at = NOW() WHERE id = ?', [rawVisibility, site.id]);
+    const disableReason = String(body.disableReason || body.reason || '').trim();
+    let emailed = null;
+    if (rawVisibility === VISIBILITY_DISABLED) {
+      if (disableReason.length < 8) {
+        return ok({ success: false, message: '禁用必须填写理由（至少 8 个字）' });
+      }
+      const owner = await getUserById(site.user_id);
+      const ownerEmail = normalizeEmail(owner && owner.email);
+      if (!ownerEmail || !isValidEmail(ownerEmail)) {
+        return ok({ success: false, message: '站点所有者没有可用邮箱，无法发送停用通知' });
+      }
+      await ensureWebsiteDisableReasonColumn();
+      await query(
+        'UPDATE websites SET visibility = ?, disable_reason = ?, disabled_at = NOW(), updated_at = NOW() WHERE id = ?',
+        [rawVisibility, disableReason.slice(0, 500), site.id]
+      );
+      const siteUrl = String(site.url || `https://${String(site.website_id).toLowerCase()}.demox.site/`);
+      const notice = buildSiteDisabledNotice({
+        ownerName: owner.nickname || '',
+        siteName: site.name || site.file_name || site.website_id,
+        siteUrl,
+        websiteId: site.website_id,
+        reason: disableReason
+      });
+      try {
+        await sendSesEmail({
+          to: ownerEmail,
+          subject: notice.subject,
+          text: notice.text,
+          html: notice.html
+        });
+        emailed = true;
+      } catch (mailErr) {
+        console.error('停用通知邮件发送失败:', mailErr);
+        emailed = false;
+      }
+      const reportId = parseInt(body.reportId, 10);
+      if (reportId) {
+        await ensureSiteReportsTable();
+        await query(
+          "UPDATE site_reports SET status = 'reviewed' WHERE id = ?",
+          [reportId]
+        );
+      }
+      const cachePurge = await purgeSiteCache({
+        websiteId: site.website_id,
+        subdomain: site.subdomain,
+        subdomainDomain: site.subdomain_domain,
+        ...(await originArgsFromSite(site))
+      });
+      return ok({
+        success: true,
+        visibility: rawVisibility,
+        websiteId: site.website_id,
+        emailed,
+        cachePurge,
+        message: emailed === false
+          ? '站点已禁用，但通知邮件发送失败'
+          : '站点已禁用，已邮件通知所有者'
+      });
+    }
+
+    await query(
+      rawVisibility === VISIBILITY_PUBLIC
+        ? 'UPDATE websites SET visibility = ?, disable_reason = NULL, disabled_at = NULL, updated_at = NOW() WHERE id = ?'
+        : 'UPDATE websites SET visibility = ?, updated_at = NOW() WHERE id = ?',
+      [rawVisibility, site.id]
+    );
     const cachePurge = await purgeSiteCache({
       websiteId: site.website_id,
       subdomain: site.subdomain,
@@ -4497,7 +4682,8 @@ async function handleGetPlatformOverview(event) {
     bucketObjects: null,
     admins: 0,
     proActive: 0,
-    proExpired: 0
+    proExpired: 0,
+    reportsOpen: 0
   };
 
   try {
@@ -4564,6 +4750,14 @@ async function handleGetPlatformOverview(event) {
     }
   } catch (e) {
     console.warn('概览会员统计失败:', e.message);
+  }
+  try {
+    await ensureSiteReportsTable();
+    counts.reportsOpen = countSafe(await query(
+      "SELECT COUNT(*) AS c FROM site_reports WHERE status = 'open'"
+    ));
+  } catch (e) {
+    console.warn('概览举报数失败:', e.message);
   }
 
   let viewsAll = 0;
@@ -5469,6 +5663,9 @@ async function handleCheckSiteAccess(event) {
     }
 
     const visibility = normalizeVisibility(site.visibility);
+    if (visibility === VISIBILITY_DISABLED) {
+      return ok({ success: true, allowed: false, visibility, reason: 'disabled' });
+    }
     if (visibility !== VISIBILITY_PRIVATE) {
       return ok({ success: true, allowed: true, visibility });
     }
@@ -5778,6 +5975,156 @@ async function handleTrackSiteEvent(event) {
   } catch (error) {
     console.error('记录站点统计失败:', error);
     return ok({ success: false, message: error.message });
+  }
+}
+
+const SITE_REPORT_REASONS = new Set(['porn', 'illegal', 'violence', 'spam', 'ip', 'other']);
+let _siteReportsTableEnsured = false;
+
+async function ensureSiteReportsTable() {
+  if (_siteReportsTableEnsured) return;
+  await query(
+    `CREATE TABLE IF NOT EXISTS site_reports (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      website_id VARCHAR(32) NOT NULL,
+      reason VARCHAR(16) NOT NULL,
+      note VARCHAR(200) NOT NULL DEFAULT '',
+      page_url VARCHAR(1024) NOT NULL DEFAULT '',
+      host VARCHAR(255) NOT NULL DEFAULT '',
+      ip_hash CHAR(64) NOT NULL DEFAULT '',
+      user_agent VARCHAR(512) NOT NULL DEFAULT '',
+      status VARCHAR(16) NOT NULL DEFAULT 'open',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_reports_site_time (website_id, created_at),
+      INDEX idx_reports_ip_time (ip_hash, created_at),
+      INDEX idx_reports_status_time (status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+  _siteReportsTableEnsured = true;
+}
+
+async function handleReportSite(event) {
+  const body = event.body || event;
+  const websiteId = normalizeAnalyticsWebsiteId(body.websiteId || body.website_id);
+  const reason = String(body.reason || '').trim().toLowerCase();
+  if (!websiteId || !SITE_REPORT_REASONS.has(reason)) {
+    return ok({ success: false, message: 'invalid report' });
+  }
+
+  const note = String(body.note || '').trim().slice(0, 200);
+  const pageUrl = String(body.pageUrl || body.url || '').trim().slice(0, 1024);
+  const host = String(body.host || '').trim().slice(0, 255);
+  const ua = String(body.userAgent || body.ua || '').slice(0, 512);
+  const ipHash = hashAnalyticsValue(getClientIp(event));
+
+  try {
+    await ensureSiteReportsTable();
+    const site = await getWebsiteByIdentity({ websiteId });
+    if (!site) return ok({ success: false, message: 'site not found' });
+
+    const hourly = await query(
+      'SELECT COUNT(*) AS n FROM site_reports WHERE ip_hash = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)',
+      [ipHash]
+    );
+    if (Number(hourly[0] && hourly[0].n || 0) >= 8) {
+      return ok({ success: false, message: 'too many reports' });
+    }
+    const dup = await query(
+      `SELECT id FROM site_reports
+       WHERE website_id = ? AND ip_hash = ? AND reason = ?
+         AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+       LIMIT 1`,
+      [websiteId, ipHash, reason]
+    );
+    if (dup.length) return ok({ success: true, duplicate: true });
+
+    const inserted = await query(
+      `INSERT INTO site_reports (website_id, reason, note, page_url, host, ip_hash, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [websiteId, reason, note, pageUrl, host, ipHash, ua]
+    );
+    notifySiteReport({
+      id: inserted && inserted.insertId,
+      websiteId,
+      reason,
+      note,
+      pageUrl,
+      host
+    }).catch((e) => console.warn('举报通知失败:', e.message));
+    return ok({ success: true });
+  } catch (error) {
+    console.error('记录站点举报失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function handleListSiteReports(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const body = event.body || event;
+  const limit = Math.min(Math.max(parseInt(body.limit, 10) || 50, 1), 200);
+  const status = String(body.status || 'open').trim().toLowerCase();
+  try {
+    await ensureSiteReportsTable();
+    const rows = await query(
+      `SELECT r.id, r.website_id, r.reason, r.note, r.page_url, r.host, r.status, r.created_at,
+              w.name AS site_name, w.url AS site_url, w.subdomain, w.visibility
+       FROM site_reports r
+       LEFT JOIN websites w ON w.website_id = r.website_id
+       WHERE (? = 'all' OR r.status = ?)
+       ORDER BY r.id DESC
+       LIMIT ?`,
+      [status, status, limit]
+    );
+    return ok({ success: true, data: rows });
+  } catch (error) {
+    console.error('列出站点举报失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function handleUpdateSiteReport(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const body = event.body || event;
+  const id = parseInt(body.id, 10);
+  const status = String(body.status || '').trim().toLowerCase();
+  if (!id || !['open', 'reviewed'].includes(status)) {
+    return ok({ success: false, message: 'invalid report update' });
+  }
+  try {
+    await ensureSiteReportsTable();
+    await query('UPDATE site_reports SET status = ? WHERE id = ?', [status, id]);
+    return ok({ success: true });
+  } catch (error) {
+    console.error('更新站点举报失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
+async function notifySiteReport(row) {
+  const hook = String(process.env.REPORT_NOTIFY_WEBHOOK || '').trim();
+  if (!hook) return;
+  const text = [
+    `Demox 站点举报${row.id ? ' #' + row.id : ''}`,
+    `${row.reason} · ${row.websiteId}`,
+    row.pageUrl || row.host || '',
+    row.note || ''
+  ].filter(Boolean).join('\n');
+  const payload = /feishu|larkoffice|lark\.cn/i.test(hook)
+    ? { msg_type: 'text', content: { text } }
+    : { text, ...row };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2500);
+  try {
+    await fetch(hook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: ac.signal
+    });
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -7750,9 +8097,16 @@ function normalizePositiveId(id) {
 }
 
 function normalizeVisibility(value) {
-  return String(value || '').trim().toLowerCase() === VISIBILITY_PRIVATE
-    ? VISIBILITY_PRIVATE
-    : VISIBILITY_PUBLIC;
+  const v = String(value || '').trim().toLowerCase();
+  if (v === VISIBILITY_PRIVATE) return VISIBILITY_PRIVATE;
+  if (v === VISIBILITY_DISABLED) return VISIBILITY_DISABLED;
+  return VISIBILITY_PUBLIC;
+}
+
+function isProtectedOfficialSite(site) {
+  const id = String(site && site.website_id || '').trim().toUpperCase();
+  const sub = String(site && site.subdomain || '').trim().toLowerCase();
+  return id === 'EPX2UU43' || sub === 'www';
 }
 
 /**

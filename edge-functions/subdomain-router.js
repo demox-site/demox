@@ -18,6 +18,10 @@
 // Backend URLs are read from EdgeOne environment variables for quick rollback.
 var RESOLVE_CACHE_TTL = 60; // 秒
 var VISIBILITY_PRIVATE = 'private';
+var VISIBILITY_DISABLED = 'disabled';
+// EdgeOne response.text() 超过 1MB 抛 OverSize。异常被 passThroughOnException
+// 回源到默认桶根，已发布的大页面会变成 404。到上限就不再整页读取。
+var MAX_BADGE_HTML_BYTES = 1000000;
 
 // 自托管 demox 主站（作为被 demox 托管的站点 EPX2UU43，发布走 demox cli，不再走 GitHub Actions→COS 根）：
 //   - apex demox.site：301 跳转到 www.demox.site（保留 path+query，OAuth code 不丢）。
@@ -129,7 +133,13 @@ function buildOriginUrl(req, originPath, search, originHost) {
   const origin = new URL(req.url);
   // 多云：回源域由路由表的 origin_host 决定（每个桶绑定自己的回源域）。
   // 缺省(旧数据/默认桶/resolve 未返回 origin)回退到 sites.demox.site。
-  origin.hostname = originHost || 'sites.demox.site';
+  const host = originHost || 'sites.demox.site';
+  origin.hostname = host;
+  // site-{bucketId}.demox.site 是 COS 自定义源站域（CNAME 到 COS，不进 EdgeOne）。
+  // 证书还没绑到 COS HTTPS 实例时只能走 HTTP；用户侧仍是 https://*.demox.site。
+  if (/^site-\d+\.demox\.site$/i.test(host)) {
+    origin.protocol = 'http:';
+  }
   origin.pathname = originPath.replace(/\/+/g, '/');
   origin.search = search;
   return origin.toString();
@@ -254,6 +264,15 @@ async function trackSiteEvent(req, event, meta, type) {
 
 function applySiteCacheHeaders(headers, meta) {
   const h = headers instanceof Headers ? headers : new Headers(headers);
+  // 2024-01-01 后新建的 COS 桶，默认域名（含 cos-website）会强制
+  // Content-Disposition: attachment + x-cos-force-download。浏览器顶层导航会变成下载 HTML。
+  // 边缘函数回源后再吐给用户，必须剥掉这两头，页面才能打开。
+  const disposition = (h.get('Content-Disposition') || h.get('content-disposition') || '').toLowerCase();
+  if (disposition.includes('attachment') || (h.get('x-cos-force-download') || '').toLowerCase() === 'true') {
+    h.delete('Content-Disposition');
+    h.delete('content-disposition');
+    h.delete('x-cos-force-download');
+  }
   if (meta && meta.visibility === VISIBILITY_PRIVATE) {
     h.set('Cache-Control', 'no-store');
     h.delete('Age');
@@ -360,6 +379,36 @@ function getDefault404Html(meta, u) {
 </html>`;
 }
 
+function disabledSitePage() {
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>站点已停用</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0a0a0a; color:#e4e4e7; }
+  .box { text-align:center; padding:2rem; max-width:28rem; }
+  h1 { font-size:1.25rem; margin:0 0 .75rem; }
+  p { color:#71717a; margin:0 0 1.5rem; }
+  a { color:#a1a1aa; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>此站点已被停用</h1>
+    <p>该页面因举报审核被管理员关闭，暂不可访问。</p>
+    <a href="https://www.demox.site/">Demox</a>
+  </div>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 403,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+  });
+}
+
 function shouldInjectDemoxBadge(req, resp) {
   const host = new URL(req.url).hostname.toLowerCase();
   if (host === WWW_HOST) return false;
@@ -383,6 +432,10 @@ function getDemoxBadgeHtml(meta) {
     left: max(14px, calc(env(safe-area-inset-left) + 12px)) !important;
     bottom: max(14px, calc(env(safe-area-inset-bottom) + 12px)) !important;
     z-index: 2147483647 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
     opacity: .94 !important;
     transition: opacity .18s ease !important;
   }
@@ -430,6 +483,72 @@ function getDemoxBadgeHtml(meta) {
     outline: 3px solid rgba(125,249,212,.86) !important;
     outline-offset: 3px !important;
   }
+  button[${DEMOX_BADGE_MARKER}="report"] {
+    appearance: none !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: rgba(248,255,251,.7) !important;
+    font-family: "Avenir Next", "Trebuchet MS", "Gill Sans", sans-serif !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    letter-spacing: .04em !important;
+    padding: 4px 8px 4px 10px !important;
+    cursor: pointer !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    text-shadow: 0 1px 8px rgba(0,0,0,.35) !important;
+  }
+  button[${DEMOX_BADGE_MARKER}="report"]:hover,
+  button[${DEMOX_BADGE_MARKER}="report"][aria-expanded="true"] {
+    color: #7df9d4 !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] {
+    display: none !important;
+    position: absolute !important;
+    left: 0 !important;
+    bottom: calc(100% + 8px) !important;
+    width: min(292px, 82vw) !important;
+    padding: 14px 14px 12px !important;
+    border-radius: 18px !important;
+    border: 1px solid rgba(255,255,255,.18) !important;
+    background: linear-gradient(135deg, rgba(5,22,40,.94), rgba(8,78,82,.9)) !important;
+    color: #f8fffb !important;
+    box-shadow: 0 22px 50px rgba(2,12,27,.38), inset 0 1px 0 rgba(255,255,255,.16) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(1.14) !important;
+    backdrop-filter: blur(18px) saturate(1.14) !important;
+    font-family: "Avenir Next", "Trebuchet MS", "Gill Sans", sans-serif !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"].open { display: block !important; }
+  div[${DEMOX_BADGE_MARKER}="sheet"] h3 {
+    margin: 0 !important; font-size: 14px !important; font-weight: 700 !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-sub {
+    margin: 6px 0 12px !important; font-size: 11px !important; color: rgba(248,255,251,.62) !important; line-height: 1.45 !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-reasons {
+    display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 6px !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] label {
+    display: flex !important; align-items: center !important; gap: 6px !important;
+    min-height: 32px !important; padding: 0 8px !important; border-radius: 10px !important;
+    border: 1px solid rgba(255,255,255,.12) !important; font-size: 11px !important; cursor: pointer !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] textarea {
+    width: 100% !important; margin: 8px 0 10px !important; min-height: 58px !important; resize: none !important;
+    border-radius: 10px !important; border: 1px solid rgba(255,255,255,.12) !important;
+    background: rgba(0,0,0,.18) !important; color: #f8fffb !important; padding: 8px !important;
+    font: 12px/1.4 "Avenir Next", "Trebuchet MS", sans-serif !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-row { display: flex !important; gap: 8px !important; }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-row button {
+    flex: 1 !important; min-height: 34px !important; border-radius: 999px !important; border: 0 !important;
+    cursor: pointer !important; font: 700 12px "Avenir Next", "Trebuchet MS", sans-serif !important;
+  }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-cancel { background: rgba(255,255,255,.08) !important; color: #f8fffb !important; }
+  div[${DEMOX_BADGE_MARKER}="sheet"] .demox-report-send { background: #7df9d4 !important; color: #052018 !important; }
+  div[${DEMOX_BADGE_MARKER}="done"] { display: none !important; font-size: 13px !important; padding: 18px 8px !important; text-align: center !important; }
+  div[${DEMOX_BADGE_MARKER}="done"].show { display: block !important; }
   div[${DEMOX_BADGE_MARKER}="wrap"].dragging,
   div[${DEMOX_BADGE_MARKER}="wrap"].dragging a[${DEMOX_BADGE_MARKER}="link"] {
     cursor: grabbing !important;
@@ -452,7 +571,28 @@ function getDemoxBadgeHtml(meta) {
 }
 </style>
 <div ${DEMOX_BADGE_MARKER}="wrap">
+  <div ${DEMOX_BADGE_MARKER}="sheet" role="dialog" aria-labelledby="demox-report-title">
+    <form ${DEMOX_BADGE_MARKER}="form">
+      <h3 id="demox-report-title">举报此站点</h3>
+      <p class="demox-report-sub">我们会人工抽查。请选最接近的一类，可选填说明。</p>
+      <div class="demox-report-reasons">
+        <label><input type="radio" name="demox-report-reason" value="porn"> 色情低俗</label>
+        <label><input type="radio" name="demox-report-reason" value="illegal"> 违法违规</label>
+        <label><input type="radio" name="demox-report-reason" value="violence"> 暴力恐怖</label>
+        <label><input type="radio" name="demox-report-reason" value="spam"> 欺诈广告</label>
+        <label><input type="radio" name="demox-report-reason" value="ip"> 侵权盗用</label>
+        <label><input type="radio" name="demox-report-reason" value="other" checked> 其他</label>
+      </div>
+      <textarea name="demox-report-note" maxlength="200" placeholder="可选：补充链接或说明（200 字内）"></textarea>
+      <div class="demox-report-row">
+        <button class="demox-report-cancel" type="button">取消</button>
+        <button class="demox-report-send" type="submit">提交举报</button>
+      </div>
+    </form>
+    <div ${DEMOX_BADGE_MARKER}="done">已收到，我们会尽快审核。</div>
+  </div>
   <a ${DEMOX_BADGE_MARKER}="link" href="${demoxHomeUrl()}" target="_blank" rel="noopener noreferrer" aria-label="Go to Demox homepage">Powered by Demox</a>
+  <button ${DEMOX_BADGE_MARKER}="report" type="button" aria-expanded="false">举报</button>
 </div>
 <script data-demox-site-badge-script>
 (function () {
@@ -463,6 +603,7 @@ function getDemoxBadgeHtml(meta) {
   var STORAGE_KEY = 'demox-badge-pos';
   var DRAG_THRESHOLD = 5;
   var ANALYTICS_URL = '${optionalBackendUrl('/website/analytics-track')}';
+  var REPORT_URL = '${optionalBackendUrl('/website/report-site')}';
   var WEBSITE_ID = '${(meta && meta.websiteId) || ''}';
   var ANALYTICS_TOKEN = '';
   // 读取持久化位置：有则用 left/top 接管定位，无则保留 CSS 默认左下角
@@ -561,6 +702,61 @@ function getDemoxBadgeHtml(meta) {
     var r = wrap.getBoundingClientRect();
     applyPos(r.left, r.top);
   });
+  var reportBtn = wrap.querySelector('button[${DEMOX_BADGE_MARKER}="report"]');
+  var sheet = wrap.querySelector('div[${DEMOX_BADGE_MARKER}="sheet"]');
+  var form = wrap.querySelector('form[${DEMOX_BADGE_MARKER}="form"]');
+  var done = wrap.querySelector('div[${DEMOX_BADGE_MARKER}="done"]');
+  function setReportOpen(open) {
+    if (!sheet || !reportBtn) return;
+    if (open) {
+      sheet.classList.add('open');
+      reportBtn.setAttribute('aria-expanded', 'true');
+      if (form) form.style.display = '';
+      if (done) done.classList.remove('show');
+    } else {
+      sheet.classList.remove('open');
+      reportBtn.setAttribute('aria-expanded', 'false');
+    }
+  }
+  if (reportBtn && sheet) {
+    reportBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      setReportOpen(reportBtn.getAttribute('aria-expanded') !== 'true');
+    });
+    var cancel = sheet.querySelector('.demox-report-cancel');
+    if (cancel) cancel.addEventListener('click', function () { setReportOpen(false); });
+    if (form) {
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var reasonEl = form.querySelector('input[name="demox-report-reason"]:checked');
+        var noteEl = form.querySelector('textarea[name="demox-report-note"]');
+        var payload = {
+          action: 'report_site',
+          websiteId: WEBSITE_ID,
+          reason: reasonEl ? reasonEl.value : 'other',
+          note: noteEl ? String(noteEl.value || '').slice(0, 200) : '',
+          pageUrl: location.href,
+          host: location.hostname,
+          userAgent: navigator.userAgent || ''
+        };
+        if (REPORT_URL && WEBSITE_ID) {
+          try {
+            fetch(REPORT_URL, {
+              method: 'POST',
+              mode: 'cors',
+              keepalive: true,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            }).catch(function () {});
+          } catch (err) {}
+        }
+        if (form) form.style.display = 'none';
+        if (done) done.classList.add('show');
+        setTimeout(function () { setReportOpen(false); }, 1600);
+      });
+    }
+  }
 })();
 </script>`;
 }
@@ -660,23 +856,49 @@ function escapeHtml(s) {
   });
 }
 
+function htmlContentLength(resp) {
+  const raw = resp && resp.headers ? resp.headers.get('content-length') : '';
+  if (raw == null || String(raw).trim() === '') return null;
+  const size = Number(raw);
+  if (!Number.isFinite(size) || size < 0) return null;
+  return size;
+}
+
+function streamSiteResponse(resp, meta) {
+  return new Response(resp.body, {
+    status: resp.status,
+    statusText: resp.statusText,
+    headers: applySiteCacheHeaders(new Headers(resp.headers), meta)
+  });
+}
+
 async function withDemoxBadge(req, event, resp, meta) {
   if (shouldTrackSiteView(req, resp)) {
     trackSiteEvent(req, event, meta, 'view');
   }
   if (!shouldInjectDemoxBadge(req, resp)) {
     const current = (resp.headers.get('Cache-Control') || '').toLowerCase();
+    const forceDownload = (resp.headers.get('x-cos-force-download') || '').toLowerCase() === 'true' ||
+      (resp.headers.get('Content-Disposition') || '').toLowerCase().includes('attachment');
     const mustRewrite = (meta && meta.visibility === VISIBILITY_PRIVATE) ||
+      forceDownload ||
       !current || current.includes('no-store') ||
       (current.includes('no-cache') && current.indexOf('max-age=') === -1);
     if (!mustRewrite) return resp;
-    return new Response(resp.body, {
-      status: resp.status,
-      statusText: resp.statusText,
-      headers: applySiteCacheHeaders(new Headers(resp.headers), meta)
-    });
+    return streamSiteResponse(resp, meta);
   }
-  const html = await resp.text();
+  const byteLength = htmlContentLength(resp);
+  if (byteLength != null && byteLength >= MAX_BADGE_HTML_BYTES) {
+    return streamSiteResponse(resp, meta);
+  }
+  let html;
+  try {
+    // 有长度且未超限时沿用原来的直接读取。长度缺失才 clone，OverSize 时还能返回未读的源站正文。
+    html = byteLength == null ? await resp.clone().text() : await resp.text();
+  } catch (e) {
+    if (byteLength != null) throw e;
+    return streamSiteResponse(resp, meta);
+  }
   const headers = applySiteCacheHeaders(new Headers(resp.headers), meta);
   headers.delete('content-length');
   headers.delete('content-encoding');
@@ -1199,6 +1421,9 @@ async function handle(req, event) {
   }
 
   if (path) {
+    if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_DISABLED) {
+      return disabledSitePage();
+    }
     if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
       if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
         if (req.method !== 'POST') {
