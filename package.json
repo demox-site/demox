@@ -22,6 +22,7 @@
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
     "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
+    "test:changelog": "node --test src/content/changelog.test.mjs",
     "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs"
   },
   "dependencies": {
