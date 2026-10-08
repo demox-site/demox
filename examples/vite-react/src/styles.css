@@ -566,3 +566,38 @@ dl dt {
     transition: none;
   }
 }
+
+/* ---- polish v2: rhythm, numerals, calmer focus, spec card, mobile ---- */
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+.row-meta, .spec dd, .row-sku { font-variant-numeric: tabular-nums; }
+.filters button:hover, .catalog button:hover { outline: none; }
+.filters button:hover { border-color: var(--anodize); color: var(--anodize); }
+.filters .is-active:hover { color: #fff; }
+.catalog button { transition: background-color .18s ease, padding-left .18s ease; }
+.catalog button:hover { background: rgba(47, 111, 116, 0.06); padding-left: 0.6rem; }
+.catalog .is-selected .row-name { color: var(--anodize); }
+.lede { font-size: 1rem; line-height: 1.7; color: #33403f; }
+.spec {
+  margin-top: 1.4rem;
+  padding: 1.1rem 1.2rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff, rgba(255,255,255,.55));
+  box-shadow: 0 1px 0 rgba(255,255,255,.8) inset, 0 10px 30px -18px rgba(20, 40, 44, .35);
+}
+.spec h2 { letter-spacing: -0.01em; }
+.spec dl { row-gap: 0.85rem; }
+.note { line-height: 1.65; }
+.foot { margin-top: 1.2rem; padding-top: 0.9rem; border-top: 1px dashed var(--line); }
+@media (min-width: 960px) {
+  .sheet { padding: 2.4rem 2.6rem 1.6rem; }
+  .catalog button { padding: 0.8rem 0.45rem; }
+}
+@media (max-width: 720px) {
+  .stage { min-height: 46vh; }
+  .sheet { padding: 1.5rem 1.15rem 5rem; }
+  .filters { flex-wrap: nowrap; overflow-x: auto; margin-inline: -1.15rem; padding: 0 1.15rem 0.2rem; scrollbar-width: none; }
+  .filters button { flex: none; }
+  .catalog button { padding: 0.85rem 0.3rem; row-gap: 0.25rem; }
+  .row-name { font-size: 1.02rem; }
+}

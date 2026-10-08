@@ -3,6 +3,7 @@
 # Runs on aigc. customers.demox.site must resolve here so HTTP-01 and HTTPS work.
 set -euo pipefail
 
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ROOT=/opt/demox-customer-proxy
 # shellcheck disable=SC1091
 source "$ROOT/.env"
@@ -30,9 +31,21 @@ mysql_query() {
     -D "$MYSQL_DATABASE" --batch --raw -e "$1"
 }
 
+write_if_changed() {
+  local dest="$1" tmp
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$dest"
+  return 0
+}
+
 write_http_only() {
   local host="$1"
-  cat >"$NGINX_DIR/${PREFIX}-${host}.conf" <<EOF
+  write_if_changed "$NGINX_DIR/${PREFIX}-${host}.conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -49,7 +62,9 @@ EOF
 
 write_https() {
   local host="$1" origin="$2"
-  cat >"$NGINX_DIR/${PREFIX}-${host}.conf" <<EOF
+  # aigc has no public IPv6. podfwngc.demox.site has many AAAA records;
+  # proxy_pass to the hostname makes nginx try those first and the request fails.
+  write_if_changed "$NGINX_DIR/${PREFIX}-${host}.conf" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -70,6 +85,9 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     client_max_body_size 32m;
     location / {
+        resolver 119.29.29.29 223.5.5.5 ipv6=off valid=30s;
+        resolver_timeout 2s;
+        set \$demox_origin ${origin};
         proxy_http_version 1.1;
         proxy_ssl_server_name on;
         proxy_ssl_name ${origin};
@@ -78,14 +96,15 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_pass https://${origin};
+        proxy_connect_timeout 5s;
+        proxy_pass https://\$demox_origin;
     }
 }
 EOF
 }
 
 reload_nginx() {
-  if nginx -t 2>/dev/null; then
+  if /usr/sbin/nginx -t; then
     systemctl reload nginx
   else
     echo "nginx -t failed; leaving previous config" >&2
@@ -150,9 +169,10 @@ while IFS=$'\t' read -r host website_id; do
   live="/etc/letsencrypt/live/${host}/fullchain.pem"
 
   if [[ ! -f "$conf" ]]; then
-    write_http_only "$host"
-    CHANGED=1
-    reload_nginx || true
+    if write_http_only "$host"; then
+      CHANGED=1
+      reload_nginx || true
+    fi
   fi
 
   if [[ ! -f "$live" ]]; then
@@ -166,8 +186,9 @@ while IFS=$'\t' read -r host website_id; do
   fi
 
   if [[ -f "$live" ]]; then
-    write_https "$host" "$origin"
-    CHANGED=1
+    if write_https "$host" "$origin"; then
+      CHANGED=1
+    fi
   fi
 done < <(mysql_query "
 SELECT cd.hostname, w.website_id
