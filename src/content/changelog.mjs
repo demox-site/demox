@@ -39,6 +39,65 @@ export const RELEASES = [
   {
     version: "current",
     name: {
+      zh: "换了张脸 (New Face)",
+      en: "New Face",
+    },
+    date: "2026-10-08",
+    dateNote: {
+      zh: "(首页终于不是那张旧的了)",
+      en: "(the homepage is finally not the old one)",
+    },
+    features: [
+      {
+        tag: "Style",
+        title: {
+          zh: "新首页上线",
+          en: "New homepage",
+        },
+        desc: {
+          zh: "www 在 14:09 换成新首页。第一屏是能改代码、右边跟着变的编辑器，第二屏地球可以拖着转，第三屏是示例站卡片墙。",
+          en: "www switched to the new homepage at 14:09. Screen one is an editor you can type in, with the preview updating beside it; screen two is a globe you can drag; screen three is a wall of example-site cards.",
+        },
+        note: {
+          zh: "三屏都在，旧的那张脸退休了。",
+          en: "All three screens made it. The old face is retired.",
+        },
+      },
+      {
+        tag: "Fix",
+        title: {
+          zh: "部署不再互相拆台",
+          en: "Deploys stopped stepping on each other",
+        },
+        desc: {
+          zh: "website-api v11 在 12:31 上线。同一个站同时发起两次部署时，现在会锁住一次，不会再互相删文件。不存在的页面返回 404 之后也不再被缓存，站刚部署好不用再干等一分钟。",
+          en: "website-api v11 went out at 12:31. Two deploys of the same site at once now take turns instead of deleting each other's files. A missing page's 404 is no longer cached, so a site that just deployed doesn't sit there for a minute.",
+        },
+        note: {
+          zh: "来自 PR #4。",
+          en: "From PR #4.",
+        },
+      },
+      {
+        tag: "Infra",
+        title: {
+          zh: "部署更稳",
+          en: "Deploys got steadier",
+        },
+        desc: {
+          zh: "同一版里，地理位置改成从磁盘查，不再整包装进内存。切换版本时不再因为内存不够而失败。",
+          en: "In the same release, location lookup now reads from disk instead of loading the whole set into memory. Switching versions no longer fails because it ran out of memory.",
+        },
+        note: {
+          zh: "服务器松了一口气。",
+          en: "The server can breathe again.",
+        },
+      },
+    ],
+  },
+  {
+    version: "current",
+    name: {
       zh: "偷窥自己 (Know Thy Traffic)",
       en: "Know Thy Traffic",
     },

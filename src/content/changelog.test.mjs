@@ -53,3 +53,16 @@ test("pickLang picks by language and passes plain strings through", () => {
   assert.equal(pickLang("It Works on My Machine", "zh"), "It Works on My Machine");
   assert.equal(pickLang(undefined, "en"), undefined);
 });
+
+test("2026-10-08 is the newest release and the older entries stay", () => {
+  assert.equal(RELEASES.length, 12);
+  const first = RELEASES[0];
+  assert.equal(first.date, "2026-10-08");
+  assert.equal(first.version, "current");
+  assert.equal(first.name.zh, "换了张脸 (New Face)");
+  assert.equal(first.name.en, "New Face");
+  assert.deepEqual(first.features.map((f) => f.tag), ["Style", "Fix", "Infra"]);
+  assert.equal(RELEASES[1].date, "2026-06-22");
+  assert.equal(RELEASES[1].name.zh, "偷窥自己 (Know Thy Traffic)");
+});
+
