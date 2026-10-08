@@ -8,16 +8,147 @@ const nodeCrypto = require('crypto');
 const https = require('https');
 const http = require('http');
 const path = require('path');
-// geoip-lite 在 require 时把约 150MB 的 IP 库整份读进内存（实测 RSS +140MB）。
-// 只有访问统计的 lookupGeoByIp 用得到，所以首次查询时再加载并缓存，
-// 让不处理统计事件的 website worker（部署、列表等）不背这 140MB。
+// IP 归属地：直接在磁盘上查 geoip-lite 自带的数据文件，不把库读进内存。
+// geoip-lite 在 require 时会把约 150MB 的 .dat 整份读进内存（实测 RSS +140MB），
+// 而 website worker 常驻在 demox-user-nodejs 里，新旧版本同时在线时会撞 512MB 上限。
+// 这里按 geoip-lite 1.4.x 的文件格式（定长记录，按起始 IP 排序）用 fs.readSync 二分查找，
+// 查找逻辑与 geoip-lite 的 lookup4/lookup6 一致；只读 country/region/city。
+// 数据文件不存在时 getGeoip() 返回 null，调用方回落为 UNKNOWN（与原来加载失败时相同）。
+const fs = require('fs');
+const net = require('net');
 let geoip = null;
 let geoipLoadAttempted = false;
+
+function createDiskGeoip(dataDir) {
+  const file = (name) => path.join(dataDir, name);
+  const exists = (f) => { try { return fs.statSync(f).size > 0; } catch (e) { return false; } };
+  const LOC_RECORD = 88;
+  let v4 = null;
+  let v6 = null;
+  let locFd = null;
+  if (exists(file('geoip-city-names.dat')) && exists(file('geoip-city.dat'))) {
+    locFd = fs.openSync(file('geoip-city-names.dat'), 'r');
+    v4 = { fd: fs.openSync(file('geoip-city.dat'), 'r'), size: fs.statSync(file('geoip-city.dat')).size, rec: 24, city: true };
+  } else if (exists(file('geoip-country.dat'))) {
+    v4 = { fd: fs.openSync(file('geoip-country.dat'), 'r'), size: fs.statSync(file('geoip-country.dat')).size, rec: 10, city: false };
+  }
+  if (exists(file('geoip-city6.dat')) && locFd !== null) {
+    v6 = { fd: fs.openSync(file('geoip-city6.dat'), 'r'), size: fs.statSync(file('geoip-city6.dat')).size, rec: 48, city: true };
+  } else if (exists(file('geoip-country6.dat'))) {
+    v6 = { fd: fs.openSync(file('geoip-country6.dat'), 'r'), size: fs.statSync(file('geoip-country6.dat')).size, rec: 34, city: false };
+  }
+  if (!v4) return null;
+  const buf = Buffer.alloc(LOC_RECORD);
+  const read = (fd, pos, len) => { fs.readSync(fd, buf, 0, len, pos); return buf; };
+  const cstr = (b, from, to) => b.toString('utf8', from, to).replace(/\u0000.*/, '');
+  const readLoc = (locId) => {
+    const b = read(locFd, locId * LOC_RECORD, LOC_RECORD);
+    return { country: cstr(b, 0, 2), region: cstr(b, 2, 5), city: cstr(b, 42, LOC_RECORD) };
+  };
+  v4.lastLine = v4.size / v4.rec - 1;
+  v4.firstIP = read(v4.fd, 0, 4).readUInt32BE(0);
+  v4.lastIP = read(v4.fd, v4.lastLine * v4.rec + 4, 4).readUInt32BE(0);
+  const private4 = [[0x0A000000, 0x0AFFFFFF], [0xAC100000, 0xAC1FFFFF], [0xC0A80000, 0xC0A8FFFF]];
+  const aton4 = (a) => {
+    const p = a.split('.');
+    return ((parseInt(p[0], 10) << 24) >>> 0) + ((parseInt(p[1], 10) << 16) >>> 0) + ((parseInt(p[2], 10) << 8) >>> 0) + (parseInt(p[3], 10) >>> 0);
+  };
+  const aton6 = (input) => {
+    const a = input.replace(/"/g, '').split(/:/);
+    const l = a.length - 1;
+    if (a[l] === '') a[l] = 0;
+    if (l < 7) {
+      a.length = 8;
+      for (let i = l; i >= 0 && a[i] !== ''; i--) a[7 - l + i] = a[i];
+    }
+    for (let i = 0; i < 8; i++) a[i] = a[i] ? parseInt(a[i], 16) : 0;
+    const r = [];
+    for (let i = 0; i < 4; i++) r.push(((a[2 * i] << 16) + a[2 * i + 1]) >>> 0);
+    return r;
+  };
+  const cmp6 = (a, b) => {
+    for (let i = 0; i < 2; i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return 0;
+  };
+  // geoip-lite 的二分写法（含 fline/cline 收尾分支）原样保留，保证边界结果一致。
+  function search(lastLine, readRange, inRange, below) {
+    let fline = 0;
+    let cline = lastLine;
+    for (;;) {
+      const line = Math.round((cline - fline) / 2) + fline;
+      const range = readRange(line);
+      if (inRange(range)) return line;
+      if (fline === cline) return -1;
+      if (fline === cline - 1) {
+        if (line === fline) fline = cline; else cline = fline;
+      } else if (below(range)) {
+        cline = line;
+      } else {
+        fline = line;
+      }
+    }
+  }
+  function lookup4(ip) {
+    if (ip > v4.lastIP || ip < v4.firstIP) return null;
+    for (const [lo, hi] of private4) if (ip >= lo && ip <= hi) return null;
+    const line = search(v4.lastLine,
+      (n) => { const b = read(v4.fd, n * v4.rec, 8); return [b.readUInt32BE(0), b.readUInt32BE(4)]; },
+      ([lo, hi]) => lo <= ip && hi >= ip,
+      ([lo]) => lo > ip);
+    if (line < 0) return null;
+    const out = { country: '', region: '', city: '' };
+    if (!v4.city) {
+      out.country = read(v4.fd, line * v4.rec + 8, 2).toString('utf8', 0, 2);
+      return out;
+    }
+    const locId = read(v4.fd, line * v4.rec + 8, 4).readUInt32BE(0);
+    if ((-1 >>> 0) > locId) Object.assign(out, readLoc(locId));
+    return out;
+  }
+  function lookup6(ip) {
+    if (!v6) return null;
+    const readip = (n, off) => { const b = read(v6.fd, n * v6.rec + off * 16, 8); return [b.readUInt32BE(0), b.readUInt32BE(4)]; };
+    const lastLine = v6.size / v6.rec - 1;
+    if (cmp6(ip, readip(lastLine, 1)) > 0 || cmp6(ip, readip(0, 0)) < 0) return null;
+    const line = search(lastLine,
+      (n) => [readip(n, 0), readip(n, 1)],
+      ([lo, hi]) => cmp6(lo, ip) <= 0 && cmp6(hi, ip) >= 0,
+      ([lo]) => cmp6(lo, ip) > 0);
+    if (line < 0) return null;
+    const out = { country: '', region: '', city: '' };
+    if (!v6.city) {
+      out.country = cstr(read(v6.fd, line * v6.rec + 32, 2), 0, 2);
+      return out;
+    }
+    const locId = read(v6.fd, line * v6.rec + 32, 4).readUInt32BE(0);
+    if ((-1 >>> 0) > locId) Object.assign(out, readLoc(locId));
+    return out;
+  }
+  return {
+    lookup(ip) {
+      if (!ip) return null;
+      if (net.isIP(ip) === 4) return lookup4(aton4(ip));
+      if (net.isIP(ip) === 6) {
+        const upper = ip.toUpperCase();
+        for (const prefix of ['0:0:0:0:0:FFFF:', '::FFFF:']) {
+          if (upper.indexOf(prefix) === 0) return lookup4(aton4(upper.substring(prefix.length)));
+        }
+        return lookup6(aton6(ip));
+      }
+      return null;
+    }
+  };
+}
+
 function getGeoip() {
   if (!geoipLoadAttempted) {
     geoipLoadAttempted = true;
     try {
-      geoip = require('geoip-lite');
+      const libDir = path.dirname(require.resolve('geoip-lite'));
+      geoip = createDiskGeoip(path.resolve(libDir, process.env.GEODATADIR || '../data/'));
     } catch (e) {
       geoip = null;
     }
@@ -8312,6 +8443,7 @@ exports.purgeSiteCache = purgeSiteCache;
 exports.cachePurgeWarning = cachePurgeWarning;
 exports.DEPLOY_LOCK_TTL_SECONDS = DEPLOY_LOCK_TTL_SECONDS;
 exports.lookupGeoByIp = lookupGeoByIp;
+exports._getGeoipForTest = getGeoip;
 exports.acquireWebsiteDeployLock = acquireWebsiteDeployLock;
 exports.releaseWebsiteDeployLock = releaseWebsiteDeployLock;
 exports.deployZipToBucket = deployZipToBucket;

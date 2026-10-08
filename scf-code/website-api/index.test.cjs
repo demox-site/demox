@@ -1754,19 +1754,46 @@ test('purge FailedList entries count as failure and are retried', async () => {
   }
 });
 
-// ---- lazy geoip-lite ----
+// ---- disk-based geo lookup (geoip-lite data files read with fs.readSync, library never loaded) ----
+const geoipLiteLoaded = () => Object.keys(require.cache).some((k) => k.includes(`${require('path').sep}geoip-lite${require('path').sep}`));
+const openGeoDataFds = () => {
+  try {
+    return require('fs').readdirSync('/proc/self/fd').filter((fd) => {
+      try { return /geoip-lite[\\/]data[\\/].*\.dat$/.test(require('fs').readlinkSync(`/proc/self/fd/${fd}`)); } catch (e) { return false; }
+    }).length;
+  } catch (e) {
+    return null; // no /proc (non-Linux): skip the fd assertions
+  }
+};
+
 test('geoip-lite is not loaded when the module is required', () => {
   assert.equal(geoipLoadedAtRequire, false);
 });
 
-test('geo lookup skips private/empty IPs without loading geoip, then loads once for a public IP', () => {
-  const isLoaded = () => Object.keys(require.cache).some((k) => k.includes(`${require('path').sep}geoip-lite${require('path').sep}`));
+test('geo lookup skips private/empty IPs without opening data files, then reads from disk for a public IP', () => {
   assert.deepEqual(websiteApi.lookupGeoByIp(''), { country: 'UNKNOWN', province: 'UNKNOWN' });
   assert.deepEqual(websiteApi.lookupGeoByIp('10.1.2.3'), { country: 'UNKNOWN', province: 'UNKNOWN' });
   assert.deepEqual(websiteApi.lookupGeoByIp('192.168.0.9, 8.8.8.8'), { country: 'UNKNOWN', province: 'UNKNOWN' });
-  assert.equal(isLoaded(), false);
+  const before = openGeoDataFds();
+  if (before !== null) assert.equal(before, 0);
   const hit = websiteApi.lookupGeoByIp('8.8.8.8');
-  assert.equal(isLoaded(), true);
   assert.equal(hit.country, 'US');
   assert.deepEqual(websiteApi.lookupGeoByIp('8.8.8.8'), hit);
+  const after = openGeoDataFds();
+  if (after !== null) assert.ok(after >= 2 && after <= 3, `expected 2-3 open data files, got ${after}`);
+  assert.equal(geoipLiteLoaded(), false, 'geoip-lite library must not be loaded into memory');
+});
+
+test('disk geo lookup returns the same country/region/city as geoip-lite', () => {
+  const disk = websiteApi._getGeoipForTest();
+  assert.ok(disk, 'geoip-lite data files should be found next to the package');
+  const lite = require('geoip-lite');
+  const ips = ['8.8.8.8', '1.1.1.1', '114.114.114.114', '223.5.5.5', '180.101.49.11', '1.0.0.0', '223.255.255.255',
+    '2001:4860:4860::8888', '2400:3200::1', '240e:e9:8800::1', '2a00:1450:4001:80b::200e', '::ffff:8.8.8.8', '0:0:0:0:0:FFFF:1.1.1.1',
+    '10.0.0.1', '0.0.0.1', 'not-an-ip'];
+  let seed = 42;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32;
+  for (let i = 0; i < 300; i++) ips.push([1 + Math.floor(rnd() * 223), 0, 0, 0].map((v, j) => (j ? Math.floor(rnd() * 256) : v)).join('.'));
+  const pick = (r) => (r ? [r.country || '', r.region || '', r.city || ''] : null);
+  for (const ip of ips) assert.deepEqual(pick(disk.lookup(ip)), pick(lite.lookup(ip)), ip);
 });
