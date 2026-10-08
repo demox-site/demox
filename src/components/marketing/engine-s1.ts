@@ -2,9 +2,11 @@
 /* Ported verbatim from the approved demox-hero-demo (v6-interactive + v7.1 content).
    Scoped to `root`; returns a cleanup that stops all loops and window/document listeners. */
 
-import { COFFEE_LINES, COFFEE_CSS, renderBody, coffeeSandboxDocument } from './coffee-page.mjs';
+import { coffeeLines, coffeeBody, COFFEE_CSS, renderBody, coffeeSandboxDocument } from './coffee-page.mjs';
+import { marketingStrings } from './marketing-translations';
 
-export function initS1(root: HTMLElement): () => void {
+export function initS1(root: HTMLElement, lang: 'zh' | 'en' = 'zh'): () => void {
+  const T = marketingStrings(lang).s1, LANG_ATTR = lang === 'en' ? 'en' : 'zh-CN';
   var __dead=false, __L=[];
   function __on(t,e,f,o){ t.addEventListener(e,f,o); __L.push([t,e,f,o]); }
   var __raf=window.requestAnimationFrame.bind(window);
@@ -19,7 +21,7 @@ export function initS1(root: HTMLElement): () => void {
 
   /* ---------- the "AI-generated" source, typed from zero every loop ---------- */
   // [code, blockId, revealAt(optional: reveal once this many chars are typed)]
-  var LINES = COFFEE_LINES;   // shared with coffee.demox.site (coffee-page.mjs)
+  var LINES = coffeeLines(lang);   // zh is shared with coffee.demox.site (coffee-page.mjs)
   var URL_LIVE = 'https://coffee.demox.site';
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -67,7 +69,7 @@ export function initS1(root: HTMLElement): () => void {
     '.cf .blk{opacity:0;transform:translateY(8px);transition:opacity .4s,transform .45s cubic-bezier(.2,.7,.2,1),box-shadow .7s ease-out,outline-color .6s;outline:1px dashed transparent;outline-offset:4px}'+
     '.cf .blk.on{opacity:1;transform:none}.cf .blk.on.pre{opacity:.1;transform:scale(.965);filter:blur(1.5px)}.cf .blk{transition:opacity .4s,transform .45s cubic-bezier(.2,.7,.2,1),filter .4s,box-shadow .7s ease-out,outline-color .6s}.cf .blk.hl{outline-color:rgba(200,116,44,.5)}'+
     '.cf .blk.land{box-shadow:0 0 0 4px rgba(34,197,94,.25),0 0 28px rgba(34,197,94,.32);transition:none}'+
-    '.cf .nav{position:relative}.cf .lk{display:flex}</style><div class="cq"><div class="cf">'+renderBody()+'</div></div>';
+    '.cf .nav{position:relative}.cf .lk{display:flex}</style><div class="cq" lang="'+LANG_ATTR+'"><div class="cf">'+renderBody(coffeeBody(lang))+'</div></div>';
   var cfEl=shadow.querySelector('.cf');
   var blocks={}; LINES.forEach(function(l){ if(!l[1]) return; var el=cfEl.querySelector(l[2]); if(el){ el.classList.add('blk'); el.setAttribute('data-b',l[1]); if(l[3]) el.setAttribute('data-full',el.textContent); blocks[l[1]]=el; } });
   var VW=1040, K=1, pageOff=0;
@@ -141,13 +143,13 @@ export function initS1(root: HTMLElement): () => void {
   /* ---------- terminal + state ---------- */
   var PROMPT='<span class="ok">➜</span> <span class="dim">~/coffee $</span> ';
   function term(rows){ termEl.innerHTML=rows.map(function(r){return '<div class="row">'+r+'</div>';}).join(''); }
-  function termStatic(){ term([PROMPT+'<span class="w">demox deploy ./dist</span>','<span class="dim">上传至边缘网络...</span> 完成 (1.2s)','<span class="ok">✓ 成功！已部署至：</span><span class="w">coffee.demox.site</span>']); }
-  function termIdle(){ term([PROMPT+'<span class="w">npm run dev</span>','<span class="dim">VITE ready ·</span> localhost:5173 <span class="dim">· 热更新已开启</span>']); }
+  function termStatic(){ term([PROMPT+'<span class="w">demox deploy ./dist</span>','<span class="dim">'+T.termUploading+'</span> '+T.termDone+' (1.2s)','<span class="ok">'+T.termSuccess+'</span><span class="w">coffee.demox.site</span>']); }
+  function termIdle(){ term([PROMPT+'<span class="w">npm run dev</span>','<span class="dim">VITE ready ·</span> localhost:5173 <span class="dim">'+T.termHmr+'</span>']); }
   function setState(s){
     root.setAttribute('data-state',s); Beam.state(s);
-    if(s==='editing'){urlEl.textContent='localhost:5173';stateTag.textContent='预览';nodeLabel.textContent='实时预览';}
-    if(s==='deploying'){urlEl.textContent='正在部署…';stateTag.textContent='部署中';nodeLabel.textContent='demox deploy';}
-    if(s==='live'){urlEl.textContent=URL_LIVE;stateTag.textContent='已上线';nodeLabel.textContent='已部署';}
+    if(s==='editing'){urlEl.textContent='localhost:5173';stateTag.textContent=T.statePreview;nodeLabel.textContent=T.nodePreview;}
+    if(s==='deploying'){urlEl.textContent=T.urlDeploying;stateTag.textContent=T.stateDeploying;nodeLabel.textContent='demox deploy';}
+    if(s==='live'){urlEl.textContent=URL_LIVE;stateTag.textContent=T.stateLive;nodeLabel.textContent=T.nodeLive;}
   }
 
   /* =====================================================================
@@ -380,11 +382,11 @@ export function initS1(root: HTMLElement): () => void {
     await sleep(160);
     setState('deploying');
     var head=PROMPT+'<span class="w">'+cmd+'</span>';
-    term([head,'<span class="dim">打包资源...</span>']);
+    term([head,'<span class="dim">'+T.termBundling+'</span>']);
     await sleep(520);
-    term([head,'<span class="dim">打包资源...</span> 完成 (0.4s)','<span class="dim">上传至边缘网络...</span>']);
+    term([head,'<span class="dim">'+T.termBundling+'</span> '+T.termDone+' (0.4s)','<span class="dim">'+T.termUploading+'</span>']);
     await sleep(820);
-    term([head,'<span class="dim">上传至边缘网络...</span> 完成 (1.2s)','<span class="ok">✓ 成功！已部署至：</span><span class="w">'+URL_LIVE.replace('https://','')+'</span>']);
+    term([head,'<span class="dim">'+T.termUploading+'</span> '+T.termDone+' (1.2s)','<span class="ok">'+T.termSuccess+'</span><span class="w">'+URL_LIVE.replace('https://','')+'</span>']);
     setState('live'); pageRefresh(); pageTop();
   }
   async function clearAll(){
@@ -528,10 +530,10 @@ export function initS1(root: HTMLElement): () => void {
   }
 
   /* ---- sandboxed preview ---- */
-  function buildDoc(src){ return coffeeSandboxDocument(src); }
+  function buildDoc(src){ return coffeeSandboxDocument(src, lang); }
   function render(fx){
     var f=document.createElement('iframe');
-    f.className='s1-frame'; f.setAttribute('sandbox','allow-scripts'); f.setAttribute('title','你的代码 · 实时预览');
+    f.className='s1-frame'; f.setAttribute('sandbox','allow-scripts'); f.setAttribute('title',T.frameTitle);
     f.setAttribute('tabindex','-1'); f.setAttribute('referrerpolicy','no-referrer');
     f.srcdoc=buildDoc(ta.value);              // set before insertion: no history entries, and the old frame stays up until the new one has loaded
     pvFrame=f;
@@ -550,11 +552,11 @@ export function initS1(root: HTMLElement): () => void {
   }
   function termEdit(updated){
     term([PROMPT+'<span class="w">npm run dev</span>', updated
-      ? '<span class="ok">✓</span> <span class="w">index.html</span> 已更新 <span class="dim">· 右侧实时预览</span>'
-      : '<span class="dim">VITE ready ·</span> localhost:5173 <span class="dim">· 热更新已开启</span>']);
+      ? '<span class="ok">✓</span> <span class="w">index.html</span> '+T.termUpdated+' <span class="dim">'+T.termUpdatedHint+'</span>'
+      : '<span class="dim">VITE ready ·</span> localhost:5173 <span class="dim">'+T.termHmr+'</span>']);
   }
   function armIdle(){ clearTimeout(idleT); idleT=setTimeout(function(){ if(editing && !dirty) exitEdit(true); },20000); }
-  function resetResume(){ clearTimeout(confirmT); resumeBtn.classList.remove('warn'); resumeT.textContent='继续演示'; }
+  function resetResume(){ clearTimeout(confirmT); resumeBtn.classList.remove('warn'); resumeT.textContent=T.resume; }
 
   function enterEdit(x,y){
     if(editing) return;
@@ -591,7 +593,7 @@ export function initS1(root: HTMLElement): () => void {
   hintBtn.addEventListener('click',function(){ enterEdit(null,null); });
   resumeBtn.addEventListener('click',function(){
     if(dirty && !resumeBtn.classList.contains('warn')){        // never wipe edits silently: second click confirms
-      resumeBtn.classList.add('warn'); resumeT.textContent='放弃修改？再点一次';
+      resumeBtn.classList.add('warn'); resumeT.textContent=T.resumeConfirm;
       clearTimeout(confirmT); confirmT=setTimeout(resetResume,3500); return;
     }
     exitEdit(false);

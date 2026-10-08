@@ -128,15 +128,15 @@ const CloudHostLanding: React.FC = () => {
           </div>
         </div>
 
-        <HeroStage />
+        <HeroStage lang={lang} />
       </section>
 
       {/* Screen 2 — global edge nodes */}
-      <GlobeStage />
+      <GlobeStage lang={lang} />
 
       {/* Screen 3 — gallery wall (真实 + 示例) */}
       <div className="-mx-4 sm:-mx-6 lg:-mx-8">
-        <GalleryStage onUpload={openUpload} />
+        <GalleryStage onUpload={openUpload} lang={lang} />
       </div>
 
       {/* Intent guides (SEO) — grouped by publishing task */}
