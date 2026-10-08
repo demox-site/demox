@@ -16,7 +16,7 @@ const context = vm.createContext({
   addEventListener: () => {},
   fetch: async () => { throw new Error('Unexpected fetch'); }
 });
-vm.runInContext(`${source}\nglobalThis.__testHooks = { withDemoxBadge, rewriteOrigin, isWwwSpaRoute };`, context);
+vm.runInContext(`${source}\nglobalThis.__testHooks = { withDemoxBadge, rewriteOrigin, isWwwSpaRoute, buildOriginUrl };`, context);
 
 async function render(hideWatermark) {
   return context.__testHooks.withDemoxBadge(
@@ -30,6 +30,44 @@ async function render(hideWatermark) {
   );
 }
 
+test('site-{id}.demox.site origin uses HTTP so COS custom domains work before HTTPS bind', () => {
+  const req = new Request('https://stx0k1md.demox.site/');
+  const url = context.__testHooks.buildOriginUrl(
+    req,
+    '/sites/u/STX0K1MD/dist/index.html',
+    '',
+    'site-3.demox.site'
+  );
+  assert.equal(url, 'http://site-3.demox.site/sites/u/STX0K1MD/dist/index.html');
+  const legacy = context.__testHooks.buildOriginUrl(req, '/sites/u/EPX2UU43/dist/index.html', '', 'sites.demox.site');
+  assert.match(legacy, /^https:\/\/sites\.demox\.site\//);
+});
+
+test('strips COS force-download so HTML is not saved as an attachment', async () => {
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://sample.demox.site/'),
+    { waitUntil: () => {} },
+    new Response('<!doctype html><html><body><main>Site</main></body></html>', {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html',
+        'Content-Disposition': 'attachment',
+        'x-cos-force-download': 'true'
+      }
+    }),
+    { websiteId: 'SITE1', hideWatermark: true }
+  );
+  assert.equal(resp.headers.get('content-disposition'), null);
+  assert.equal(resp.headers.get('x-cos-force-download'), null);
+  assert.match(await resp.text(), /<main>Site<\/main>/);
+});
+
+test('hosted HTML includes a report control under the Demox watermark', async () => {
+  const html = await (await render(false)).text();
+  assert.match(html, /data-demox-site-badge="report"/);
+  assert.match(html, /举报此站点/);
+});
+
 test('hosted HTML includes the Demox watermark by default', async () => {
   const html = await (await render(false)).text();
   assert.match(html, /data-demox-site-badge="wrap"/);
@@ -41,6 +79,71 @@ test('hosted HTML omits the Demox watermark when the site setting hides it', asy
   assert.doesNotMatch(html, /data-demox-site-badge="wrap"/);
   assert.doesNotMatch(html, /Powered by Demox/);
   assert.match(html, /<main>Site<\/main>/);
+});
+
+test('HTML at or above 1MB is served without reading the body for watermark injection', async () => {
+  let reads = 0;
+  const body = '<!doctype html><html><body><main>Big</main></body></html>';
+  const origin = new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': '2191103',
+      'Cache-Control': 'public, max-age=60',
+      'ETag': '"origin-etag"'
+    }
+  });
+  const originalText = origin.text.bind(origin);
+  origin.text = async () => {
+    reads += 1;
+    return originalText();
+  };
+  const originalClone = origin.clone.bind(origin);
+  origin.clone = () => {
+    reads += 1;
+    return originalClone();
+  };
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://09vp31gs.demox.site/'),
+    { waitUntil: () => {} },
+    origin,
+    { websiteId: '09VP31GS', hideWatermark: false }
+  );
+  assert.equal(reads, 0);
+  assert.equal(resp.status, 200);
+  assert.equal(resp.headers.get('etag'), '"origin-etag"');
+  assert.equal(resp.headers.get('content-length'), '2191103');
+  const html = await resp.text();
+  assert.match(html, /<main>Big<\/main>/);
+  assert.doesNotMatch(html, /data-demox-site-badge/);
+});
+
+test('watermark injection falls back to the origin body when reading HTML throws', async () => {
+  const body = '<!doctype html><html><body><main>Still here</main></body></html>';
+  const origin = new Response(body, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
+  });
+  const originalClone = origin.clone.bind(origin);
+  origin.clone = () => {
+    const cloned = originalClone();
+    cloned.text = async () => {
+      const error = new Error('OverSize');
+      error.name = 'OverSize';
+      throw error;
+    };
+    return cloned;
+  };
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://09vp31gs.demox.site/'),
+    { waitUntil: () => {} },
+    origin,
+    { websiteId: '09VP31GS', hideWatermark: false }
+  );
+  assert.equal(resp.status, 200);
+  const html = await resp.text();
+  assert.match(html, /<main>Still here<\/main>/);
+  assert.doesNotMatch(html, /data-demox-site-badge/);
 });
 
 async function renderWithSeo(html, seo) {
@@ -185,6 +288,23 @@ test('P0: resolved www homepage stays 200 and is not a Demox 404 shell', async (
   assert.doesNotMatch(html, /站点未发布/);
   assert.doesNotMatch(html, /页面不存在/);
   assert.doesNotMatch(html, /NoSuchKey/);
+});
+
+test('disabled sites return a takedown page and do not fetch origin', async () => {
+  const { response, html, requests } = await handleSite('https://stx0k1md.demox.site/', {
+    resolve: {
+      success: true,
+      path: 'sites/demo/STX0K1MD/dist',
+      websiteId: 'STX0K1MD',
+      origin: 'site-3.demox.site',
+      visibility: 'disabled'
+    }
+  });
+  assert.equal(response.status, 403);
+  assert.match(html, /此站点已被停用/);
+  assert.doesNotMatch(html, /Live site/);
+  assert.doesNotMatch(html, /站点未发布/);
+  assert.equal(requests.some((href) => href.includes('site-3.demox.site') || href.includes('/sites/demo/')), false);
 });
 
 test('P0: resolved user site homepage stays 200 and is not a Demox 404 shell', async () => {

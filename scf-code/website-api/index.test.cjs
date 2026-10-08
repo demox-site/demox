@@ -1582,6 +1582,78 @@ test('websitePrefixFromTarget keeps only the website root', () => {
   assert.equal(websitePrefixFromTarget('sites/42'), '');
 });
 
+test('disabling a site requires a written reason', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [{ roles: JSON.stringify(['admin']), pro_expires_at: null }];
+    if (sql.includes('SELECT * FROM websites')) {
+      return [{ id: 9, website_id: 'STX0K1MD', subdomain: null, visibility: 'public', user_id: 'owner-1', name: 'Demo', url: 'https://stx0k1md.demox.site/' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const token = sign({ userId: 'admin-1', email: 'admin@demox.example' });
+  const response = await main({
+    path: '/website/update-visibility',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { action: 'update_visibility', websiteId: 'STX0K1MD', visibility: 'disabled' }
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(body.success, false);
+  assert.match(String(body.message || ''), /理由/);
+});
+
+test('admin cannot disable the official www site', async () => {
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM user_roles')) return [{ roles: JSON.stringify(['admin']), pro_expires_at: null }];
+    if (sql.includes('SELECT * FROM websites')) {
+      return [{ id: 1, website_id: 'EPX2UU43', subdomain: 'www', visibility: 'public', user_id: 'owner' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const token = sign({ userId: 'admin-1', email: 'admin@demox.example' });
+  const response = await main({
+    path: '/website/update-visibility',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { action: 'update_visibility', websiteId: 'EPX2UU43', visibility: 'disabled' }
+  });
+  const body = JSON.parse(response.body);
+  assert.equal(body.success, false);
+  assert.match(String(body.message || ''), /主站/);
+});
+
+test('public site report requires a known website and reason', async () => {
+  const calls = [];
+  queryImpl = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes('CREATE TABLE IF NOT EXISTS site_reports')) return [];
+    if (sql.includes('FROM websites') && sql.includes('website_id')) {
+      return [{ id: 9, website_id: 'STX0K1MD', user_id: 'user-1' }];
+    }
+    if (sql.includes('COUNT(*)')) return [{ n: 0 }];
+    if (sql.includes('SELECT id FROM site_reports')) return [];
+    if (sql.includes('INSERT INTO site_reports')) return { insertId: 1 };
+    return [];
+  };
+  const missing = await main({
+    path: '/website/report-site',
+    httpMethod: 'POST',
+    headers: { 'x-forwarded-for': '203.0.113.9' },
+    body: { action: 'report_site', websiteId: 'STX0K1MD', reason: 'not-a-reason' }
+  });
+  assert.equal(JSON.parse(missing.body).success, false);
+
+  const okRes = await main({
+    path: '/website/report-site',
+    httpMethod: 'POST',
+    headers: { 'x-forwarded-for': '203.0.113.9' },
+    body: { action: 'report_site', websiteId: 'STX0K1MD', reason: 'spam', note: 'ads', pageUrl: 'https://stx0k1md.demox.site/', host: 'stx0k1md.demox.site' }
+  });
+  const body = JSON.parse(okRes.body);
+  assert.equal(body.success, true);
+  assert.ok(calls.some((c) => String(c.sql).includes('INSERT INTO site_reports')));
+});
+
 test('staleObjectKeys only removes leftovers under the same website prefix', () => {
   const prefix = 'sites/u1/SITE1/';
   const keep = [

@@ -680,8 +680,8 @@ export const websiteApi = {
   },
 
   // 更新站点访问级别
-  updateVisibility: async (data: { docId?: string; websiteId?: string; visibility: "public" | "private" }) => {
-    return request<{ success: boolean; visibility?: "public" | "private"; message?: string }>(
+  updateVisibility: async (data: { docId?: string; websiteId?: string; visibility: "public" | "private" | "disabled"; disableReason?: string; reportId?: number }) => {
+    return request<{ success: boolean; visibility?: "public" | "private" | "disabled"; emailed?: boolean | null; message?: string }>(
       WEBSITE_API_URL,
       "/website/update-visibility",
       { method: "POST", body: { action: "update_visibility", ...data } }
@@ -1235,6 +1235,7 @@ export const adminApi = {
         admins?: number;
         proActive?: number;
         proExpired?: number;
+        reportsOpen?: number;
       };
       traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
       topSites?: Array<{ websiteId: string; name: string; url?: string; owner?: string; views30d?: number; storage?: number }>;
@@ -1343,6 +1344,37 @@ export const adminApi = {
       WEBSITE_API_URL,
       "/website/set-default-bucket",
       { method: "POST", body: { action: "set_default_bucket", id } }
+    );
+  },
+  listSiteReports: async (status: "open" | "reviewed" | "all" = "open") => {
+    return request<{
+      success: boolean;
+      message?: string;
+      data?: Array<{
+        id: number;
+        website_id: string;
+        reason: string;
+        note: string;
+        page_url: string;
+        host: string;
+        status: string;
+        created_at: string;
+        site_name?: string;
+        site_url?: string;
+        subdomain?: string;
+        visibility?: string;
+      }>;
+    }>(
+      WEBSITE_API_URL,
+      "/website/list-site-reports",
+      { method: "POST", body: { action: "list_site_reports", status, limit: 100 } }
+    );
+  },
+  updateSiteReport: async (id: number, status: "open" | "reviewed") => {
+    return request<{ success: boolean; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/update-site-report",
+      { method: "POST", body: { action: "update_site_report", id, status } }
     );
   }
 };
