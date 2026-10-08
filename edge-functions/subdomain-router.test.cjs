@@ -362,3 +362,54 @@ test('custom 404 lookup uses the default origin when route metadata has no origi
   assert.equal(new URL(requests[1]).hostname, 'sites.demox.site');
   assert.match(requests[1], /\/sites\/demo\/dist\/404\.html$/);
 });
+
+test('origin 404 without cache header (COS NoSuchKey) is served no-store, not max-age=60', async () => {
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://sample.demox.site/missing.js'),
+    { waitUntil: () => {} },
+    new Response('<Error><Code>NoSuchKey</Code></Error>', { status: 404, headers: { 'Content-Type': 'application/xml' } }),
+    { websiteId: 'SITE1' }
+  );
+  assert.equal(resp.status, 404);
+  assert.equal(resp.headers.get('Cache-Control'), 'no-store');
+});
+
+test('origin 404 carrying a cacheable header is still downgraded to no-store', async () => {
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://sample.demox.site/missing.css'),
+    { waitUntil: () => {} },
+    new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'public, max-age=60' } }),
+    { websiteId: 'SITE1' }
+  );
+  assert.equal(resp.headers.get('Cache-Control'), 'no-store');
+});
+
+test('successful origin responses without cache header keep the 60s default', async () => {
+  const resp = await context.__testHooks.withDemoxBadge(
+    new Request('https://sample.demox.site/app.js'),
+    { waitUntil: () => {} },
+    new Response('ok', { status: 200, headers: { 'Content-Type': 'application/javascript' } }),
+    { websiteId: 'SITE1' }
+  );
+  assert.equal(resp.headers.get('Cache-Control'), 'public, max-age=60');
+});
+
+test('site 404.html and Demox fallback 404 pages are no-store', async () => {
+  const { response } = await rewrite({ pathname: '/definitely-missing' });
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+
+  context.fetch = async () => new Response('Missing', { status: 404 });
+  const url = 'https://user1.demox.site/nope';
+  const fallback = await context.__testHooks.rewriteOrigin(
+    new Request(url, { headers: { Accept: 'text/html' } }),
+    { waitUntil: () => {} },
+    new URL(url),
+    '/sites/u/S/dist/nope',
+    'sites/u/S/dist',
+    'sites.demox.site',
+    { websiteId: 'S', label: 'user1', domain: 'demox.site', hideWatermark: true }
+  );
+  assert.equal(fallback.status, 404);
+  assert.equal(fallback.headers.get('Cache-Control'), 'no-store');
+});

@@ -762,8 +762,48 @@ async function originArgsFromSite(site) {
  * - purge_prefix: 公开域名、自定义前缀，以及边缘函数回源 origin prefix。
  * - purge_url: 清理边缘函数 resolveSite 使用的 label->path 解析缓存 key（best effort）。
  *
- * 缓存清理失败不阻断部署，但会写入日志并返回给调用方，便于 CI 里排查。
+ * 缓存清理失败会退避重试；仍失败不回滚部署，但通过 cachePurge.success=false 和响应 warning 字段显式暴露。
  */
+let purgeTaskRunner = (task) => createEdgeOnePurgeTask(task);
+let purgeRetryDelaysMs = [500, 1500, 4000];
+let purgeSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function setPurgeRuntime(hooks = {}) {
+  purgeTaskRunner = hooks.runTask || ((task) => createEdgeOnePurgeTask(task));
+  purgeRetryDelaysMs = Array.isArray(hooks.retryDelaysMs) ? hooks.retryDelaysMs : [500, 1500, 4000];
+  purgeSleep = hooks.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+}
+
+/**
+ * 提交单个 purge 任务，失败（抛错或 FailedList 非空）按 purgeRetryDelaysMs 退避重试。
+ * 返回值总带 attempts；最终失败时 success=false 并附最后一次错误。
+ */
+async function runPurgeTaskWithRetry(task) {
+  const maxAttempts = purgeRetryDelaysMs.length + 1;
+  let lastError = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await purgeTaskRunner(task);
+      const failedList = (result && result.failedList) || [];
+      if (!failedList.length) return { ...result, success: true, attempts: attempt };
+      lastError = `部分目标清理失败: ${failedList.map((f) => (f && (f.Target || f.target)) || String(f)).join(', ')}`;
+    } catch (e) {
+      lastError = (e && e.message) || String(e);
+    }
+    console.warn(`EdgeOne ${task.type} 缓存清理失败（第 ${attempt}/${maxAttempts} 次）:`, lastError);
+    if (attempt < maxAttempts) await purgeSleep(purgeRetryDelaysMs[attempt - 1]);
+  }
+  return { type: task.type, targets: task.targets, success: false, attempts: maxAttempts, message: lastError };
+}
+
+/** 缓存清理失败时给响应附带的 warning 文案；成功/跳过返回 null。 */
+function cachePurgeWarning(cachePurge) {
+  if (!cachePurge || cachePurge.success) return null;
+  const failed = (cachePurge.tasks || []).filter((t) => !t.success);
+  const detail = failed.map((t) => `${t.type}: ${t.message || 'unknown'}`).join('; ');
+  return `CDN 缓存清理失败，线上可能短时间仍返回旧内容（${detail || 'unknown'}）`;
+}
+
 async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHost, originPath, ownerId }) {
   const hosts = new Set();
   const resolveKeys = new Set();
@@ -798,13 +838,7 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHos
     { type: 'purge_url', targets: resolveTargets }
   ]) {
     if (!task.targets.length) continue;
-    try {
-      const result = await createEdgeOnePurgeTask(task);
-      tasks.push({ ...result, success: true });
-    } catch (e) {
-      console.warn(`EdgeOne ${task.type} 缓存清理失败:`, e.message);
-      tasks.push({ type: task.type, targets: task.targets, success: false, message: e.message });
-    }
+    tasks.push(await runPurgeTaskWithRetry(task));
   }
 
   return {
@@ -2196,6 +2230,7 @@ async function handleUpdateWebsiteVisibility(event) {
       visibility: rawVisibility,
       websiteId: site.website_id,
       cachePurge,
+      ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {}),
       message: rawVisibility === VISIBILITY_PRIVATE ? '站点已设为私有' : '站点已公开'
     });
   } catch (error) {
@@ -2254,6 +2289,7 @@ async function handleUpdateWebsiteWatermark(event) {
       hideWatermark,
       websiteId: site.website_id,
       cachePurge,
+      ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {}),
       message: hideWatermark ? '页面水印已关闭' : '页面水印已开启'
     });
   } catch (error) {
@@ -2317,6 +2353,7 @@ async function handleUpdateSeo(event) {
       },
       websiteId: site.website_id,
       cachePurge,
+      ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {}),
       message: 'SEO 设置已更新'
     });
   } catch (error) {
@@ -7737,7 +7774,72 @@ async function handleUploadAndDeploy(event) {
   });
 }
 
+// 默认 3 分钟：长于单次部署（函数超时 120s），又不会让崩溃实例把站点锁太久。
+const DEPLOY_LOCK_TTL_SECONDS = Math.max(60, parseInt(process.env.DEPLOY_LOCK_TTL_SECONDS || '180', 10) || 180);
+let _deployLocksEnsured = false;
+
+async function ensureWebsiteDeployLocksTable() {
+  if (_deployLocksEnsured) return;
+  await query(
+    `CREATE TABLE IF NOT EXISTS website_deploy_locks (
+      website_id  VARCHAR(32) NOT NULL,
+      lock_token  CHAR(36) NOT NULL,
+      owner_id    VARCHAR(64) DEFAULT NULL,
+      expires_at  DATETIME NOT NULL,
+      created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (website_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点部署互斥锁（带 TTL）'`
+  );
+  _deployLocksEnsured = true;
+}
+
+class DeployInProgressError extends Error {
+  constructor(websiteId) {
+    super('该站点正在部署中，请等待上一次部署完成后再试');
+    this.code = 'DEPLOY_IN_PROGRESS';
+    this.websiteId = websiteId;
+  }
+}
+
+/**
+ * 获取站点级部署锁：INSERT IGNORE 建行，再条件 UPDATE 抢占（行不存在/已过期/本 token 持有）。
+ * affectedRows=1 才算拿到锁；锁行由 MySQL 主键保证跨 SCF 实例互斥，TTL 兜底崩溃实例。
+ */
+async function acquireWebsiteDeployLock(websiteId, ownerId) {
+  await ensureWebsiteDeployLocksTable();
+  const token = nodeCrypto.randomUUID();
+  await query(
+    `INSERT IGNORE INTO website_deploy_locks (website_id, lock_token, owner_id, expires_at)
+     VALUES (?, '', NULL, '1970-01-02 00:00:00')`,
+    [websiteId]
+  );
+  const res = await query(
+    `UPDATE website_deploy_locks
+        SET lock_token = ?, owner_id = ?, expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND)
+      WHERE website_id = ? AND expires_at < UTC_TIMESTAMP()`,
+    [token, ownerId || null, DEPLOY_LOCK_TTL_SECONDS, websiteId]
+  );
+  if (!res || res.affectedRows !== 1) throw new DeployInProgressError(websiteId);
+  return { websiteId, token };
+}
+
+async function releaseWebsiteDeployLock(lock) {
+  if (!lock) return;
+  try {
+    await query(
+      `UPDATE website_deploy_locks SET lock_token = '', expires_at = '1970-01-02 00:00:00'
+        WHERE website_id = ? AND lock_token = ?`,
+      [lock.websiteId, lock.token]
+    );
+  } catch (e) {
+    // 释放失败最多让该站点在 TTL 内不可再部署，不影响本次结果
+    console.warn('释放部署锁失败:', e.message);
+  }
+}
+
 async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, inputProjectId }) {
+  let deployLock = null;
   try {
     // 获取用户角色配置（从数据库读取）
     const roleConfig = await getUserLimits(userId);
@@ -7865,6 +7967,9 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
       console.log(`内容审核通过：本地 ${contentScan.scanned} 个文件，IMS ${contentScan.images} 张图`);
     }
 
+    // 站点级互斥：上传 + prune + 写库 + purge 期间持锁，避免并发部署互相 prune 掉对方文件。
+    deployLock = await acquireWebsiteDeployLock(websiteId, deploymentOwnerId);
+
     // 部署到目标桶（COS 或 S3 兼容，由 provider 决定）
     const uploadedCount = await deployZipToBucket(bucketCfg, zipEntries, targetPrefix, {
       ownerId: deploymentOwnerId,
@@ -7941,10 +8046,18 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
         projectInternalId: projectId,
         path: targetPrefix,
         uploadedCount,
-        cachePurge
+        cachePurge,
+        ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {})
       })
     };
   } catch (error) {
+    if (error && error.code === 'DEPLOY_IN_PROGRESS') {
+      return {
+        statusCode: 409,
+        headers: getCORSHeaders(),
+        body: JSON.stringify({ success: false, code: error.code, websiteId: error.websiteId, message: error.message })
+      };
+    }
     console.error('部署失败:', error);
     return {
       statusCode: 200,
@@ -7954,6 +8067,8 @@ async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, input
         message: error.message || '部署失败'
       })
     };
+  } finally {
+    await releaseWebsiteDeployLock(deployLock);
   }
 }
 
@@ -8006,7 +8121,7 @@ async function pruneWebsiteStorage(provider, websitePrefix, keepKeys) {
  * 上传成功后清理同一站点前缀下不在本次 key 集合中的旧对象，避免 hashed 资源和改名目录残留。
  */
 async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix, opts = {}) {
-  const provider = providerFor(bucketCfg);
+  const provider = opts.provider || providerFor(bucketCfg);
   const records = getDeployEntryRecords(zipEntries);
   const normalizedPrefix = String(targetPrefix || '').replace(/\/+$/, '');
   const keys = records.map((rec) => `${normalizedPrefix}/${rec.name}`);
@@ -8181,3 +8296,10 @@ exports.buildOriginPurgeTargets = buildOriginPurgeTargets;
 exports.websiteStoragePrefix = websiteStoragePrefix;
 exports.websitePrefixFromTarget = websitePrefixFromTarget;
 exports.staleObjectKeys = staleObjectKeys;
+exports.setPurgeRuntime = setPurgeRuntime;
+exports.purgeSiteCache = purgeSiteCache;
+exports.cachePurgeWarning = cachePurgeWarning;
+exports.DEPLOY_LOCK_TTL_SECONDS = DEPLOY_LOCK_TTL_SECONDS;
+exports.acquireWebsiteDeployLock = acquireWebsiteDeployLock;
+exports.releaseWebsiteDeployLock = releaseWebsiteDeployLock;
+exports.deployZipToBucket = deployZipToBucket;

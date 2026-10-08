@@ -1602,3 +1602,153 @@ test('staleObjectKeys only removes leftovers under the same website prefix', () 
   assert.deepEqual(staleObjectKeys(existing, keep, ''), []);
   assert.deepEqual(staleObjectKeys(existing, keep, 'sites/'), []);
 });
+
+// ---- deploy lock / overlapping deploys ----
+function createLockDb() {
+  const rows = new Map();
+  let now = 1_000_000;
+  const impl = async (sql, params = []) => {
+    if (sql.includes('CREATE TABLE IF NOT EXISTS website_deploy_locks')) return {};
+    if (sql.includes('INSERT IGNORE INTO website_deploy_locks')) {
+      if (!rows.has(params[0])) rows.set(params[0], { token: '', expires: 0 });
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('UPDATE website_deploy_locks') && sql.includes('expires_at < UTC_TIMESTAMP()')) {
+      const [token, , ttl, id] = params;
+      const row = rows.get(id);
+      if (!row || row.expires >= now) return { affectedRows: 0 };
+      row.token = token; row.expires = now + ttl * 1000;
+      return { affectedRows: 1 };
+    }
+    if (sql.includes('UPDATE website_deploy_locks') && sql.includes('lock_token = ?')) {
+      const [id, token] = params;
+      const row = rows.get(id);
+      if (!row || row.token !== token) return { affectedRows: 0 };
+      row.token = ''; row.expires = 0;
+      return { affectedRows: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  return { impl, advance: (ms) => { now += ms; } };
+}
+
+function memoryProvider() {
+  const store = new Map();
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  return {
+    store,
+    release: () => release(),
+    gate,
+    provider: {
+      put: async (key, data) => { await gate; store.set(key, data); },
+      list: async (prefix) => [...store.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })),
+      delete: async (key) => { store.delete(key); }
+    }
+  };
+}
+
+function zipEntries(names) {
+  return names.map((entryName) => ({ entryName, isDirectory: false, getData: () => Buffer.from(entryName) }));
+}
+
+async function lockedDeploy(mem, names, prefix) {
+  const lock = await websiteApi.acquireWebsiteDeployLock('SITEA001', 'u1');
+  try {
+    return await websiteApi.deployZipToBucket({}, zipEntries(names), prefix, { ownerId: 'u1', websiteId: 'SITEA001', provider: mem.provider });
+  } finally {
+    await websiteApi.releaseWebsiteDeployLock(lock);
+  }
+}
+
+test('two overlapping deploys to one site: second is rejected and no files from the first are lost', async () => {
+  const db = createLockDb();
+  queryImpl = db.impl;
+  const mem = memoryProvider();
+  const first = lockedDeploy(mem, ['index.html', 'assets/a.js'], 'sites/u1/SITEA001/dist');
+  await new Promise((r) => setImmediate(r));
+  await assert.rejects(
+    lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'),
+    (err) => err.code === 'DEPLOY_IN_PROGRESS'
+  );
+  mem.release();
+  assert.equal(await first, 2);
+  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/a.js', 'sites/u1/SITEA001/dist/index.html']);
+
+  // 锁已释放，下一次串行部署可正常进行并 prune 旧 hash 资源
+  assert.equal(await lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'), 2);
+  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/b.js', 'sites/u1/SITEA001/dist/index.html']);
+});
+
+test('an expired deploy lock (crashed instance) can be taken over after TTL', async () => {
+  const db = createLockDb();
+  queryImpl = db.impl;
+  await websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'); // never released
+  await assert.rejects(websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'), { code: 'DEPLOY_IN_PROGRESS' });
+  db.advance(179 * 1000);
+  await assert.rejects(websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1'), { code: 'DEPLOY_IN_PROGRESS' });
+  db.advance(2 * 1000);
+  const lock = await websiteApi.acquireWebsiteDeployLock('SITEB001', 'u1');
+  assert.ok(lock.token);
+});
+
+test('deploy lock TTL defaults to 3 minutes', () => {
+  assert.equal(websiteApi.DEPLOY_LOCK_TTL_SECONDS, 180);
+});
+
+// ---- CDN purge retry / warning ----
+test('cache purge retries with backoff and succeeds after a transient 432 quota error', async () => {
+  const sleeps = [];
+  let calls = 0;
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [10, 20, 40],
+    sleep: async (ms) => { sleeps.push(ms); },
+    runTask: async (task) => {
+      calls++;
+      if (task.type === 'purge_prefix' && calls < 3) throw new Error('HTTP 432 LimitExceeded');
+      return { type: task.type, targets: task.targets, failedList: [] };
+    }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC001', originHost: 'sites.demox.site', ownerId: 'u1' });
+    assert.equal(result.success, true);
+    assert.equal(result.tasks[0].attempts, 3);
+    assert.deepEqual(sleeps, [10, 20]);
+    assert.equal(websiteApi.cachePurgeWarning(result), null);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('persistent cache purge failure is surfaced as success=false plus a warning', async () => {
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [1, 1],
+    sleep: async () => {},
+    runTask: async () => { throw new Error('HTTP 432 quota exceeded'); }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC002', originHost: 'sites.demox.site', ownerId: 'u1' });
+    assert.equal(result.success, false);
+    assert.ok(result.tasks.every((t) => t.success === false && t.attempts === 3));
+    assert.match(websiteApi.cachePurgeWarning(result), /432 quota exceeded/);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
+
+test('purge FailedList entries count as failure and are retried', async () => {
+  let calls = 0;
+  websiteApi.setPurgeRuntime({
+    retryDelaysMs: [1],
+    sleep: async () => {},
+    runTask: async (task) => { calls++; return { type: task.type, targets: task.targets, failedList: [{ Target: 'https://x/' }] }; }
+  });
+  try {
+    const result = await websiteApi.purgeSiteCache({ websiteId: 'SITEC003' });
+    assert.equal(result.success, false);
+    assert.match(websiteApi.cachePurgeWarning(result), /https:\/\/x\//);
+    assert.equal(calls, 4);
+  } finally {
+    websiteApi.setPurgeRuntime();
+  }
+});
