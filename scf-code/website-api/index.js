@@ -8,11 +8,21 @@ const nodeCrypto = require('crypto');
 const https = require('https');
 const http = require('http');
 const path = require('path');
+// geoip-lite 在 require 时把约 150MB 的 IP 库整份读进内存（实测 RSS +140MB）。
+// 只有访问统计的 lookupGeoByIp 用得到，所以首次查询时再加载并缓存，
+// 让不处理统计事件的 website worker（部署、列表等）不背这 140MB。
 let geoip = null;
-try {
-  geoip = require('geoip-lite');
-} catch (e) {
-  geoip = null;
+let geoipLoadAttempted = false;
+function getGeoip() {
+  if (!geoipLoadAttempted) {
+    geoipLoadAttempted = true;
+    try {
+      geoip = require('geoip-lite');
+    } catch (e) {
+      geoip = null;
+    }
+  }
+  return geoip;
 }
 const dnsPromises = require('dns').promises;
 const { query, transaction } = require('./shared/db.js');
@@ -5883,11 +5893,12 @@ function isPrivateIp(input) {
 }
 
 function lookupGeoByIp(input) {
-  if (!geoip) return { country: 'UNKNOWN', province: 'UNKNOWN' };
   const ip = String(input || '').split(',')[0].trim();
   if (!ip || isPrivateIp(ip)) return { country: 'UNKNOWN', province: 'UNKNOWN' };
+  const geo = getGeoip();
+  if (!geo) return { country: 'UNKNOWN', province: 'UNKNOWN' };
   try {
-    const hit = geoip.lookup(ip);
+    const hit = geo.lookup(ip);
     if (!hit) return { country: 'UNKNOWN', province: 'UNKNOWN' };
     const country = normalizeCountry(hit.country);
     const region = String(hit.region || '').trim();
@@ -8300,6 +8311,7 @@ exports.setPurgeRuntime = setPurgeRuntime;
 exports.purgeSiteCache = purgeSiteCache;
 exports.cachePurgeWarning = cachePurgeWarning;
 exports.DEPLOY_LOCK_TTL_SECONDS = DEPLOY_LOCK_TTL_SECONDS;
+exports.lookupGeoByIp = lookupGeoByIp;
 exports.acquireWebsiteDeployLock = acquireWebsiteDeployLock;
 exports.releaseWebsiteDeployLock = releaseWebsiteDeployLock;
 exports.deployZipToBucket = deployZipToBucket;

@@ -64,6 +64,7 @@ require.cache[githubModulePath] = {
 };
 
 const websiteApi = require('./index.js');
+const geoipLoadedAtRequire = Object.keys(require.cache).some((k) => k.includes(`${require('path').sep}geoip-lite${require('path').sep}`));
 const { main, setCustomDomainRuntime } = websiteApi;
 const { sign } = require('./shared/jwt.js');
 
@@ -1751,4 +1752,21 @@ test('purge FailedList entries count as failure and are retried', async () => {
   } finally {
     websiteApi.setPurgeRuntime();
   }
+});
+
+// ---- lazy geoip-lite ----
+test('geoip-lite is not loaded when the module is required', () => {
+  assert.equal(geoipLoadedAtRequire, false);
+});
+
+test('geo lookup skips private/empty IPs without loading geoip, then loads once for a public IP', () => {
+  const isLoaded = () => Object.keys(require.cache).some((k) => k.includes(`${require('path').sep}geoip-lite${require('path').sep}`));
+  assert.deepEqual(websiteApi.lookupGeoByIp(''), { country: 'UNKNOWN', province: 'UNKNOWN' });
+  assert.deepEqual(websiteApi.lookupGeoByIp('10.1.2.3'), { country: 'UNKNOWN', province: 'UNKNOWN' });
+  assert.deepEqual(websiteApi.lookupGeoByIp('192.168.0.9, 8.8.8.8'), { country: 'UNKNOWN', province: 'UNKNOWN' });
+  assert.equal(isLoaded(), false);
+  const hit = websiteApi.lookupGeoByIp('8.8.8.8');
+  assert.equal(isLoaded(), true);
+  assert.equal(hit.country, 'US');
+  assert.deepEqual(websiteApi.lookupGeoByIp('8.8.8.8'), hit);
 });
