@@ -1,0 +1,66 @@
+{
+  "_comment": "Intentional Chinese that must stay as-is in every UI language. Each entry needs a reason. Translation files (whole-file) go in `files`.",
+  "files": [],
+  "strings": [
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "好咖啡 · Coffee.",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "晚风番茄钟",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "北线灯具 · 客户预览",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "夜班车 · 江岸 3 号泊位",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "远山设计 · 作品集",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "田间气象站 · 安装与校准手册",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "纸鹤 CLI · 快速开始",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "山间来信 · 第 12 封",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/gallery-cards.ts",
+      "text": "栖木笔记 · 更新日志",
+      "reason": "Gallery card title = the showcased site's own name; shown as-is in English (caption is translated via captionEn)"
+    },
+    {
+      "file": "src/components/marketing/coffee-page.mjs",
+      "contains": "No.07 · 今日手冲",
+      "reason": "Shared coffee page CSS: zh label of the real coffee.demox.site; English pages get the :lang(en) override in the same stylesheet"
+    },
+    {
+      "file": "src/components/marketing/coffee-page.mjs",
+      "contains": "<title>Coffee. 好咖啡 慢慢来</title>",
+      "reason": "Full HTML of the real Chinese site coffee.demox.site (scripts/build-coffee-site.mjs); not rendered on the homepage"
+    },
+    {
+      "file": "src/layouts/components/footer.tsx",
+      "text": "陕ICP备2024025600号-2",
+      "reason": "ICP filing number, must be shown verbatim"
+    }
+  ]
+}

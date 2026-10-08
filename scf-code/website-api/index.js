@@ -945,33 +945,64 @@ function cachePurgeWarning(cachePurge) {
   return `CDN 缓存清理失败，线上可能短时间仍返回旧内容（${detail || 'unknown'}）`;
 }
 
-async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHost, originPath, ownerId }) {
+/**
+ * 清理站点相关的 EdgeOne 缓存（页面前缀 + 边缘函数解析缓存 key）。
+ * - subdomain/subdomainDomain：当前自定义前缀；extraSubdomains：额外要清的前缀（如 set_subdomain 前的旧前缀）。
+ * - customHosts：绑定到该站点的自定义域名（边缘解析缓存 key resolve.demox.site/v2/custom/<host>）。
+ * 解析缓存 key 同时清 v2（当前边缘函数格式，存放「最近一次正常结果」，供 stale-if-error 使用）和旧无版本格式。
+ */
+async function purgeSiteCache({
+  websiteId,
+  subdomain,
+  subdomainDomain,
+  extraSubdomains = [],
+  customHosts = [],
+  originHost,
+  originPath,
+  ownerId
+}) {
   const hosts = new Set();
   const resolveKeys = new Set();
+  const customResolveHosts = new Set();
   const defaultLabel = String(websiteId || '').trim().toLowerCase();
-  const customLabel = String(subdomain || '').trim().toLowerCase();
-  const customDomain = normalizeOfficialDomain(subdomainDomain) || defaultDomain;
   if (defaultLabel) {
     hosts.add(`${defaultLabel}.${defaultDomain}`);
     resolveKeys.add(`${defaultDomain}|${defaultLabel}`);
   }
-  if (customLabel) {
-    hosts.add(`${customLabel}.${customDomain}`);
-    resolveKeys.add(`${customDomain}|${customLabel}`);
+  const bindings = [{ subdomain, subdomainDomain }, ...(Array.isArray(extraSubdomains) ? extraSubdomains : [])];
+  for (const binding of bindings) {
+    const label = String((binding && binding.subdomain) || '').trim().toLowerCase();
+    if (!label) continue;
+    const domain = normalizeOfficialDomain(binding.subdomainDomain) || defaultDomain;
+    hosts.add(`${label}.${domain}`);
+    resolveKeys.add(`${domain}|${label}`);
+  }
+  for (const raw of Array.isArray(customHosts) ? customHosts : []) {
+    const host = String(raw || '').trim().toLowerCase().replace(/\.+$/, '');
+    if (/^[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$/.test(host)) customResolveHosts.add(host);
   }
 
   const safeHosts = Array.from(hosts).filter(host => /^[a-z0-9-]{1,63}\.[a-z0-9.-]+$/.test(host));
   const originTargets = buildOriginPurgeTargets({ originHost, originPath, ownerId, websiteId });
-  if (safeHosts.length === 0 && originTargets.length === 0) {
+  if (safeHosts.length === 0 && originTargets.length === 0 && customResolveHosts.size === 0) {
     return { success: true, skipped: true, reason: 'no_valid_hosts' };
   }
 
   const publicTargets = safeHosts.map(host => `https://${host}/`);
   const prefixTargets = [...publicTargets, ...originTargets];
-  const resolveTargets = Array.from(resolveKeys).map(key => {
+  // 边缘函数解析缓存 key：v2 为当前格式（edge-functions/subdomain-router.js RESOLVE_CACHE_PREFIX），
+  // 旧无版本格式保留，兼容边缘函数回滚到旧版本的情况。
+  const resolveTargets = [];
+  for (const key of resolveKeys) {
     const [domain, label] = key.split('|');
-    return `https://resolve.${defaultDomain}/host/${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
-  });
+    const suffix = `${encodeURIComponent(domain)}/${encodeURIComponent(label)}`;
+    resolveTargets.push(`https://resolve.${defaultDomain}/v2/host/${suffix}`);
+    resolveTargets.push(`https://resolve.${defaultDomain}/host/${suffix}`);
+  }
+  for (const host of customResolveHosts) {
+    resolveTargets.push(`https://resolve.${defaultDomain}/v2/custom/${encodeURIComponent(host)}`);
+    resolveTargets.push(`https://resolve.${defaultDomain}/custom/${encodeURIComponent(host)}`);
+  }
   const tasks = [];
 
   for (const task of [
@@ -989,6 +1020,38 @@ async function purgeSiteCache({ websiteId, subdomain, subdomainDomain, originHos
     originTargets,
     tasks
   };
+}
+
+/** 站点绑定的自定义域名完整 host 列表（best effort，失败返回空数组）。websiteDbId = websites.id */
+async function listCustomHostsForWebsite(websiteDbId) {
+  if (!websiteDbId) return [];
+  try {
+    await ensureCustomDomainsTable();
+    const rows = await query(
+      `SELECT cd.hostname AS hostname, r.label AS label
+       FROM custom_domain_routes r
+       JOIN custom_domains cd ON cd.id = r.custom_domain_id
+       WHERE r.website_id = ?`,
+      [websiteDbId]
+    );
+    return (rows || [])
+      .map((row) => (row.label ? `${row.label}.${row.hostname}` : String(row.hostname || '')))
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean);
+  } catch (e) {
+    console.warn('读取站点自定义域名失败（跳过其解析缓存清理）:', e.message);
+    return [];
+  }
+}
+
+/** 清理缓存但绝不让主流程失败。 */
+async function purgeSiteCacheSafely(args) {
+  try {
+    return await purgeSiteCache(args);
+  } catch (e) {
+    console.warn('站点缓存清理异常:', e && e.message);
+    return { success: false, skipped: false, tasks: [{ type: 'unknown', success: false, message: (e && e.message) || String(e) }] };
+  }
 }
 
 /**
@@ -1791,6 +1854,7 @@ async function handleDeleteWebsite(event) {
     console.warn('删除站点存储失败:', e.message);
   }
 
+  const customHosts = await listCustomHostsForWebsite(site.id);
   try {
     await ensureCustomDomainsTable();
     await query('DELETE FROM custom_domain_routes WHERE website_id = ?', [site.id]);
@@ -1798,8 +1862,17 @@ async function handleDeleteWebsite(event) {
     console.warn('删除站点自定义域名失败:', e.message);
   }
 
-  // 路由表在 websites.subdomain 列里，删除行即清理；边缘缓存 60s 内自然失效。
+  // 路由表在 websites.subdomain 列里，删除行即清理。
   const result = await query('DELETE FROM websites WHERE id = ?', [site.id]);
+
+  // 清边缘解析缓存（含 v2 key 上保存的「最近一次正常结果」）和页面/回源缓存；失败不影响删除结果。
+  const cachePurge = await purgeSiteCacheSafely({
+    websiteId: site.website_id,
+    subdomain: site.subdomain,
+    subdomainDomain: site.subdomain_domain,
+    customHosts,
+    ...(await originArgsFromSite(site))
+  });
 
   return {
     statusCode: 200,
@@ -1807,7 +1880,9 @@ async function handleDeleteWebsite(event) {
     body: JSON.stringify({
       success: true,
       message: '删除成功',
-      deletedCount: result.affectedRows
+      deletedCount: result.affectedRows,
+      cachePurge,
+      ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {})
     })
   };
 }
@@ -2153,6 +2228,14 @@ async function handleSetSubdomain(event) {
       [label, domain, site.id]
     );
 
+    // 新前缀上可能缓存着「不存在」，旧前缀上缓存着「正常」：两边的解析缓存都清掉。
+    const cachePurge = await purgeSiteCacheSafely({
+      websiteId: site.website_id,
+      subdomain: label,
+      subdomainDomain: domain,
+      extraSubdomains: site.subdomain ? [{ subdomain: site.subdomain, subdomainDomain: site.subdomain_domain }] : []
+    });
+
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
@@ -2162,6 +2245,8 @@ async function handleSetSubdomain(event) {
         subdomainDomain: domain,
         subdomain_domain: domain,
         url: buildCustomSiteUrl(label, domain),
+        cachePurge,
+        ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {}),
         message: '设置成功，访问可能有最长 60 秒的边缘缓存同步延迟'
       })
     };
@@ -2235,10 +2320,20 @@ async function handleClearSubdomain(event) {
       'UPDATE websites SET subdomain = NULL, subdomain_domain = ?, updated_at = NOW() WHERE id = ?',
       [defaultDomain, site.id]
     );
+    const cachePurge = await purgeSiteCacheSafely({
+      websiteId: site.website_id,
+      subdomain: site.subdomain,
+      subdomainDomain: site.subdomain_domain
+    });
     return {
       statusCode: 200,
       headers: getCORSHeaders(),
-      body: JSON.stringify({ success: true, message: '已清除自定义前缀' })
+      body: JSON.stringify({
+        success: true,
+        cachePurge,
+        ...(cachePurgeWarning(cachePurge) ? { warning: cachePurgeWarning(cachePurge) } : {}),
+        message: '已清除自定义前缀'
+      })
     };
   } catch (error) {
     console.error('清除子域名失败:', error);
@@ -2340,6 +2435,7 @@ async function handleUpdateWebsiteVisibility(event) {
         websiteId: site.website_id,
         subdomain: site.subdomain,
         subdomainDomain: site.subdomain_domain,
+        customHosts: await listCustomHostsForWebsite(site.id),
         ...(await originArgsFromSite(site))
       });
       return ok({
@@ -2364,6 +2460,7 @@ async function handleUpdateWebsiteVisibility(event) {
       websiteId: site.website_id,
       subdomain: site.subdomain,
       subdomainDomain: site.subdomain_domain,
+      customHosts: await listCustomHostsForWebsite(site.id),
       ...(await originArgsFromSite(site))
     });
     return ok({
