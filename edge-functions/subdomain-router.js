@@ -18,7 +18,9 @@
 // Backend URLs are read from EdgeOne environment variables for quick rollback.
 var RESOLVE_CACHE_TTL = 60; // 秒：命中结果的新鲜期
 var RESOLVE_NEGATIVE_TTL = 15; // 秒：后端明确「不存在」的新鲜期（超时/出错不缓存）
-var RESOLVE_STALE_TTL = 86400; // 秒：解析出错时，过期命中结果最多兜底这么久
+// 秒：stale-if-error 窗口。只在后端出错/超时时使用，且只用于最近一次成功解析为「正常可访问」的结果；
+// 被封禁 / 已删除 / 不存在的结果会覆盖它，永远不会被兜底「复活」。
+var RESOLVE_STALE_IF_ERROR_TTL = 600;
 var RESOLVE_TIMEOUT_MS = 6000; // 单次 resolve 子请求超时
 var RESOLVE_ATTEMPTS = 2; // 首次 + 1 次重试
 var RESOLVE_RETRY_DELAY_MS = 200;
@@ -1217,9 +1219,11 @@ async function checkPrivateSiteAccessToken(token, label, domain, host) {
  *
  * 边缘缓存规则（2026-10-08 修复「找不到」被长期缓存）：
  *   - 只有后端明确回答的结果才缓存：命中(found) 新鲜期 RESOLVE_CACHE_TTL 秒；
- *     确认不存在(not_found) 只缓存 RESOLVE_NEGATIVE_TTL 秒。
+ *     确认不存在(not_found，含已删除) 和 已封禁(blocked，visibility=disabled) 只新鲜 RESOLVE_NEGATIVE_TTL 秒。
+ *     not_found / blocked 写在同一个 key 上，覆盖掉之前的「正常」结果（写失败则删除该 key）。
  *   - 超时 / 网络异常 / 非 2xx / 后端报错(success:false 但不是 not found) 一律不写缓存。
- *     出错时如果本节点有过期不超过 RESOLVE_STALE_TTL 的命中结果，先用它兜底（stale-if-error），
+ *     出错时：本节点缓存是 blocked → 继续返回停用页（fail closed）；
+ *     是 found 且 visibility 不是 disabled、写入不超过 RESOLVE_STALE_IF_ERROR_TTL(10 分钟) → 兜底用它；
  *     否则按原逻辑走「站点不存在」分支（handle 里不变）。
  *   - 新鲜期写在缓存内容里(cachedAt)由代码判断，不再只依赖 Cache-Control：
  *     线上观测到旧 key 的条目远超 max-age=60 仍在（letters-from-the-hill 卡「找不到」~18h，
@@ -1257,7 +1261,8 @@ function isResolveNotFoundMessage(message) {
   return RESOLVE_NOT_FOUND_MESSAGES.indexOf(m) !== -1;
 }
 
-// 单次查询：返回 { status: 'found' | 'not_found' | 'error', resolution?, reason? }
+// 单次查询：返回 { status: 'found' | 'blocked' | 'not_found' | 'error', resolution?, reason? }
+// blocked = 后端确认站点存在但已被封禁(visibility=disabled)，是明确回答，不是错误。
 async function resolveOnce(payload, signal) {
   const init = {
     method: 'POST',
@@ -1271,7 +1276,9 @@ async function resolveOnce(payload, signal) {
   }
   const data = await resp.json();
   if (data && data.success && data.path) {
-    return { status: 'found', resolution: resolutionFromData(data) };
+    const resolution = resolutionFromData(data);
+    if (resolution.visibility === VISIBILITY_DISABLED) return { status: 'blocked', resolution: resolution };
+    return { status: 'found', resolution: resolution };
   }
   if (data && data.success) {
     return { status: 'not_found' };
@@ -1325,7 +1332,7 @@ async function readResolveCache(cache, cacheKey) {
     if (!hit) return null;
     const j = await hit.json();
     if (!j || j.v !== RESOLVE_CACHE_VERSION || typeof j.cachedAt !== 'number') return null;
-    if (j.status !== 'found' && j.status !== 'not_found') return null;
+    if (j.status !== 'found' && j.status !== 'blocked' && j.status !== 'not_found') return null;
     return j;
   } catch (e) {
     // EdgeOne cache.match 对过期条目会抛 504，按未命中处理
@@ -1343,21 +1350,30 @@ function isResolveEntryFresh(entry) {
   return age >= 0 && age < ttl * 1000;
 }
 
+// stale-if-error 只认「最近一次成功解析且可访问」的结果，最长 RESOLVE_STALE_IF_ERROR_TTL。
 function isResolveEntryUsableAsStale(entry) {
+  if (!entry || entry.status !== 'found' || !entry.data || !entry.data.path) return false;
+  if (entry.data.visibility === VISIBILITY_DISABLED) return false;
   const age = resolveEntryAgeMs(entry);
-  return entry.status === 'found' && !!(entry.data && entry.data.path) && age >= 0 && age < RESOLVE_STALE_TTL * 1000;
+  return age >= 0 && age < RESOLVE_STALE_IF_ERROR_TTL * 1000;
+}
+
+function resolutionFromEntry(entry) {
+  return entry.status === 'not_found' ? emptyResolution() : resolutionFromData(entry.data);
 }
 
 async function writeResolveCache(cache, cacheKey, status, resolution) {
   if (!cache) return;
-  // 命中结果的物理保留期 = stale 兜底窗口；新鲜期由 cachedAt 在代码里判断。
-  const maxAge = status === 'found' ? RESOLVE_STALE_TTL : RESOLVE_NEGATIVE_TTL;
+  // found / blocked 的物理保留期 = stale-if-error 窗口（新鲜期由 cachedAt 在代码里判断）；
+  // not_found 只保留 RESOLVE_NEGATIVE_TTL。
+  const maxAge = status === 'not_found' ? RESOLVE_NEGATIVE_TTL : RESOLVE_STALE_IF_ERROR_TTL;
+  let written = false;
   try {
     const body = JSON.stringify({
       v: RESOLVE_CACHE_VERSION,
       status: status,
       cachedAt: nowMs(),
-      data: status === 'found' ? resolution : null
+      data: status === 'not_found' ? null : resolution
     });
     await cache.put(cacheKey, new Response(body, {
       headers: {
@@ -1365,7 +1381,12 @@ async function writeResolveCache(cache, cacheKey, status, resolution) {
         'Cache-Control': 'public, max-age=' + maxAge + ', s-maxage=' + maxAge
       }
     }));
+    written = true;
   } catch (e) {}
+  // 封禁 / 不存在没能覆盖写入时，至少删掉旧的「正常」结果，避免之后被 stale 兜底复活。
+  if (!written && status !== 'found') {
+    try { await cache.delete(cacheKey); } catch (e) {}
+  }
 }
 
 async function cachedResolve(cacheKeyUrl, payload, logName) {
@@ -1375,12 +1396,12 @@ async function cachedResolve(cacheKeyUrl, payload, logName) {
 
   const cached = await readResolveCache(cache, cacheKey);
   if (cached && isResolveEntryFresh(cached)) {
-    return cached.status === 'found' ? resolutionFromData(cached.data) : emptyResolution();
+    return resolutionFromEntry(cached);
   }
 
   const result = await lookupResolve(payload);
-  if (result.status === 'found') {
-    await writeResolveCache(cache, cacheKey, 'found', result.resolution);
+  if (result.status === 'found' || result.status === 'blocked') {
+    await writeResolveCache(cache, cacheKey, result.status, result.resolution);
     return result.resolution;
   }
   if (result.status === 'not_found') {
@@ -1389,6 +1410,10 @@ async function cachedResolve(cacheKeyUrl, payload, logName) {
   }
 
   // 出错：绝不缓存「找不到」。
+  if (cached && cached.status === 'blocked') {
+    // 已封禁的站点在后端出错时继续显示停用页（fail closed）
+    return resolutionFromData(cached.data);
+  }
   if (cached && isResolveEntryUsableAsStale(cached)) {
     try { console.warn('[subdomain-router] resolve failed, serving stale route for', logName, result.reason); } catch (e) {}
     return resolutionFromData(cached.data);

@@ -556,7 +556,8 @@ function fakeCache() {
         const entry = { body: await resp.text(), headers: Object.fromEntries(resp.headers.entries()) };
         store.set(key, entry);
         puts.push({ key, ...entry });
-      }
+      },
+      delete: async (req) => store.delete(String(req && req.url ? req.url : req))
     }
   };
 }
@@ -759,7 +760,7 @@ test('resolve: when the backend errors after the fresh window, the last known ro
   assert.match(html, /山间来信/);
   assert.equal(r.cache.puts.length, 1, 'stale fallback does not rewrite the entry');
 
-  r.advance(25 * 60 * 60_000); // 超过 RESOLVE_STALE_TTL
+  r.advance(5 * 60_000); // 共 10 分钟：超过 RESOLVE_STALE_IF_ERROR_TTL
   assert.equal((await r.visit('https://coverage.demox.site/')).response.status, 404);
 });
 
@@ -793,4 +794,135 @@ test('resolve: cache.match throwing (EdgeOne 504 on expired entries) is treated 
   const r = makeRouter({ cache, resolver: () => json(LETTERS_FOUND) });
   const { response } = await r.visit('https://letters-from-the-hill.demox.site/');
   assert.equal(response.status, 200);
+});
+
+// ---------------------------------------------------------------------------
+// stale-if-error 不得让被封禁 / 已删除的站点复活；窗口 10 分钟。
+// ---------------------------------------------------------------------------
+
+const LETTERS_BANNED = { ...LETTERS_FOUND, visibility: 'disabled' };
+const ESSAY_URL = 'https://letters-from-the-hill.demox.site/';
+const ESSAY_KEY = 'https://resolve.demox.site/v2/host/demox.site/letters-from-the-hill';
+
+function switchableBackend(initial) {
+  let state = initial;
+  return {
+    set: (next) => { state = next; },
+    resolver: () => {
+      if (state === 'down') throw new TypeError('network error');
+      if (state === 'hang') return new Promise(() => {});
+      if (state === 'banned') return json(LETTERS_BANNED);
+      if (state === 'deleted') return json({ success: false, message: 'not found' });
+      return json(LETTERS_FOUND);
+    }
+  };
+}
+
+test('stale window is a named 10-minute constant and found entries are stored for exactly that long', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal(r.ctx.RESOLVE_STALE_IF_ERROR_TTL, 600);
+  await r.visit(ESSAY_URL);
+  assert.match(r.cache.store.get(ESSAY_KEY).headers['cache-control'], /max-age=600\b/);
+});
+
+test('stale fallback ends exactly at 10 minutes after the last good lookup', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+  backend.set('down');
+  r.advance(10 * 60_000 - 1);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+  r.advance(1);
+  const { response, html } = await r.visit(ESSAY_URL);
+  assert.equal(response.status, 404);
+  assert.doesNotMatch(html, /山间来信/);
+});
+
+test('banned site: the ban replaces the last good entry; when the backend then goes down the site is NOT served from stale', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+
+  backend.set('banned');
+  r.advance(61_000);
+  const originBeforeBan = r.calls.origin.length;
+  const banned = await r.visit(ESSAY_URL);
+  assert.equal(banned.response.status, 403);
+  assert.match(banned.html, /此站点已被停用/);
+  const entry = JSON.parse(r.cache.store.get(ESSAY_KEY).body);
+  assert.equal(entry.status, 'blocked');
+
+  for (const state of ['down', 'hang']) {
+    backend.set(state);
+    for (const step of [16_000, 60_000, 5 * 60_000]) {
+      r.advance(step);
+      const { response, html } = await r.visit(ESSAY_URL);
+      assert.notEqual(response.status, 200, `${state} +${step}ms must not revive a banned site`);
+      assert.doesNotMatch(html, /山间来信/);
+    }
+  }
+  assert.equal(
+    r.calls.origin.slice(originBeforeBan).some((href) => href.includes('LCJAIAC0')),
+    false,
+    'never fetches the banned site origin after the ban'
+  );
+});
+
+test('banned status is a real answer: cached only 15s fresh, never retried as an error, and unban takes effect after 15s', async () => {
+  const backend = switchableBackend('banned');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 403);
+  assert.equal(r.calls.resolve.length, 1, 'no retry: banned is not an error');
+  backend.set('ok');
+  r.advance(10_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 403);
+  r.advance(6_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+});
+
+test('deleted site: "not found" replaces the last good entry; when the backend then goes down the site is NOT served from stale', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+
+  backend.set('deleted');
+  r.advance(61_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
+  assert.equal(r.calls.resolve.length, 2, 'not found is not retried');
+  assert.equal(JSON.parse(r.cache.store.get(ESSAY_KEY).body).status, 'not_found');
+
+  backend.set('down');
+  for (const step of [16_000, 60_000, 5 * 60_000]) {
+    r.advance(step);
+    const { response, html } = await r.visit(ESSAY_URL);
+    assert.equal(response.status, 404);
+    assert.doesNotMatch(html, /山间来信/);
+  }
+});
+
+test('deleted site: if writing the "not found" entry fails, the old good entry is deleted instead of kept', async () => {
+  const backend = switchableBackend('ok');
+  const cache = fakeCache();
+  const r = makeRouter({ cache, resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+  cache.cache.put = async () => { throw new Error('413'); };
+  backend.set('deleted');
+  r.advance(61_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
+  assert.equal(cache.store.has(ESSAY_KEY), false);
+  backend.set('down');
+  r.advance(60_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
+});
+
+test('remaining risk is bounded: if the edge never saw the ban because the backend was down, stale ends at 10 minutes', async () => {
+  const backend = switchableBackend('ok');
+  const r = makeRouter({ resolver: backend.resolver });
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+  backend.set('down'); // 封禁发生在后端，但之后每次查询都失败
+  r.advance(9 * 60_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 200);
+  r.advance(60_000);
+  assert.equal((await r.visit(ESSAY_URL)).response.status, 404);
 });
