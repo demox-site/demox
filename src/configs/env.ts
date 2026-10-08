@@ -35,7 +35,7 @@ const feishuRedirectUri = readEnv("VITE_FEISHU_REDIRECT_URI");
 
 export const siteConfig = {
   name: "Demox",
-  version: "0.9.2",
+  version: "0.9.3",
   domain: readEnv("VITE_DEMOX_SITE_DOMAIN") || (typeof window !== "undefined" ? window.location.hostname : ""),
   url: withTrailingSlash(siteUrl)
 };
