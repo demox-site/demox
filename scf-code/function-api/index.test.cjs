@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 const { createFunctionHttpHandler, createPlatformHandler, main: defaultMain } = require('./index.js');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
@@ -686,3 +687,7 @@ test('env GET/PUT is owner-only when the website owner is known', async () => {
   assert.equal(denied.statusCode, 403);
 });
 
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
+});

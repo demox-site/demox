@@ -8,6 +8,8 @@ const { fork } = require('child_process');
 const { FunctionRuntimeError } = require('./runtime-error.js');
 const { runtimeTarget } = require('./runtimes.js');
 const { invokeScfFunction, invokeRuntimeHttp } = require('./scf-invoke.js');
+const { createResponseSeal, openSealedPayload } = require('./response-seal.js');
+const { redactLogText } = require('./log-redact.js');
 
 const WORKER_PATH = path.join(__dirname, 'runtime-nodejs-worker.cjs');
 const WORKER_ENV_BLOCKLIST = new Set([
@@ -186,7 +188,7 @@ class NodeWorkerPool {
     });
     child.stderr?.on('data', (chunk) => {
       try {
-        this.logger.warn?.('[demox-user-nodejs]', String(chunk).trimEnd());
+        this.logger.warn?.('[demox-user-nodejs]', redactLogText(String(chunk).trimEnd()));
       } catch {
         // Logging must never change function behavior.
       }
@@ -310,13 +312,14 @@ function createScfNodeInvoker({
   const resolvedNamespace = namespace || target.namespace;
   return async (payload) => {
     const timeoutMs = Math.max(1, Number(payload.limits?.timeoutMs || 30_000));
+    const seal = createResponseSeal();
     const response = await invoke({
       functionName: resolvedName,
       namespace: resolvedNamespace,
-      payload: runtimeExecutePayload(payload, { includeSource: true }),
+      payload: { ...runtimeExecutePayload(payload, { includeSource: true }), responseSeal: seal.descriptor },
       timeoutMs
     });
-    return unwrapRuntimeResponse(response);
+    return unwrapRuntimeResponse(openSealedPayload(response, seal));
   };
 }
 
@@ -339,12 +342,19 @@ function createHttpNodeInvoker({
     const extra = payloadKeyExtra(payload);
     const hash = source ? sourceKey(source, entrypoint, extra) : String(payload.sourceHash || '');
     const timeoutMs = Math.max(1, Number(payload.limits?.timeoutMs || 30_000));
-    const send = (includeSource) => post({
-      url: resolvedUrl,
-      secret: resolvedSecret,
-      payload: runtimeExecutePayload({ ...payload, source, sourceHash: hash, entrypoint }, { includeSource }),
-      timeoutMs
-    });
+    const send = async (includeSource) => {
+      const seal = createResponseSeal();
+      const response = await post({
+        url: resolvedUrl,
+        secret: resolvedSecret,
+        payload: {
+          ...runtimeExecutePayload({ ...payload, source, sourceHash: hash, entrypoint }, { includeSource }),
+          responseSeal: seal.descriptor
+        },
+        timeoutMs
+      });
+      return openSealedPayload(response, seal);
+    };
     let includeSource = Boolean(source) && !warm.has(hash);
     let response = await send(includeSource);
     if (response?.error?.code === 'SOURCE_REQUIRED' && source && !includeSource) {

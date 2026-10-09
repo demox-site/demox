@@ -1,6 +1,9 @@
 'use strict';
 
 const crypto = require('crypto');
+const { installLogRedaction } = require('./log-redact.js');
+
+installLogRedaction(console);
 const { createJwtAuthenticator } = require('./auth.js');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');

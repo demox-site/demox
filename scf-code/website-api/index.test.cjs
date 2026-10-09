@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 
 Object.assign(process.env, {
   MYSQL_HOST: '127.0.0.1',
@@ -2089,4 +2090,23 @@ test('a failing cache purge never fails set_subdomain; it is surfaced as a warni
   } finally {
     websiteApi.setPurgeRuntime();
   }
+});
+
+test('database errors that echo emails or tokens are redacted before they are logged (v13)', async () => {
+  const leakyToken = sign({ userId: 'leaky-user', email: 'leaky.person@example.com' });
+  const before = logGuard.lines.length;
+  queryImpl = async () => {
+    throw new Error(`Duplicate entry 'leaky.person@example.com' token=${leakyToken} refresh_token=${'Zx9'.repeat(22)}`);
+  };
+  for (const action of ['list', 'get_usage', 'list_projects', 'get_site_stats', 'list_tokens']) {
+    await request(action, { websiteId: 'ABCDEFGH' }, 'leaky-user', 'leaky.person@example.com').catch(() => {});
+  }
+  const produced = logGuard.lines.slice(before);
+  assert.ok(produced.length > 0, 'the failing queries should have produced log lines');
+  assert.ok(produced.some((line) => line.text.includes('[email]') || line.text.includes('[jwt]')), 'redaction placeholders expected');
+});
+
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
 });

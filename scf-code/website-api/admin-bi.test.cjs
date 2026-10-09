@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 const fs = require('fs');
 const path = require('path');
 
@@ -342,4 +343,9 @@ test('web deploys carry the browser visitor id so the homepage funnel can join t
   assert.equal(inserts.length, 1);
   assert.equal(inserts[0][1], 'lx9abc12def');
   assert.equal(inserts[0][2], 'server:web');
+});
+
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
 });

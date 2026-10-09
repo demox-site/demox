@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 const { executeNodejsPayload, createScfNodeInvoker, createHttpNodeInvoker, workerEnv, resetNodeWorkerPool, sourceKey } = require('./runtime-nodejs.js');
 const { main } = require('./runtime-nodejs-handler.js');
 const { normalizeRuntime, runtimeTarget, SUPPORTED_RUNTIMES, PLANNED_RUNTIMES } = require('./runtimes.js');
@@ -244,4 +245,9 @@ test('SCF Node invoker sends a typed runtime payload', async () => {
   assert.equal(calls[0].payload.type, 'demox.runtime.execute');
   assert.equal(calls[0].payload.runtime, 'nodejs');
   assert.equal(calls[0].payload.env.JWT_SECRET, 'site');
+});
+
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
 });
