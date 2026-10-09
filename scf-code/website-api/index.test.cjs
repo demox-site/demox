@@ -6,7 +6,7 @@ Object.assign(process.env, {
   MYSQL_USER: 'test',
   MYSQL_PASSWORD: 'test',
   MYSQL_DATABASE: 'test',
-  JWT_SECRET: 'website-api-test-secret',
+  JWT_SECRET: 'website-api-test-secret-at-least-32-chars',
   FEISHU_APP_ID: 'cli_test',
   FEISHU_APP_SECRET: 'secret_test'
 });

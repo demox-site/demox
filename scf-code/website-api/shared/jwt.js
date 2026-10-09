@@ -1,21 +1,37 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'demox-prod-secret-2024';
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * 读取 JWT 签名密钥。没有配置或长度不足时直接报错，绝不回退到代码里的默认值
+ * （仓库是公开的，任何写在代码里的默认密钥都等于没有密钥）。
+ */
+function getJwtSecret(env = process.env) {
+  const secret = typeof env.JWT_SECRET === 'string' ? env.JWT_SECRET.trim() : '';
+  if (!secret) {
+    throw new Error('缺少 JWT_SECRET 环境变量，拒绝签发或校验 token');
+  }
+  if (secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(`JWT_SECRET 长度不足 ${MIN_SECRET_LENGTH} 位，拒绝签发或校验 token`);
+  }
+  return secret;
+}
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d';
 
 /**
  * 生成JWT token
  */
 function sign(payload, expiresIn = JWT_EXPIRES_IN) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn });
+  return jwt.sign(payload, getJwtSecret(), { algorithm: 'HS256', expiresIn });
 }
 
 /**
  * 验证JWT token
  */
 function verify(token) {
+  const secret = getJwtSecret();
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, secret, { algorithms: ['HS256'] });
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       throw new Error('Token已过期');
@@ -81,6 +97,8 @@ function getUserId(event) {
 }
 
 module.exports = {
+  getJwtSecret,
+  MIN_SECRET_LENGTH,
   sign,
   verify,
   extractToken,

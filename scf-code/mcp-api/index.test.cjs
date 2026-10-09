@@ -5,7 +5,7 @@ const { afterEach, before, mock, test } = require('node:test');
 
 process.env.AUTH_API_URL = 'https://auth.example.test';
 process.env.WEBSITE_API_URL = 'https://website.example.test';
-process.env.JWT_SECRET = 'test-secret-that-is-long-enough-for-proxy-tests';
+process.env.JWT_SECRET = 'mcp-api-test-secret-at-least-32-characters';
 
 let api;
 let sign;

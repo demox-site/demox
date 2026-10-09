@@ -5,7 +5,7 @@
   "description": "Demox MCP API proxy for SCF",
   "main": "index.js",
   "scripts": {
-    "test": "node --test index.test.cjs"
+    "test": "node --test index.test.cjs shared/jwt.test.cjs"
   },
   "dependencies": {
     "jsonwebtoken": "^9.0.2"

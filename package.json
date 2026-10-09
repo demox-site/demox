@@ -24,7 +24,8 @@
     "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
     "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs",
     "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
-    "test:changelog": "node --test src/content/changelog.test.mjs"
+    "test:changelog": "node --test src/content/changelog.test.mjs",
+    "test:jwt": "node --test scf-code/website-api/shared/jwt.test.cjs scf-code/mcp-api/shared/jwt.test.cjs scf-deploy-packages/auth-api/shared/jwt.test.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
