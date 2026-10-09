@@ -332,9 +332,20 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
                   <Tooltip content={<DeployTooltip t={t} n={n} style={tooltipStyle} />} cursor={{ fill: ink.wash }} />
-                  {/* 补算（站点记录 / 日志回填）= 只有虚线描边的空心柱，只有总数，不拆成功 / 失败。没有记录的日子值是 null，不画柱，也不画 0。
+                  {/* 补算（站点记录 / 日志回填）= 只有总数，不拆成功 / 失败。桌面用虚线空心柱；手机柱太窄虚线会碎成点，改成浅灰实心（仍弱于埋点成功柱）。
                       开始那天后端只给一种（埋点或补算），所以这里的堆叠不会出现「补算上再叠埋点」 */}
-                  <Bar dataKey="deployDerived" name={t.sDerived} stackId="d" fill="transparent" stroke={LOW} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false} />
+                  <Bar
+                    dataKey="deployDerived"
+                    name={t.sDerived}
+                    stackId="d"
+                    fill={deployChartWidth < 480 ? LOW : "transparent"}
+                    fillOpacity={deployChartWidth < 480 ? 0.45 : 1}
+                    stroke={LOW}
+                    strokeWidth={deployChartWidth < 480 ? 0 : 1}
+                    strokeDasharray={deployChartWidth < 480 ? undefined : "3 2"}
+                    radius={deployChartWidth < 480 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+                    isAnimationActive={false}
+                  />
                   {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
                   <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
                     label={<BarEndLabel lastIndex={deployLast} text={t.sSuccess} color={SOFT} />} />
