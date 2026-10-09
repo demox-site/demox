@@ -7,6 +7,10 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: deploy-www
+  cancel-in-progress: true
+
 env:
   WEBSITE_ID: EPX2UU43
   VITE_DEMOX_API_URL: ${{ vars.VITE_DEMOX_API_URL }}
