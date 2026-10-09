@@ -400,29 +400,27 @@ export function initS1(root: HTMLElement, lang: 'zh' | 'en' = 'zh'): () => void 
   async function loop(){
     try{
       while(true){
-        await typeAll();
-        await sleep(280);
-        await deploy();
+        /* hold the completed live frame, then clear and type again */
         await sleep(2800);
         await clearAll();
         await sleep(60);
+        await typeAll();
+        await sleep(280);
+        await deploy();
       }
     }catch(e){ if(e!==ABORT) throw e; }
   }
 
-  /* ---------- first frame: frames visible, editor empty with caret, typing starts at t=0 ---------- */
-  for(var i=0;i<LINES.length;i++){
-    typed[i] = reduce ? LINES[i][0].length : 0;
-    renderLine(i,false); syncBlock(i);
+  /* ---------- first frame: full code + full preview already on screen (no wait) ---------- */
+  function paintComplete(){
+    for(var i=0;i<LINES.length;i++){
+      typed[i]=LINES[i][0].length;
+      renderLine(i,false); syncBlock(i);
+    }
+    setState('live'); setCharge(1); termStatic(); scrollCode(); Beam.geom();
   }
-  Beam.geom();
-  if(reduce){
-    setState('live'); setCharge(1); Beam.setStatic(.35);
-    termStatic();
-    scrollCode(); Beam.geom();
-  } else {
-    setState('editing'); termIdle(); setCur(0); setCharge(0);
-  }
+  paintComplete();
+  if(reduce){ Beam.setStatic(.35); }
   requestAnimationFrame(function(){requestAnimationFrame(function(){html.classList.remove('init');});});
   __on(window,'resize',function(){Beam.geom(); scrollCode(); if(editing){ metrics(); syncScroll(); }});
   var stage=$id('stage');
@@ -584,9 +582,9 @@ export function initS1(root: HTMLElement, lang: 'zh' | 'en' = 'zh'): () => void 
     gen++;
     if(cur>=0 && lineEls[cur]) lineEls[cur].classList.remove('cur');
     cur=-1; lastBlock=null;
-    for(var i=0;i<LINES.length;i++){ typed[i]=reduce?LINES[i][0].length:0; renderLine(i,false); syncBlock(i); }
-    if(reduce){ setState('live'); setCharge(1); termStatic(); scrollCode(); Beam.geom(); }
-    else { setState('editing'); termIdle(); setCur(0); setCharge(0); loop(); }
+    paintComplete();
+    if(reduce){ Beam.setStatic(.35); }
+    else { loop(); }
   }
 
   codeEl.addEventListener('click',function(e){ if(!editing) enterEdit(e.clientX,e.clientY); });

@@ -27,8 +27,8 @@ function SiteGateBackdrop({ host }: { host: string }) {
         aria-hidden="true"
         className="pointer-events-none fixed inset-[-3rem] scale-105 overflow-hidden bg-[#f5f5f2] opacity-85 blur-xl dark:bg-[#101010]"
       >
-        <div className="absolute -right-32 top-0 h-96 w-96 rounded-full bg-blue-500/20 blur-3xl" />
-        <div className="absolute -left-24 bottom-0 h-96 w-96 rounded-full bg-emerald-500/15 blur-3xl" />
+        <div className="absolute -right-32 top-0 h-96 w-96 rounded-full bg-zinc-950/10 dark:bg-white/10 blur-3xl" />
+        <div className="absolute -left-24 bottom-0 h-96 w-96 rounded-full bg-zinc-950/10 dark:bg-white/10 blur-3xl" />
         <header className="flex h-20 items-center justify-between border-b border-zinc-950/10 bg-white/70 px-[7vw] dark:border-white/10 dark:bg-zinc-900/70">
           <div className="flex items-center gap-4">
             <span className="h-9 w-9 rounded-xl bg-zinc-950 dark:bg-white/80" />
@@ -42,7 +42,7 @@ function SiteGateBackdrop({ host }: { host: string }) {
           <span className="h-10 w-24 rounded-full bg-zinc-950 dark:bg-white/80" />
         </header>
         <main className="mx-auto mt-[10vh] w-[88vw] max-w-6xl">
-          <div className="h-7 w-36 rounded-full bg-blue-500/25" />
+          <div className="h-7 w-36 rounded-full bg-zinc-950/25 dark:bg-white/25" />
           <div className="mt-8 h-32 w-[min(64vw,48rem)] rounded-2xl bg-zinc-950/80 dark:bg-white/75" />
           <div className="mt-7 h-16 w-[min(56vw,38rem)] rounded-xl bg-zinc-950/20 dark:bg-white/20" />
           <div className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-[1.1fr_.9fr]">
@@ -53,7 +53,7 @@ function SiteGateBackdrop({ host }: { host: string }) {
       </div>
       <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-zinc-950/30 shadow-[inset_0_0_10rem_rgba(0,0,0,0.18)] dark:bg-black/40" />
       <div className="pointer-events-none fixed left-1/2 top-[max(1rem,env(safe-area-inset-top))] z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 overflow-hidden rounded-full border border-white/25 bg-zinc-950/65 px-3.5 py-2 text-xs font-bold text-white/90 shadow-xl backdrop-blur-xl">
-        <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-300 shadow-[0_0_0_.25rem_rgba(110,231,183,0.15)]" />
+        <span className="h-2 w-2 shrink-0 rounded-full bg-zinc-100 shadow-[0_0_0_.25rem_rgba(255,255,255,0.12)]" />
         <span className="truncate">{host} 是私有项目</span>
       </div>
     </>
@@ -115,14 +115,14 @@ export function SiteAuth() {
   return (
     <div className="min-h-screen overflow-hidden bg-black text-zinc-100">
       <div className="pointer-events-none fixed inset-0">
-        <div className="absolute -left-24 top-12 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl" />
-        <div className="absolute bottom-0 right-0 h-96 w-96 rounded-full bg-emerald-500/10 blur-3xl" />
+        <div className="absolute -left-24 top-12 h-72 w-72 rounded-full bg-zinc-500/10 blur-3xl" />
+        <div className="absolute bottom-0 right-0 h-96 w-96 rounded-full bg-zinc-500/10 blur-3xl" />
       </div>
 
       <main className="relative mx-auto flex min-h-screen w-full max-w-5xl items-center px-6 py-16">
         <section className="grid w-full gap-8 md:grid-cols-[1.05fr_.95fr] md:items-center">
           <div>
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.22em] text-cyan-200">
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-xs font-bold uppercase tracking-[0.22em] text-zinc-300">
               <ShieldCheck className="h-3.5 w-3.5" />
               Private Demox site
             </div>
@@ -151,7 +151,7 @@ export function SiteAuth() {
           </div>
 
           <div className="rounded-[2rem] border border-zinc-800 bg-zinc-950/70 p-7 shadow-2xl shadow-black/30 backdrop-blur">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-emerald-200">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-900 text-zinc-200">
               <LockKeyhole className="h-7 w-7" />
             </div>
             <h2 className="mt-6 text-2xl font-bold tracking-tight">Access is protected</h2>

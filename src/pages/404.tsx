@@ -66,9 +66,9 @@ const NotFoundPage: React.FC = () => {
           {/* Terminal Header */}
           <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--stitch-line)] bg-[var(--stitch-blue-soft)]">
             <div className="flex gap-1.5">
-              <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+              <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/50"></div>
+              <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/35"></div>
+              <div className="w-3 h-3 rounded-full bg-[var(--stitch-muted)]/20"></div>
             </div>
             <div className="flex-1 text-center">
               <span className="text-xs text-[var(--stitch-muted)] font-mono">
@@ -88,18 +88,18 @@ const NotFoundPage: React.FC = () => {
 
             <div className="text-[var(--stitch-muted)]">
               &gt; Resolving routing table...{" "}
-              <span className="text-green-500">done</span>
+              <span className="text-success">done</span>
             </div>
             <div className="text-[var(--stitch-muted)]">
               &gt; Locating deployment artifact...{" "}
-              <span className="text-yellow-500">searching</span>
+              <span className="text-[var(--stitch-muted)]">searching</span>
             </div>
             <div className="text-[var(--stitch-muted)]">
               &gt; Verifying integrity hash...
             </div>
 
-            <div className="pl-4 border-l-2 border-red-500/30 my-4">
-              <div className="text-red-500 font-bold mb-1 flex items-center gap-2">
+            <div className="pl-4 border-l-2 border-[var(--stitch-line)] my-4">
+              <div className="text-[var(--stitch-ink)] font-bold mb-1 flex items-center gap-2">
                 <AlertTriangle size={16} />
                 CRITICAL_FAILURE
               </div>
@@ -111,14 +111,14 @@ const NotFoundPage: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 text-[var(--stitch-ink)] mt-8">
-              <span className="text-red-500">➜</span>
+              <span className="text-[var(--stitch-ink)]">➜</span>
               <span className="animate-pulse">_</span>
-              <span className="text-red-400 font-bold">{typedText}</span>
+              <span className="text-[var(--stitch-ink)] font-bold">{typedText}</span>
             </div>
           </div>
 
           {/* Glow effect */}
-          <div className="absolute inset-0 bg-gradient-to-t from-red-900/5 to-transparent pointer-events-none" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[var(--stitch-ink)]/5 to-transparent pointer-events-none" />
         </div>
 
         {/* Action Area */}
