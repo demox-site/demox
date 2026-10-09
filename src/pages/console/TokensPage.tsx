@@ -184,9 +184,9 @@ const TokensPage: React.FC = () => {
       </div>
 
       {created && (
-        <Card className="stitch-panel mb-6 border-amber-500/40">
+        <Card className="stitch-panel mb-6 border-[var(--stitch-ink)]">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-amber-400">
+            <CardTitle className="flex items-center gap-2 text-[var(--stitch-ink)]">
               <AlertTriangle className="w-4 h-4" />
               {created.name}
             </CardTitle>
@@ -277,8 +277,8 @@ const TokensPage: React.FC = () => {
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full font-mono ${
                           inactive
-                            ? "text-red-400 bg-red-500/10"
-                            : "text-green-400 bg-green-500/10"
+                            ? "text-[var(--stitch-muted)] bg-[var(--stitch-blue-soft)]"
+                            : "text-emerald-600 bg-emerald-500/10 dark:text-emerald-400"
                         }`}
                       >
                         {tok.revoked ? t.revoke : expired ? t.expired : t.active}
@@ -296,7 +296,7 @@ const TokensPage: React.FC = () => {
                         variant="outline"
                         onClick={() => handleRevoke(tok.id)}
                         disabled={tok.revoked || revokingId === tok.id}
-                        className="text-destructive hover:text-destructive"
+                        className="text-[var(--stitch-ink)]"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>

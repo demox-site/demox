@@ -255,7 +255,7 @@ export default function SiteSettingsPanel({
         <Button
           variant="ghost"
           onClick={() => confirmDeleteWebsite(website._id)}
-          className="h-11 w-full justify-start rounded-2xl text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+          className="h-11 w-full justify-start rounded-2xl text-[var(--stitch-ink)] hover:bg-[var(--stitch-blue-soft)]"
         >
           <Trash2 className="mr-2 h-4 w-4" />
           {t.deleteSite}

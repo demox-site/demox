@@ -12,7 +12,7 @@ import {
   YAxis
 } from "recharts";
 import { ComposableMap, Geographies, Geography } from "react-simple-maps";
-import { ArrowLeft, BarChart3, Clock3, Globe2, Lock, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
+import { AlertCircle, ArrowLeft, BarChart3, Clock3, Globe2, Lock, MapPin, MousePointer2, Radio, Route, ShieldCheck, TrendingUp } from "lucide-react";
 import { userManager, websiteApi, mapWebsiteRow } from "@/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { useLanguage } from "@/hooks/use-language";
@@ -20,6 +20,7 @@ import { formatTimestamp, getDisplayName, getSiteDomains, hasProOrAboveRole } fr
 import { translations } from "../home-translations";
 import { ContactWebmaster } from "@/components/ContactWebmaster";
 import { listStatDateKeys, shortDateLabel } from "@/lib/stat-date";
+import { inkLevel, useInkPalette, type InkPalette } from "@/lib/ink-palette";
 
 type StatsResponse = {
   success: boolean;
@@ -56,7 +57,6 @@ type AccessLogMeta = {
   totalPages: number;
 };
 
-const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#f43f5e", "#a78bfa", "#14b8a6", "#eab308", "#fb7185"];
 const WORLD_GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
 const countryNames: Record<string, string> = {
@@ -136,19 +136,33 @@ function getCountryLabel(code: string) {
   return countryNames[normalized] || countryDisplayNames?.of(normalized) || normalized;
 }
 
-function getMapFill(views: number, max: number) {
-  if (!views) return "rgba(148,163,184,.10)";
-  const intensity = views / Math.max(1, max);
-  if (intensity > 0.8) return "#22d3ee";
-  if (intensity > 0.55) return "#38bdf8";
-  if (intensity > 0.3) return "#0ea5e9";
-  return "rgba(56,189,248,.42)";
+/** 图表名字直接标在最后一个点的右边（设计原则：不用图例，名字贴着线尾）。 */
+function EndLabel({ x, y, index, lastIndex, text, color }: { x?: number | string; y?: number | string; index?: number; lastIndex: number; text: string; color: string }) {
+  if (index !== lastIndex || x == null || y == null) return null;
+  return (
+    <text x={Number(x) - 4} y={Number(y) - 12} textAnchor="end" fill={color} fontSize={12} fontWeight={600}>
+      {text}
+    </text>
+  );
+}
+
+function BarValueLabel({ x, y, width, height, value, color }: { x?: number | string; y?: number | string; width?: number | string; height?: number | string; value?: number | string; color: string }) {
+  if (x == null || y == null) return null;
+  return (
+    <text x={Number(x) + Number(width || 0) + 6} y={Number(y) + Number(height || 0) / 2} dy={4} fill={color} fontSize={11} fontWeight={600}>
+      {fmt.format(Number(value || 0))}
+    </text>
+  );
+}
+
+function tooltipStyle(ink: InkPalette) {
+  return { border: `1px solid ${ink.tooltipBorder}`, borderRadius: 16, background: ink.tooltipBg, color: ink.tooltipText };
 }
 
 function LoadingPanel({ text = "加载统计数据中..." }: { text?: string }) {
   return (
     <div className="relative grid h-[260px] place-items-center overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)]">
-      <div className="absolute inset-0 bg-[linear-gradient(110deg,transparent,rgba(56,189,248,.12),transparent)] animate-[pulse_1.6s_ease-in-out_infinite]" />
+      <div className="absolute inset-0 bg-[linear-gradient(110deg,transparent,var(--stitch-blue-soft),transparent)] animate-[pulse_1.6s_ease-in-out_infinite]" />
       <div className="relative flex flex-col items-center gap-4 text-sm text-[var(--stitch-muted)]">
         <div className="relative h-14 w-14 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)]">
           <div className="absolute inset-2 rounded-full border-2 border-transparent border-t-[var(--stitch-blue)] animate-spin" />
@@ -170,7 +184,8 @@ function StatCardSkeleton() {
   );
 }
 
-function WorldTrafficMap({ data }: { data: { country: string; views: number }[] }) {
+function WorldTrafficMap({ data, isZh }: { data: { country: string; views: number }[]; isZh: boolean }) {
+  const ink = useInkPalette();
   const normalizedData = React.useMemo(
     () => data.filter((item) => item.country && item.country !== "UNKNOWN"),
     [data]
@@ -192,21 +207,15 @@ function WorldTrafficMap({ data }: { data: { country: string; views: number }[] 
   const max = Math.max(1, ...normalizedData.map((item) => item.views));
 
   return (
-    <div className="relative overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)] bg-[radial-gradient(circle_at_50%_35%,rgba(56,189,248,.18),transparent_42%),linear-gradient(135deg,rgba(15,23,42,.92),rgba(8,13,24,.98))] p-3">
-      <div className="pointer-events-none absolute inset-x-10 top-6 h-24 rounded-full bg-cyan-300/10 blur-3xl" />
+    <div className="relative overflow-hidden rounded-[1.4rem] border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-3">
       <ComposableMap
         projection="geoEqualEarth"
         projectionConfig={{ scale: 155 }}
         width={760}
         height={390}
-        className="relative h-[330px] w-full drop-shadow-[0_24px_45px_rgba(14,165,233,.18)]"
+        className="relative h-[330px] w-full"
         aria-label="世界访问分布地图"
       >
-        <defs>
-          <filter id="worldMapGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="0" dy="8" stdDeviation="7" floodColor="#38bdf8" floodOpacity="0.2" />
-          </filter>
-        </defs>
         <Geographies geography={WORLD_GEO_URL}>
           {({ geographies }) =>
             geographies.map((geo) => {
@@ -217,18 +226,17 @@ function WorldTrafficMap({ data }: { data: { country: string; views: number }[] 
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
-                  filter={views ? "url(#worldMapGlow)" : undefined}
                   style={{
                     default: {
-                      fill: getMapFill(views, max),
-                      stroke: "rgba(226,232,240,.38)",
+                      fill: inkLevel(ink, views, max),
+                      stroke: ink.mapStroke,
                       strokeWidth: 0.72,
                       outline: "none",
                       transition: "fill .2s ease, stroke .2s ease"
                     },
                     hover: {
-                      fill: views ? "#67e8f9" : "rgba(148,163,184,.20)",
-                      stroke: "rgba(255,255,255,.82)",
+                      fill: views ? ink.mid : ink.mapEmpty,
+                      stroke: ink.ink,
                       strokeWidth: 1.05,
                       outline: "none",
                       cursor: "default"
@@ -243,8 +251,12 @@ function WorldTrafficMap({ data }: { data: { country: string; views: number }[] 
           }
         </Geographies>
       </ComposableMap>
-      <div className="absolute bottom-4 left-4 rounded-full border border-white/10 bg-slate-950/60 px-3 py-1 text-xs text-slate-300 backdrop-blur">
-        颜色越亮，访问越多
+      <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1 text-xs text-[var(--stitch-muted)] backdrop-blur">
+        <span>{isZh ? "少" : "Less"}</span>
+        <span className="flex gap-0.5" aria-hidden>
+          {ink.mapLevels.map((c) => <span key={c} className="h-2 w-3 rounded-sm" style={{ background: c }} />)}
+        </span>
+        <span>{isZh ? "多" : "More"}</span>
       </div>
     </div>
   );
@@ -292,6 +304,8 @@ export default function SiteAnalyticsPage() {
   const { projectId = "", websiteId = "" } = useParams();
   const navigate = useNavigate();
   const { language } = useLanguage();
+  const isZh = language !== "en";
+  const ink = useInkPalette();
   const t = translations[language] || translations.zh;
   const outlet = useOutletContext<ConsoleOutletContext | undefined>();
   const canViewAnalytics = hasProOrAboveRole(outlet?.user?.roles || userManager.get()?.roles);
@@ -480,7 +494,10 @@ export default function SiteAnalyticsPage() {
         </div>
 
         {error && (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>
+          <div role="alert" className="flex items-start gap-2 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-4 text-sm text-[var(--stitch-ink)]">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>{error}</span>
+          </div>
         )}
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -513,18 +530,19 @@ export default function SiteAnalyticsPage() {
               {loading ? <LoadingPanel /> : daily.every((d) => d.views === 0) ? <EmptyChart text="暂无访问数据" /> : (
                 <div className="h-[320px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={daily} margin={{ left: 0, right: 18, top: 12, bottom: 0 }}>
+                    <AreaChart data={daily} margin={{ left: 0, right: 18, top: 24, bottom: 0 }}>
                       <defs>
                         <linearGradient id="viewsGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.42} />
-                          <stop offset="95%" stopColor="#38bdf8" stopOpacity={0.02} />
+                          <stop offset="5%" stopColor={ink.ink} stopOpacity={0.14} />
+                          <stop offset="95%" stopColor={ink.ink} stopOpacity={0} />
                         </linearGradient>
                       </defs>
-                      <CartesianGrid stroke="rgba(148,163,184,.18)" vertical={false} />
-                      <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "#94a3b8", fontSize: 12 }} />
-                      <YAxis allowDecimals={false} tickLine={false} axisLine={false} tick={{ fill: "#94a3b8", fontSize: 12 }} />
-                      <Tooltip contentStyle={{ border: "1px solid rgba(148,163,184,.28)", borderRadius: 16, background: "rgba(15,23,42,.94)", color: "#e5e7eb" }} />
-                      <Area type="monotone" dataKey="views" name="访问" stroke="#38bdf8" strokeWidth={3} fill="url(#viewsGradient)" />
+                      <CartesianGrid stroke={ink.grid} vertical={false} />
+                      <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: ink.axis, fontSize: 12 }} minTickGap={16} />
+                      <YAxis allowDecimals={false} tickLine={false} axisLine={false} tick={{ fill: ink.axis, fontSize: 12 }} />
+                      <Tooltip contentStyle={tooltipStyle(ink)} />
+                      <Area type="monotone" dataKey="views" name={isZh ? "访问" : "Views"} stroke={ink.ink} strokeWidth={2} fill="url(#viewsGradient)" isAnimationActive={false}
+                        label={<EndLabel lastIndex={daily.length - 1} text={isZh ? "访问" : "Views"} color={ink.ink} />} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -542,7 +560,7 @@ export default function SiteAnalyticsPage() {
             <CardContent>
               {loading ? <LoadingPanel text="加载世界地图中..." /> : countryData.length === 0 ? <EmptyChart text="暂无国家/地区数据" /> : (
                 <div className="space-y-5">
-                  <WorldTrafficMap data={countryData} />
+                  <WorldTrafficMap data={countryData} isZh={isZh} />
 
                   <div className="space-y-3">
                     {countryData.slice(0, 8).map((item, index) => {
@@ -554,7 +572,7 @@ export default function SiteAnalyticsPage() {
                             <span className="font-mono text-[var(--stitch-muted)]">{pct}% · {fmt.format(item.views)}</span>
                           </div>
                           <div className="h-2 rounded-full bg-[var(--stitch-surface-strong)]">
-                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, pct)}%`, background: COLORS[index % COLORS.length] }} />
+                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, pct)}%`, background: index === 0 ? ink.ink : index < 3 ? ink.mid : ink.low }} />
                           </div>
                         </div>
                       );
@@ -573,12 +591,13 @@ export default function SiteAnalyticsPage() {
               {loading ? <LoadingPanel text="加载来源数据中..." /> : !stats?.referrers?.length ? <EmptyChart text="暂无来源数据" /> : (
                 <div className="h-[300px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={stats.referrers} layout="vertical" margin={{ left: 8, right: 20, top: 8, bottom: 8 }}>
-                      <CartesianGrid stroke="rgba(148,163,184,.16)" horizontal={false} />
-                      <XAxis type="number" allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis dataKey="host" type="category" width={120} tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{ border: "1px solid rgba(148,163,184,.28)", borderRadius: 16, background: "rgba(15,23,42,.94)", color: "#e5e7eb" }} />
-                      <Bar dataKey="views" name="访问" radius={[0, 10, 10, 0]} fill="#38bdf8" />
+                    <BarChart data={stats.referrers} layout="vertical" margin={{ left: 8, right: 48, top: 8, bottom: 8 }}>
+                      <CartesianGrid stroke={ink.grid} horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fill: ink.axis, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <YAxis dataKey="host" type="category" width={120} tick={{ fill: ink.axis, fontSize: 12 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={tooltipStyle(ink)} cursor={{ fill: ink.grid }} />
+                      <Bar dataKey="views" name={isZh ? "访问" : "Views"} radius={[0, 10, 10, 0]} fill={ink.mid} isAnimationActive={false}
+                        label={<BarValueLabel color={ink.ink} />} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

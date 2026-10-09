@@ -30,7 +30,7 @@ import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { ArrowDown, ArrowUp, ArrowUpDown, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Ban, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 
 // BI 概览单独分包：只有打开「数据概览」时才下载图表代码。
 const AdminBiOverview = React.lazy(() => import("./admin/bi/AdminBiOverview"));
@@ -128,9 +128,12 @@ const formatProExpiry = (item: {
   return dateText || "—";
 };
 
+const VIEWS_LABEL = "访问";
+
 const roleBadgeClass = (roleId: string) => {
-  if (roleId === "admin") return "border-amber-400/30 bg-amber-400/10 text-amber-200";
-  if (roleId === "pro") return "border-sky-400/30 bg-sky-400/10 text-sky-200";
+  // 黑白灰：管理员最实（反白），专业用户描边，普通用户最弱
+  if (roleId === "admin") return "border-zinc-100 bg-zinc-100 text-zinc-900";
+  if (roleId === "pro") return "border-zinc-400 bg-transparent text-zinc-100";
   return "border-zinc-700 bg-zinc-800 text-zinc-300";
 };
 
@@ -1079,7 +1082,7 @@ const AdminDashboard: React.FC = () => {
             ) : activeTab === "roles" ? (
               <div className="space-y-6">
                 <div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-amber-200">
+                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-300">
                     <ShieldCheck className="h-4 w-4" />
                     平台权限层级
                   </div>
@@ -1095,7 +1098,7 @@ const AdminDashboard: React.FC = () => {
                       key={role.id}
                       className="relative overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-4"
                     >
-                      <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-amber-300/80 to-sky-400/30" />
+                      <div className="absolute inset-y-0 left-0 w-1 bg-zinc-600" />
                       <div className="flex items-start justify-between gap-4">
                         <div>
                           <div className="flex items-center gap-2">
@@ -1230,7 +1233,10 @@ const AdminDashboard: React.FC = () => {
                                   </td>
                                   <td className="whitespace-nowrap py-4 pr-6 text-sm">
                                     {proExpiryText ? (
-                                      <span className={item.proExpired ? "text-red-300" : "text-zinc-300"}>{proExpiryText}</span>
+                                      <span className={item.proExpired ? "inline-flex items-center gap-1 text-zinc-500" : "text-zinc-300"}>
+                                        {item.proExpired ? <AlertCircle className="h-3.5 w-3.5" aria-hidden /> : null}
+                                        {proExpiryText}
+                                      </span>
                                     ) : (
                                       <span className="text-zinc-600">—</span>
                                     )}
@@ -1293,7 +1299,7 @@ const AdminDashboard: React.FC = () => {
                       {detailLoading ? (
                         <p className="text-sm text-zinc-500">正在加载看板...</p>
                       ) : detailError ? (
-                        <p className="text-sm text-red-300">{detailError}</p>
+                        <p role="alert" className="flex items-center gap-2 text-sm text-zinc-200"><AlertCircle className="h-4 w-4 shrink-0" aria-hidden />{detailError}</p>
                       ) : userOverview ? (
                         <>
                           <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
@@ -1306,7 +1312,7 @@ const AdminDashboard: React.FC = () => {
                             {userOverview.user?.proLifetime ? (
                               <span>永久会员</span>
                             ) : userOverview.user?.proExpired ? (
-                              <span className="text-red-300">会员已过期</span>
+                              <span className="inline-flex items-center gap-1 text-zinc-300"><AlertCircle className="h-3.5 w-3.5" aria-hidden />会员已过期</span>
                             ) : userOverview.user?.remainingDays != null ? (
                               <span>会员剩 {userOverview.user.remainingDays} 天</span>
                             ) : null}
@@ -1342,15 +1348,20 @@ const AdminDashboard: React.FC = () => {
                             ) : (
                               <div style={{ width: "100%", height: 220 }}>
                                 <ResponsiveContainer>
-                                  <LineChart data={userOverview.traffic?.daily || []}>
-                                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+                                  <LineChart data={userOverview.traffic?.daily || []} margin={{ top: 20, right: 12, left: 0, bottom: 0 }}>
+                                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
                                     <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
                                     <YAxis stroke="#71717a" allowDecimals={false} />
                                     <Tooltip
-                                      formatter={(value: number | string) => [formatCount(Number(value)), "访问"]}
+                                      formatter={(value: number | string) => [formatCount(Number(value)), VIEWS_LABEL]}
                                       contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
                                     />
-                                    <Line type="monotone" dataKey="views" stroke="#38bdf8" strokeWidth={2} dot={false} />
+                                    <Line type="monotone" dataKey="views" name={VIEWS_LABEL} stroke="#f4f4f5" strokeWidth={2} dot={false} isAnimationActive={false}
+                                      label={(props: { x?: number; y?: number; index?: number }) =>
+                                        props.index === (userOverview.traffic?.daily || []).length - 1 && props.x != null && props.y != null ? (
+                                          <text key="end" x={props.x - 4} y={props.y - 10} textAnchor="end" fill="#f4f4f5" fontSize={11} fontWeight={600}>{VIEWS_LABEL}</text>
+                                        ) : <g key={props.index} />
+                                      } />
                                   </LineChart>
                                 </ResponsiveContainer>
                               </div>
@@ -1514,7 +1525,7 @@ const AdminDashboard: React.FC = () => {
                                 key={option.id}
                                 className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
                                   userRoleDialogProDuration === option.id
-                                    ? "border-sky-400/40 bg-sky-400/10 text-zinc-100"
+                                    ? "border-zinc-300 bg-zinc-100/10 text-zinc-100"
                                     : "border-zinc-800 bg-zinc-950/40 text-zinc-300"
                                 }`}
                               >
@@ -1529,7 +1540,7 @@ const AdminDashboard: React.FC = () => {
                         </fieldset>
                       ) : null}
 
-                      <div className="rounded-lg border border-sky-400/20 bg-sky-400/5 px-3 py-3">
+                      <div className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-3">
                         <div className="text-xs text-zinc-500">保存后生效角色</div>
                         <div className="mt-1 flex items-center gap-2">
                           <Badge variant="outline" className={roleBadgeClass(dialogEffectiveRole.id)}>{dialogEffectiveRole.name}</Badge>
@@ -1806,7 +1817,7 @@ const AdminDashboard: React.FC = () => {
                                 <td className="py-3 pr-4">
                                   <div>{row.site_name || row.website_id}</div>
                                   <a
-                                    className="text-xs text-emerald-400 hover:underline"
+                                    className="text-xs text-zinc-300 underline-offset-2 hover:underline"
                                     href={row.page_url || row.site_url || (row.host ? `https://${row.host}/` : "#")}
                                     target="_blank"
                                     rel="noreferrer"
@@ -1821,10 +1832,10 @@ const AdminDashboard: React.FC = () => {
                                   {row.visibility === "disabled" ? (
                                     <button className="text-zinc-400 hover:underline mr-3" onClick={() => restoreReportedSite(row)}>恢复</button>
                                   ) : canDisableReportedSite(row) ? (
-                                    <button className="text-red-400 hover:underline mr-3" onClick={() => openDisableDialog(row)}>禁用</button>
+                                    <button className="mr-3 inline-flex items-center gap-1 text-zinc-100 hover:underline" onClick={() => openDisableDialog(row)}><Ban className="h-3.5 w-3.5" aria-hidden />禁用</button>
                                   ) : null}
                                   {row.status === "open" ? (
-                                    <button className="text-emerald-400 hover:underline" onClick={() => markReportReviewed(row.id)}>标为已审</button>
+                                    <button className="text-zinc-300 hover:underline" onClick={() => markReportReviewed(row.id)}>标为已审</button>
                                   ) : (
                                     <span className="text-zinc-500">已审</span>
                                   )}
@@ -1865,7 +1876,8 @@ const AdminDashboard: React.FC = () => {
                         </div>
                         <div className="flex justify-end gap-2">
                           <Button variant="outline" className="border-zinc-700 bg-zinc-900" disabled={disableSaving} onClick={() => setDisableTarget(null)}>取消</Button>
-                          <Button className="bg-red-700 hover:bg-red-600" disabled={disableSaving} onClick={disableReportedSite}>
+                          <Button className="gap-1.5 bg-zinc-100 text-zinc-900 hover:bg-zinc-300" disabled={disableSaving} onClick={disableReportedSite}>
+                            <Ban className="h-4 w-4" aria-hidden />
                             {disableSaving ? "提交中..." : "确认禁用并发送邮件"}
                           </Button>
                         </div>
@@ -1889,7 +1901,7 @@ const AdminDashboard: React.FC = () => {
                         </div>
                         <div>
                           <div className="text-zinc-500">页面</div>
-                          <a className="text-emerald-400 hover:underline break-all" href={reportSiteUrl(inspectReport)} target="_blank" rel="noreferrer">
+                          <a className="text-zinc-200 underline-offset-2 hover:underline break-all" href={reportSiteUrl(inspectReport)} target="_blank" rel="noreferrer">
                             {reportSiteUrl(inspectReport)}
                           </a>
                         </div>
@@ -1908,10 +1920,10 @@ const AdminDashboard: React.FC = () => {
                           {inspectReport.visibility === "disabled" ? (
                             <Button variant="outline" className="border-zinc-700 bg-zinc-900" onClick={() => restoreReportedSite(inspectReport)}>恢复公开</Button>
                           ) : canDisableReportedSite(inspectReport) ? (
-                            <Button variant="outline" className="border-red-900 text-red-300" onClick={() => openDisableDialog(inspectReport)}>禁用站点</Button>
+                            <Button variant="outline" className="gap-1.5 border-zinc-500 bg-zinc-900 text-zinc-100" onClick={() => openDisableDialog(inspectReport)}><Ban className="h-4 w-4" aria-hidden />禁用站点</Button>
                           ) : null}
                           {inspectReport.status === "open" ? (
-                            <Button className="bg-emerald-700 hover:bg-emerald-600" onClick={() => { markReportReviewed(inspectReport.id); setInspectReport(null); }}>标为已审</Button>
+                            <Button className="bg-zinc-100 text-zinc-900 hover:bg-zinc-300" onClick={() => { markReportReviewed(inspectReport.id); setInspectReport(null); }}>标为已审</Button>
                           ) : null}
                         </div>
                       </div>
@@ -1939,7 +1951,7 @@ const AdminDashboard: React.FC = () => {
                   </CardHeader>
                   <CardContent>
                     {bucketsErr ? (
-                      <div className="text-amber-400 text-sm mb-3">{bucketsErr}</div>
+                      <div role="alert" className="mb-3 flex items-center gap-2 text-sm text-zinc-200"><AlertCircle className="h-4 w-4 shrink-0" aria-hidden />{bucketsErr}</div>
                     ) : null}
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm text-zinc-300">
@@ -1967,7 +1979,7 @@ const AdminDashboard: React.FC = () => {
                                 <td className="py-2 pr-4">
                                   {b.name}
                                   {b.isDefault ? (
-                                    <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">默认</span>
+                                    <span className="ml-2 rounded border border-zinc-600 px-1.5 py-0.5 text-xs text-zinc-200">默认</span>
                                   ) : null}
                                 </td>
                                 <td className="py-2 pr-4 uppercase text-zinc-400">{b.provider}</td>
@@ -1980,13 +1992,13 @@ const AdminDashboard: React.FC = () => {
                                 <td className="py-2 pr-4">{b.enabled ? "启用" : "停用"}</td>
                                 <td className="py-2 text-right whitespace-nowrap">
                                   {!b.isDefault && b.enabled ? (
-                                    <button className="text-emerald-400 hover:underline mr-3" onClick={() => setDefaultBucket(b.id)}>设为默认</button>
+                                    <button className="text-zinc-200 hover:underline mr-3" onClick={() => setDefaultBucket(b.id)}>设为默认</button>
                                   ) : null}
                                   <button className="text-zinc-400 hover:underline mr-3" onClick={() => toggleBucketEnabled(b)}>
                                     {b.enabled ? "停用" : "启用"}
                                   </button>
                                   {!b.isDefault ? (
-                                    <button className="text-red-400 hover:underline" onClick={() => removeBucket(b)}>删除</button>
+                                    <button className="inline-flex items-center gap-1 text-zinc-100 hover:underline" onClick={() => removeBucket(b)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</button>
                                   ) : null}
                                 </td>
                               </tr>

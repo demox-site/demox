@@ -17,7 +17,7 @@ import {
   useToast
 } from "@/components/ui";
 // @ts-ignore
-import { Building2, Check, Github, Loader2, Mail, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
+import { AlertCircle, Building2, Check, Github, Loader2, Mail, Search, ShieldCheck, UserMinus, UserPlus, UsersRound, X } from "lucide-react";
 import { websiteApi } from "@/api";
 
 const roleLabels = {
@@ -518,7 +518,7 @@ export function ProjectMembersPanel({
                         {inviteQuery.trim() && inviteSearchOpen && (
                           <div id="project-member-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
                             {inviteSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
-                            {!inviteSearchLoading && inviteSearchError && <div className="px-3 py-3 text-sm text-red-400">{inviteSearchError}</div>}
+                            {!inviteSearchLoading && inviteSearchError && <div role="alert" className="flex items-center gap-2 px-3 py-3 text-sm text-[var(--stitch-ink)]"><AlertCircle className="h-4 w-4 shrink-0" aria-hidden />{inviteSearchError}</div>}
                             {!inviteSearchLoading && !inviteSearchError && inviteResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectInviteNoUsers}</div>}
                             {!inviteSearchLoading && inviteResults.map((user, index) => (
                               <button
@@ -622,7 +622,7 @@ export function ProjectMembersPanel({
                       {githubQuery.trim() && githubSearchOpen && (
                         <div id="project-github-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
                           {githubSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
-                          {!githubSearchLoading && githubSearchError && <div className="px-3 py-3 text-sm text-red-400">{githubSearchError}</div>}
+                          {!githubSearchLoading && githubSearchError && <div role="alert" className="flex items-center gap-2 px-3 py-3 text-sm text-[var(--stitch-ink)]"><AlertCircle className="h-4 w-4 shrink-0" aria-hidden />{githubSearchError}</div>}
                           {!githubSearchLoading && !githubSearchError && githubResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectGithubNoResults}</div>}
                           {!githubSearchLoading && githubResults.map((user, index) => (
                             <button
@@ -725,7 +725,7 @@ export function ProjectMembersPanel({
                       {feishuQuery.trim() && feishuSearchOpen && (
                         <div id="project-feishu-results" role="listbox" className="absolute z-50 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] p-1 shadow-2xl">
                           {feishuSearchLoading && <div className="flex items-center px-3 py-3 text-sm text-[var(--stitch-muted)]"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t.projectSearchLoading}</div>}
-                          {!feishuSearchLoading && feishuSearchError && <div className="px-3 py-3 text-sm text-red-400">{feishuSearchError}</div>}
+                          {!feishuSearchLoading && feishuSearchError && <div role="alert" className="flex items-center gap-2 px-3 py-3 text-sm text-[var(--stitch-ink)]"><AlertCircle className="h-4 w-4 shrink-0" aria-hidden />{feishuSearchError}</div>}
                           {!feishuSearchLoading && !feishuSearchError && feishuResults.length === 0 && <div className="px-3 py-3 text-sm text-[var(--stitch-muted)]">{t.projectFeishuNoResults}</div>}
                           {!feishuSearchLoading && feishuResults.map((principal, index) => (
                             <button
@@ -799,7 +799,7 @@ export function ProjectMembersPanel({
                     size="icon"
                     disabled={busyKey === `github:${grant.id}`}
                     onClick={() => removeGithubGrant(grant)}
-                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-red-950/30 hover:text-red-400"
+                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
                     aria-label={t.projectGithubGrantRemove}
                   >
                     {busyKey === `github:${grant.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-4 w-4" />}
@@ -837,7 +837,7 @@ export function ProjectMembersPanel({
                     size="icon"
                     disabled={busyKey === `feishu:${grant.id}`}
                     onClick={() => removeFeishuGrant(grant)}
-                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-red-950/30 hover:text-red-400"
+                    className="h-8 w-8 shrink-0 text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
                     aria-label={t.projectFeishuGrantRemove}
                   >
                     {busyKey === `feishu:${grant.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-4 w-4" />}
@@ -897,7 +897,7 @@ export function ProjectMembersPanel({
                         size="sm"
                         disabled={!!busy}
                         onClick={() => removeMember(member)}
-                        className="h-8 text-[var(--stitch-muted)] hover:bg-red-950/30 hover:text-red-400"
+                        className="h-8 text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
                       >
                         {busyKey === `remove:${member.userId}` ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <UserMinus className="mr-2 h-3.5 w-3.5" />}
                         {member.userId === currentUser?.userId ? t.projectLeaveButton : t.projectRemoveButton}

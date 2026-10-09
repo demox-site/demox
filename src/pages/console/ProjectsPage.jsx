@@ -150,7 +150,7 @@ export default function ProjectsPage() {
                           event.stopPropagation();
                           setDeleteTarget(project);
                         }}
-                        className="h-8 w-8 rounded-full text-[var(--stitch-muted)] hover:bg-red-500/10 hover:text-red-500"
+                        className="h-8 w-8 rounded-full text-[var(--stitch-muted)] hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
                       >
                         {String(projects.projectBusyId || "") === String(project.id) ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -204,7 +204,7 @@ export default function ProjectsPage() {
             <AlertDialogAction
               disabled={!!projects.projectBusyId || deleteTarget?.websitesCount > 0}
               onClick={handleDeleteProject}
-              className="bg-red-600 text-white hover:bg-red-700"
+              className="bg-[var(--stitch-ink)] text-[var(--stitch-bg)] hover:opacity-90"
             >
               {projects.projectBusyId ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

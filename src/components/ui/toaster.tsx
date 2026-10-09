@@ -1,3 +1,4 @@
+import { AlertCircle } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
   Toast,
@@ -16,7 +17,9 @@ export function Toaster() {
       {toasts.map(function ({ id, title, description, action, ...props }) {
         return (
           <Toast key={id} {...props}>
-            <div className="grid gap-1">
+            {/* 坏消息：墨色 + 图标，不用红色 */}
+            {props.variant === "destructive" && <AlertCircle aria-hidden className="h-4 w-4 shrink-0 self-start mt-0.5" />}
+            <div className="grid flex-1 gap-1">
               {title && <ToastTitle>{title}</ToastTitle>}
               {description && (
                 <ToastDescription>{description}</ToastDescription>
