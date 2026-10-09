@@ -129,6 +129,10 @@ function fakeDb() {
     if (sql.includes('SELECT DISTINCT') && sql.includes('FROM websites WHERE created_at >= ? AND created_at < ?')) {
       return [{ d: '2026-10-08', website_id: 'aaa11111' }, { d: '2026-10-08', website_id: 'BBB22222' }, { d: '2026-10-05', website_id: 'CCC33333' }, { d: '2026-10-09', website_id: 'DDD44444' }];
     }
+    if (sql.includes('FROM deploy_daily_backfill')) {
+      // 日志回填：10-06 日志比站点记录多；10-08 比站点记录少；10-09 开始前有 26 次
+      return [{ d: '2026-10-06', total: 7 }, { d: new Date('2026-10-08T00:00:00Z'), total: 1 }, { d: '2026-10-09', total: 26 }];
+    }
     if (sql.includes('SELECT DISTINCT') && sql.includes('FROM deploy_upload_sessions WHERE status')) {
       // AAA11111 同一天又走了一次分块上传：同站同日只算 1 次
       return [{ d: new Date('2026-10-08T00:00:00Z'), website_id: 'AAA11111' }, { d: '2026-10-06', website_id: 'EEE55555' }];
@@ -195,7 +199,8 @@ test('computeAdminBi issues only parameterized SELECTs and assembles KPIs', asyn
   assert.equal(data.kpis.deploys.prevSuccessRate, null);
   assert.equal(data.kpis.deploys.trackedSince, '2026-10-09');
   assert.equal(data.kpis.deploys.complete, false);
-  assert.equal(data.kpis.deploys.derivedTotal, 5);
+  // 10-05 站点 1 + 10-06 max(站点 1, 日志 7) + 10-08 max(站点 2, 日志 1) + 10-09 开始那天 max(埋点 1, 补算 26)
+  assert.equal(data.kpis.deploys.derivedTotal, 1 + 7 + 2 + 26);
   assert.equal(data.kpis.funnel.deploySuccessSince, '2026-10-09');
   assert.equal(data.kpis.funnel.prevLanding, 80);
   assert.equal(data.tracking.deploys, '2026-10-09');
@@ -206,18 +211,21 @@ test('computeAdminBi issues only parameterized SELECTs and assembles KPIs', asyn
     ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-03')[k]),
     [null, null, null, 'none', false]
   );
-  // 埋点前：只有补算总数，不拆成功 / 失败
+  // 埋点前：只有补算总数，不拆成功 / 失败；站点记录和日志取较大值，不相加
   assert.deepEqual(
-    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-08')[k]),
-    [null, null, 2, 'derived', false]
+    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown', 'deployDerivedFrom'].map((k) => day('2026-10-08')[k]),
+    [null, null, 2, 'derived', false, 'sites']
   );
-  assert.equal(day('2026-10-06').deployDerived, 1);
+  assert.equal(day('2026-10-06').deployDerived, 7);
+  assert.equal(day('2026-10-06').deployDerivedFrom, 'logs');
   assert.equal(day('2026-10-05').deployDerived, 1);
-  // 开始那天：开始前的补算 + 开始后的埋点
+  // 开始那天：埋点 1 < 补算 26，只画补算总数（不叠加埋点），埋点数放在 deployLiveTotal 给提示用
   assert.deepEqual(
-    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-09')[k]),
-    [1, 0, 1, 'mixed', false]
+    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown', 'deployLiveTotal'].map((k) => day('2026-10-09')[k]),
+    [null, null, 26, 'mixed', false, 1]
   );
+  const logCall = calls.find((c) => c.sql.includes('FROM deploy_daily_backfill'));
+  assert.deepEqual(logCall.params, ['2026-09-26', '2026-10-09']);
   // 补算只读埋点开始之前的记录
   const derivedCall = calls.find((c) => c.sql.includes('FROM websites WHERE created_at >= ? AND created_at < ?'));
   assert.deepEqual(derivedCall.params, ['2026-09-25 16:00:00', '2026-10-09 05:25:00']);
@@ -272,13 +280,58 @@ test('deploy days: live days keep real zeros, untracked days are null', () => {
   const live = new Map([['2026-10-10', { success: 0, fail: 0 }]]);
   const derived = new Map([['2026-10-07', 3]]);
   assert.deepEqual(bi.buildDeployDay('2026-10-10', '2026-10-09', live, derived),
-    { deploySuccess: 0, deployFail: 0, deployDerived: null, deploySource: 'events', deploySplitKnown: true });
+    { deploySuccess: 0, deployFail: 0, deployDerived: null, deploySource: 'events', deploySplitKnown: true, deployDerivedFrom: null, deployLiveTotal: 0 });
   assert.deepEqual(bi.buildDeployDay('2026-10-07', '2026-10-09', live, derived),
-    { deploySuccess: null, deployFail: null, deployDerived: 3, deploySource: 'derived', deploySplitKnown: false });
+    { deploySuccess: null, deployFail: null, deployDerived: 3, deploySource: 'derived', deploySplitKnown: false, deployDerivedFrom: 'sites', deployLiveTotal: null });
   assert.deepEqual(bi.buildDeployDay('2026-10-01', '2026-10-09', live, derived),
-    { deploySuccess: null, deployFail: null, deployDerived: null, deploySource: 'none', deploySplitKnown: false });
+    { deploySuccess: null, deployFail: null, deployDerived: null, deploySource: 'none', deploySplitKnown: false, deployDerivedFrom: null, deployLiveTotal: null });
   // 从来没有服务端埋点：全部不是 events
   assert.equal(bi.buildDeployDay('2026-10-10', null, live, derived).deploySource, 'none');
+});
+
+test('boundary day draws only one kind: live when live >= derived, else derived; never the sum', () => {
+  const start = '2026-10-09';
+  // 埋点 9（8 成功 1 失败）≥ 补算 5：画埋点，不画补算
+  let d = bi.buildDeployDay(start, start, new Map([[start, { success: 8, fail: 1 }]]), new Map([[start, { total: 5, from: 'logs' }]]));
+  assert.deepEqual([d.deploySuccess, d.deployFail, d.deployDerived, d.deploySource, d.deploySplitKnown], [8, 1, null, 'mixed', false]);
+  // 相等也画埋点
+  d = bi.buildDeployDay(start, start, new Map([[start, { success: 5, fail: 0 }]]), new Map([[start, 5]]));
+  assert.deepEqual([d.deploySuccess, d.deployDerived], [5, null]);
+  // 埋点 9 < 补算 26：只画补算总数 26（不是 35），埋点数留给提示
+  d = bi.buildDeployDay(start, start, new Map([[start, { success: 8, fail: 1 }]]), new Map([[start, { total: 26, from: 'logs' }]]));
+  assert.deepEqual([d.deploySuccess, d.deployFail, d.deployDerived, d.deployDerivedFrom, d.deployLiveTotal], [null, null, 26, 'logs', 9]);
+  // 开始那天没有补算：就是普通的埋点日
+  d = bi.buildDeployDay(start, start, new Map([[start, { success: 2, fail: 0 }]]), new Map());
+  assert.deepEqual([d.deploySource, d.deploySplitKnown, d.deployDerived], ['events', true, null]);
+});
+
+test('site-derived and log-backfilled totals merge by max per day, never by sum', () => {
+  const m = bi.mergeDerived(
+    new Map([['2026-10-06', 1], ['2026-10-07', 10], ['2026-10-08', 4]]),
+    new Map([['2026-10-06', 22], ['2026-10-07', 3], ['2026-10-03', 0], ['2026-10-09', 26]])
+  );
+  assert.deepEqual([...m.entries()].sort(), [
+    ['2026-10-06', { total: 22, from: 'logs' }],
+    ['2026-10-07', { total: 10, from: 'sites' }],
+    ['2026-10-08', { total: 4, from: 'sites' }],
+    ['2026-10-09', { total: 26, from: 'logs' }]
+  ]);
+  // 两边都是 0：不出现（图上留空）
+  assert.equal(m.has('2026-10-03'), false);
+});
+
+test('a missing deploy_daily_backfill table is skipped silently; other errors become warnings', async () => {
+  const mk = (err) => async (sql) => {
+    if (sql.includes('MIN(created_at) AS t')) return [{ event_name: 'deploy_success', t: new Date('2026-10-09T05:25:00Z') }];
+    if (sql.includes('FROM deploy_daily_backfill')) throw err;
+    if (sql.includes('SELECT DISTINCT') && sql.includes('FROM websites WHERE created_at >= ? AND created_at < ?')) return [{ d: '2026-10-07', website_id: 'A' }];
+    return [];
+  };
+  let data = await bi.computeAdminBi({ query: mk(Object.assign(new Error('no table'), { code: 'ER_NO_SUCH_TABLE', errno: 1146 })), range: 7, now: NOW });
+  assert.deepEqual(data.warnings, []);
+  assert.equal(data.series.find((p) => p.date === '2026-10-07').deployDerived, 1);
+  data = await bi.computeAdminBi({ query: mk(Object.assign(new Error('denied'), { code: 'ER_TABLEACCESS_DENIED_ERROR' })), range: 7, now: NOW });
+  assert.deepEqual(data.warnings, ['logBackfill: ER_TABLEACCESS_DENIED_ERROR']);
 });
 
 test('derived deploys count each site once per day across sources', () => {
@@ -453,4 +506,30 @@ test('web deploys carry the browser visitor id so the homepage funnel can join t
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();
+});
+
+// ── migration 022 / seed ────────────────────────────────────
+test('migration 022 only creates deploy_daily_backfill and touches no existing table', () => {
+  const strip = (t) => t.replace(/--.*$/gm, '').replace(/COMMENT\s+'[^']*'/g, '');
+  const sql = strip(fs.readFileSync(path.join(__dirname, 'migrations/022_add_deploy_daily_backfill.sql'), 'utf8'));
+  const stmts = sql.split(';').map((x) => x.trim()).filter(Boolean);
+  assert.equal(stmts.length, 1);
+  assert.match(stmts[0], /^CREATE TABLE IF NOT EXISTS deploy_daily_backfill \(/);
+  assert.doesNotMatch(sql, /\b(ALTER|DROP|DELETE|UPDATE|INSERT|RENAME|TRUNCATE|REPLACE)\b/i);
+});
+
+test('the one-shot seed only inserts log_backfill rows with unknown fail / channel', () => {
+  const raw = fs.readFileSync(path.join(__dirname, 'migrations/seeds/022_seed_deploy_daily_backfill.sql'), 'utf8');
+  const sql = raw.replace(/--.*$/gm, '');
+  const stmts = sql.split(';').map((x) => x.trim()).filter(Boolean);
+  assert.equal(stmts.length, 1);
+  assert.match(stmts[0], /^INSERT IGNORE INTO deploy_daily_backfill\b/);
+  assert.doesNotMatch(sql, /\b(ALTER|DROP|DELETE|UPDATE|CREATE|TRUNCATE|REPLACE)\b/i);
+  const rows = [...sql.matchAll(/\('(\d{4}-\d{2}-\d{2})', 'log_backfill', (\d+), NULL, NULL, ([01]),/g)];
+  assert.equal(rows.length, 8);
+  assert.deepEqual(rows.map((r) => r[1]), ['2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09']);
+  // 只有日志开始那天和埋点开始那天是部分覆盖
+  assert.deepEqual(rows.filter((r) => r[3] === '1').map((r) => r[1]), ['2026-10-02', '2026-10-09']);
+  // 不含日志原文、令牌、邮箱
+  assert.doesNotMatch(raw, /Bearer|eyJ[A-Za-z0-9_-]{10,}|dmx_|@[a-z0-9-]+\.[a-z]{2,}/i);
 });

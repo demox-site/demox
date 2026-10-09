@@ -578,22 +578,58 @@ const adminBiLib = (() => {
   }
 
   /**
+   * 两种补算按天取较大值（同一批部署的两种估计，不能相加）：
+   * - sites：上面的站点记录补算；
+   * - logs：deploy_daily_backfill（source='log_backfill'，从 CLS 日志一次性算出的成功次数）。
+   * 返回 Map(date → { total, from })，from 标出取的是哪一种（相等时记 sites）。
+   */
+  function mergeDerived(siteByDay, logByDay) {
+    const out = new Map();
+    const dates = new Set([...(siteByDay ? siteByDay.keys() : []), ...(logByDay ? logByDay.keys() : [])]);
+    for (const d of dates) {
+      const a = (siteByDay && siteByDay.get(d)) || 0;
+      const b = (logByDay && logByDay.get(d)) || 0;
+      const total = Math.max(a, b);
+      if (total > 0) out.set(d, { total, from: b > a ? 'logs' : 'sites' });
+    }
+    return out;
+  }
+
+  /**
    * 部署按天：每一天标出数据来源和是否知道成功 / 失败。
    * - events：服务端埋点，success / fail 都是真实值（0 就是 0）；
-   * - derived：埋点前，按站点记录补算，只有 deployDerived 总数，success / fail 为 null（不按比例拆）；
-   * - mixed：埋点开始那天，开始前的部分是补算总数，开始后是埋点；
+   * - derived：埋点前，按站点记录 / 日志补算，只有 deployDerived 总数，success / fail 为 null（不按比例拆）；
+   * - mixed：埋点开始那天。只画一种：埋点总数 ≥ 补算时画埋点（success / fail），否则画补算总数。
+   *   取两者较大值，从不相加（相加会把同一批部署算两次，柱子也会叠成一根尖刺）；
    * - none：没有任何记录，三个值都是 null（图上留空，不画 0）。
    */
   function buildDeployDay(date, deployStartKey, liveByDay, derivedByDay) {
     const live = deployStartKey != null && date >= deployStartKey;
-    const derived = derivedByDay.get(date) || 0;
+    const dv = derivedByDay.get(date);
+    const derived = dv == null ? 0 : (typeof dv === 'number' ? dv : dv.total);
+    const derivedFrom = derived > 0 ? (typeof dv === 'number' ? 'sites' : dv.from) : null;
     const l = liveByDay.get(date) || { success: 0, fail: 0 };
+    const liveTotal = l.success + l.fail;
+    if (live && derived > 0) {
+      const asLive = liveTotal >= derived;
+      return {
+        deploySuccess: asLive ? l.success : null,
+        deployFail: asLive ? l.fail : null,
+        deployDerived: asLive ? null : derived,
+        deploySource: 'mixed',
+        deploySplitKnown: false,
+        deployDerivedFrom: derivedFrom,
+        deployLiveTotal: liveTotal
+      };
+    }
     return {
       deploySuccess: live ? l.success : null,
       deployFail: live ? l.fail : null,
-      deployDerived: derived > 0 ? derived : null,
-      deploySource: live ? (derived > 0 ? 'mixed' : 'events') : (derived > 0 ? 'derived' : 'none'),
-      deploySplitKnown: live && derived === 0
+      deployDerived: !live && derived > 0 ? derived : null,
+      deploySource: live ? 'events' : (derived > 0 ? 'derived' : 'none'),
+      deploySplitKnown: live,
+      deployDerivedFrom: !live && derived > 0 ? derivedFrom : null,
+      deployLiveTotal: live ? liveTotal : null
     };
   }
 
@@ -671,10 +707,25 @@ const adminBiLib = (() => {
          FROM deploy_upload_sessions WHERE status = 'COMPLETED' AND updated_at >= ? AND updated_at < ?`,
         [win.prevStartUtc, until]
       ), warnings);
-      derivedByDay = aggregateDerivedDeploys(derivedSites, derivedSessions);
+      // 日志回填（迁移 022 建表后才有；表不存在时安静跳过，不算数据缺失）
+      let logRows = null;
+      try {
+        logRows = await query(
+          `SELECT stat_date AS d, total
+           FROM deploy_daily_backfill
+           WHERE source = 'log_backfill' AND stat_date >= ? AND stat_date <= ?`,
+          [win.prevStartKey, statTime.statDateKey(tracking.deploys != null ? tracking.deploys : now)]
+        );
+      } catch (e) {
+        if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) warnings.push(`logBackfill: ${e && e.code ? e.code : 'ERROR'}`);
+      }
+      const logByDay = new Map();
+      for (const r of logRows || []) logByDay.set(statTime.toDateKey(r.d), num(r.total));
+      derivedByDay = mergeDerived(aggregateDerivedDeploys(derivedSites, derivedSessions), logByDay);
     }
     const deployDays = new Map(win.days.map((date) => [date, buildDeployDay(date, deployStartKey, deploys.byDay, derivedByDay)]));
-    const derivedCur = win.days.reduce((a, d) => a + (derivedByDay.get(d) || 0), 0);
+    // 本期画出来的补算总数（开始那天按「只画一种」的规则）
+    const derivedCur = win.days.reduce((a, d) => a + (deployDays.get(d).deployDerived || 0), 0);
     // 本期 / 上期是否完整被埋点覆盖（开始那天只覆盖半天，不算完整）
     const deploysCurComplete = deployStartKey != null && win.startKey > deployStartKey;
     const deploysPrevComplete = deployStartKey != null && win.prevStartKey > deployStartKey;
@@ -912,12 +963,12 @@ const adminBiLib = (() => {
       tracking: {
         deploys: deployStartKey,
         deploysAt: trackingRows && tracking.deploys != null ? new Date(tracking.deploys).toISOString() : null,
-        deploysDerivedFrom: ['websites.created_at', 'deploy_upload_sessions.updated_at'],
+        deploysDerivedFrom: ['websites.created_at', 'deploy_upload_sessions.updated_at', 'deploy_daily_backfill(log_backfill)'],
         landing: landingStartKey,
         deployClick: clickStartKey
       },
       notes: {
-        deploysSince: 'server-side deploy events start at tracking.deploysAt; earlier days are derived from site records (one per site per day, total only, lower bound)',
+        deploysSince: 'server-side deploy events start at tracking.deploysAt; earlier days are derived from site records and log backfill (max of the two per day, total only, lower bound)',
         uvApprox: 'distinct (masked IP, user agent) from site_access_logs',
         statDateTz: 'stat_date rows written before the UTC+8 switch are UTC dates'
       },
@@ -948,6 +999,7 @@ const adminBiLib = (() => {
     buildWindow,
     aggregateDeployEvents,
     aggregateDerivedDeploys,
+    mergeDerived,
     buildDeployDay,
     parseTrackingStarts,
     computeAdminBi,
