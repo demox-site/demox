@@ -5,8 +5,9 @@
  * demox-function-api（统一 SCF 路由）CI 发布 / 回滚。
  *
  * 规则（不要放宽）：
- * - 只更新代码，绝不调用 UpdateFunctionConfiguration：函数环境变量里有 JWT_SECRET、
- *   MYSQL_PASSWORD 等，CI 既不读值也不写。发布前后比对环境变量摘要，不一致就停。
+ * - 只更新代码，绝不调用 UpdateFunctionConfiguration / GetFunction：函数环境变量里有 JWT_SECRET、
+ *   MYSQL_PASSWORD 等，CI 既不读也不写。CAM 角色 demox-ci-deploy 对这两个接口是显式 Deny，
+ *   UpdateFunctionCode 也不带 Environment，所以环境变量由权限保证不变，不再靠读取比对。
  * - 先 PublishVersion 生成不可变版本，用 Invoke(Qualifier=N) 做健康检查，
  *   通过后才把别名 production 指向新版本；公网复查失败自动切回上一个版本。
  * - 只有 api.demox.site 的所有入口和定时触发器都已绑定到别名 production 时才允许发布
@@ -17,7 +18,10 @@
  *   node scripts/ci/scf-function-api.cjs plan                    只读：检查前置条件
  *   node scripts/ci/scf-function-api.cjs deploy --zip <zip> [--with-runtime]
  *   node scripts/ci/scf-function-api.cjs rollback --version <N>
- * 凭证：TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY（可选 TENCENTCLOUD_REGION）。
+ * 凭证（优先级从高到低）：
+ *   1. GitHub Actions OIDC：TENCENTCLOUD_ROLE_ARN + ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN（job 需 id-token: write
+ *      且在 environment function-api-production 里），换取 1 小时临时密钥，只留在本进程内存里；
+ *   2. 本地调试：TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY（可选 TENCENTCLOUD_SESSIONTOKEN）。
  */
 
 const crypto = require('crypto');
@@ -38,7 +42,9 @@ const CONFIG = Object.freeze({
   cosBucket: 'demox-analytics-raw-1307257815',
   cosRegion: 'ap-chengdu',
   cosPrefix: 'scf-deploy/ci/',
-  publicBaseUrl: 'https://api.demox.site'
+  publicBaseUrl: 'https://api.demox.site',
+  oidcProviderId: 'github-actions',
+  oidcAudience: 'sts.tencentcloudapi.com'
 });
 
 // 健康检查：都不带凭证，返回体里没有用户数据。
@@ -61,33 +67,54 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function credentialsFromEnv(env = process.env) {
   const secretId = env.TENCENTCLOUD_SECRETID || env.TENCENTCLOUD_SECRET_ID || '';
   const secretKey = env.TENCENTCLOUD_SECRETKEY || env.TENCENTCLOUD_SECRET_KEY || '';
-  if (!secretId || !secretKey) throw new Error('缺少 TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY');
-  return { secretId, secretKey, region: env.TENCENTCLOUD_REGION || CONFIG.region };
+  const token = env.TENCENTCLOUD_SESSIONTOKEN || env.TENCENTCLOUD_SESSION_TOKEN || '';
+  if (!secretId || !secretKey) throw new Error('缺少凭证：CI 里应设置 TENCENTCLOUD_ROLE_ARN 走 OIDC；本地调试才用 TENCENTCLOUD_SECRETID / TENCENTCLOUD_SECRETKEY');
+  return { secretId, secretKey, token, region: env.TENCENTCLOUD_REGION || CONFIG.region };
 }
 
-/** 环境变量摘要：只用来比对“有没有被改”，输出时只打印键数量和摘要前 12 位。 */
-function envDigest(fn) {
-  const vars = (fn && fn.Environment && fn.Environment.Variables) || [];
-  const lines = vars.map((item) => `${item.Key}=${item.Value}`).sort();
-  return {
-    keys: vars.map((item) => item.Key).sort(),
-    digest: crypto.createHash('sha256').update(lines.join('\n')).digest('hex')
-  };
+/** GitHub OIDC token → sts:AssumeRoleWithWebIdentity（该接口不签名）→ 临时密钥。不打印 token 和密钥。 */
+async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fetch) {
+  const roleArn = env.TENCENTCLOUD_ROLE_ARN;
+  if (!env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+    throw new Error('设置了 TENCENTCLOUD_ROLE_ARN，但拿不到 GitHub OIDC token（job 需要 permissions: id-token: write）');
+  }
+  const sep = env.ACTIONS_ID_TOKEN_REQUEST_URL.includes('?') ? '&' : '?';
+  const idRes = await fetchImpl(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}${sep}audience=${encodeURIComponent(CONFIG.oidcAudience)}`, {
+    headers: { Authorization: `bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }
+  });
+  if (!idRes.ok) throw new Error(`获取 GitHub OIDC token 失败：HTTP ${idRes.status}`);
+  const idToken = (await idRes.json()).value;
+  const res = await fetchImpl('https://sts.tencentcloudapi.com/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'SKIP',
+      'X-TC-Action': 'AssumeRoleWithWebIdentity',
+      'X-TC-Version': '2018-08-13',
+      'X-TC-Region': CONFIG.region,
+      'X-TC-Timestamp': String(Math.floor(Date.now() / 1000))
+    },
+    body: JSON.stringify({
+      ProviderId: CONFIG.oidcProviderId,
+      WebIdentityToken: idToken,
+      RoleArn: roleArn,
+      RoleSessionName: `gha-${env.GITHUB_RUN_ID || 'local'}`.slice(0, 64),
+      DurationSeconds: 3600
+    })
+  });
+  const body = (await res.json()).Response || {};
+  if (body.Error) throw new Error(`AssumeRoleWithWebIdentity 失败：${body.Error.Code} ${body.Error.Message}`);
+  const c = body.Credentials || {};
+  if (!c.TmpSecretId || !c.TmpSecretKey || !c.Token) throw new Error('AssumeRoleWithWebIdentity 没有返回临时密钥');
+  return { secretId: c.TmpSecretId, secretKey: c.TmpSecretKey, token: c.Token, region: env.TENCENTCLOUD_REGION || CONFIG.region, expiration: body.Expiration };
 }
 
-function shortDigest(d) {
-  return `${d.keys.length} keys / sha256:${d.digest.slice(0, 12)}`;
-}
-
-/** 只读前置检查。返回 { ok, errors, warnings, productionVersion }。 */
+/** 只读前置检查。fn = { Status, Triggers }（来自 ListVersionByFunction + ListTriggers，不用 GetFunction）。 */
 function checkPreconditions({ fn, domain, aliases }) {
   const errors = [];
   const warnings = [];
   if (!fn) errors.push(`${CONFIG.functionName} 不存在`);
-  if (fn && fn.Handler !== CONFIG.handler) errors.push(`Handler 是 ${fn.Handler}，预期 ${CONFIG.handler}`);
-  if (fn && fn.Runtime !== CONFIG.runtime) errors.push(`Runtime 是 ${fn.Runtime}，预期 ${CONFIG.runtime}`);
   if (fn && !['Active'].includes(fn.Status)) errors.push(`函数状态 ${fn.Status}，不是 Active`);
-  if (fn && fn.Type && fn.Type !== 'Event') errors.push(`函数类型 ${fn.Type}，本脚本只处理 Event 函数`);
 
   const production = (aliases || []).find((item) => item.Name === CONFIG.alias);
   if (!production) errors.push(`别名 ${CONFIG.alias} 不存在（需先做一次性迁移）`);
@@ -124,19 +151,27 @@ function parseInvokeStatus(result) {
 function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {} }) {
   const base = { FunctionName: CONFIG.functionName, Namespace: CONFIG.namespace };
 
+  async function versionStatus(name, qualifier = '$LATEST') {
+    const res = await scf.ListVersionByFunction({ FunctionName: name, Namespace: CONFIG.namespace, Order: 'DESC', OrderBy: 'AddTime', Limit: 50 });
+    const hit = (res.Versions || []).find((item) => String(item.Version) === String(qualifier));
+    return hit ? String(hit.Status || '') : null;
+  }
+
   async function readState() {
-    const [fn, domain, aliasList] = await Promise.all([
-      scf.GetFunction({ ...base }),
+    const [status, triggerList, domain, aliasList] = await Promise.all([
+      versionStatus(CONFIG.functionName),
+      scf.ListTriggers({ ...base, Limit: 100 }),
       scf.GetCustomDomain({ Domain: CONFIG.domain }),
       scf.ListAliases({ ...base })
     ]);
+    const fn = status === null ? null : { Status: status, Triggers: triggerList.Triggers || [] };
     return { fn, domain, aliases: aliasList.Aliases || [] };
   }
 
   async function plan() {
     const state = await readState();
     const result = checkPreconditions(state);
-    log(`函数 ${CONFIG.functionName}: ${state.fn.Runtime} ${state.fn.Handler} ${state.fn.Status}，环境变量 ${shortDigest(envDigest(state.fn))}`);
+    log(`函数 ${CONFIG.functionName}: $LATEST ${state.fn ? state.fn.Status : '不存在'}，触发器 ${state.fn ? state.fn.Triggers.length : 0} 个`);
     log(`别名 ${CONFIG.alias}: ${result.productionVersion || '（不存在）'}`);
     for (const w of result.warnings) log(`::warning::${w}`);
     for (const e of result.errors) log(`::error::${e}`);
@@ -145,9 +180,9 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
 
   async function waitActive(name, qualifier) {
     for (let i = 0; i < 100; i += 1) {
-      const fn = await scf.GetFunction({ FunctionName: name, Namespace: CONFIG.namespace, ...(qualifier ? { Qualifier: qualifier } : {}) });
-      if (fn.Status === 'Active') return fn;
-      if (/Failed$/.test(String(fn.Status))) throw new Error(`${name}${qualifier ? `:${qualifier}` : ''} 状态 ${fn.Status}`);
+      const status = await versionStatus(name, qualifier || '$LATEST');
+      if (status === 'Active') return status;
+      if (/Failed$/.test(String(status))) throw new Error(`${name}${qualifier ? `:${qualifier}` : ''} 状态 ${status}`);
       await wait(3000);
     }
     throw new Error(`等待 ${name} Active 超时`);
@@ -196,8 +231,13 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   async function pointAlias(name, version) {
     const aliases = (await scf.ListAliases({ ...base })).Aliases || [];
     const params = { ...base, Name: name, FunctionVersion: String(version), RoutingConfig: { AdditionalVersionWeights: [] } };
-    if (aliases.some((item) => item.Name === name)) await scf.UpdateAlias(params);
-    else await scf.CreateAlias(params);
+    // CI 角色没有 CreateAlias（scf:Create* 显式 Deny）；别名由一次性迁移创建。
+    if (!aliases.some((item) => item.Name === name)) {
+      if (name === CONFIG.alias) throw new Error(`别名 ${name} 不存在，CI 不能创建别名（见 docs/function-api-ci.md 一次性迁移）`);
+      log(`::warning::别名 ${name} 不存在，跳过`);
+      return;
+    }
+    await scf.UpdateAlias(params);
   }
 
   async function uploadZip(zipPath, key) {
@@ -216,27 +256,20 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     const pre = await plan();
     if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
     const previous = pre.productionVersion;
-    const envBefore = envDigest(pre.state.fn);
     const hash = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
     const key = `${CONFIG.cosPrefix}demox-unified-scf-${String(sha).slice(0, 12)}-${hash.slice(0, 12)}.zip`;
     log(`包 sha256:${hash.slice(0, 16)} → cos://${CONFIG.cosBucket}/${key}`);
     summary(`- 上一个 production 版本：**${previous}**（回滚：workflow_dispatch action=rollback version=${previous}）`);
 
     await uploadZip(zipPath, key);
-    // 只更新代码；不传 Environment / 其它配置。
-    await scf.UpdateFunctionCode({ ...base, ...cosCode(key) });
-    const latest = await waitActive(CONFIG.functionName);
-    const envAfter = envDigest(latest);
-    if (envAfter.digest !== envBefore.digest) {
-      throw new Error(`环境变量摘要变化（${shortDigest(envBefore)} → ${shortDigest(envAfter)}），停止，production 仍是 v${previous}`);
-    }
-    if (latest.Handler !== CONFIG.handler) throw new Error(`更新后 Handler 变成 ${latest.Handler}，停止`);
+    // 只更新代码（Handler 固定）；不传 Environment / 其它配置。环境变量不读不写，由 CAM 显式 Deny 保证。
+    await scf.UpdateFunctionCode({ ...base, Handler: CONFIG.handler, ...cosCode(key) });
+    await waitActive(CONFIG.functionName);
 
     const published = await scf.PublishVersion({ ...base, Description: `ci ${String(sha).slice(0, 12)} run ${runId}`.trim() });
     const version = String(published.FunctionVersion);
-    const snapshot = await waitActive(CONFIG.functionName, version);
-    if (envDigest(snapshot).digest !== envBefore.digest) throw new Error(`v${version} 环境变量摘要和发布前不一致，停止`);
-    log(`已发布 v${version}，环境变量未变（${shortDigest(envBefore)}）`);
+    await waitActive(CONFIG.functionName, version);
+    log(`已发布 v${version}`);
 
     const failures = await healthCheckVersion(version);
     if (failures.length) throw new Error(`v${version} 健康检查失败（${failures.join(', ')}），未切流量，production 仍是 v${previous}`);
@@ -257,15 +290,12 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   /** demox-user-nodejs：路由按它的 $LATEST 触发器地址调用，没有别名可切；先发快照版本作为回滚点。 */
   async function deployRuntime({ key }) {
     const rbase = { FunctionName: CONFIG.runtimeFunctionName, Namespace: CONFIG.namespace };
-    const before = await scf.GetFunction(rbase);
-    if (before.Handler !== CONFIG.runtimeHandler) throw new Error(`${CONFIG.runtimeFunctionName} Handler 是 ${before.Handler}，停止`);
-    const envBefore = envDigest(before);
+    await waitActive(CONFIG.runtimeFunctionName);
     const snap = await scf.PublishVersion({ ...rbase, Description: 'ci pre-deploy snapshot' });
     const snapshotVersion = String(snap.FunctionVersion);
     summary(`- ${CONFIG.runtimeFunctionName} 发布前快照：v${snapshotVersion}`);
-    await scf.UpdateFunctionCode({ ...rbase, ...cosCode(key) });
-    const after = await waitActive(CONFIG.runtimeFunctionName);
-    if (envDigest(after).digest !== envBefore.digest) throw new Error(`${CONFIG.runtimeFunctionName} 环境变量摘要变化，停止`);
+    await scf.UpdateFunctionCode({ ...rbase, Handler: CONFIG.runtimeHandler, ...cosCode(key) });
+    await waitActive(CONFIG.runtimeFunctionName);
     if (!(await publicCheck())) {
       await restoreRuntime(snapshotVersion);
       throw new Error(`${CONFIG.runtimeFunctionName} 更新后公网复查失败，已恢复快照 v${snapshotVersion} 的代码`);
@@ -282,7 +312,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
     const key = `${CONFIG.cosPrefix}rollback-${CONFIG.runtimeFunctionName}-v${version}.zip`;
     await uploadZip(tmp, key);
-    await scf.UpdateFunctionCode({ ...rbase, ...cosCode(key) });
+    await scf.UpdateFunctionCode({ ...rbase, Handler: CONFIG.runtimeHandler, ...cosCode(key) });
     await waitActive(CONFIG.runtimeFunctionName);
   }
 
@@ -302,17 +332,18 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckVersion, publicCheck, readState };
 }
 
-function createClients(env = process.env) {
-  const cred = credentialsFromEnv(env);
+async function createClients(env = process.env) {
+  const cred = env.TENCENTCLOUD_ROLE_ARN ? await credentialsFromOidc(env) : credentialsFromEnv(env);
+  if (cred.expiration) console.log(`已通过 OIDC 扮演 ${env.TENCENTCLOUD_ROLE_ARN}（临时密钥到期 ${cred.expiration}）`);
   const tencentcloud = require('tencentcloud-sdk-nodejs');
   const scf = new tencentcloud.scf.v20180416.Client({
-    credential: { secretId: cred.secretId, secretKey: cred.secretKey },
+    credential: { secretId: cred.secretId, secretKey: cred.secretKey, ...(cred.token ? { token: cred.token } : {}) },
     region: cred.region,
     profile: { httpProfile: { reqTimeout: 120 } }
   });
   let COS;
   try { COS = require('cos-nodejs-sdk-v5'); } catch { COS = require(path.join(__dirname, '../../scf-code/function-api/node_modules/cos-nodejs-sdk-v5')); }
-  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey });
+  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}) });
   return { scf, cos };
 }
 
@@ -325,7 +356,7 @@ async function cli(argv = process.argv.slice(2)) {
   const command = argv[0];
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
-  const deployer = createDeployer({ ...createClients(), summary });
+  const deployer = createDeployer({ ...(await createClients()), summary });
   if (command === 'plan') {
     const result = await deployer.plan();
     if (!result.ok) process.exitCode = 1;
@@ -352,4 +383,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, envDigest, checkPreconditions, parseInvokeStatus, createDeployer, credentialsFromEnv };
+module.exports = { CONFIG, HEALTH_CHECKS, checkPreconditions, parseInvokeStatus, createDeployer, credentialsFromEnv, credentialsFromOidc };

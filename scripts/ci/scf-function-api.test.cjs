@@ -4,34 +4,37 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, envDigest, parseInvokeStatus, createDeployer, CONFIG } = require('./scf-function-api.cjs');
+const { checkPreconditions, parseInvokeStatus, createDeployer, credentialsFromOidc, CONFIG } = require('./scf-function-api.cjs');
 
-const ENV = [{ Key: 'JWT_SECRET', Value: 'x'.repeat(40) }, { Key: 'MYSQL_HOST', Value: '10.0.0.1' }];
+// CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
+const FORBIDDEN = ['GetFunction', 'UpdateFunctionConfiguration', 'UpdateFunction', 'CreateAlias', 'CreateFunction', 'DeleteFunction', 'DeleteAlias', 'CreateTrigger', 'DeleteTrigger', 'UpdateTrigger'];
+
 const endpoints = (q) => ['/', '/*', '/auth/*'].map((p) => ({ Namespace: 'demox', FunctionName: CONFIG.functionName, Qualifier: q, PathMatch: p }));
 const timers = (q) => [{ Type: 'timer', TriggerName: 'analytics-rollup-5m', Enable: 1, Qualifier: q }];
 
-function fakeScf({ qualifier = 'production', prodVersion = '3', healthStatus = { '/health': 200, '/': 401, '/auth/login': 204 }, mutateEnvOnUpdate = false } = {}) {
+function fakeScf({ qualifier = 'production', prodVersion = '3', healthStatus = { '/health': 200, '/': 401, '/auth/login': 204 }, publishStatus = 'Active', aliasNames = ['production', 'develop'] } = {}) {
   const calls = [];
-  let env = ENV.map((x) => ({ ...x }));
   let versions = Number(prodVersion);
-  const aliases = [{ Name: 'production', FunctionVersion: prodVersion }];
-  const fn = () => ({ FunctionName: CONFIG.functionName, Handler: 'index.main', Runtime: 'Nodejs18.15', Status: 'Active', Type: 'Event',
-    Environment: { Variables: env }, Triggers: [...timers(qualifier), { Type: 'http', TriggerName: 'h', Qualifier: '$LATEST', Enable: 1 }] });
+  const aliases = aliasNames.map((Name) => ({ Name, FunctionVersion: prodVersion }));
   const api = new Proxy({}, { get: (_t, name) => async (params) => {
     calls.push({ name, params });
+    if (FORBIDDEN.includes(name)) { const e = new Error(`UnauthorizedOperation ${name}`); e.code = 'UnauthorizedOperation'; throw e; }
     switch (name) {
-      case 'GetFunction': return params.FunctionName === CONFIG.runtimeFunctionName
-        ? { Handler: 'runtime-nodejs.main', Status: 'Active', Environment: { Variables: [] } } : fn();
+      case 'ListVersionByFunction': {
+        const list = [{ Version: '$LATEST', Status: 'Active' }];
+        for (let v = versions; v >= 1; v -= 1) list.push({ Version: String(v), Status: v > Number(prodVersion) ? publishStatus : 'Active' });
+        return { Versions: list };
+      }
+      case 'ListTriggers': return { Triggers: [...timers(qualifier), { Type: 'http', TriggerName: 'h', Qualifier: '$LATEST', Enable: 1 }] };
       case 'GetCustomDomain': return { EndpointsConfig: endpoints(qualifier) };
       case 'ListAliases': return { Aliases: aliases };
-      case 'UpdateFunctionCode': if (mutateEnvOnUpdate) env = [...env, { Key: 'NEW', Value: '1' }]; return {};
+      case 'UpdateFunctionCode': return {};
       case 'PublishVersion': versions += 1; return { FunctionVersion: String(versions) };
       case 'Invoke': {
         const ev = JSON.parse(params.ClientContext);
         return { Result: { InvokeResult: 0, RetMsg: JSON.stringify({ statusCode: healthStatus[ev.path] }) } };
       }
       case 'UpdateAlias': { const a = aliases.find((x) => x.Name === params.Name); a.FunctionVersion = params.FunctionVersion; return {}; }
-      case 'CreateAlias': aliases.push({ Name: params.Name, FunctionVersion: params.FunctionVersion }); return {};
       default: return {};
     }
   } });
@@ -57,10 +60,26 @@ test('preconditions pass when domain and timers use the alias', () => {
   assert.equal(r.productionVersion, '3');
 });
 
-test('envDigest never exposes values', () => {
-  const d = envDigest({ Environment: { Variables: ENV } });
-  assert.deepEqual(d.keys, ['JWT_SECRET', 'MYSQL_HOST']);
-  assert.ok(!JSON.stringify(d).includes('xxxx'));
+test('OIDC: exchanges the GitHub token via unsigned AssumeRoleWithWebIdentity', async () => {
+  const seen = [];
+  const fetchImpl = async (url, opts = {}) => {
+    seen.push({ url, opts });
+    if (url.startsWith('https://gh.example/')) return { ok: true, json: async () => ({ value: 'id.token.jwt' }) };
+    return { ok: true, json: async () => ({ Response: { Credentials: { TmpSecretId: 'AKIDtmp', TmpSecretKey: 'k', Token: 't' }, Expiration: '2026-10-09T10:00:00Z' } }) };
+  };
+  const env = { TENCENTCLOUD_ROLE_ARN: 'qcs::cam::uin/1:roleName/demox-ci-deploy', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://gh.example/token?x=1', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'req', GITHUB_RUN_ID: '42' };
+  const c = await credentialsFromOidc(env, fetchImpl);
+  assert.deepEqual([c.secretId, c.secretKey, c.token], ['AKIDtmp', 'k', 't']);
+  assert.ok(seen[0].url.endsWith('&audience=sts.tencentcloudapi.com'));
+  assert.equal(seen[1].opts.headers.Authorization, 'SKIP');
+  assert.equal(seen[1].opts.headers['X-TC-Action'], 'AssumeRoleWithWebIdentity');
+  const body = JSON.parse(seen[1].opts.body);
+  assert.equal(body.ProviderId, 'github-actions');
+  assert.equal(body.RoleArn, env.TENCENTCLOUD_ROLE_ARN);
+  const denied = async (url) => (url.startsWith('https://gh.example/') ? { ok: true, json: async () => ({ value: 'x' }) }
+    : { ok: true, json: async () => ({ Response: { Error: { Code: 'UnauthorizedOperation', Message: 'no' } } }) });
+  await assert.rejects(credentialsFromOidc(env, denied), /UnauthorizedOperation/);
+  await assert.rejects(credentialsFromOidc({ TENCENTCLOUD_ROLE_ARN: 'x' }, denied), /id-token: write/);
 });
 
 test('parseInvokeStatus reads statusCode only', () => {
@@ -75,7 +94,7 @@ test('deploy: code only, publish, health check, then switch alias', async () => 
   const r = await d.deploy({ zipPath: zip(), sha: 'abc' });
   assert.deepEqual(r, { previous: '3', version: '4' });
   const names = s.calls.map((c) => c.name);
-  assert.ok(!names.includes('UpdateFunctionConfiguration'));
+  assert.deepEqual(names.filter((n) => FORBIDDEN.includes(n)), [], 'never calls denied APIs (GetFunction, UpdateFunctionConfiguration, Create*)');
   const update = s.calls.find((c) => c.name === 'UpdateFunctionCode');
   assert.equal(update.params.Environment, undefined);
   assert.ok(names.indexOf('PublishVersion') < names.indexOf('Invoke'));
@@ -98,11 +117,30 @@ test('deploy does not switch when health check fails', async () => {
   assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
 });
 
-test('deploy stops if env vars changed', async () => {
-  const s = fakeScf({ mutateEnvOnUpdate: true });
+test('deploy stops if the published version fails to become Active', async () => {
+  const s = fakeScf({ publishStatus: 'PublishFailed' });
   const d = createDeployer({ scf: s.api, cos: fakeCos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
-  await assert.rejects(d.deploy({ zipPath: zip() }), /环境变量摘要变化/);
-  assert.ok(!s.calls.some((c) => c.name === 'PublishVersion'));
+  await assert.rejects(d.deploy({ zipPath: zip() }), /PublishFailed/);
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+  assert.ok(!s.calls.some((c) => c.name === 'UpdateAlias'));
+});
+
+test('deploy never creates the production alias (CI role has no Create*)', async () => {
+  const s = fakeScf({ aliasNames: [] });
+  const d = createDeployer({ scf: s.api, cos: fakeCos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(d.deploy({ zipPath: zip() }), /前置条件不满足/);
+  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'CreateAlias'].includes(c.name)));
+});
+
+test('deployRuntime and plan avoid GetFunction', async () => {
+  const s = fakeScf();
+  const d = createDeployer({ scf: s.api, cos: fakeCos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.plan();
+  await d.deployRuntime({ key: 'scf-deploy/ci/x.zip' });
+  assert.ok(!s.calls.some((c) => FORBIDDEN.includes(c.name)));
+  const upd = s.calls.find((c) => c.name === 'UpdateFunctionCode');
+  assert.equal(upd.params.Handler, 'runtime-nodejs.main');
+  assert.equal(upd.params.Environment, undefined);
 });
 
 test('deploy rolls the alias back when the public check fails', async () => {
