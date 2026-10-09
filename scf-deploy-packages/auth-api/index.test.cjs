@@ -674,6 +674,91 @@ test('oauth token refresh rotates the refresh token', async () => {
   assert.notEqual(refreshed.refresh_token, first.refresh_token);
 });
 
+
+// ── OAUTH_REFRESH_NOT_BEFORE 截止开关 ─────────────────────────
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+function seededRefreshStore(rows) {
+  const log = { deletes: 0, inserts: 0 };
+  const map = new Map(Object.entries(rows));
+  const fn = async (sql, params = []) => {
+    if (sql.includes('FROM users WHERE id = ?')) return [{ id: params[0], email: 'user@example.com' }];
+    if (sql.includes('INSERT INTO oauth_refresh_tokens')) { log.inserts++; return { affectedRows: 1 }; }
+    if (sql.includes('DELETE FROM oauth_refresh_tokens')) { log.deletes++; map.delete(params[0]); return { affectedRows: 1 }; }
+    if (sql.includes('FROM oauth_refresh_tokens')) {
+      const row = map.get(params[0]);
+      return row && row.client_id === params[1] ? [row] : [];
+    }
+    if (sql.includes('INSERT INTO oauth_clients')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  return { fn, log, map };
+}
+function refreshRow(issuedAtMs) {
+  return { user_id: 'user-1', client_id: 'demox-mcp-client', expires_at: new Date(issuedAtMs + REFRESH_TTL_MS), scopes: ['website:list'] };
+}
+function refreshCall(token) {
+  return main({ path: '/oauth/token', httpMethod: 'POST', body: { grant_type: 'refresh_token', refresh_token: token, client_id: 'demox-mcp-client' } });
+}
+async function withNotBefore(value, fn) {
+  const prev = process.env.OAUTH_REFRESH_NOT_BEFORE;
+  if (value === undefined) delete process.env.OAUTH_REFRESH_NOT_BEFORE; else process.env.OAUTH_REFRESH_NOT_BEFORE = value;
+  try { return await fn(); } finally {
+    if (prev === undefined) delete process.env.OAUTH_REFRESH_NOT_BEFORE; else process.env.OAUTH_REFRESH_NOT_BEFORE = prev;
+  }
+}
+
+test('refresh cutoff: unset or empty variable keeps old behaviour', async () => {
+  for (const value of [undefined, '', '   ']) {
+    const old = Date.now() - 20 * 24 * 3600 * 1000;
+    const store = seededRefreshStore({ tokOld: refreshRow(old) });
+    queryImpl = store.fn;
+    const res = await withNotBefore(value, () => refreshCall('tokOld'));
+    assert.equal(res.statusCode, 200, res.body);
+    assert.ok(JSON.parse(res.body).refresh_token);
+    assert.equal(store.log.deletes, 1);
+    assert.equal(store.log.inserts, 1);
+  }
+});
+
+test('refresh cutoff: token issued before cutoff is rejected without deleting the row', async () => {
+  const cutoff = Date.now() - 60 * 1000;
+  const store = seededRefreshStore({ tokOld: refreshRow(cutoff - 5 * 60 * 1000) });
+  queryImpl = store.fn;
+  const res = await withNotBefore(new Date(cutoff).toISOString(), () => refreshCall('tokOld'));
+  assert.equal(res.statusCode, 400);
+  const body = JSON.parse(res.body);
+  assert.equal(body.error, 'invalid_grant');
+  assert.equal(body.access_token, undefined);
+  assert.equal(store.log.deletes, 0);
+  assert.equal(store.log.inserts, 0);
+  assert.ok(store.map.has('tokOld'));
+});
+
+test('refresh cutoff: token issued at/after cutoff still refreshes; future cutoff blocks everything older', async () => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  const store = seededRefreshStore({ tokNew: refreshRow(cutoff + 1000), tokEdge: refreshRow(cutoff) });
+  queryImpl = store.fn;
+  const sgt = new Date(cutoff + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00');
+  const ok1 = await withNotBefore(sgt, () => refreshCall('tokNew'));
+  assert.equal(ok1.statusCode, 200, ok1.body);
+  const ok2 = await withNotBefore(sgt, () => refreshCall('tokEdge'));
+  assert.equal(ok2.statusCode, 200, ok2.body);
+
+  const store2 = seededRefreshStore({ tokRecent: refreshRow(Date.now() - 1000) });
+  queryImpl = store2.fn;
+  const future = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const res = await withNotBefore(future, () => refreshCall('tokRecent'));
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error, 'invalid_grant');
+});
+
+test('refresh cutoff: unparsable value is ignored (behaves as unset)', async () => {
+  const store = seededRefreshStore({ tokOld: refreshRow(Date.now() - 1000) });
+  queryImpl = store.fn;
+  const res = await withNotBefore('not-a-date', () => refreshCall('tokOld'));
+  assert.equal(res.statusCode, 200, res.body);
+});
+
 const bcrypt = require('bcryptjs');
 
 test('current user reports hasPassword from stored hash', async () => {

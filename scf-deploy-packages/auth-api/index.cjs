@@ -1936,6 +1936,32 @@ const OAUTH_ACCESS_TTL_SECONDS = 3600;
 const OAUTH_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const OAUTH_CODE_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * 凭证截止时间（2026-10-09 安全事件）：环境变量 OAUTH_REFRESH_NOT_BEFORE（ISO 8601，带时区）。
+ * 签发时间早于它的 refresh token 一律拒绝（invalid_grant），只拒绝、不删行，
+ * 去掉变量即可完全恢复。变量未设置或为空时行为不变。
+ * 每次请求读取 process.env，便于测试；线上改环境变量后仍需重启 worker 才能生效。
+ */
+let warnedBadNotBefore = false;
+function oauthRefreshNotBeforeMs() {
+  const raw = String(process.env.OAUTH_REFRESH_NOT_BEFORE || '').trim();
+  if (!raw) return 0;
+  const t = Date.parse(raw);
+  if (!Number.isFinite(t)) {
+    if (!warnedBadNotBefore) {
+      warnedBadNotBefore = true;
+      console.warn('OAUTH_REFRESH_NOT_BEFORE 无法解析，已忽略');
+    }
+    return 0;
+  }
+  return t;
+}
+
+// 表里没有 created_at：签发时间 = expires_at - 刷新令牌有效期（秒级精度）
+function refreshTokenIssuedAtMs(expiresAt) {
+  return new Date(expiresAt).getTime() - OAUTH_REFRESH_TTL_SECONDS * 1000;
+}
+
 function oauthError(status, error, description) {
   return {
     statusCode: status,
@@ -2158,6 +2184,12 @@ async function handleOAuthToken(event) {
     if (new Date(rows[0].expires_at) < new Date()) {
       await query('DELETE FROM oauth_refresh_tokens WHERE token = ?', [refreshToken]);
       return oauthError(400, 'invalid_grant', '刷新令牌已过期');
+    }
+    const notBefore = oauthRefreshNotBeforeMs();
+    if (notBefore && !(refreshTokenIssuedAtMs(rows[0].expires_at) >= notBefore)) {
+      // 不打印 token 和 user_id；不删行，便于回滚
+      console.warn('oauth refresh rejected: issued before cutoff');
+      return oauthError(400, 'invalid_grant', '登录已失效，请重新登录');
     }
     await query('DELETE FROM oauth_refresh_tokens WHERE token = ?', [refreshToken]);
     return issueOAuthTokens({
