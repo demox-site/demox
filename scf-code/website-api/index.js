@@ -158,6 +158,7 @@ function getGeoip() {
 const dnsPromises = require('dns').promises;
 const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
+const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
@@ -1604,6 +1605,22 @@ async function purgeSiteCacheSafely(args) {
  * SCF 云函数入口
  */
 exports.main = async (event, context) => {
+  const auditContext = { admin: null };
+  let response;
+  let thrown = null;
+  try {
+    response = await adminAuditStorage.run(auditContext, () => dispatchWebsiteRequest(event, context));
+  } catch (error) {
+    thrown = error;
+  }
+  if (auditContext.admin) {
+    await recordAdminAudit(event, auditContext.admin, thrown ? { statusCode: 500 } : response);
+  }
+  if (thrown) throw thrown;
+  return response;
+};
+
+async function dispatchWebsiteRequest(event, context) {
   try {
     // 解析 body
     let body = event.body;
@@ -1724,6 +1741,7 @@ exports.main = async (event, context) => {
       track_product_event: handleTrackProductEvent,
       get_product_funnel: handleGetProductFunnel,
       get_admin_bi: handleGetAdminBi,
+      list_admin_audit: handleListAdminAudit,
       // 多云存储桶注册制
       list_buckets: handleListBuckets,
       register_bucket: handleRegisterBucket,
@@ -1773,6 +1791,8 @@ exports.main = async (event, context) => {
       return await handleGetProductFunnel(event);
     } else if (pathUrl.includes('/get-admin-bi')) {
       return await handleGetAdminBi(event);
+    } else if (pathUrl.includes('/list-admin-audit')) {
+      return await handleListAdminAudit(event);
     } else if (pathUrl.includes('/list-project-custom-domains')) {
       return await handleListProjectCustomDomains(event);
     } else if (pathUrl.includes('/add-project-custom-domain')) {
@@ -1870,7 +1890,7 @@ exports.main = async (event, context) => {
       body: JSON.stringify({ error: 'Internal Server Error', message: error.message })
     };
   }
-};
+}
 
 /**
  * 从数据库获取用户角色配置
@@ -2327,6 +2347,7 @@ async function handleListAllWebsites(event) {
       body: JSON.stringify({ error: '仅管理员可访问' })
     };
   }
+  markAdminAction(event, userId, 'admin_only');
 
   await ensureWatermarkColumn();
   const projectId = (event.body || event).projectId;
@@ -2929,6 +2950,7 @@ async function handleUpdateWebsiteVisibility(event) {
       if (!(await checkAdmin(userId))) {
         return ok({ success: false, message: '仅管理员可禁用或恢复被禁用的站点' });
       }
+      markAdminAction(event, userId, 'admin_only');
     } else if (!(await canUserManageSite(userId, site))) {
       return ok({ success: false, message: '站点不存在或无权限' });
     }
@@ -3161,11 +3183,167 @@ async function requireAdmin(event) {
   if (!ok) {
     return { err: { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '仅管理员可访问' }) } };
   }
+  markAdminAction(event, userId, 'admin_only');
   return { userId };
 }
 
 function ok(obj) {
   return { statusCode: 200, headers: getCORSHeaders(), body: JSON.stringify(obj) };
+}
+
+// ── 管理员操作审计（v13，迁移 021_add_admin_audit_log.sql）─────────────────────
+// 每个请求在 AsyncLocalStorage 里带一个审计上下文。只要这次请求用到了管理员身份
+// （仅管理员接口，或者用管理员身份操作别人的站点/项目），请求结束后就写一行
+// admin_audit_log：操作人 uid、时间、action、目标、凭证类型（jwt/pat/oauth）、结果。
+const adminAuditStorage = new AsyncLocalStorage();
+const ADMIN_AUDIT_TARGET_KEYS = [
+  'uid', 'targetUserId', 'userId', 'websiteId', 'website_id', 'docId', 'id', 'projectId',
+  'reportId', 'bucketId', 'role', 'roles', 'status', 'visibility', 'name', 'proDays', 'proLifetime',
+  'archived', 'includeAll', 'range', 'days', 'subdomain', 'operatorUid', 'beforeId'
+];
+const ADMIN_AUDIT_READ_ACTION = /^(?:list|get|check|resolve|search|bucket_stats)/;
+
+function markAdminAction(_event, userId, via) {
+  const store = adminAuditStorage.getStore();
+  if (!store || !userId) return;
+  if (!store.admin) store.admin = { uid: String(userId), via: new Set() };
+  store.admin.via.add(via || 'admin_only');
+}
+
+function adminAuthMethod(payload) {
+  if (!payload || typeof payload !== 'object') return 'jwt';
+  if (payload.jti || payload.type === 'pat') return 'pat';
+  if (Array.isArray(payload.scopes) || typeof payload.scope === 'string') return 'oauth';
+  return 'jwt';
+}
+
+function adminAuditActionName(event) {
+  const body = event && event.body && typeof event.body === 'object' ? event.body : {};
+  if (body.action) return String(body.action).slice(0, 64);
+  const pathUrl = String((event && event.path) || '').split('?')[0];
+  const last = pathUrl.split('/').filter(Boolean).pop() || 'unknown';
+  return last.replace(/-/g, '_').slice(0, 64);
+}
+
+function adminAuditTarget(event) {
+  const body = event && event.body && typeof event.body === 'object' ? event.body : {};
+  const parts = [];
+  for (const key of ADMIN_AUDIT_TARGET_KEYS) {
+    const value = body[key];
+    if (value === undefined || value === null || value === '') continue;
+    let text = Array.isArray(value) ? value.slice(0, 10).join(',') : (typeof value === 'object' ? '[object]' : String(value));
+    text = text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]').slice(0, 64);
+    parts.push(`${key}=${text}`);
+  }
+  if (Array.isArray(body.userIds)) parts.push(`userIds=${body.userIds.length}`);
+  return parts.join(';').slice(0, 255);
+}
+
+function adminAuditOutcome(response) {
+  const statusCode = Number(response && response.statusCode) || 0;
+  let success = statusCode >= 200 && statusCode < 300;
+  if (success && response && typeof response.body === 'string' && response.body.length < 2_000_000) {
+    try {
+      const parsed = JSON.parse(response.body);
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.success === false) success = false;
+        if (Number(parsed.code) >= 400) success = false;
+      }
+    } catch {
+      // 非 JSON 响应按状态码判断
+    }
+  }
+  return { statusCode, success };
+}
+
+let adminAuditTableReady = null;
+function ensureAdminAuditTable() {
+  if (!adminAuditTableReady) {
+    adminAuditTableReady = query(`CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      operator_uid VARCHAR(64) NOT NULL,
+      auth_method VARCHAR(8) NOT NULL,
+      action VARCHAR(64) NOT NULL,
+      kind VARCHAR(8) NOT NULL DEFAULT 'write',
+      target VARCHAR(255) NOT NULL DEFAULT '',
+      via VARCHAR(64) NOT NULL DEFAULT 'admin_only',
+      status_code SMALLINT NOT NULL DEFAULT 0,
+      success TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      INDEX idx_admin_audit_time (created_at),
+      INDEX idx_admin_audit_operator_time (operator_uid, created_at),
+      INDEX idx_admin_audit_action_time (action, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员操作审计'`).catch((error) => {
+      adminAuditTableReady = null;
+      throw error;
+    });
+  }
+  return adminAuditTableReady;
+}
+
+async function recordAdminAudit(event, admin, response) {
+  try {
+    const action = adminAuditActionName(event);
+    const kind = ADMIN_AUDIT_READ_ACTION.test(action) ? 'read' : 'write';
+    const { statusCode, success } = adminAuditOutcome(response);
+    const via = [...admin.via].sort().join(',').slice(0, 64);
+    await ensureAdminAuditTable();
+    await query(
+      `INSERT INTO admin_audit_log (operator_uid, auth_method, action, kind, target, via, status_code, success)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [admin.uid, adminAuthMethod(authenticate(event)), action, kind, adminAuditTarget(event), via, statusCode, success ? 1 : 0]
+    );
+  } catch (error) {
+    // 审计写失败不回滚已经完成的操作，但要在日志里留痕（不含目标和凭证）。
+    console.error('写管理员审计失败:', error && (error.code || error.message));
+  }
+}
+
+/**
+ * 管理员：只读查看管理员操作审计。
+ * body: { limit?: 1-200（默认 50）, beforeId?: 翻页游标, operatorUid?, auditAction?, authMethod? }
+ */
+async function handleListAdminAudit(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const body = event.body || event;
+  const limit = Math.min(200, Math.max(1, Number(body.limit) || 50));
+  const where = [];
+  const params = [];
+  const beforeId = Number(body.beforeId);
+  if (Number.isSafeInteger(beforeId) && beforeId > 0) { where.push('id < ?'); params.push(beforeId); }
+  if (body.operatorUid) { where.push('operator_uid = ?'); params.push(String(body.operatorUid).slice(0, 64)); }
+  if (body.auditAction) { where.push('action = ?'); params.push(String(body.auditAction).slice(0, 64)); }
+  if (['jwt', 'pat', 'oauth'].includes(body.authMethod)) { where.push('auth_method = ?'); params.push(body.authMethod); }
+  params.push(limit);
+  try {
+    const rows = await query(
+      `SELECT id, operator_uid, auth_method, action, kind, target, via, status_code, success, created_at
+       FROM admin_audit_log ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY id DESC
+       LIMIT ?`,
+      params
+    );
+    const items = rows.map((row) => ({
+      id: Number(row.id),
+      operatorUid: String(row.operator_uid),
+      authMethod: row.auth_method,
+      action: row.action,
+      kind: row.kind,
+      target: row.target || '',
+      via: row.via || '',
+      statusCode: Number(row.status_code) || 0,
+      success: Number(row.success) === 1,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+    }));
+    return ok({ success: true, items, nextBeforeId: items.length === limit ? items[items.length - 1].id : null });
+  } catch (error) {
+    if (error && (error.code === 'ER_NO_SUCH_TABLE' || /doesn't exist/.test(String(error.message)))) {
+      return ok({ success: true, items: [], nextBeforeId: null, tableMissing: true });
+    }
+    console.error('读取管理员审计失败:', error && (error.code || error.message));
+    return ok({ success: false, message: '读取管理员审计失败' });
+  }
 }
 
 function normalizeProjectKey(input) {
@@ -3662,20 +3840,27 @@ async function getProjectRoleForUser(userId, projectId) {
 
 async function canUserReadProject(userId, projectId) {
   if (!userId || !projectId) return false;
-  if (await checkAdmin(userId)) return true;
-  return !!(await getProjectWithUserRole(userId, projectId));
+  const member = await getProjectWithUserRole(userId, projectId);
+  if (member) return true;
+  if (await checkAdmin(userId)) {
+    markAdminAction(null, userId, 'override');
+    return true;
+  }
+  return false;
 }
 
 async function canUserWriteProject(userId, projectId) {
   if (!userId || !projectId) return false;
   const pid = await resolveProjectId(projectId);
   if (!pid) return false;
+  const project = await getProjectWithUserRole(userId, pid, { includeArchived: false });
+  if (project && PROJECT_WRITE_ROLES.includes(project.project_role)) return true;
   if (await checkAdmin(userId)) {
     const rows = await query('SELECT id FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [pid]);
+    if (rows.length > 0) markAdminAction(null, userId, 'override');
     return rows.length > 0;
   }
-  const project = await getProjectWithUserRole(userId, pid, { includeArchived: false });
-  return !!(project && PROJECT_WRITE_ROLES.includes(project.project_role));
+  return false;
 }
 
 async function getWebsiteByIdentity({ docId, websiteId }) {
@@ -3698,7 +3883,10 @@ async function getWebsiteByIdentity({ docId, websiteId }) {
 async function canUserManageSite(userId, site) {
   if (!userId || !site) return false;
   if (String(site.user_id || '') === String(userId)) return true;
-  if (await checkAdmin(userId)) return true;
+  if (await checkAdmin(userId)) {
+    markAdminAction(null, userId, 'override');
+    return true;
+  }
   if (!site.project_id) return false;
   return await canUserWriteProject(userId, site.project_id);
 }
@@ -3706,7 +3894,10 @@ async function canUserManageSite(userId, site) {
 async function canUserReadSite(userId, site) {
   if (!userId || !site) return false;
   if (String(site.user_id || '') === String(userId)) return true;
-  if (await checkAdmin(userId)) return true;
+  if (await checkAdmin(userId)) {
+    markAdminAction(null, userId, 'override');
+    return true;
+  }
   if (!site.project_id) return false;
   return await canUserReadProject(userId, site.project_id);
 }
@@ -3800,6 +3991,7 @@ async function handleListProjects(event) {
   if (includeAll && !isAdmin) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '仅管理员可访问' }) };
   }
+  if (includeAll) markAdminAction(event, userId, 'admin_only');
 
   try {
     if (!includeAll) {
@@ -3939,6 +4131,7 @@ async function handleUpdateProject(event) {
     if (project && !PROJECT_WRITE_ROLES.includes(project.project_role) && !isPlatformAdmin) {
       return ok({ success: false, message: '只有项目 owner/admin 可以更新项目' });
     }
+    if (!project || !PROJECT_WRITE_ROLES.includes(project.project_role)) markAdminAction(event, userId, 'override');
     params.push(id);
     const res = await query(`UPDATE projects SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ?`, params);
     if (!res.affectedRows) return ok({ success: false, message: '项目不存在或无权限' });
@@ -3966,6 +4159,7 @@ async function handleArchiveProject(event) {
     if (project && project.project_role !== PROJECT_ROLE_OWNER && !isPlatformAdmin) {
       return ok({ success: false, message: '只有项目 owner 可以归档项目' });
     }
+    if (!project || project.project_role !== PROJECT_ROLE_OWNER) markAdminAction(event, userId, 'override');
     if (rows[0].slug === 'default' && archived) return ok({ success: false, message: 'default 项目不能归档' });
     await query('UPDATE projects SET archived = ?, updated_at = NOW() WHERE id = ?', [archived, id]);
     return ok({ success: true, archived: !!archived, message: archived ? '项目已归档' : '项目已恢复' });
@@ -3995,6 +4189,7 @@ async function handleDeleteProject(event) {
       if (!isPlatformAdmin && String(project.user_id) !== String(userId)) {
         return { success: false, code: 'PROJECT_DELETE_FORBIDDEN', message: '只有项目 owner 可以删除项目' };
       }
+      if (String(project.user_id) !== String(userId)) markAdminAction(event, userId, 'override');
       if (project.slug === 'default') {
         return { success: false, code: 'DEFAULT_PROJECT_DELETE_FORBIDDEN', message: 'default 项目不能删除' };
       }
@@ -4061,7 +4256,10 @@ async function handleSetWebsiteProject(event) {
     let project = await getProjectWithUserRole(userId, projectId, { includeArchived: false });
     if (!project && isPlatformAdmin) {
       const rows = await query('SELECT * FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [projectId]);
-      if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+      if (rows[0]) {
+        project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+        markAdminAction(event, userId, 'override');
+      }
     }
     if (!project) return ok({ success: false, message: '目标项目不存在或已归档' });
     if (!isPlatformAdmin && !PROJECT_WRITE_ROLES.includes(project.project_role)) {
@@ -4086,7 +4284,12 @@ async function requireProjectMembershipManager(userId, projectId) {
   let project = await getProjectWithUserRole(userId, projectId);
   if (!project && isPlatformAdmin) {
     const rows = await query('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
-    if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+    if (rows[0]) {
+      project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+      markAdminAction(null, userId, 'override');
+    }
+  } else if (project && isPlatformAdmin && !PROJECT_WRITE_ROLES.includes(project.project_role)) {
+    markAdminAction(null, userId, 'override');
   }
   if (!project) {
     return { error: '项目不存在或无权限' };
@@ -4500,6 +4703,7 @@ async function handleListProjectMembers(event) {
     const project = await getProjectWithUserRole(userId, projectId);
     const isPlatformAdmin = await checkAdmin(userId);
     if (!project && !isPlatformAdmin) return ok({ success: false, message: '项目不存在或无权限' });
+    if (!project) markAdminAction(event, userId, 'override');
     if (project) await ensureProjectOwnerMembershipBestEffort(project.id, project.user_id);
 
     const members = await query(
@@ -6241,6 +6445,7 @@ async function handleGetProductFunnel(event) {
   if (!userId) return ok({ code: 401, data: null, message: '未登录' });
   const isAdmin = await checkAdmin(userId);
   if (!isAdmin) return ok({ code: 403, data: null, message: '无权限' });
+  markAdminAction(event, userId, 'admin_only');
 
   const days = Math.min(90, Math.max(1, Number(event.body?.days) || 14));
   await ensureProductEventsTable();
@@ -6606,6 +6811,7 @@ async function handleCheckSiteAccess(event) {
 
     const isAdmin = await checkAdmin(user.userId);
     if (isAdmin) {
+      markAdminAction(event, user.userId, 'override');
       return ok({ success: true, allowed: true, visibility, role: 'platform_admin' });
     }
 
@@ -7740,7 +7946,10 @@ async function assignWebsiteProject(userId, websiteId, projectId) {
     const isPlatformAdmin = await checkAdmin(userId);
     if (!project && isPlatformAdmin) {
       const rows = await query('SELECT * FROM projects WHERE id = ? AND archived = 0 LIMIT 1', [pid]);
-      if (rows[0]) project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+      if (rows[0]) {
+        project = { ...rows[0], project_role: PROJECT_ROLE_OWNER };
+        markAdminAction(null, userId, 'override');
+      }
     }
     if (!project && !isPlatformAdmin) {
       throw new Error('目标项目不存在、已归档或无权限');
@@ -9224,3 +9433,4 @@ exports.classifyDeploySource = classifyDeploySource;
 exports._adminBiForTest = adminBi;
 exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
+exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome };

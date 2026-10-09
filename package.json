@@ -26,6 +26,7 @@
     "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
     "test:changelog": "node --test src/content/changelog.test.mjs",
     "test:admin-bi": "node --test scripts/check-bi-palette.test.mjs && node scf-code/website-api/admin-bi.test.cjs && node scf-code/website-api/index.test.cjs && node scf-code/mcp-api/index.test.cjs",
+    "test:admin-audit": "node --test scf-code/website-api/admin-audit.test.cjs",
     "test:jwt": "node --test scf-code/website-api/shared/jwt.test.cjs scf-code/mcp-api/shared/jwt.test.cjs scf-deploy-packages/auth-api/shared/jwt.test.cjs"
   },
   "dependencies": {
