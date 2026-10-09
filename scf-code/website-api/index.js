@@ -3346,6 +3346,8 @@ async function handleListAdminAudit(event) {
   }
 }
 
+exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome };
+
 function normalizeProjectKey(input) {
   const value = String(input || '').trim().toUpperCase();
   if (!value || /^\d+$/.test(value)) return '';
@@ -9433,4 +9435,3 @@ exports.classifyDeploySource = classifyDeploySource;
 exports._adminBiForTest = adminBi;
 exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
-exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome };
