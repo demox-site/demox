@@ -1348,7 +1348,7 @@ const AdminDashboard: React.FC = () => {
                             ) : (
                               <div style={{ width: "100%", height: 220 }}>
                                 <ResponsiveContainer>
-                                  <LineChart data={userOverview.traffic?.daily || []} margin={{ top: 20, right: 12, left: 0, bottom: 0 }}>
+                                  <LineChart data={userOverview.traffic?.daily || []} margin={{ top: 12, right: 44, left: 0, bottom: 0 }}>
                                     <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
                                     <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
                                     <YAxis stroke="#71717a" allowDecimals={false} />
@@ -1359,7 +1359,7 @@ const AdminDashboard: React.FC = () => {
                                     <Line type="monotone" dataKey="views" name={VIEWS_LABEL} stroke="#f4f4f5" strokeWidth={2} dot={false} isAnimationActive={false}
                                       label={(props: { x?: number; y?: number; index?: number }) =>
                                         props.index === (userOverview.traffic?.daily || []).length - 1 && props.x != null && props.y != null ? (
-                                          <text key="end" x={props.x - 4} y={props.y - 10} textAnchor="end" fill="#f4f4f5" fontSize={11} fontWeight={600}>{VIEWS_LABEL}</text>
+                                          <text key="end" x={props.x + 6} y={props.y + 4} textAnchor="start" fill="#f4f4f5" fontSize={11} fontWeight={600}>{VIEWS_LABEL}</text>
                                         ) : <g key={props.index} />
                                       } />
                                   </LineChart>

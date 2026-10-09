@@ -140,7 +140,7 @@ function getCountryLabel(code: string) {
 function EndLabel({ x, y, index, lastIndex, text, color }: { x?: number | string; y?: number | string; index?: number; lastIndex: number; text: string; color: string }) {
   if (index !== lastIndex || x == null || y == null) return null;
   return (
-    <text x={Number(x) - 4} y={Number(y) - 12} textAnchor="end" fill={color} fontSize={12} fontWeight={600}>
+    <text x={Number(x) + 6} y={Number(y) + 4} textAnchor="start" fill={color} fontSize={12} fontWeight={600}>
       {text}
     </text>
   );
@@ -530,7 +530,7 @@ export default function SiteAnalyticsPage() {
               {loading ? <LoadingPanel /> : daily.every((d) => d.views === 0) ? <EmptyChart text="暂无访问数据" /> : (
                 <div className="h-[320px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={daily} margin={{ left: 0, right: 18, top: 24, bottom: 0 }}>
+                    <AreaChart data={daily} margin={{ left: 0, right: 48, top: 16, bottom: 0 }}>
                       <defs>
                         <linearGradient id="viewsGradient" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor={ink.ink} stopOpacity={0.14} />
