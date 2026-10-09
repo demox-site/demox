@@ -178,7 +178,7 @@ test('existing functions without aliases backfill production/develop to the curr
 });
 
 test('published function can call outbound HTTP using site env on /api/{slug}', async () => {
-  process.env.JWT_SECRET = process.env.JWT_SECRET || 'platform-secret-must-not-leak';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'platform-secret-must-not-leak-for-tests-0123456789';
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push({ url: req.url, auth: req.headers.authorization });

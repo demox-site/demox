@@ -73,6 +73,7 @@ jobs:
           npm config set fetch-retries 5
           npm install --legacy-peer-deps --no-audit --no-fund
           npm ci --prefix scf-code/function-api --omit=dev --no-audit --no-fund
+          npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund
 
       - name: Unit tests (deploy script + function-api)
         if: env.ACTION == 'deploy'
