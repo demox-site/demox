@@ -99,8 +99,9 @@ function unauthorized(message = '未登录或 Token 已过期') {
 
 function normalizeDeployPayload(requestData) {
   const action = String(requestData.action || '').trim();
+  // deploySource 只用于 website-api 的部署埋点（统计渠道），不参与鉴权。
   if (CHUNKED_DEPLOY_ACTIONS.has(action)) {
-    return { ...requestData, action };
+    return { ...requestData, action, deploySource: 'mcp' };
   }
   if (!action || action === 'deploy' || action === 'upload_and_deploy') {
     return {
@@ -108,7 +109,8 @@ function normalizeDeployPayload(requestData) {
       fileContentBase64: requestData.fileContentBase64,
       fileName: requestData.fileName,
       websiteId: requestData.websiteId,
-      projectId: requestData.projectId
+      projectId: requestData.projectId,
+      deploySource: 'mcp'
     };
   }
   return null;

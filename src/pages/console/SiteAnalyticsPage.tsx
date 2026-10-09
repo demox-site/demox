@@ -19,6 +19,7 @@ import { useLanguage } from "@/hooks/use-language";
 import { formatTimestamp, getDisplayName, getSiteDomains, hasProOrAboveRole } from "@/lib/website-utils";
 import { translations } from "../home-translations";
 import { ContactWebmaster } from "@/components/ContactWebmaster";
+import { listStatDateKeys, shortDateLabel } from "@/lib/stat-date";
 
 type StatsResponse = {
   success: boolean;
@@ -255,14 +256,11 @@ const fmt = new Intl.NumberFormat("zh-CN");
 function fillDaily(daily: StatsResponse["daily"] = [], days: number) {
   const byDate = new Map(daily.map((d) => [d.date, d]));
   const out: { date: string; label: string; views: number }[] = [];
-  const today = new Date();
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
+  // 与后端统计口径一致：按 UTC+8 切日（见 src/lib/stat-date.ts）
+  for (const key of listStatDateKeys(days)) {
     out.push({
       date: key,
-      label: `${d.getMonth() + 1}/${d.getDate()}`,
+      label: shortDateLabel(key),
       views: byDate.get(key)?.views || 0
     });
   }

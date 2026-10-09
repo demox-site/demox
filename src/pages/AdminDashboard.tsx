@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { userManager, adminApi } from "@/api";
 import {
@@ -30,7 +30,10 @@ import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { ArrowDown, ArrowUp, ArrowUpDown, Crown, Database, Eye, Flag, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, UserPlus } from "lucide-react";
+
+// BI 概览单独分包：只有打开「数据概览」时才下载图表代码。
+const AdminBiOverview = React.lazy(() => import("./admin/bi/AdminBiOverview"));
 
 const DEFAULT_ROLE_META = [
   { id: "admin", name: "管理员", priority: 100, enabled: true },
@@ -55,27 +58,6 @@ type ProDuration = (typeof PRO_DURATION_OPTIONS)[number]["id"];
 
 const formatCount = (value?: number | null) =>
   Number(value || 0).toLocaleString("zh-CN");
-
-const toLocalDayKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const fillDailySeries = (daily: Array<{ date: string; views: number }> | undefined, days = 30) => {
-  const map = new Map((daily || []).map((item) => [item.date, Number(item.views || 0)]));
-  const series: Array<{ date: string; views: number }> = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  for (let offset = days - 1; offset >= 0; offset -= 1) {
-    const date = new Date(today);
-    date.setDate(today.getDate() - offset);
-    const key = toLocalDayKey(date);
-    series.push({ date: key, views: map.get(key) || 0 });
-  }
-  return series;
-};
 
 type OverviewSite = {
   websiteId: string;
@@ -169,29 +151,6 @@ const AdminDashboard: React.FC = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [userName, setUserName] = useState<string>("");
   const [currentUserId, setCurrentUserId] = useState<string>("");
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [platformOverview, setPlatformOverview] = useState<{
-    counts?: {
-      users?: number;
-      usersWithSites?: number;
-      users7d?: number;
-      sites?: number;
-      sites7d?: number;
-      projects?: number;
-      archivedProjects?: number;
-      storage?: number;
-      storageObjects?: number;
-      bucketStorage?: number | null;
-      bucketObjects?: number | null;
-      admins?: number;
-      proActive?: number;
-      proExpired?: number;
-      reportsOpen?: number;
-    };
-    traffic?: { views7d?: number; views30d?: number; viewsAll?: number; daily?: Array<{ date: string; views: number }> };
-    topSites?: Array<{ websiteId: string; name: string; url?: string; owner?: string; views30d?: number; storage?: number }>;
-  } | null>(null);
-
   /**
    * 检查当前用户是否为管理员
    */
@@ -208,23 +167,6 @@ const AdminDashboard: React.FC = () => {
     setIsAdmin(roles.includes("admin"));
   };
 
-  const fetchPlatformOverview = useCallback(async () => {
-    setOverviewLoading(true);
-    try {
-      const result = await adminApi.getPlatformOverview();
-      if (!result.success) throw new Error(result.message || "概览加载失败");
-      setPlatformOverview(result);
-    } catch (e: unknown) {
-      toast({
-        title: "获取概览失败",
-        description: e instanceof Error ? e.message : "请稍后重试",
-        variant: "destructive"
-      });
-    } finally {
-      setOverviewLoading(false);
-    }
-  }, [toast]);
-
   useEffect(() => {
     (async () => {
       await checkAdmin();
@@ -232,11 +174,6 @@ const AdminDashboard: React.FC = () => {
     })();
   }, []);
 
-  useEffect(() => {
-    if (isAdmin && activeTab === "dashboard") {
-      fetchPlatformOverview();
-    }
-  }, [isAdmin, activeTab, fetchPlatformOverview]);
   // ===== 角色配置状态与方法 =====
   interface UserRoleDoc {
     _id: string;
@@ -892,7 +829,6 @@ const AdminDashboard: React.FC = () => {
       const res = await adminApi.updateSiteReport(id, "reviewed");
       if (!res.success) throw new Error(res.message || "操作失败");
       fetchReports();
-      fetchPlatformOverview();
     } catch (e: unknown) {
       toast({ title: "操作失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
     }
@@ -933,7 +869,6 @@ const AdminDashboard: React.FC = () => {
       setDisableTarget(null);
       setInspectReport(null);
       fetchReports();
-      fetchPlatformOverview();
     } catch (e: unknown) {
       toast({ title: "禁用失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
     } finally {
@@ -1122,37 +1057,6 @@ const AdminDashboard: React.FC = () => {
     return counts;
   }, {});
   const dialogEffectiveRole = getEffectiveRole(userRoleDialogRoles);
-  const overview = platformOverview;
-  const overviewDaily = fillDailySeries(overview?.traffic?.daily);
-  const deployedStorage = Number(overview?.counts?.storage || 0);
-  const bucketStorage = overview?.counts?.bucketStorage;
-  const bucketWaste = bucketStorage == null ? null : Math.max(0, Number(bucketStorage) - deployedStorage);
-  const bucketWasteHot = bucketWaste != null
-    && bucketWaste >= Math.max(1024 * 1024, deployedStorage * 0.05);
-  const overviewCards = [
-    { label: "注册用户", value: formatCount(overview?.counts?.users), hint: `管理员 ${formatCount(overview?.counts?.admins)} · 近 7 天 +${formatCount(overview?.counts?.users7d)}`, icon: Users, warn: false },
-    { label: "站点", value: formatCount(overview?.counts?.sites), hint: `近 7 天 +${formatCount(overview?.counts?.sites7d)}`, icon: Globe, warn: false },
-    { label: "项目", value: formatCount(overview?.counts?.projects), hint: overview?.counts?.archivedProjects ? `已归档 ${formatCount(overview.counts.archivedProjects)}` : "运行中", icon: FolderKanban, warn: false },
-    { label: "近 30 天访问", value: formatCount(overview?.traffic?.views30d), hint: `近 7 天 ${formatCount(overview?.traffic?.views7d)}`, icon: Eye, warn: false },
-    { label: "专业会员", value: formatCount(overview?.counts?.proActive), hint: overview?.counts?.proExpired ? `已过期 ${formatCount(overview.counts.proExpired)}` : "生效中", icon: Crown, warn: false },
-    { label: "待处理举报", value: formatCount(overview?.counts?.reportsOpen), hint: "托管页水印提交", icon: Flag, warn: Number(overview?.counts?.reportsOpen || 0) > 0 },
-    { label: "部署存储", value: formatBytes(deployedStorage), hint: `${formatCount(overview?.counts?.usersWithSites)} 个用户有站点`, icon: HardDrive, warn: false },
-    {
-      label: "存储桶",
-      value: bucketStorage == null ? "—" : formatBytes(bucketStorage),
-      hint: bucketStorage == null
-        ? "未能读取桶体积"
-        : bucketWasteHot
-          ? `比部署多 ${formatBytes(bucketWaste)}，可能有垃圾`
-          : bucketWaste
-            ? `比部署多 ${formatBytes(bucketWaste)}`
-            : "与部署存储一致",
-      icon: Database,
-      warn: bucketWasteHot
-    }
-  ];
-
-
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
@@ -1169,97 +1073,9 @@ const AdminDashboard: React.FC = () => {
           {/* Content（导航已上移到控制台侧边栏二级菜单，由二级路由 section 驱动） */}
           <div>
             {activeTab === "dashboard" ? (
-              <div className="space-y-6">
-                <div className="flex items-end justify-between gap-4">
-                  <div>
-                    <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">数据概览</h1>
-                    <p className="mt-2 text-sm text-zinc-400">平台用户、站点、会员和访问量，按真实业务数据汇总。</p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                    onClick={fetchPlatformOverview}
-                    disabled={overviewLoading}
-                  >
-                    <RefreshCw className={`mr-2 h-4 w-4 ${overviewLoading ? "animate-spin" : ""}`} />
-                    刷新
-                  </Button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                  {overviewCards.map((card) => (
-                    <Card key={card.label} className={card.warn ? "border-amber-800/80 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}>
-                      <CardContent className="pt-5">
-                        <div className={`flex items-center gap-1.5 text-xs ${card.warn ? "text-amber-300" : "text-zinc-500"}`}>
-                          <card.icon className="h-3.5 w-3.5" />
-                          {card.label}
-                        </div>
-                        <div className="mt-2 text-2xl font-semibold text-zinc-100">
-                          {overviewLoading && !overview ? "—" : card.value}
-                        </div>
-                        <div className={`mt-1 text-xs ${card.warn ? "text-amber-300" : "text-zinc-500"}`}>{card.hint}</div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-                  <Card className="border-zinc-800 bg-zinc-900">
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle className="text-zinc-100">近 30 天访问量</CardTitle>
-                      <span className="text-xs text-zinc-500">累计 {formatCount(overview?.traffic?.viewsAll)}</span>
-                    </CardHeader>
-                    <CardContent>
-                      {!overview && overviewLoading ? (
-                        <p className="text-sm text-zinc-500">正在加载...</p>
-                      ) : overviewDaily.every((item) => item.views === 0) ? (
-                        <p className="text-sm text-zinc-500">暂无访问数据</p>
-                      ) : (
-                        <div style={{ width: "100%", height: 260 }}>
-                          <ResponsiveContainer>
-                            <LineChart data={overviewDaily}>
-                              <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
-                              <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
-                              <YAxis stroke="#71717a" allowDecimals={false} />
-                              <Tooltip
-                                formatter={(value: number | string) => [formatCount(Number(value)), "访问"]}
-                                contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
-                              />
-                              <Line type="monotone" dataKey="views" stroke="#38bdf8" strokeWidth={2} dot={false} />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  <Card className="border-zinc-800 bg-zinc-900">
-                    <CardHeader>
-                      <CardTitle className="text-zinc-100">热门站点</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      {(overview?.topSites || []).length === 0 ? (
-                        <p className="text-sm text-zinc-500">{overviewLoading ? "正在加载..." : "暂无站点访问"}</p>
-                      ) : (
-                        (overview?.topSites || []).map((site) => (
-                          <div key={site.websiteId} className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-sm text-zinc-100">{site.name}</span>
-                              <span className="shrink-0 font-mono text-xs text-zinc-400">
-                                {formatBytes(site.storage || 0)} · {formatCount(site.views30d)}
-                              </span>
-                            </div>
-                            <div className="mt-1 truncate text-xs text-zinc-500">
-                              {site.owner ? `${site.owner} · ` : ""}
-                              {site.url || site.websiteId}
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              </div>
+              <Suspense fallback={<div className="min-h-[640px]" />}>
+                <AdminBiOverview />
+              </Suspense>
             ) : activeTab === "roles" ? (
               <div className="space-y-6">
                 <div>

@@ -1,0 +1,342 @@
+/**
+ * BI 看板首屏以下的 4 个区块（增长 / 使用 / 流量 / 健康）。
+ * 单独分包（recharts 图表都在这里），滚动进入视口时淡入；首屏 KPI 不依赖本文件。
+ */
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from "recharts";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useLanguage } from "@/hooks/use-language";
+import { formatBytes } from "@/lib/utils";
+import { shortDateLabel } from "@/lib/stat-date";
+import type { AdminBiData, BiTopItem } from "./types";
+import { biText, fill, sourceLabel, type BiText } from "./bi-i18n";
+import { fmtNum, fmtPct } from "./format";
+
+const VIOLET = "#a78bfa";
+const VIOLET_DEEP = "#7c3aed";
+const VIOLET_SOFT = "#ddd6fe";
+const AMBER = "#f59e0b";
+const GRID = "#27272a";
+const AXIS = "#71717a";
+const tooltipStyle = { background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12 };
+
+function Reveal({ children, id }: { children: React.ReactNode; id: string }) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [visible, setVisible] = useState(() => {
+    if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return true;
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  });
+  useEffect(() => {
+    if (visible || !ref.current) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisible(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: "0px 0px -10% 0px", threshold: 0.05 }
+    );
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [visible]);
+  return (
+    <section
+      ref={ref}
+      id={id}
+      data-bi-section={id}
+      className={`transition-all duration-700 ease-out ${visible ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}
+    >
+      {children}
+    </section>
+  );
+}
+
+function SectionHead({ title, desc, index }: { title: string; desc: string; index: number }) {
+  return (
+    <div className="mb-3 flex items-baseline gap-3">
+      <span className="font-mono text-xs text-violet-400">0{index}</span>
+      <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
+      <span className="text-xs text-zinc-500">{desc}</span>
+    </div>
+  );
+}
+
+function Panel({ title, children, className = "" }: { title: string; children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-xl border border-zinc-800 bg-zinc-900 p-4 ${className}`}>
+      <div className="mb-3 text-sm font-medium text-zinc-300">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function Empty({ t }: { t: BiText }) {
+  return <div className="flex h-40 items-center justify-center text-sm text-zinc-500">{t.noData}</div>;
+}
+
+function BarList({ items, t, format }: { items: BiTopItem[]; t: BiText; format: (it: BiTopItem) => string }) {
+  const { language } = useLanguage();
+  if (!items.length) return <Empty t={t} />;
+  const max = Math.max(...items.map((i) => i.views), 1);
+  return (
+    <ul className="space-y-1.5">
+      {items.map((it) => (
+        <li key={it.key} className="relative overflow-hidden rounded-md bg-zinc-950/60 px-2.5 py-1.5 text-xs">
+          <div className="absolute inset-y-0 left-0 bg-violet-500/20" style={{ width: `${(it.views / max) * 100}%` }} />
+          <div className="relative flex items-center justify-between gap-3">
+            <span className="truncate text-zinc-200">{format(it)}</span>
+            <span className="shrink-0 tabular-nums text-zinc-400">{fmtNum(it.views, language)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Stat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "warn" }) {
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-3 py-2.5">
+      <div className="text-[11px] text-zinc-500">{label}</div>
+      <div className={`mt-0.5 text-lg font-semibold tabular-nums ${tone === "warn" ? "text-amber-300" : "text-zinc-100"}`}>{value}</div>
+    </div>
+  );
+}
+
+export default function BiSections({ data }: { data: AdminBiData }) {
+  const { language } = useLanguage();
+  const t = biText(language);
+  const n = (v: number | null | undefined) => fmtNum(v, language);
+  const series = data.series.map((p) => ({ ...p, label: shortDateLabel(p.date) }));
+  const k = data.kpis;
+  const funnelSteps = k.funnel
+    ? [
+        { label: t.fLanding, value: k.funnel.landing },
+        { label: t.fClick, value: k.funnel.deployClick },
+        { label: t.fSuccess, value: k.funnel.deploySuccess }
+      ]
+    : [];
+  const funnelMax = Math.max(...funnelSteps.map((s) => s.value), 1);
+  const sources = data.deploySources.map((s) => ({ ...s, label: sourceLabel(t, s.source) }));
+  const failRate = data.health.deployFailRate;
+  const lag = data.health.analyticsLagMinutes;
+  const axisProps = { stroke: AXIS, tick: { fontSize: 11 }, tickLine: false, axisLine: false } as const;
+
+  return (
+    <div className="space-y-10 pt-4">
+      <Reveal id="growth">
+        <SectionHead index={1} title={t.secGrowth} desc={t.secGrowthDesc} />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <Panel title={t.cNewUsersSites}>
+            <div className="h-64">
+              <ResponsiveContainer>
+                <AreaChart data={series} margin={{ left: -18, right: 8, top: 4 }}>
+                  <defs>
+                    <linearGradient id="biUsers" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={VIOLET} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={VIOLET} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" {...axisProps} minTickGap={16} />
+                  <YAxis {...axisProps} allowDecimals={false} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Area type="monotone" dataKey="newUsers" name={t.sNewUsers} stroke={VIOLET} fill="url(#biUsers)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="newSites" name={t.sNewSites} stroke={VIOLET_SOFT} fill="transparent" strokeDasharray="4 3" strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </Panel>
+          <Panel title={t.cFunnel}>
+            {funnelSteps.length ? (
+              <div className="space-y-3">
+                {funnelSteps.map((s, i) => (
+                  <div key={s.label}>
+                    <div className="mb-1 flex justify-between text-xs">
+                      <span className="text-zinc-300">{s.label}</span>
+                      <span className="tabular-nums text-zinc-400">
+                        {n(s.value)}
+                        {i > 0 && funnelSteps[i - 1].value ? ` · ${fmtPct(s.value / funnelSteps[i - 1].value)}` : ""}
+                      </span>
+                    </div>
+                    <div className="h-6 rounded-md bg-zinc-950/70">
+                      <div
+                        className="h-6 rounded-md"
+                        style={{ width: `${Math.max(2, (s.value / funnelMax) * 100)}%`, background: `linear-gradient(90deg, ${VIOLET_DEEP}, ${VIOLET})`, opacity: 1 - i * 0.18 }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <div className="pt-1 text-xs text-zinc-500">
+                  {t.fGuide}: {n(k.funnel?.guideClick)}
+                </div>
+              </div>
+            ) : <Empty t={t} />}
+          </Panel>
+        </div>
+      </Reveal>
+
+      <Reveal id="usage">
+        <SectionHead index={2} title={t.secUsage} desc={t.secUsageDesc} />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <Panel title={t.cDeploysDaily}>
+            <div className="h-64">
+              <ResponsiveContainer>
+                <BarChart data={series} margin={{ left: -18, right: 8, top: 4 }}>
+                  <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" {...axisProps} minTickGap={16} />
+                  <YAxis {...axisProps} allowDecimals={false} />
+                  <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(139,92,246,0.08)" }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={VIOLET_DEEP} radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={AMBER} fillOpacity={0.75} radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Panel>
+          <div className="grid gap-4">
+            <Panel title={t.cSources}>
+              {sources.length ? (
+                <ul className="space-y-2">
+                  {sources.map((s) => {
+                    const total = s.success + s.fail;
+                    const all = sources.reduce((a, b) => a + b.success + b.fail, 0) || 1;
+                    return (
+                      <li key={s.source} className="text-xs">
+                        <div className="mb-1 flex justify-between">
+                          <span className="text-zinc-300">{s.label}</span>
+                          <span className="tabular-nums text-zinc-400">
+                            {n(total)} · {fmtPct(total ? s.success / total : null, 0)}
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-zinc-800">
+                          <div className="h-1.5 rounded-full bg-violet-500" style={{ width: `${(total / all) * 100}%` }} />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : <Empty t={t} />}
+            </Panel>
+            <Panel title={t.cSiteUsage}>
+              <div className="grid grid-cols-2 gap-2">
+                <Stat label={t.uTotalSites} value={n(data.usage.totalSites)} />
+                <Stat label={t.uOwners} value={n(data.usage.siteOwners)} />
+                <Stat label={t.uStorage} value={data.usage.storageBytes == null ? "—" : formatBytes(data.usage.storageBytes)} />
+                <Stat label={t.uSubdomain} value={n(data.usage.customSubdomainSites)} />
+              </div>
+            </Panel>
+          </div>
+        </div>
+      </Reveal>
+
+      <Reveal id="traffic">
+        <SectionHead index={3} title={t.secTraffic} desc={t.secTrafficDesc} />
+        <Panel title={t.cTrafficDaily}>
+          <div className="h-64">
+            <ResponsiveContainer>
+              <LineChart data={series} margin={{ left: -10, right: 8, top: 4 }}>
+                <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" {...axisProps} minTickGap={16} />
+                <YAxis {...axisProps} allowDecimals={false} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line type="monotone" dataKey="pv" name={t.sPv} stroke={VIOLET} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="uv" name={t.sUv} stroke={VIOLET_SOFT} strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-2 text-[11px] text-zinc-500">{t.noteUv}</div>
+        </Panel>
+        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Panel title={t.cReferrers}>
+            <BarList items={data.tops.referrers} t={t} format={(it) => (it.key === "direct" ? t.direct : it.key)} />
+          </Panel>
+          <Panel title={t.cCountries}>
+            <BarList items={data.tops.countries} t={t} format={(it) => it.key} />
+          </Panel>
+          <Panel title={t.cPaths}>
+            <BarList items={data.tops.wwwPaths} t={t} format={(it) => it.key} />
+          </Panel>
+          <Panel title={t.cSites}>
+            <BarList items={data.tops.sites} t={t} format={(it) => (it.name ? `${it.name} · ${it.key}` : it.key)} />
+          </Panel>
+        </div>
+      </Reveal>
+
+      <Reveal id="health">
+        <SectionHead index={4} title={t.secHealth} desc={t.secHealthDesc} />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Panel title={t.cFailRate}>
+            <div className={`text-3xl font-semibold tabular-nums ${failRate != null && failRate > 0.2 ? "text-amber-300" : "text-zinc-100"}`}>
+              {fmtPct(failRate)}
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              {k.deploys ? `${t.sSuccess} ${n(k.deploys.success)} · ${t.sFail} ${n(k.deploys.fail)}` : t.unavailable}
+            </div>
+          </Panel>
+          <Panel title={t.cErrors}>
+            {data.deployErrors.length ? (
+              <ul className="space-y-1.5 text-xs">
+                {data.deployErrors.map((e) => (
+                  <li key={e.code} className="flex justify-between gap-2">
+                    <span className="truncate font-mono text-zinc-300">{e.code}</span>
+                    <span className="tabular-nums text-zinc-400">{n(e.count)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <div className="text-sm text-zinc-500">{t.noData}</div>}
+          </Panel>
+          <Panel title={t.cIngest}>
+            <div className={`text-3xl font-semibold tabular-nums ${lag != null && lag > 60 ? "text-amber-300" : "text-zinc-100"}`}>
+              {lag == null ? "—" : fill(t.ingestMinutes, { n: lag })}
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              {lag == null || !data.health.analyticsLastIngestAt
+                ? t.ingestNever
+                : `${new Date(data.health.analyticsLastIngestAt).toLocaleString(language === "en" ? "en-US" : "zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} UTC+8`}
+            </div>
+          </Panel>
+          <Panel title={t.cReports}>
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label={t.reportsOpen} value={n(k.reports?.open)} tone={(k.reports?.open || 0) > 0 ? "warn" : "default"} />
+              <Stat label={t.reportsRecent} value={n(k.reports?.recent)} />
+            </div>
+          </Panel>
+        </div>
+        <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-xs text-zinc-400">
+          <div className="mb-2 flex items-center gap-1.5 font-medium text-zinc-300">
+            {data.warnings.length ? <AlertTriangle className="h-3.5 w-3.5 text-amber-400" /> : <CheckCircle2 className="h-3.5 w-3.5 text-violet-300" />}
+            {t.cWarnings}
+          </div>
+          {data.warnings.length ? (
+            <ul className="mb-2 list-inside list-disc font-mono text-amber-200/90">
+              {data.warnings.map((w) => <li key={w}>{w}</li>)}
+            </ul>
+          ) : (
+            <div className="mb-2">{t.warningsNone}</div>
+          )}
+          <div className="space-y-0.5 text-zinc-500">
+            <div>{t.noteDeploys}</div>
+            <div>{t.noteUv}</div>
+            <div>{t.noteTz}</div>
+          </div>
+        </div>
+      </Reveal>
+    </div>
+  );
+}
