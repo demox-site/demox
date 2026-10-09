@@ -244,10 +244,9 @@ test('get_admin_bi returns data for admins without running DDL or writes', async
   assert.equal(body.success, true);
   assert.equal(body.data.range.days, 7);
   assert.equal(body.data.series.length, 7);
-  // v13：唯一允许的写是管理员审计（admin_audit_log 只追加），BI 本身仍然是纯读。
-  const audit = seen.filter((sql) => /admin_audit_log/.test(sql));
-  assert.equal(audit.filter((sql) => /^\s*INSERT INTO admin_audit_log/.test(sql)).length, 1, 'exactly one audit row');
-  for (const sql of seen.filter((q) => !/admin_audit_log/.test(q))) assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|CREATE|ALTER)\b/i, sql);
+  // v14：BI 看板属于汇总类读，不再写管理员审计；整个请求纯读。
+  assert.deepEqual(seen.filter((sql) => /admin_audit_log/.test(sql)), [], 'no audit row for get_admin_bi');
+  for (const sql of seen) assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|CREATE|ALTER)\b/i, sql);
 });
 
 // ── tracking ────────────────────────────────────────────────
