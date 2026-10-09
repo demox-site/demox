@@ -87,13 +87,42 @@ function DeployTooltip(props: {
   );
 }
 
-/** 分界线上的小字：标在线的左侧（指向补算的日子），不压到柱子上方 */
-function DividerLabel(props: { viewBox?: { x?: number; y?: number }; text: string; color: string }) {
-  const { viewBox, text, color } = props;
+/**
+ * 分界线上的小字：放在图顶部留白里（不压柱子）。优先标在线左侧（指向补算的日子）；
+ * 左边放不下标右侧；两边都放不下（手机 + 英文）就折成两行，放在空间大的一侧，保证整句完整显示。
+ */
+function DividerLabel(props: { viewBox?: { x?: number; y?: number }; text: string; color: string; chartWidth: number }) {
+  const { viewBox, text, color, chartWidth } = props;
   if (!viewBox || viewBox.x == null || viewBox.y == null) return null;
+  const x = viewBox.x;
+  const y = viewBox.y;
+  // 10px 字：中日韩字符约 10px，其他约 5.6px
+  const measure = (str: string) => [...str].reduce((w, ch) => w + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 10 : 5.6), 0);
+  const leftRoom = x - 8;
+  const rightRoom = chartWidth - x - 8;
+  const one = measure(text);
+  let lines = [text];
+  let left = one <= leftRoom || (one > rightRoom && leftRoom >= rightRoom);
+  if (one > leftRoom && one > rightRoom) {
+    // 折两行：在中间附近的空格处断开（中文没有空格就按字数对半）
+    const words = text.split(" ");
+    let cut = Math.ceil(text.length / 2);
+    if (words.length > 1) {
+      let acc = 0;
+      for (let i = 0; i < words.length - 1; i += 1) {
+        acc += words[i].length + 1;
+        if (acc >= text.length / 2) { cut = acc; break; }
+      }
+    }
+    lines = [text.slice(0, cut).trim(), text.slice(cut).trim()];
+    left = leftRoom >= rightRoom;
+  }
+  const lineH = 12;
   return (
-    <text x={viewBox.x - 6} y={viewBox.y + 10} textAnchor="end" fill={color} fontSize={10}>
-      {text}
+    <text x={left ? x - 6 : x + 6} y={y - 6 - (lines.length - 1) * lineH} textAnchor={left ? "end" : "start"} fill={color} fontSize={10}>
+      {lines.map((ln, i) => (
+        <tspan key={i} x={left ? x - 6 : x + 6} dy={i === 0 ? 0 : lineH}>{ln}</tspan>
+      ))}
     </text>
   );
 }
@@ -203,6 +232,17 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const sinceInWindow = !!trackedSince && series.length > 0 && trackedSince > series[0].date;
   const sinceText = trackedSince ? fmtSinceDate(trackedSince, language) : "";
   const hasDerived = series.some((p) => p.deployDerived != null);
+  // 分界线小字要知道图有多宽（手机上决定标在哪一侧、要不要折行）
+  const deployChartRef = useRef<HTMLDivElement | null>(null);
+  const [deployChartWidth, setDeployChartWidth] = useState(640);
+  useEffect(() => {
+    const el = deployChartRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setDeployChartWidth(el.clientWidth || 640));
+    ro.observe(el);
+    setDeployChartWidth(el.clientWidth || 640);
+    return () => ro.disconnect();
+  }, []);
   // 分界线画在第一根「按埋点画」的柱子左边（之前有补算时才画）。
   // 开始那天如果画的是补算（补算 > 埋点），它算在线的左边，线挪到下一天。
   const boundary = hasDerived ? series.find((p) => p.deploySuccess != null) : undefined;
@@ -285,9 +325,9 @@ export default function BiSections({ data }: { data: AdminBiData }) {
             {sinceInWindow ? (
               <div className="-mt-2 mb-2 text-[11px] text-zinc-500" data-testid="bi-deploys-since">{fill(t.deploysSince, { d: sinceText })}</div>
             ) : null}
-            <div className="h-64" data-testid="bi-deploys-chart">
+            <div className="h-64" data-testid="bi-deploys-chart" ref={deployChartRef}>
               <ResponsiveContainer>
-                <BarChart data={series} margin={{ left: -18, right: 76, top: hasDerived ? 18 : 8 }}>
+                <BarChart data={series} margin={{ left: -18, right: 76, top: hasDerived ? 34 : 8 }}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
@@ -302,7 +342,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                     label={<BarEndLabel lastIndex={deployLast} text={t.sFail} color={MID} dy={-8} />} />
                   {boundary ? (
                     <ReferenceLine x={boundary.label} position="start" stroke={MID} strokeWidth={1} ifOverflow="extendDomain"
-                      label={<DividerLabel text={t.derivedDivider} color={AXIS} />} />
+                      label={<DividerLabel text={t.derivedDivider} color={AXIS} chartWidth={deployChartWidth} />} />
                   ) : null}
                 </BarChart>
               </ResponsiveContainer>
