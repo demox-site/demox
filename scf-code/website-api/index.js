@@ -526,6 +526,77 @@ const adminBiLib = (() => {
     };
   }
 
+  /** mysql2 读出的 TIMESTAMP（Date 或 'YYYY-MM-DD HH:MM:SS' UTC 字符串）→ 毫秒；读不出返回 null */
+  function toMs(v) {
+    if (v == null) return null;
+    if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.getTime() : null;
+    const str = String(v);
+    const ms = Date.parse(str.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(str) ? '' : 'Z'));
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function msToUtcSql(ms) {
+    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  /**
+   * 埋点开始时间：每个事件第一次出现的时间（部署只看服务端写的 server: 行）。
+   * 早于开始时间的日期在序列里是 null（没有记录），不是 0。
+   */
+  function parseTrackingStarts(rows) {
+    const out = { deploys: null, landing: null, deployClick: null };
+    for (const r of rows || []) {
+      const ms = toMs(r.t);
+      if (ms == null) continue;
+      const key = r.event_name === 'landing_view' ? 'landing'
+        : r.event_name === 'deploy_click' ? 'deployClick'
+          : (r.event_name === 'deploy_success' || r.event_name === 'deploy_fail') ? 'deploys' : null;
+      if (key && (out[key] == null || ms < out[key])) out[key] = ms;
+    }
+    return out;
+  }
+
+  /**
+   * 服务端部署埋点之前的「补算」：每个 (UTC+8 日期, 站点) 算一次部署，来源取并集去重：
+   * - websites.created_at：新站点只在第一次部署成功时插入，所以每个新站点 = 当天至少 1 次成功部署；
+   * - deploy_upload_sessions（COMPLETED）的 updated_at：分块上传完成 = 一次成功部署（这张表只留约 7 天）。
+   * 同一站点同一天多次部署只算 1 次，删掉的站点也找不回来，所以是**下限**；只有总数，没有成功 / 失败拆分，也没有渠道。
+   */
+  function aggregateDerivedDeploys(siteRows, sessionRows) {
+    const pairs = new Set();
+    for (const r of [...(siteRows || []), ...(sessionRows || [])]) {
+      const d = statTime.toDateKey(r.d);
+      if (!d || !r.website_id) continue;
+      pairs.add(`${d}|${String(r.website_id).toUpperCase()}`);
+    }
+    const byDay = new Map();
+    for (const k of pairs) {
+      const d = k.slice(0, 10);
+      byDay.set(d, (byDay.get(d) || 0) + 1);
+    }
+    return byDay;
+  }
+
+  /**
+   * 部署按天：每一天标出数据来源和是否知道成功 / 失败。
+   * - events：服务端埋点，success / fail 都是真实值（0 就是 0）；
+   * - derived：埋点前，按站点记录补算，只有 deployDerived 总数，success / fail 为 null（不按比例拆）；
+   * - mixed：埋点开始那天，开始前的部分是补算总数，开始后是埋点；
+   * - none：没有任何记录，三个值都是 null（图上留空，不画 0）。
+   */
+  function buildDeployDay(date, deployStartKey, liveByDay, derivedByDay) {
+    const live = deployStartKey != null && date >= deployStartKey;
+    const derived = derivedByDay.get(date) || 0;
+    const l = liveByDay.get(date) || { success: 0, fail: 0 };
+    return {
+      deploySuccess: live ? l.success : null,
+      deployFail: live ? l.fail : null,
+      deployDerived: derived > 0 ? derived : null,
+      deploySource: live ? (derived > 0 ? 'mixed' : 'events') : (derived > 0 ? 'derived' : 'none'),
+      deploySplitKnown: live && derived === 0
+    };
+  }
+
   async function computeAdminBi({ query, range, now = Date.now(), wwwWebsiteId = 'EPX2UU43', scannerPathPredicate }) {
     const win = buildWindow(range, now);
     const warnings = [];
@@ -573,6 +644,44 @@ const adminBiLib = (() => {
       [win.prevStartUtc < win.activePrev7StartUtc ? win.prevStartUtc : win.activePrev7StartUtc]
     ), warnings);
     const deploys = aggregateDeployEvents(deployRows || [], win);
+
+    // 3b. 埋点开始时间 + 埋点之前的补算（只读、读时计算，不回写）
+    const trackingRows = await safe('trackingStart', () => query(
+      `SELECT event_name, MIN(created_at) AS t
+       FROM product_events
+       WHERE (event_name IN ('landing_view', 'deploy_click'))
+          OR (event_name IN ('deploy_fail', 'deploy_success') AND page LIKE 'server:%')
+       GROUP BY event_name`
+    ), warnings);
+    // 查不到开始时间（表 / 权限问题）时退回旧口径：窗口内每天都按埋点算
+    const tracking = trackingRows ? parseTrackingStarts(trackingRows) : { deploys: 0, landing: 0, deployClick: 0 };
+    const windowStartMs = Date.parse(win.prevStartUtc.replace(' ', 'T') + 'Z');
+    const deployStartKey = tracking.deploys != null ? statTime.statDateKey(tracking.deploys) : null;
+    let derivedByDay = new Map();
+    // 窗口（含上期）里有埋点之前的日子才需要补算
+    if (tracking.deploys == null || tracking.deploys > windowStartMs) {
+      const until = msToUtcSql(tracking.deploys != null ? tracking.deploys : now);
+      const derivedSites = await safe('derivedSites', () => query(
+        `SELECT DISTINCT ${sd('created_at')} AS d, website_id
+         FROM websites WHERE created_at >= ? AND created_at < ?`,
+        [win.prevStartUtc, until]
+      ), warnings);
+      const derivedSessions = await safe('derivedUploads', () => query(
+        `SELECT DISTINCT ${sd('updated_at')} AS d, website_id
+         FROM deploy_upload_sessions WHERE status = 'COMPLETED' AND updated_at >= ? AND updated_at < ?`,
+        [win.prevStartUtc, until]
+      ), warnings);
+      derivedByDay = aggregateDerivedDeploys(derivedSites, derivedSessions);
+    }
+    const deployDays = new Map(win.days.map((date) => [date, buildDeployDay(date, deployStartKey, deploys.byDay, derivedByDay)]));
+    const derivedCur = win.days.reduce((a, d) => a + (derivedByDay.get(d) || 0), 0);
+    // 本期 / 上期是否完整被埋点覆盖（开始那天只覆盖半天，不算完整）
+    const deploysCurComplete = deployStartKey != null && win.startKey > deployStartKey;
+    const deploysPrevComplete = deployStartKey != null && win.prevStartKey > deployStartKey;
+    const landingStartKey = tracking.landing != null ? statTime.statDateKey(tracking.landing) : null;
+    const clickStartKey = tracking.deployClick != null ? statTime.statDateKey(tracking.deployClick) : null;
+    const funnelPrevComplete = landingStartKey != null && clickStartKey != null
+      && win.prevStartKey > landingStartKey && win.prevStartKey > clickStartKey;
 
     // 活跃部署者兜底：分块上传完成 + 新建站点
     const sessionDeployers = await safe('uploadSessions', () => query(
@@ -730,12 +839,12 @@ const adminBiLib = (() => {
       date,
       newUsers: users.byDay.get(date) || 0,
       newSites: sites.byDay.get(date) || 0,
-      deploySuccess: (deploys.byDay.get(date) || {}).success || 0,
-      deployFail: (deploys.byDay.get(date) || {}).fail || 0,
+      ...deployDays.get(date),
       pv: pv.byDay.get(date) || 0,
       uv: uvDaily ? (uvDay.byDay.get(date) || 0) : null,
-      landing: landingDay.get(date) || 0,
-      deployClick: clickDay.get(date) || 0
+      // 埋点开始之前：null（没有记录），不是 0
+      landing: landingStartKey != null && date >= landingStartKey ? (landingDay.get(date) || 0) : null,
+      deployClick: clickStartKey != null && date >= clickStartKey ? (clickDay.get(date) || 0) : null
     }));
 
     const tops = (rows) => (rows || []).map((r) => ({ key: String(r.k == null ? '' : r.k), views: num(r.v), ...(r.name ? { name: String(r.name) } : {}) }));
@@ -751,11 +860,15 @@ const adminBiLib = (() => {
         activeDeployers7d: { value: active.size, prev: activePrev.size },
         deploys: deployRows ? {
           value: deploys.cur.total,
-          prev: deploys.prev.total,
+          // 上期没被埋点完整覆盖时为 null：前端据此不显示涨跌箭头
+          prev: deploysPrevComplete ? deploys.prev.total : null,
           success: deploys.cur.success,
           fail: deploys.cur.fail,
           successRate: deploys.cur.successRate,
-          prevSuccessRate: deploys.prev.successRate
+          prevSuccessRate: deploysPrevComplete ? deploys.prev.successRate : null,
+          trackedSince: deployStartKey,
+          complete: deploysCurComplete,
+          derivedTotal: derivedCur
         } : null,
         sites: sitesDaily ? { value: sites.cur, prev: sites.prev, total: totalSites } : null,
         pv: pvDaily ? { value: pv.cur, prev: pv.prev } : null,
@@ -765,8 +878,10 @@ const adminBiLib = (() => {
           deployClick: click.cur,
           guideClick: guide.cur,
           deploySuccess: converted,
-          prevLanding: landing.prev,
-          prevDeployClick: click.prev,
+          prevLanding: funnelPrevComplete ? landing.prev : null,
+          prevDeployClick: funnelPrevComplete ? click.prev : null,
+          // 「部署成功」这一步用的是服务端部署埋点，从这天开始
+          deploySuccessSince: deployStartKey,
           clickRate: landing.cur ? click.cur / landing.cur : null,
           successRate: landing.cur ? converted / landing.cur : null
         } : null,
@@ -794,8 +909,15 @@ const adminBiLib = (() => {
         analyticsLagMinutes: lastIngest && !Number.isNaN(lastIngest.getTime()) ? Math.max(0, Math.round((now - lastIngest.getTime()) / 60000)) : null,
         deployFailRate: deploys.cur.successRate == null ? null : 1 - deploys.cur.successRate
       },
+      tracking: {
+        deploys: deployStartKey,
+        deploysAt: trackingRows && tracking.deploys != null ? new Date(tracking.deploys).toISOString() : null,
+        deploysDerivedFrom: ['websites.created_at', 'deploy_upload_sessions.updated_at'],
+        landing: landingStartKey,
+        deployClick: clickStartKey
+      },
       notes: {
-        deploysSince: 'server-side deploy events start with the website-api release that ships this change',
+        deploysSince: 'server-side deploy events start at tracking.deploysAt; earlier days are derived from site records (one per site per day, total only, lower bound)',
         uvApprox: 'distinct (masked IP, user agent) from site_access_logs',
         statDateTz: 'stat_date rows written before the UTC+8 switch are UTC dates'
       },
@@ -825,6 +947,9 @@ const adminBiLib = (() => {
     normalizeRange,
     buildWindow,
     aggregateDeployEvents,
+    aggregateDerivedDeploys,
+    buildDeployDay,
+    parseTrackingStarts,
     computeAdminBi,
     createAdminBiService
   };

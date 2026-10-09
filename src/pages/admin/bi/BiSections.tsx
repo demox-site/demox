@@ -11,6 +11,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -21,9 +22,9 @@ import { useLanguage } from "@/hooks/use-language";
 import { useInkPalette } from "@/lib/ink-palette";
 import { formatBytes } from "@/lib/utils";
 import { shortDateLabel } from "@/lib/stat-date";
-import type { AdminBiData, BiTopItem } from "./types";
+import type { AdminBiData, BiSeriesPoint, BiTopItem } from "./types";
 import { biText, fill, sourceLabel, type BiText } from "./bi-i18n";
-import { fmtNum, fmtPct } from "./format";
+import { fmtNum, fmtPct, fmtSinceDate } from "./format";
 
 /**
  * 配色规则（设计）：全站只用黑 / 白 / 灰；绿色只表示变好或成功，其他颜色一律不用。
@@ -49,6 +50,47 @@ function BarEndLabel(props: { x?: number | string; y?: number | string; width?: 
   if (index !== lastIndex || x == null || y == null) return null;
   return (
     <text x={Number(x) + Number(width || 0) + 6} y={Number(y) + Number(height || 0) / 2 + dy} dy={4} fill={color} fontSize={11} fontWeight={500}>
+      {text}
+    </text>
+  );
+}
+
+/**
+ * 部署柱状图的悬停提示：按这天的数据来源说清楚，补算的日子只给总数，没有记录的日子写「暂无数据」，不写 0。
+ */
+function DeployTooltip(props: {
+  active?: boolean;
+  payload?: Array<{ payload?: BiSeriesPoint & { label: string } }>;
+  t: BiText;
+  n: (v: number | null | undefined) => string;
+  style: React.CSSProperties;
+}) {
+  const { active, payload, t, n, style } = props;
+  const p = active && payload && payload[0] ? payload[0].payload : undefined;
+  if (!p) return null;
+  const rows: Array<[string, string]> = [];
+  if (p.deploySuccess != null) rows.push([t.sSuccess, n(p.deploySuccess)]);
+  if (p.deployFail != null) rows.push([t.sFail, n(p.deployFail)]);
+  if (p.deployDerived != null) rows.push([t.sDerived, n(p.deployDerived)]);
+  return (
+    <div style={{ ...style, padding: "6px 10px" }} data-deploy-tooltip={p.deploySource || "events"}>
+      <div style={{ marginBottom: 2, fontWeight: 500 }}>{p.label}</div>
+      {rows.length ? rows.map(([k, v]) => (
+        <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <span>{k}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{v}</span>
+        </div>
+      )) : <div>{t.noData}</div>}
+    </div>
+  );
+}
+
+/** 分界线上的小字：标在线的左侧（指向补算的日子），不压到柱子上方 */
+function DividerLabel(props: { viewBox?: { x?: number; y?: number }; text: string; color: string }) {
+  const { viewBox, text, color } = props;
+  if (!viewBox || viewBox.x == null || viewBox.y == null) return null;
+  return (
+    <text x={viewBox.x - 6} y={viewBox.y + 10} textAnchor="end" fill={color} fontSize={10}>
       {text}
     </text>
   );
@@ -154,6 +196,17 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const sources = data.deploySources.map((s) => ({ ...s, label: sourceLabel(t, s.source) }));
   const failRate = data.health.deployFailRate;
   const lag = data.health.analyticsLagMinutes;
+  // 部署：埋点开始日期在窗口内时，图上方写「部署从 X 开始统计」，渠道 / 失败率也注明起始日
+  const trackedSince = k.deploys?.trackedSince ?? data.tracking?.deploys ?? null;
+  const sinceInWindow = !!trackedSince && series.length > 0 && trackedSince > series[0].date;
+  const sinceText = trackedSince ? fmtSinceDate(trackedSince, language) : "";
+  const hasDerived = series.some((p) => p.deployDerived != null);
+  // 分界线画在第一天有埋点的日子（之前有补算时才画）
+  const boundary = hasDerived ? series.find((p) => p.deploySource === "events" || p.deploySource === "mixed") : undefined;
+  const deployLast = (() => {
+    for (let i = series.length - 1; i >= 0; i -= 1) if (series[i].deploySuccess != null) return i;
+    return -1;
+  })();
   const last = series.length - 1;
   const lp = series[last];
   // 两条线尾标注互相避让：末值大的标在上方，小的标在下方
@@ -226,24 +279,35 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         <SectionHead index={2} title={t.secUsage} desc={t.secUsageDesc} />
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
           <Panel title={t.cDeploysDaily}>
-            <div className="h-64">
+            {sinceInWindow ? (
+              <div className="-mt-2 mb-2 text-[11px] text-zinc-500" data-testid="bi-deploys-since">{fill(t.deploysSince, { d: sinceText })}</div>
+            ) : null}
+            <div className="h-64" data-testid="bi-deploys-chart">
               <ResponsiveContainer>
-                <BarChart data={series} margin={{ left: -18, right: 76, top: 8 }}>
+                <BarChart data={series} margin={{ left: -18, right: 76, top: hasDerived ? 18 : 8 }}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: ink.wash }} />
+                  <Tooltip content={<DeployTooltip t={t} n={n} style={tooltipStyle} />} cursor={{ fill: ink.wash }} />
+                  {/* 补算 = 只有描边的空心柱（比成功、失败都弱），只有总数，不拆成功 / 失败。没有记录的日子值是 null，不画柱，也不画 0 */}
+                  <Bar dataKey="deployDerived" name={t.sDerived} stackId="d" fill="transparent" stroke={LOW} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false} />
                   {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
                   <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={SOFT} />} />
+                    label={<BarEndLabel lastIndex={deployLast} text={t.sSuccess} color={SOFT} />} />
                   <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={LOW} stroke={MID} strokeWidth={0.75} radius={[3, 3, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sFail} color={MID} dy={-8} />} />
+                    label={<BarEndLabel lastIndex={deployLast} text={t.sFail} color={MID} dy={-8} />} />
+                  {boundary ? (
+                    <ReferenceLine x={boundary.label} position="start" stroke={MID} strokeWidth={1} ifOverflow="extendDomain"
+                      label={<DividerLabel text={t.derivedDivider} color={AXIS} />} />
+                  ) : null}
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            {hasDerived ? <div className="mt-2 text-[11px] text-zinc-500">{t.derivedNote}</div> : null}
           </Panel>
           <div className="grid gap-4">
             <Panel title={t.cSources}>
+              {sinceInWindow ? <div className="-mt-2 mb-2 text-[11px] text-zinc-500">{fill(t.since, { d: sinceText })}</div> : null}
               {sources.length ? (
                 <ul className="space-y-2">
                   {sources.map((s) => {
@@ -321,7 +385,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
               {fmtPct(failRate)}
             </div>
             <div className="mt-1 text-xs text-zinc-500">
-              {k.deploys ? `${t.sSuccess} ${n(k.deploys.success)} · ${t.sFail} ${n(k.deploys.fail)}` : t.unavailable}
+              {k.deploys ? `${t.sSuccess} ${n(k.deploys.success)} · ${t.sFail} ${n(k.deploys.fail)}${sinceInWindow ? ` · ${fill(t.since, { d: sinceText })}` : ""}` : t.unavailable}
             </div>
           </Panel>
           <Panel title={t.cErrors}>

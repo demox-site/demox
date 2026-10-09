@@ -117,6 +117,22 @@ function fakeDb() {
   const calls = [];
   const q = async (sql, params = []) => {
     calls.push({ sql, params });
+    if (sql.includes('MIN(created_at) AS t')) {
+      // 服务端部署埋点 10-09 13:25 (UTC+8) 开始；首页漏斗事件早就有
+      return [
+        { event_name: 'deploy_success', t: new Date('2026-10-09T05:25:00Z') },
+        { event_name: 'deploy_fail', t: '2026-10-09 05:40:00' },
+        { event_name: 'landing_view', t: new Date('2026-07-13T08:00:00Z') },
+        { event_name: 'deploy_click', t: new Date('2026-07-13T08:00:00Z') }
+      ];
+    }
+    if (sql.includes('SELECT DISTINCT') && sql.includes('FROM websites WHERE created_at >= ? AND created_at < ?')) {
+      return [{ d: '2026-10-08', website_id: 'aaa11111' }, { d: '2026-10-08', website_id: 'BBB22222' }, { d: '2026-10-05', website_id: 'CCC33333' }, { d: '2026-10-09', website_id: 'DDD44444' }];
+    }
+    if (sql.includes('SELECT DISTINCT') && sql.includes('FROM deploy_upload_sessions WHERE status')) {
+      // AAA11111 同一天又走了一次分块上传：同站同日只算 1 次
+      return [{ d: new Date('2026-10-08T00:00:00Z'), website_id: 'AAA11111' }, { d: '2026-10-06', website_id: 'EEE55555' }];
+    }
     if (sql.includes('FROM users WHERE created_at')) return [{ d: '2026-10-09', c: 3 }, { d: '2026-10-01', c: 1 }, { d: '2026-09-01', c: 2 }];
     if (sql.startsWith('SELECT COUNT(*) AS c FROM users')) return [{ c: 120 }];
     if (sql.includes('FROM websites WHERE created_at >= ?\n')) return [{ d: new Date('2026-10-08T00:00:00Z'), c: 4 }];
@@ -174,6 +190,37 @@ test('computeAdminBi issues only parameterized SELECTs and assembles KPIs', asyn
   assert.deepEqual(data.kpis.uv, { value: 40, prev: 30, approx: true });
   assert.equal(data.kpis.deploys.value, 1);
   assert.equal(data.kpis.deploys.successRate, 1);
+  // 本期 / 上期都没被服务端埋点完整覆盖：上期为 null（前端不画涨跌箭头），不是 0
+  assert.equal(data.kpis.deploys.prev, null);
+  assert.equal(data.kpis.deploys.prevSuccessRate, null);
+  assert.equal(data.kpis.deploys.trackedSince, '2026-10-09');
+  assert.equal(data.kpis.deploys.complete, false);
+  assert.equal(data.kpis.deploys.derivedTotal, 5);
+  assert.equal(data.kpis.funnel.deploySuccessSince, '2026-10-09');
+  assert.equal(data.kpis.funnel.prevLanding, 80);
+  assert.equal(data.tracking.deploys, '2026-10-09');
+  assert.equal(data.tracking.deploysAt, '2026-10-09T05:25:00.000Z');
+  const day = (d) => data.series.find((p) => p.date === d);
+  // 没有任何记录：null，不是 0
+  assert.deepEqual(
+    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-03')[k]),
+    [null, null, null, 'none', false]
+  );
+  // 埋点前：只有补算总数，不拆成功 / 失败
+  assert.deepEqual(
+    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-08')[k]),
+    [null, null, 2, 'derived', false]
+  );
+  assert.equal(day('2026-10-06').deployDerived, 1);
+  assert.equal(day('2026-10-05').deployDerived, 1);
+  // 开始那天：开始前的补算 + 开始后的埋点
+  assert.deepEqual(
+    ['deploySuccess', 'deployFail', 'deployDerived', 'deploySource', 'deploySplitKnown'].map((k) => day('2026-10-09')[k]),
+    [1, 0, 1, 'mixed', false]
+  );
+  // 补算只读埋点开始之前的记录
+  const derivedCall = calls.find((c) => c.sql.includes('FROM websites WHERE created_at >= ? AND created_at < ?'));
+  assert.deepEqual(derivedCall.params, ['2026-09-25 16:00:00', '2026-10-09 05:25:00']);
   // u9 (event) + u1 (session) + u1,u2 (new sites) => 3; prev: u5, u6
   assert.deepEqual(data.kpis.activeDeployers7d, { value: 3, prev: 2 });
   assert.equal(data.kpis.funnel.landing, 100);
@@ -219,6 +266,61 @@ test('BI service caches each range for 60 seconds', async () => {
   const c = await svc.get(30);
   assert.equal(c.cached, false);
   assert.equal(n, perCall * 3);
+});
+
+test('deploy days: live days keep real zeros, untracked days are null', () => {
+  const live = new Map([['2026-10-10', { success: 0, fail: 0 }]]);
+  const derived = new Map([['2026-10-07', 3]]);
+  assert.deepEqual(bi.buildDeployDay('2026-10-10', '2026-10-09', live, derived),
+    { deploySuccess: 0, deployFail: 0, deployDerived: null, deploySource: 'events', deploySplitKnown: true });
+  assert.deepEqual(bi.buildDeployDay('2026-10-07', '2026-10-09', live, derived),
+    { deploySuccess: null, deployFail: null, deployDerived: 3, deploySource: 'derived', deploySplitKnown: false });
+  assert.deepEqual(bi.buildDeployDay('2026-10-01', '2026-10-09', live, derived),
+    { deploySuccess: null, deployFail: null, deployDerived: null, deploySource: 'none', deploySplitKnown: false });
+  // 从来没有服务端埋点：全部不是 events
+  assert.equal(bi.buildDeployDay('2026-10-10', null, live, derived).deploySource, 'none');
+});
+
+test('derived deploys count each site once per day across sources', () => {
+  const byDay = bi.aggregateDerivedDeploys(
+    [{ d: '2026-10-01', website_id: 'abc' }, { d: '2026-10-01', website_id: 'XYZ' }],
+    [{ d: new Date('2026-10-01T00:00:00Z'), website_id: 'ABC' }, { d: '2026-10-02', website_id: 'ABC' }, { d: '2026-10-02', website_id: null }]
+  );
+  assert.deepEqual([...byDay.entries()], [['2026-10-01', 2], ['2026-10-02', 1]]);
+});
+
+test('when the window is fully tracked, no derived query runs and deltas are kept', async () => {
+  const later = Date.parse('2026-10-30T03:00:00.000Z');
+  const calls = [];
+  const q = async (sql, params = []) => {
+    calls.push(sql);
+    if (sql.includes('MIN(created_at) AS t')) return [{ event_name: 'deploy_success', t: new Date('2026-10-09T05:25:00Z') }, { event_name: 'landing_view', t: new Date('2026-07-13T08:00:00Z') }, { event_name: 'deploy_click', t: new Date('2026-07-13T08:00:00Z') }];
+    if (sql.includes("event_name IN ('deploy_success', 'deploy_fail')")) {
+      return [
+        { id: 1, event_name: 'deploy_success', created_at: new Date('2026-10-29T01:00:00Z'), props: { source: 'cli' } },
+        { id: 2, event_name: 'deploy_success', created_at: new Date('2026-10-20T01:00:00Z'), props: { source: 'cli' } }
+      ];
+    }
+    return [];
+  };
+  const data = await bi.computeAdminBi({ query: q, range: 7, now: later });
+  assert.equal(calls.some((s) => s.includes('SELECT DISTINCT') && s.includes('website_id')), false);
+  assert.equal(data.kpis.deploys.complete, true);
+  assert.equal(data.kpis.deploys.prev, 1);
+  assert.equal(data.kpis.deploys.derivedTotal, 0);
+  assert.ok(data.series.every((p) => p.deploySource === 'events' && p.deploySplitKnown));
+  assert.equal(data.series[0].deploySuccess, 0); // 有埋点的日子里 0 就是 0
+});
+
+test('if the tracking-start lookup fails, the deploy series falls back to live events everywhere', async () => {
+  const q = async (sql) => {
+    if (sql.includes('MIN(created_at) AS t')) throw Object.assign(new Error('boom'), { code: 'ER_X' });
+    return [];
+  };
+  const data = await bi.computeAdminBi({ query: q, range: 7, now: NOW });
+  assert.ok(data.warnings.includes('trackingStart: ER_X'));
+  assert.ok(data.series.every((p) => p.deploySource === 'events' && p.deploySuccess === 0));
+  assert.equal(data.tracking.deploysAt, null);
 });
 
 // ── get_admin_bi action ─────────────────────────────────────

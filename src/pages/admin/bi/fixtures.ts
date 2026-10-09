@@ -3,7 +3,7 @@
  * 数字是编造的，量级参考 2026-10 的真实情况，方便看版式。
  */
 import { listStatDateKeys } from "@/lib/stat-date";
-import type { AdminBiData, BiRange } from "./types";
+import type { AdminBiData, BiDeploySource, BiRange } from "./types";
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -16,19 +16,33 @@ function rng(seed: number) {
 export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
   const rand = rng(range * 7919);
   const days = listStatDateKeys(range, now);
+  // 部署的三种状态都演示出来（和线上一样）：
+  // - 最早的日子：没有任何记录（none），图上留空；
+  // - 中间：服务端埋点之前，按站点记录补算，只有总数（derived）；
+  // - 最近 10 天：服务端埋点，成功 / 失败都有（开始那天是 mixed）。
+  const all = listStatDateKeys(90, now);
+  const trackedSince = all[all.length - 10];
+  const derivedSince = all[all.length - 24];
   const series = days.map((date, i) => {
     const wave = 1 + 0.35 * Math.sin(i / 2.3);
     const spike = i === days.length - 3 ? 3.2 : 1;
     const pv = Math.round((380 + rand() * 160) * wave * spike);
     const landing = Math.round(pv * (0.16 + rand() * 0.05));
     const deployClick = Math.round(landing * (0.18 + rand() * 0.06));
-    const deploySuccess = Math.round(6 + rand() * 9 * wave);
+    const success = Math.round(6 + rand() * 9 * wave);
+    const fail = Math.round(rand() * 2.4);
+    const derivedRaw = Math.round(2 + rand() * 6 * wave);
+    const live = date >= trackedSince;
+    const derived = date >= derivedSince && date <= trackedSince ? (date === trackedSince ? 3 : derivedRaw) : 0;
     return {
       date,
       newUsers: Math.round(3 + rand() * 7 * wave),
       newSites: Math.round(4 + rand() * 8 * wave),
-      deploySuccess,
-      deployFail: Math.round(rand() * 2.4),
+      deploySuccess: live ? success : null,
+      deployFail: live ? fail : null,
+      deployDerived: derived > 0 ? derived : null,
+      deploySource: (live ? (derived > 0 ? "mixed" : "events") : derived > 0 ? "derived" : "none") as BiDeploySource,
+      deploySplitKnown: live && derived === 0,
       pv,
       uv: Math.round(pv * (0.34 + rand() * 0.08)),
       landing,
@@ -36,6 +50,7 @@ export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
     };
   });
   const sum = (k: keyof (typeof series)[number]) => series.reduce((a, p) => a + Number(p[k] || 0), 0);
+  const deploysComplete = days[0] > trackedSince;
   const pv = sum("pv");
   const uv = Math.round(sum("uv") * 0.82);
   const success = sum("deploySuccess");
@@ -54,11 +69,15 @@ export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
       activeDeployers7d: { value: 64, prev: 57 },
       deploys: {
         value: success + fail,
-        prev: Math.round((success + fail) * 0.9),
+        // 上期没被埋点完整覆盖：null，看板不显示涨跌箭头
+        prev: null,
         success,
         fail,
         successRate: success / (success + fail),
-        prevSuccessRate: 0.93
+        prevSuccessRate: null,
+        trackedSince,
+        complete: deploysComplete,
+        derivedTotal: sum("deployDerived")
       },
       sites: { value: sum("newSites"), prev: Math.round(sum("newSites") * 1.08), total: 2143 },
       pv: { value: pv, prev: Math.round(pv * 0.88) },
@@ -68,6 +87,7 @@ export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
         deployClick: click,
         guideClick: Math.round(landing * 0.07),
         deploySuccess: converted,
+        deploySuccessSince: trackedSince,
         prevLanding: Math.round(landing * 0.95),
         prevDeployClick: Math.round(click * 0.86),
         clickRate: landing ? click / landing : null,
@@ -131,6 +151,13 @@ export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
       ]
     },
     health: { analyticsLastIngestAt: new Date(now - 6 * 60000).toISOString(), analyticsLagMinutes: 6, deployFailRate: fail / (success + fail) },
+    tracking: {
+      deploys: trackedSince,
+      deploysAt: `${trackedSince}T05:25:00.000Z`,
+      deploysDerivedFrom: ["websites.created_at", "deploy_upload_sessions.updated_at"],
+      landing: all[0],
+      deployClick: all[0]
+    },
     warnings: []
   };
 }
