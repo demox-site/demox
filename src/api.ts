@@ -9,6 +9,7 @@ import {
 } from "./lib/feishu-oauth";
 import { beginGithubOAuthFlow } from "./lib/github-oauth";
 import { getTopAwareSessionStorage } from "./lib/top-aware-session-storage";
+import { getVisitorId } from "./lib/visitor-id";
 
 const AUTH_API_URL = config.authApiUrl;
 const WEBSITE_API_URL = config.websiteApiUrl;
@@ -520,7 +521,7 @@ export const websiteApi = {
     return request<{ success: boolean; url?: string; websiteId?: string; projectId?: string | number | null; path?: string; message?: string }>(
       WEBSITE_API_URL,
       "/upload",
-      { method: "POST", body: { action: "upload_and_deploy", ...params } }
+      { method: "POST", body: { action: "upload_and_deploy", ...params, deploySource: "web", visitorId: getVisitorId() } }
     );
   },
 
@@ -585,7 +586,13 @@ export const websiteApi = {
         const result = await retryUploadRequest(
           () => request<DeployUploadResult>(WEBSITE_API_URL, DEPLOY_API_PATH, {
             method: "POST",
-            body: { action: "complete_deploy_upload", uploadId: init.uploadId }
+            body: {
+              action: "complete_deploy_upload",
+              uploadId: init.uploadId,
+              // 仅用于服务端部署埋点：渠道 + 漏斗访客 ID
+              deploySource: "web",
+              visitorId: getVisitorId()
+            }
           }),
           3
         );
@@ -1209,6 +1216,14 @@ export const websiteApi = {
 
 // 管理员 API（角色与限额配置）
 export const adminApi = {
+  // BI 汇总（只读，服务端 60 秒缓存）。类型见 src/pages/admin/bi/types.ts
+  getAdminBi: async (range: 7 | 30 | 90 = 30) => {
+    return request<{ success: boolean; message?: string; data?: import("./pages/admin/bi/types").AdminBiData }>(
+      WEBSITE_API_URL,
+      "/website/get-admin-bi",
+      { method: "POST", body: { action: "get_admin_bi", range } }
+    );
+  },
   listUserRoles: async () => {
     return request<{ success: boolean; data: any[] }>(
       WEBSITE_API_URL,

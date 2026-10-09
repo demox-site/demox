@@ -205,6 +205,552 @@ const {
   resolveGrantExpiry
 } = require('./shared/membership.js');
 
+// ─────────────────────────────────────────────────────────────
+// 注意：线上 website 函数是 `demox functions push` 只上传 index.js，
+// shared/ 目录来自已部署的统一 worker 包（发布 index.js 不会带上新的 shared 文件）。
+// 所以统计时区和 BI 汇总直接内联在这里，不新增 shared 模块。
+// ─────────────────────────────────────────────────────────────
+const statTime = (() => {
+  /**
+   * 统计口径时区：Asia/Shanghai（UTC+8，无夏令时）。
+   *
+   * 为什么固定 +08:00：
+   * - 管理员和绝大多数用户在中国 / 新加坡（同为 UTC+8），按 UTC 切日会把早上 8 点前的访问算到前一天；
+   * - 数据库会话时区固定为 UTC（见 shared/db.js），TIMESTAMP 列读出的是 UTC instant，
+   *   需要在 SQL 里用 CONVERT_TZ(col, '+00:00', '+08:00') 或在 JS 里加 8 小时再切日；
+   * - 用数字偏移而不是 'Asia/Shanghai' 名称，因为 TencentDB 不一定装了时区表，CONVERT_TZ 名称会返回 NULL。
+   *
+   * 历史数据：本改动之前写入的 site_*_daily_stats.stat_date 是 UTC 日期，不回写。
+   * 切换当天（发布日）会混合两种口径，之后全部按 UTC+8。
+   */
+
+  const STAT_TZ = 'Asia/Shanghai';
+  const STAT_TZ_OFFSET = '+08:00';
+  const STAT_TZ_OFFSET_MS = 8 * 60 * 60 * 1000;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  /** 毫秒时间戳（或 Date）→ UTC+8 的 YYYY-MM-DD */
+  function statDateKey(value = Date.now()) {
+    const ms = value instanceof Date ? value.getTime() : Number(value);
+    const safe = Number.isFinite(ms) ? ms : Date.now();
+    return new Date(safe + STAT_TZ_OFFSET_MS).toISOString().slice(0, 10);
+  }
+
+  /** UTC+8 下“今天往前 n 天”的日期键（n=0 即今天） */
+  function statDateKeyDaysAgo(n, now = Date.now()) {
+    return statDateKey(Number(now) - Number(n || 0) * DAY_MS);
+  }
+
+  /** 最近 days 天（含今天）的日期键，按时间升序 */
+  function listStatDateKeys(days, now = Date.now()) {
+    const out = [];
+    for (let i = Number(days) - 1; i >= 0; i -= 1) out.push(statDateKeyDaysAgo(i, now));
+    return out;
+  }
+
+  /**
+   * UTC+8 日期键当天 00:00 对应的 UTC 'YYYY-MM-DD HH:MM:SS'，
+   * 用于和 TIMESTAMP/DATETIME 列（会话时区 UTC）比较。
+   */
+  function statDayStartUtc(dateKey) {
+    const ms = Date.parse(`${dateKey}T00:00:00.000Z`) - STAT_TZ_OFFSET_MS;
+    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  /** SQL 片段：把 UTC 时间列换成 UTC+8 日期。col 只能是代码里写死的列名。 */
+  function sqlStatDate(col) {
+    if (!/^[a-z_][a-z0-9_.]*$/i.test(col)) throw new Error('invalid column');
+    return `DATE(CONVERT_TZ(${col}, '+00:00', '${STAT_TZ_OFFSET}'))`;
+  }
+
+  /** mysql2（timezone:'Z'）读出的 DATE 列 / 字符串 → YYYY-MM-DD */
+  function toDateKey(value) {
+    if (value instanceof Date) return value.toISOString().slice(0, 10);
+    return String(value || '').slice(0, 10);
+  }
+  return {
+    STAT_TZ,
+    STAT_TZ_OFFSET,
+    STAT_TZ_OFFSET_MS,
+    statDateKey,
+    statDateKeyDaysAgo,
+    listStatDateKeys,
+    statDayStartUtc,
+    sqlStatDate,
+    toDateKey
+  };
+})();
+// 统计“今天”（UTC+8）。会话时区是 UTC，CURDATE() 会按 UTC 切日，统一用这个。
+const STAT_TODAY_SQL = `DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '${statTime.STAT_TZ_OFFSET}'))`;
+
+const adminBiLib = (() => {
+  /**
+   * 管理后台 BI 汇总（get_admin_bi）。
+   *
+   * 约束：
+   * - 只做 SELECT，不调用任何 ensure* 或 backfill，表不存在时该项返回 null，不报错；
+   * - 全部参数化，时间范围只允许 7 / 30 / 90 天；
+   * - 统计口径时区 UTC+8（见上面的 statTime）。site_*_daily_stats 在切换前写入的是 UTC 日期，不回写；
+   * - 结果按 range 缓存 60 秒（进程内），避免看板反复刷新压库。
+   *
+   * 数据来源：
+   * - 新用户：users.created_at
+   * - 新站点 / 站点总数 / 存储：websites
+   * - 部署次数、成功率、来源、活跃部署者：product_events 里服务端写入的 deploy_success / deploy_fail（page 以 server: 开头），
+   *   同一个分块上传（uploadId）多次失败只算一次，之后成功则不算失败；
+   *   活跃部署者另外并上 deploy_upload_sessions（COMPLETED）和新建站点的 user_id（服务端埋点上线前的兜底）
+   * - PV：site_path_daily_stats（去掉扫描器路径，与旧概览口径一致）
+   * - UV：site_access_logs 按 (脱敏 IP, UA) 去重，近似值
+   * - 首页漏斗：product_events landing_view → deploy_click → 服务端 deploy_success（同一 visitor_id）
+   * - 专业会员：user_roles（含 30 天内到期）
+   * - 举报：site_reports status='open'
+   */
+
+
+  const ALLOWED_RANGES = [7, 30, 90];
+  const CACHE_TTL_MS = 60 * 1000;
+  const MAX_DEPLOY_EVENT_ROWS = 50000;
+  const DEPLOY_SOURCES = ['web', 'cli', 'mcp', 'github', 'token', 'api'];
+
+  function normalizeRange(input) {
+    const n = Number(input);
+    return ALLOWED_RANGES.includes(n) ? n : 30;
+  }
+
+  function num(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function parseProps(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(raw) || {}; } catch (e) { return {}; }
+  }
+
+  /** 计算当前窗口和上一同长窗口（全部是 UTC+8 日期键 + 对应的 UTC 起点） */
+  function buildWindow(range, now = Date.now()) {
+    const todayKey = statTime.statDateKeyDaysAgo(0, now);
+    const startKey = statTime.statDateKeyDaysAgo(range - 1, now);
+    const prevStartKey = statTime.statDateKeyDaysAgo(range * 2 - 1, now);
+    const days = statTime.listStatDateKeys(range, now);
+    return {
+      range,
+      todayKey,
+      startKey,
+      prevStartKey,
+      days,
+      startUtc: statTime.statDayStartUtc(startKey),
+      prevStartUtc: statTime.statDayStartUtc(prevStartKey),
+      // 7 天活跃窗口（与所选 range 无关）
+      active7StartUtc: statTime.statDayStartUtc(statTime.statDateKeyDaysAgo(6, now)),
+      activePrev7StartUtc: statTime.statDayStartUtc(statTime.statDateKeyDaysAgo(13, now))
+    };
+  }
+
+  /** 把 [{d, c}] 按日期切成 当前 / 上期 合计 + 当前日序列 */
+  function splitDaily(rows, win, valueKey = 'c') {
+    const byDay = new Map();
+    let cur = 0;
+    let prev = 0;
+    for (const r of rows || []) {
+      const key = statTime.toDateKey(r.d);
+      const v = num(r[valueKey]);
+      if (key >= win.startKey) {
+        cur += v;
+        byDay.set(key, (byDay.get(key) || 0) + v);
+      } else if (key >= win.prevStartKey) {
+        prev += v;
+      }
+    }
+    return { cur, prev, byDay };
+  }
+
+  async function safe(label, fn, warnings) {
+    try {
+      return await fn();
+    } catch (e) {
+      warnings.push(`${label}: ${e && e.code ? e.code : 'ERROR'}`);
+      return null;
+    }
+  }
+
+  /** 部署事件聚合（纯函数，便于单测） */
+  function aggregateDeployEvents(rows, win) {
+    const empty = () => ({ success: 0, fail: 0 });
+    const cur = empty();
+    const prev = empty();
+    const bySource = {};
+    const byDay = new Map();
+    const errorCodes = {};
+    const deployers7 = new Set();
+    const deployersPrev7 = new Set();
+    const succeededUploads = new Set();
+    const failSeen = new Set();
+
+    const normalized = (rows || []).map((r, i) => {
+      const props = parseProps(r.props);
+      const ts = r.created_at instanceof Date ? r.created_at.getTime() : Date.parse(String(r.created_at || '').replace(' ', 'T') + (String(r.created_at || '').endsWith('Z') ? '' : 'Z'));
+      return {
+        ok: r.event_name === 'deploy_success',
+        id: r.id != null ? String(r.id) : `row${i}`,
+        ts,
+        day: statTime.statDateKey(ts),
+        uploadId: props.uploadId ? String(props.uploadId) : '',
+        userId: props.userId ? String(props.userId) : '',
+        source: DEPLOY_SOURCES.includes(props.source) ? props.source : 'api',
+        errorCode: props.errorCode ? String(props.errorCode).slice(0, 64) : 'UNKNOWN'
+      };
+    });
+    for (const e of normalized) if (e.ok && e.uploadId) succeededUploads.add(e.uploadId);
+
+    const active7Start = Date.parse(win.active7StartUtc.replace(' ', 'T') + 'Z');
+    const activePrev7Start = Date.parse(win.activePrev7StartUtc.replace(' ', 'T') + 'Z');
+
+    for (const e of normalized) {
+      if (!Number.isFinite(e.ts)) continue;
+      if (e.ok && e.userId) {
+        if (e.ts >= active7Start) deployers7.add(e.userId);
+        else if (e.ts >= activePrev7Start) deployersPrev7.add(e.userId);
+      }
+      if (!e.ok) {
+        // 同一 uploadId：后来成功了不算失败；多次失败只算一次
+        if (e.uploadId && succeededUploads.has(e.uploadId)) continue;
+        const k = e.uploadId ? `u:${e.uploadId}` : `e:${e.id}`;
+        if (failSeen.has(k)) continue;
+        failSeen.add(k);
+      }
+      const isCur = e.day >= win.startKey;
+      const isPrev = !isCur && e.day >= win.prevStartKey;
+      if (!isCur && !isPrev) continue;
+      const bucket = isCur ? cur : prev;
+      bucket[e.ok ? 'success' : 'fail'] += 1;
+      if (isCur) {
+        bySource[e.source] = bySource[e.source] || empty();
+        bySource[e.source][e.ok ? 'success' : 'fail'] += 1;
+        const d = byDay.get(e.day) || empty();
+        d[e.ok ? 'success' : 'fail'] += 1;
+        byDay.set(e.day, d);
+        if (!e.ok) errorCodes[e.errorCode] = (errorCodes[e.errorCode] || 0) + 1;
+      }
+    }
+    const rate = (b) => (b.success + b.fail ? b.success / (b.success + b.fail) : null);
+    return {
+      cur: { ...cur, total: cur.success + cur.fail, successRate: rate(cur) },
+      prev: { ...prev, total: prev.success + prev.fail, successRate: rate(prev) },
+      bySource: DEPLOY_SOURCES.filter((s) => bySource[s]).map((s) => ({ source: s, ...bySource[s] })),
+      byDay,
+      topErrors: Object.entries(errorCodes).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([code, count]) => ({ code, count })),
+      deployers7,
+      deployersPrev7
+    };
+  }
+
+  async function computeAdminBi({ query, range, now = Date.now(), wwwWebsiteId = 'EPX2UU43', scannerPathPredicate }) {
+    const win = buildWindow(range, now);
+    const warnings = [];
+    const pathPred = typeof scannerPathPredicate === 'function' ? scannerPathPredicate : () => '1=1';
+    const sd = statTime.sqlStatDate;
+
+    // 1. 新用户
+    const usersDaily = await safe('users', () => query(
+      `SELECT ${sd('created_at')} AS d, COUNT(*) AS c
+       FROM users WHERE created_at >= ?
+       GROUP BY d`,
+      [win.prevStartUtc]
+    ), warnings);
+    const usersTotal = await safe('usersTotal', () => query('SELECT COUNT(*) AS c FROM users'), warnings);
+    const users = splitDaily(usersDaily, win);
+
+    // 2. 站点
+    const sitesDaily = await safe('sites', () => query(
+      `SELECT ${sd('created_at')} AS d, COUNT(*) AS c
+       FROM websites WHERE created_at >= ?
+       GROUP BY d`,
+      [win.prevStartUtc]
+    ), warnings);
+    const sitesTotalRows = await safe('sitesTotal', () => query(
+      `SELECT COUNT(*) AS sites, COUNT(DISTINCT user_id) AS owners,
+              COALESCE(SUM(COALESCE(deployed_size, storage_size, 0)), 0) AS storage
+       FROM websites`
+    ), warnings);
+    const sitesExtraRows = await safe('sitesExtra', () => query(
+      `SELECT COALESCE(SUM(CASE WHEN subdomain IS NOT NULL AND subdomain <> '' THEN 1 ELSE 0 END), 0) AS customSubdomain,
+              COALESCE(SUM(CASE WHEN hide_watermark = 1 THEN 1 ELSE 0 END), 0) AS hideWatermark
+       FROM websites`
+    ), warnings);
+    const sites = splitDaily(sitesDaily, win);
+
+    // 3. 部署（服务端埋点）
+    const deployRows = await safe('deployEvents', () => query(
+      `SELECT id, event_name, created_at, props
+       FROM product_events
+       WHERE event_name IN ('deploy_success', 'deploy_fail')
+         AND page LIKE 'server:%'
+         AND created_at >= ?
+       ORDER BY id ASC
+       LIMIT ${MAX_DEPLOY_EVENT_ROWS}`,
+      [win.prevStartUtc < win.activePrev7StartUtc ? win.prevStartUtc : win.activePrev7StartUtc]
+    ), warnings);
+    const deploys = aggregateDeployEvents(deployRows || [], win);
+
+    // 活跃部署者兜底：分块上传完成 + 新建站点
+    const sessionDeployers = await safe('uploadSessions', () => query(
+      `SELECT DISTINCT user_id FROM deploy_upload_sessions
+       WHERE status = 'COMPLETED' AND updated_at >= ?`,
+      [win.active7StartUtc]
+    ), warnings);
+    const sessionDeployersPrev = await safe('uploadSessionsPrev', () => query(
+      `SELECT DISTINCT user_id FROM deploy_upload_sessions
+       WHERE status = 'COMPLETED' AND updated_at >= ? AND updated_at < ?`,
+      [win.activePrev7StartUtc, win.active7StartUtc]
+    ), warnings);
+    const siteCreators = await safe('siteCreators', () => query(
+      `SELECT DISTINCT user_id, (created_at >= ?) AS is_cur FROM websites WHERE created_at >= ?`,
+      [win.active7StartUtc, win.activePrev7StartUtc]
+    ), warnings);
+    const active = new Set(deploys.deployers7);
+    const activePrev = new Set(deploys.deployersPrev7);
+    for (const r of sessionDeployers || []) if (r.user_id) active.add(String(r.user_id));
+    for (const r of sessionDeployersPrev || []) if (r.user_id) activePrev.add(String(r.user_id));
+    for (const r of siteCreators || []) {
+      if (!r.user_id) continue;
+      (num(r.is_cur) ? active : activePrev).add(String(r.user_id));
+    }
+
+    // 4. PV
+    const pvDaily = await safe('pv', () => query(
+      `SELECT stat_date AS d, SUM(views) AS c
+       FROM site_path_daily_stats
+       WHERE stat_date >= ? AND ${pathPred('path')}
+       GROUP BY stat_date`,
+      [win.prevStartKey]
+    ), warnings);
+    const pv = splitDaily(pvDaily, win);
+
+    // 5. UV（近似）
+    const uvKey = `CONCAT(COALESCE(ip_masked, ''), '|', LEFT(COALESCE(user_agent, ''), 255))`;
+    const uvTotals = await safe('uv', () => query(
+      `SELECT COUNT(DISTINCT CASE WHEN event_ts >= ? THEN ${uvKey} END) AS cur,
+              COUNT(DISTINCT CASE WHEN event_ts < ? THEN ${uvKey} END) AS prev
+       FROM site_access_logs
+       WHERE event_ts >= ? AND event_type = 'view'`,
+      [win.startUtc, win.startUtc, win.prevStartUtc]
+    ), warnings);
+    const uvDaily = await safe('uvDaily', () => query(
+      `SELECT ${sd('event_ts')} AS d, COUNT(DISTINCT ${uvKey}) AS c
+       FROM site_access_logs
+       WHERE event_ts >= ? AND event_type = 'view'
+       GROUP BY d`,
+      [win.startUtc]
+    ), warnings);
+    const uvDay = splitDaily(uvDaily, win);
+
+    // 6. 首页漏斗（访客去重）
+    const funnelRows = await safe('funnel', () => query(
+      `SELECT event_name,
+              COUNT(DISTINCT CASE WHEN created_at >= ? THEN visitor_id END) AS cur,
+              COUNT(DISTINCT CASE WHEN created_at < ? THEN visitor_id END) AS prev
+       FROM product_events
+       WHERE event_name IN ('landing_view', 'deploy_click', 'intent_guide_click')
+         AND created_at >= ?
+       GROUP BY event_name`,
+      [win.startUtc, win.startUtc, win.prevStartUtc]
+    ), warnings);
+    const convertedRows = await safe('funnelConverted', () => query(
+      `SELECT COUNT(DISTINCT s.visitor_id) AS c
+       FROM product_events s
+       WHERE s.event_name = 'deploy_success' AND s.page LIKE 'server:%' AND s.created_at >= ?
+         AND EXISTS (
+           SELECT 1 FROM product_events l
+           WHERE l.visitor_id = s.visitor_id AND l.event_name = 'landing_view' AND l.created_at >= ?
+         )`,
+      [win.startUtc, win.startUtc]
+    ), warnings);
+    const funnelDaily = await safe('funnelDaily', () => query(
+      `SELECT ${sd('created_at')} AS d, event_name, COUNT(DISTINCT visitor_id) AS c
+       FROM product_events
+       WHERE event_name IN ('landing_view', 'deploy_click') AND created_at >= ?
+       GROUP BY d, event_name`,
+      [win.startUtc]
+    ), warnings);
+    const funnelBy = {};
+    for (const r of funnelRows || []) funnelBy[r.event_name] = { cur: num(r.cur), prev: num(r.prev) };
+    const landing = funnelBy.landing_view || { cur: 0, prev: 0 };
+    const click = funnelBy.deploy_click || { cur: 0, prev: 0 };
+    const guide = funnelBy.intent_guide_click || { cur: 0, prev: 0 };
+    const converted = convertedRows ? num(convertedRows[0] && convertedRows[0].c) : 0;
+    const landingDay = new Map();
+    const clickDay = new Map();
+    for (const r of funnelDaily || []) {
+      const key = statTime.toDateKey(r.d);
+      (r.event_name === 'landing_view' ? landingDay : clickDay).set(key, num(r.c));
+    }
+
+    // 7. 专业会员
+    const roleRows = await safe('pro', () => query('SELECT roles, pro_expires_at FROM user_roles'), warnings);
+    let pro = null;
+    if (roleRows) {
+      const nowDate = new Date(now);
+      pro = { active: 0, lifetime: 0, expiring30d: 0, expired: 0 };
+      for (const row of roleRows) {
+        const m = membershipSummary(row.roles, row.pro_expires_at, nowDate);
+        if (m.hasPro) {
+          pro.active += 1;
+          if (m.proLifetime) pro.lifetime += 1;
+          else if (m.remainingDays != null && m.remainingDays <= 30) pro.expiring30d += 1;
+        }
+        if (m.proExpired) pro.expired += 1;
+      }
+    }
+
+    // 8. 举报
+    const reportRows = await safe('reports', () => query(
+      `SELECT COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open,
+              COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS recent
+       FROM site_reports`,
+      [win.startUtc]
+    ), warnings);
+
+    // 9. Top 榜（当前窗口）
+    const topReferrers = await safe('topReferrers', () => query(
+      `SELECT referrer_host AS k, SUM(views) AS v
+       FROM site_referrer_daily_stats WHERE stat_date >= ?
+       GROUP BY referrer_host ORDER BY v DESC LIMIT 10`,
+      [win.startKey]
+    ), warnings);
+    const topCountries = await safe('topCountries', () => query(
+      `SELECT country AS k, SUM(views) AS v
+       FROM site_country_daily_stats WHERE stat_date >= ?
+       GROUP BY country ORDER BY v DESC LIMIT 10`,
+      [win.startKey]
+    ), warnings);
+    const topPaths = await safe('topPaths', () => query(
+      `SELECT path AS k, SUM(views) AS v
+       FROM site_path_daily_stats
+       WHERE website_id = ? AND stat_date >= ? AND ${pathPred('path')}
+       GROUP BY path ORDER BY v DESC LIMIT 15`,
+      [wwwWebsiteId, win.startKey]
+    ), warnings);
+    const topSites = await safe('topSites', () => query(
+      `SELECT s.website_id AS k, MAX(w.name) AS name, SUM(s.views) AS v
+       FROM site_path_daily_stats s
+       LEFT JOIN websites w ON w.website_id = s.website_id
+       WHERE s.stat_date >= ? AND ${pathPred('s.path')}
+       GROUP BY s.website_id ORDER BY v DESC LIMIT 10`,
+      [win.startKey]
+    ), warnings);
+
+    // 10. 健康：统计管道延迟
+    const ingestRows = await safe('ingestLag', () => query(
+      'SELECT MAX(created_at) AS last_ingest, MAX(event_ts) AS last_event FROM site_analytics_ingested_events'
+    ), warnings);
+
+    const series = win.days.map((date) => ({
+      date,
+      newUsers: users.byDay.get(date) || 0,
+      newSites: sites.byDay.get(date) || 0,
+      deploySuccess: (deploys.byDay.get(date) || {}).success || 0,
+      deployFail: (deploys.byDay.get(date) || {}).fail || 0,
+      pv: pv.byDay.get(date) || 0,
+      uv: uvDaily ? (uvDay.byDay.get(date) || 0) : null,
+      landing: landingDay.get(date) || 0,
+      deployClick: clickDay.get(date) || 0
+    }));
+
+    const tops = (rows) => (rows || []).map((r) => ({ key: String(r.k == null ? '' : r.k), views: num(r.v), ...(r.name ? { name: String(r.name) } : {}) }));
+    const totalSites = sitesTotalRows ? num(sitesTotalRows[0] && sitesTotalRows[0].sites) : null;
+    const lastIngest = ingestRows && ingestRows[0] && ingestRows[0].last_ingest ? new Date(ingestRows[0].last_ingest) : null;
+
+    return {
+      generatedAt: new Date(now).toISOString(),
+      tz: statTime.STAT_TZ,
+      range: { days: win.range, start: win.startKey, end: win.todayKey, prevStart: win.prevStartKey },
+      kpis: {
+        newUsers: usersDaily ? { value: users.cur, prev: users.prev, total: usersTotal ? num(usersTotal[0] && usersTotal[0].c) : null } : null,
+        activeDeployers7d: { value: active.size, prev: activePrev.size },
+        deploys: deployRows ? {
+          value: deploys.cur.total,
+          prev: deploys.prev.total,
+          success: deploys.cur.success,
+          fail: deploys.cur.fail,
+          successRate: deploys.cur.successRate,
+          prevSuccessRate: deploys.prev.successRate
+        } : null,
+        sites: sitesDaily ? { value: sites.cur, prev: sites.prev, total: totalSites } : null,
+        pv: pvDaily ? { value: pv.cur, prev: pv.prev } : null,
+        uv: uvTotals ? { value: num(uvTotals[0] && uvTotals[0].cur), prev: num(uvTotals[0] && uvTotals[0].prev), approx: true } : null,
+        funnel: funnelRows ? {
+          landing: landing.cur,
+          deployClick: click.cur,
+          guideClick: guide.cur,
+          deploySuccess: converted,
+          prevLanding: landing.prev,
+          prevDeployClick: click.prev,
+          clickRate: landing.cur ? click.cur / landing.cur : null,
+          successRate: landing.cur ? converted / landing.cur : null
+        } : null,
+        pro,
+        reports: reportRows ? { open: num(reportRows[0] && reportRows[0].open), recent: num(reportRows[0] && reportRows[0].recent) } : null
+      },
+      series,
+      deploySources: deploys.bySource,
+      deployErrors: deploys.topErrors,
+      usage: {
+        totalSites,
+        siteOwners: sitesTotalRows ? num(sitesTotalRows[0] && sitesTotalRows[0].owners) : null,
+        storageBytes: sitesTotalRows ? num(sitesTotalRows[0] && sitesTotalRows[0].storage) : null,
+        customSubdomainSites: sitesExtraRows ? num(sitesExtraRows[0] && sitesExtraRows[0].customSubdomain) : null,
+        hideWatermarkSites: sitesExtraRows ? num(sitesExtraRows[0] && sitesExtraRows[0].hideWatermark) : null
+      },
+      tops: {
+        referrers: tops(topReferrers),
+        countries: tops(topCountries),
+        wwwPaths: tops(topPaths),
+        sites: tops(topSites)
+      },
+      health: {
+        analyticsLastIngestAt: lastIngest && !Number.isNaN(lastIngest.getTime()) ? lastIngest.toISOString() : null,
+        analyticsLagMinutes: lastIngest && !Number.isNaN(lastIngest.getTime()) ? Math.max(0, Math.round((now - lastIngest.getTime()) / 60000)) : null,
+        deployFailRate: deploys.cur.successRate == null ? null : 1 - deploys.cur.successRate
+      },
+      notes: {
+        deploysSince: 'server-side deploy events start with the website-api release that ships this change',
+        uvApprox: 'distinct (masked IP, user agent) from site_access_logs',
+        statDateTz: 'stat_date rows written before the UTC+8 switch are UTC dates'
+      },
+      warnings
+    };
+  }
+
+  function createAdminBiService({ query, ttlMs = CACHE_TTL_MS, now = () => Date.now(), wwwWebsiteId, scannerPathPredicate }) {
+    const cache = new Map();
+    return {
+      async get(rangeInput) {
+        const range = normalizeRange(rangeInput);
+        const t = now();
+        const hit = cache.get(range);
+        if (hit && t - hit.at < ttlMs) return { ...hit.data, cached: true };
+        const data = await computeAdminBi({ query, range, now: t, wwwWebsiteId, scannerPathPredicate });
+        cache.set(range, { at: t, data });
+        return { ...data, cached: false };
+      },
+      clear() { cache.clear(); }
+    };
+  }
+  return {
+    ALLOWED_RANGES,
+    CACHE_TTL_MS,
+    DEPLOY_SOURCES,
+    normalizeRange,
+    buildWindow,
+    aggregateDeployEvents,
+    computeAdminBi,
+    createAdminBiService
+  };
+})();
+const { createAdminBiService } = adminBiLib;
+
 const defaultDomain = 'demox.site';
 const unsupportedOfficialDomains = new Set(['vibeme.cn', 'vibemd.cn']);
 const builtinOfficialDomains = ['demox.site'];
@@ -1177,6 +1723,7 @@ exports.main = async (event, context) => {
       revoke_token: handleRevokeToken,
       track_product_event: handleTrackProductEvent,
       get_product_funnel: handleGetProductFunnel,
+      get_admin_bi: handleGetAdminBi,
       // 多云存储桶注册制
       list_buckets: handleListBuckets,
       register_bucket: handleRegisterBucket,
@@ -1224,6 +1771,8 @@ exports.main = async (event, context) => {
       return await handleTrackProductEvent(event);
     } else if (pathUrl.includes('/get-product-funnel')) {
       return await handleGetProductFunnel(event);
+    } else if (pathUrl.includes('/get-admin-bi')) {
+      return await handleGetAdminBi(event);
     } else if (pathUrl.includes('/list-project-custom-domains')) {
       return await handleListProjectCustomDomains(event);
     } else if (pathUrl.includes('/add-project-custom-domain')) {
@@ -4733,7 +5282,7 @@ async function handleGetUserOverview(event) {
       `SELECT s.stat_date, SUM(s.views) AS views
        FROM site_path_daily_stats s
        INNER JOIN websites w ON w.website_id = s.website_id
-       WHERE w.user_id = ? AND s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE w.user_id = ? AND s.stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
          AND ${scannerPathSqlPredicate('s.path')}
        GROUP BY s.stat_date
        ORDER BY s.stat_date ASC`,
@@ -4748,9 +5297,7 @@ async function handleGetUserOverview(event) {
   }
 
   const views30d = daily.reduce((sum, item) => sum + item.views, 0);
-  const cutoff7 = new Date();
-  cutoff7.setUTCDate(cutoff7.getUTCDate() - 6);
-  const cutoff7Key = cutoff7.toISOString().slice(0, 10);
+  const cutoff7Key = statTime.statDateKeyDaysAgo(6);
   const views7d = daily.filter((item) => item.date >= cutoff7Key).reduce((sum, item) => sum + item.views, 0);
 
   const formatOverviewSite = (row) => {
@@ -4793,7 +5340,7 @@ async function handleGetUserOverview(event) {
        LEFT JOIN (
          SELECT s.website_id, SUM(s.views) AS views30d
          FROM site_path_daily_stats s
-         WHERE s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         WHERE s.stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
            AND ${scannerPathSqlPredicate('s.path')}
          GROUP BY s.website_id
        ) v ON v.website_id = w.website_id
@@ -5047,7 +5594,7 @@ async function handleGetPlatformOverview(event) {
     const dayRows = await query(
       `SELECT stat_date, SUM(views) AS views
        FROM site_path_daily_stats
-       WHERE stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
          AND ${scannerPathSqlPredicate('path')}
        GROUP BY stat_date
        ORDER BY stat_date ASC`,
@@ -5062,9 +5609,7 @@ async function handleGetPlatformOverview(event) {
   }
 
   const views30d = daily.reduce((sum, item) => sum + item.views, 0);
-  const cutoff7 = new Date();
-  cutoff7.setUTCDate(cutoff7.getUTCDate() - 6);
-  const cutoff7Key = cutoff7.toISOString().slice(0, 10);
+  const cutoff7Key = statTime.statDateKeyDaysAgo(6);
   const views7d = daily.filter((item) => item.date >= cutoff7Key).reduce((sum, item) => sum + item.views, 0);
 
   let topSites = [];
@@ -5079,7 +5624,7 @@ async function handleGetPlatformOverview(event) {
        LEFT JOIN users u ON u.id = w.user_id
        LEFT JOIN site_path_daily_stats s
          ON s.website_id = w.website_id
-        AND s.stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+        AND s.stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
         AND ${scannerPathSqlPredicate('s.path')}
        GROUP BY w.website_id, w.name, w.subdomain, w.subdomain_domain, w.url, w.user_id, u.nickname, u.email
        ORDER BY views30d DESC, updated_at DESC
@@ -5572,15 +6117,91 @@ async function handleRevokeToken(event) {
 // ── 产品漏斗埋点 ────────────────────────────────────────────────
 // 匿名埋点：无需登录，visitor_id 由前端 localStorage 生成。
 
+// 前端可上报的事件白名单。新增前端埋点时必须同步加到这里（index.test.cjs 会扫描 src/ 里的 track("...") 校验）。
+// deploy_success / deploy_fail 改为服务端记录（见 recordServerDeployEvent），不再接受前端上报，
+// 这样旧版本前端缓存里发出的事件会被丢弃，不会和服务端事件重复计数。
 const PRODUCT_EVENT_NAMES = new Set([
   'landing_view',
   'deploy_click',
-  'deploy_success',
-  'deploy_fail',
+  'intent_guide_click',
   'example_click',
   'feedback_copy',
   'usecase_click'
 ]);
+
+// 只由服务端写入的事件；page 列固定为 `server:<source>`，BI 用这个前缀区分历史前端事件。
+const SERVER_PRODUCT_EVENT_NAMES = new Set(['deploy_success', 'deploy_fail']);
+const DEPLOY_SOURCES = new Set(['web', 'cli', 'mcp', 'github', 'token', 'api']);
+
+function eventHeader(event, name) {
+  const headers = (event && event.headers) || {};
+  const want = String(name).toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === want) return String(headers[key] || '');
+  }
+  return '';
+}
+
+/**
+ * 判断部署来自哪条渠道（仅用于统计，不参与任何鉴权）。
+ * 优先级：显式声明（body.deploySource / X-Demox-Client）> token 类型 > UA。
+ * - web：官网控制台上传（前端显式带 deploySource: 'web'）
+ * - mcp：经 mcp-api 代理转发（代理显式带 deploySource: 'mcp'）
+ * - github：客户端声明 github / github-actions（CLI 1.1.6 还不会声明，见下条）
+ * - token：个人访问令牌（PAT），目前主要是 GitHub Actions 的 DEMOX_TOKEN
+ * - cli：OAuth 登录的 CLI（本地 demox deploy、stdio MCP 也走这里）
+ * - api：其他（无法判断）
+ */
+function classifyDeploySource(event, authPayload) {
+  const body = (event && event.body) || {};
+  const explicit = String(body.deploySource || eventHeader(event, 'x-demox-client') || '').trim().toLowerCase();
+  if (explicit === 'github-actions' || explicit === 'github_actions') return 'github';
+  if (DEPLOY_SOURCES.has(explicit)) return explicit;
+  if (authPayload && authPayload.type === 'pat') return 'token';
+  if (authPayload && authPayload.scopes) return 'cli';
+  if (/Mozilla\//.test(eventHeader(event, 'user-agent'))) return 'web';
+  return 'api';
+}
+
+function deployResponsePayload(res) {
+  if (!res) return {};
+  if (typeof res.body === 'string') {
+    try { return JSON.parse(res.body) || {}; } catch (e) { return {}; }
+  }
+  return res.body || {};
+}
+
+/**
+ * 服务端记录一次部署结果（所有部署渠道都经过 upload_and_deploy 或 complete_deploy_upload）。
+ * 只写 product_events，失败不影响部署。DEPLOY_IN_PROGRESS（并发锁冲突，部署没开始）不记。
+ */
+async function recordServerDeployEvent(event, { success, userId, websiteId, uploadId, sizeBytes, startedAt, errorCode }) {
+  try {
+    if (!success && errorCode === 'DEPLOY_IN_PROGRESS') return;
+    const eventName = success ? 'deploy_success' : 'deploy_fail';
+    if (!SERVER_PRODUCT_EVENT_NAMES.has(eventName)) return;
+    const auth = authenticate(event);
+    const source = classifyDeploySource(event, auth);
+    const body = (event && event.body) || {};
+    const clientVisitor = String(body.visitorId || '').trim();
+    const visitorId = /^[A-Za-z0-9_-]{4,64}$/.test(clientVisitor)
+      ? clientVisitor
+      : `user:${String(userId || '')}`.slice(0, 64);
+    const props = { server: true, source, userId: userId ? String(userId) : null };
+    if (websiteId) props.websiteId = String(websiteId);
+    if (uploadId) props.uploadId = String(uploadId);
+    if (Number.isFinite(Number(sizeBytes))) props.sizeBytes = Number(sizeBytes);
+    if (startedAt) props.durationMs = Math.max(0, Date.now() - startedAt);
+    if (!success) props.errorCode = String(errorCode || 'DEPLOY_FAILED').slice(0, 64);
+    await ensureProductEventsTable();
+    await query(
+      `INSERT INTO product_events (event_name, visitor_id, page, props) VALUES (?, ?, ?, ?)`,
+      [eventName, visitorId, `server:${source}`, JSON.stringify(props)]
+    );
+  } catch (e) {
+    console.warn('部署埋点写入失败（不阻塞）:', e && e.message);
+  }
+}
 
 /**
  * 接收匿名产品事件（无需鉴权）。
@@ -5625,12 +6246,12 @@ async function handleGetProductFunnel(event) {
   await ensureProductEventsTable();
 
   const rows = await query(
-    `SELECT event_name, DATE(created_at) AS d, COUNT(*) AS cnt
+    `SELECT event_name, ${statTime.sqlStatDate('created_at')} AS d, COUNT(*) AS cnt
      FROM product_events
-     WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+     WHERE created_at >= ?
      GROUP BY event_name, d
      ORDER BY d, event_name`,
-    [days]
+    [statTime.statDayStartUtc(statTime.statDateKeyDaysAgo(days))]
   );
 
   // 汇总每个事件的总量
@@ -5644,9 +6265,32 @@ async function handleGetProductFunnel(event) {
     data: {
       days,
       totals,
-      daily: rows.map((r) => ({ event: r.event_name, date: r.d, count: Number(r.cnt) }))
+      daily: rows.map((r) => ({ event: r.event_name, date: statTime.toDateKey(r.d), count: Number(r.cnt) }))
     }
   });
+}
+
+// ── 管理后台 BI（只读）────────────────────────────────────────
+const adminBi = createAdminBiService({
+  query,
+  wwwWebsiteId: (process.env.WWW_WEBSITE_ID || 'EPX2UU43').trim().toUpperCase(),
+  scannerPathPredicate: (col) => scannerPathSqlPredicate(col)
+});
+
+/**
+ * 管理员：BI 汇总。纯 SELECT，不跑 ensure* / backfill；60 秒进程内缓存。
+ * body: { range: 7 | 30 | 90 }
+ */
+async function handleGetAdminBi(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  try {
+    const data = await adminBi.get(event.body && event.body.range);
+    return ok({ success: true, data });
+  } catch (e) {
+    console.error('BI 汇总失败:', e && e.message);
+    return ok({ success: false, message: 'BI 汇总失败' });
+  }
 }
 
 /**
@@ -6228,8 +6872,7 @@ async function handleTrackSiteEvent(event) {
   const referrerHost = normalizeReferrerHost(body.referrer || body.referer || '');
   const ipHash = hashAnalyticsValue(clientIp);
   const visitorHash = hashAnalyticsValue(body.visitorId || `${ipHash}:${ua}`);
-  const now = new Date();
-  const statDate = now.toISOString().slice(0, 10);
+  const statDate = statTime.statDateKey(Date.now());
 
   try {
     const raw = await writeRawAnalyticsEvent({
@@ -6431,7 +7074,7 @@ async function handleGetSiteStats(event) {
     const cleanDailyViews = await query(
       `SELECT stat_date, SUM(views) AS views
        FROM site_path_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
          AND ${scannerPathSqlPredicate('path')}
        GROUP BY stat_date
        ORDER BY stat_date ASC`,
@@ -6440,7 +7083,7 @@ async function handleGetSiteStats(event) {
     const dailyBadges = await query(
       `SELECT stat_date, badge_clicks
        FROM site_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
        ORDER BY stat_date ASC`,
       [websiteId, days - 1]
     );
@@ -6459,7 +7102,7 @@ async function handleGetSiteStats(event) {
     const referrers = await query(
       `SELECT referrer_host, SUM(views) AS views
        FROM site_referrer_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
        GROUP BY referrer_host
        ORDER BY views DESC
        LIMIT 10`,
@@ -6468,7 +7111,7 @@ async function handleGetSiteStats(event) {
     const paths = await query(
       `SELECT path, SUM(views) AS views
        FROM site_path_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
        GROUP BY path
        ORDER BY views DESC
        LIMIT 50`,
@@ -6477,7 +7120,7 @@ async function handleGetSiteStats(event) {
     const countries = await query(
       `SELECT country, SUM(views) AS views
        FROM site_country_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
          AND country <> 'UNKNOWN'
        GROUP BY country
        ORDER BY views DESC
@@ -6487,7 +7130,7 @@ async function handleGetSiteStats(event) {
     const provinces = await query(
       `SELECT country, province, SUM(views) AS views
        FROM site_province_daily_stats
-       WHERE website_id = ? AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       WHERE website_id = ? AND stat_date >= DATE_SUB(${STAT_TODAY_SQL}, INTERVAL ? DAY)
          AND country <> 'UNKNOWN' AND province <> 'UNKNOWN'
        GROUP BY country, province
        ORDER BY views DESC
@@ -6642,7 +7285,8 @@ function normalizeRawAnalyticsEvent(item) {
   const requestedType = normalizeAnalyticsEventType(item.type || item.eventType);
   const type = requestedType === 'view' && isScannerProbePath(pathValue) ? 'scanner_probe' : requestedType;
   const ts = Number(item.ts || 0) || Date.now();
-  const statDate = new Date(ts).toISOString().slice(0, 10);
+  // UTC+8 切日（见 statTime）；历史 UTC 日期行不回写。
+  const statDate = statTime.statDateKey(ts);
   const geoFromIp = lookupGeoByIp(rawIp);
   const country = normalizeCountry(item.country || item.countryCode);
   const province = normalizeProvince(item.province || item.region || item.subdivision);
@@ -7884,6 +8528,7 @@ async function handleCompleteDeployUpload(event) {
     }
 
     session.status = 'COMPLETING';
+    const startedAt = Date.now();
     const bucketCfg = await resolveBucketConfig(session.bucket_id || null);
     const provider = providerFor(bucketCfg);
     const chunks = [];
@@ -7900,6 +8545,10 @@ async function handleCompleteDeployUpload(event) {
     const digest = hasher.digest('hex');
     if (digest !== session.sha256) {
       await markDeployUploadFailed(session, 'UPLOAD_HASH_MISMATCH', '完整 ZIP 的 SHA-256 校验失败');
+      await recordServerDeployEvent(event, {
+        success: false, userId, websiteId: session.website_id, uploadId: session.upload_id,
+        sizeBytes: Number(session.total_size), startedAt, errorCode: 'UPLOAD_HASH_MISMATCH'
+      });
       return deployUploadError(400, 'UPLOAD_HASH_MISMATCH', '完整 ZIP 的 SHA-256 校验失败');
     }
 
@@ -7912,6 +8561,15 @@ async function handleCompleteDeployUpload(event) {
       inputProjectId: session.project_id
     });
     const payload = parseResultJson(deployResponse.body) || { success: false, message: '部署响应无效' };
+    await recordServerDeployEvent(event, {
+      success: !!payload.success,
+      userId,
+      websiteId: payload.websiteId || session.website_id,
+      uploadId: session.upload_id,
+      sizeBytes: Number(session.total_size),
+      startedAt,
+      errorCode: payload.code || (deployResponse.statusCode !== 200 ? `HTTP_${deployResponse.statusCode}` : 'DEPLOY_FAILED')
+    });
     if (!payload.success) {
       const terminal = payload.code === 'INVALID_STATIC_SITE' || payload.code === 'CONTENT_BLOCKED';
       if (terminal) {
@@ -7937,6 +8595,12 @@ async function handleCompleteDeployUpload(event) {
     return deployResponse;
   } catch (error) {
     console.error('完成分块部署失败:', error);
+    if (session && session.status === 'COMPLETING') {
+      await recordServerDeployEvent(event, {
+        success: false, userId, websiteId: session.website_id, uploadId: session.upload_id,
+        sizeBytes: Number(session.total_size), errorCode: error.code || 'UPLOAD_COMPLETE_FAILED'
+      });
+    }
     if (session) {
       await query(
         `UPDATE deploy_upload_sessions SET status = 'UPLOADING', error_message = ?, updated_at = NOW()
@@ -8004,13 +8668,24 @@ async function handleUploadAndDeploy(event) {
     return ok({ success: false, message: '上传内容不是有效的 Base64' });
   }
 
-  return deployZipBuffer({
+  const startedAt = Date.now();
+  const deployResponse = await deployZipBuffer({
     userId,
     buffer,
     inputWebsiteId,
     fileName,
     inputProjectId
   });
+  const payload = deployResponsePayload(deployResponse);
+  await recordServerDeployEvent(event, {
+    success: !!payload.success,
+    userId,
+    websiteId: payload.websiteId || inputWebsiteId,
+    sizeBytes: buffer.length,
+    startedAt,
+    errorCode: payload.code || (deployResponse && deployResponse.statusCode !== 200 ? `HTTP_${deployResponse.statusCode}` : 'DEPLOY_FAILED')
+  });
+  return deployResponse;
 }
 
 // 默认 3 分钟：长于单次部署（函数超时 120s），又不会让崩溃实例把站点锁太久。
@@ -8544,3 +9219,8 @@ exports._getGeoipForTest = getGeoip;
 exports.acquireWebsiteDeployLock = acquireWebsiteDeployLock;
 exports.releaseWebsiteDeployLock = releaseWebsiteDeployLock;
 exports.deployZipToBucket = deployZipToBucket;
+exports.PRODUCT_EVENT_NAMES = PRODUCT_EVENT_NAMES;
+exports.classifyDeploySource = classifyDeploySource;
+exports._adminBiForTest = adminBi;
+exports._statTimeForTest = statTime;
+exports._adminBiLibForTest = adminBiLib;

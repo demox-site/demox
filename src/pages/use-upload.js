@@ -14,7 +14,6 @@ import {
   isSupportedSpreadsheet
 } from "@/lib/spreadsheet-to-site";
 import { buildHtmlSiteZipFile, isSupportedHtml } from "@/lib/html-to-site";
-import { track } from "@/lib/track";
 import { validateStaticZipFile } from "@/lib/static-zip-validator";
 
 /**
@@ -226,7 +225,7 @@ export function useUpload({
           url: deployResult.url || "",
           name: safeFileName
         });
-        track("deploy_success", { fileName: safeFileName });
+        // deploy_success 由服务端在部署完成时记录（带 visitorId），这里不再上报，避免重复计数
         toast({
           title: t.toastDeploySuccessTitle,
           description: t.toastDeploySuccessDesc
@@ -237,7 +236,7 @@ export function useUpload({
       }
     } catch (error) {
       console.error("Deployment failed:", error);
-      track("deploy_fail", { fileName: file?.name, error: error?.message });
+      // deploy_fail 由服务端记录
       if (websiteId) {
         setWebsites((prev) =>
           prev.map((w) => (w._id === websiteId ? { ...w, status: "failed" } : w))

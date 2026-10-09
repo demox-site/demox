@@ -73,7 +73,8 @@ test('forwards every chunked deploy action without dropping fields', async () =>
     const result = await api.main(deployEvent(payload));
     assert.equal(result.statusCode, 200);
     assert.equal(upstream.options().path, '/upload');
-    assert.deepEqual(upstream.body(), payload);
+    // mcp-api 只额外加 deploySource: 'mcp'（website-api 用它统计部署渠道）
+    assert.deepEqual(upstream.body(), { ...payload, deploySource: 'mcp' });
     mock.restoreAll();
   }
 });
@@ -92,7 +93,8 @@ test('keeps the legacy deploy request compatible', async () => {
     action: 'upload_and_deploy',
     fileContentBase64: 'UEsDBAo=',
     fileName: 'legacy.zip',
-    websiteId: 'LEGACY01'
+    websiteId: 'LEGACY01',
+    deploySource: 'mcp'
   });
 });
 
@@ -124,5 +126,5 @@ test('prefers in-process backend invoker over HTTP', async () => {
   assert.deepEqual(JSON.parse(result.body), { inProcess: true });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://website.example.test/upload');
-  assert.deepEqual(calls[0].data, payload);
+  assert.deepEqual(calls[0].data, { ...payload, deploySource: 'mcp' });
 });

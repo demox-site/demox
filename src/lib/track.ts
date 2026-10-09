@@ -3,27 +3,12 @@
  * visitor_id 存 localStorage，跨页面/会话复用，用于串联同一访客的漏斗路径。
  */
 import { websiteApi } from "@/api";
-
-const VISITOR_ID_KEY = "demox_visitor_id";
-
-function getVisitorId(): string {
-  try {
-    let id = localStorage.getItem(VISITOR_ID_KEY);
-    if (!id) {
-      id =
-        Date.now().toString(36) +
-        Math.random().toString(36).slice(2, 10);
-      localStorage.setItem(VISITOR_ID_KEY, id);
-    }
-    return id;
-  } catch {
-    return "anonymous";
-  }
-}
+import { getVisitorId } from "@/lib/visitor-id";
 
 /**
  * 上报产品事件（fire-and-forget，绝不阻塞/抛错）。
- * @param eventName 事件名（landing_view / deploy_click / deploy_success / deploy_fail / example_click / feedback_copy）
+ * @param eventName 事件名（landing_view / deploy_click / intent_guide_click / example_click / feedback_copy / usecase_click）。
+ * 新增事件要同步加到 website-api 的 PRODUCT_EVENT_NAMES。deploy_success / deploy_fail 由服务端记录，前端不要再报。
  * @param props 附加属性
  */
 export function track(

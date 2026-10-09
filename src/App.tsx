@@ -29,7 +29,6 @@ import { authApi, tokenManager } from "./api";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
 import SitesPage from "./pages/console/SitesPage.jsx";
-import AdminDashboard from "./pages/AdminDashboard";
 import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
 import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
@@ -37,8 +36,12 @@ import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import FunctionsPage from "./pages/console/FunctionsPage";
 import UsagePage from "./pages/console/UsagePage";
-import SiteAnalyticsPage from "./pages/console/SiteAnalyticsPage";
 import SiteSettingsPage from "./pages/console/SiteSettingsPage.jsx";
+
+// 管理后台和站点分析页带图表库（recharts），按需加载，不进 www 主包。
+const AdminDashboard = React.lazy(() => import("./pages/AdminDashboard"));
+const SiteAnalyticsPage = React.lazy(() => import("./pages/console/SiteAnalyticsPage"));
+const lazyFallback = <div className="min-h-[60vh]" />;
 
 const history = createBrowserHistory();
 window._WEAPPS_HISTORY = history;
@@ -140,7 +143,7 @@ const App: React.FC = () => {
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId/analytics"
-                      element={<SiteAnalyticsPage />}
+                      element={<React.Suspense fallback={lazyFallback}><SiteAnalyticsPage /></React.Suspense>}
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId/functions"
@@ -169,7 +172,7 @@ const App: React.FC = () => {
                       path="admin"
                       element={<Navigate to="dashboard" replace />}
                     />
-                    <Route path="admin/:section" element={<AdminDashboard />} />
+                    <Route path="admin/:section" element={<React.Suspense fallback={lazyFallback}><AdminDashboard /></React.Suspense>} />
                   </Route>
 
                   {/* 旧地址兼容重定向 */}
