@@ -11,6 +11,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -21,9 +22,9 @@ import { useLanguage } from "@/hooks/use-language";
 import { useInkPalette } from "@/lib/ink-palette";
 import { formatBytes } from "@/lib/utils";
 import { shortDateLabel } from "@/lib/stat-date";
-import type { AdminBiData, BiTopItem } from "./types";
+import type { AdminBiData, BiSeriesPoint, BiTopItem } from "./types";
 import { biText, fill, sourceLabel, type BiText } from "./bi-i18n";
-import { fmtNum, fmtPct } from "./format";
+import { fmtNum, fmtPct, fmtSinceDate } from "./format";
 
 /**
  * 配色规则（设计）：全站只用黑 / 白 / 灰；绿色只表示变好或成功，其他颜色一律不用。
@@ -50,6 +51,78 @@ function BarEndLabel(props: { x?: number | string; y?: number | string; width?: 
   return (
     <text x={Number(x) + Number(width || 0) + 6} y={Number(y) + Number(height || 0) / 2 + dy} dy={4} fill={color} fontSize={11} fontWeight={500}>
       {text}
+    </text>
+  );
+}
+
+/**
+ * 部署柱状图的悬停提示：按这天的数据来源说清楚，补算的日子只给总数，没有记录的日子写「暂无数据」，不写 0。
+ */
+function DeployTooltip(props: {
+  active?: boolean;
+  payload?: Array<{ payload?: BiSeriesPoint & { label: string } }>;
+  t: BiText;
+  n: (v: number | null | undefined) => string;
+  style: React.CSSProperties;
+}) {
+  const { active, payload, t, n, style } = props;
+  const p = active && payload && payload[0] ? payload[0].payload : undefined;
+  if (!p) return null;
+  const rows: Array<[string, string]> = [];
+  if (p.deploySuccess != null) rows.push([t.sSuccess, n(p.deploySuccess)]);
+  if (p.deployFail != null) rows.push([t.sFail, n(p.deployFail)]);
+  if (p.deployDerived != null) rows.push([t.sDerived, n(p.deployDerived)]);
+  // 开始那天画的是补算时，埋点已记到的数也写出来（只是提示，不叠到柱子上）
+  if (p.deploySource === "mixed" && p.deployDerived != null && p.deployLiveTotal != null) rows.push([t.sLiveSoFar, n(p.deployLiveTotal)]);
+  return (
+    <div style={{ ...style, padding: "6px 10px" }} data-deploy-tooltip={p.deploySource || "events"}>
+      <div style={{ marginBottom: 2, fontWeight: 500 }}>{p.label}</div>
+      {rows.length ? rows.map(([k, v]) => (
+        <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <span>{k}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{v}</span>
+        </div>
+      )) : <div>{t.noData}</div>}
+    </div>
+  );
+}
+
+/**
+ * 分界线上的小字：放在图顶部留白里（不压柱子）。优先标在线左侧（指向补算的日子）；
+ * 左边放不下标右侧；两边都放不下（手机 + 英文）就折成两行，放在空间大的一侧，保证整句完整显示。
+ */
+function DividerLabel(props: { viewBox?: { x?: number; y?: number }; text: string; color: string; chartWidth: number }) {
+  const { viewBox, text, color, chartWidth } = props;
+  if (!viewBox || viewBox.x == null || viewBox.y == null) return null;
+  const x = viewBox.x;
+  const y = viewBox.y;
+  // 10px 字：中日韩字符约 10px，其他约 5.6px
+  const measure = (str: string) => [...str].reduce((w, ch) => w + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 10 : 5.6), 0);
+  const leftRoom = x - 8;
+  const rightRoom = chartWidth - x - 8;
+  const one = measure(text);
+  let lines = [text];
+  let left = one <= leftRoom || (one > rightRoom && leftRoom >= rightRoom);
+  if (one > leftRoom && one > rightRoom) {
+    // 折两行：在中间附近的空格处断开（中文没有空格就按字数对半）
+    const words = text.split(" ");
+    let cut = Math.ceil(text.length / 2);
+    if (words.length > 1) {
+      let acc = 0;
+      for (let i = 0; i < words.length - 1; i += 1) {
+        acc += words[i].length + 1;
+        if (acc >= text.length / 2) { cut = acc; break; }
+      }
+    }
+    lines = [text.slice(0, cut).trim(), text.slice(cut).trim()];
+    left = leftRoom >= rightRoom;
+  }
+  const lineH = 12;
+  return (
+    <text x={left ? x - 6 : x + 6} y={y - 6 - (lines.length - 1) * lineH} textAnchor={left ? "end" : "start"} fill={color} fontSize={10}>
+      {lines.map((ln, i) => (
+        <tspan key={i} x={left ? x - 6 : x + 6} dy={i === 0 ? 0 : lineH}>{ln}</tspan>
+      ))}
     </text>
   );
 }
@@ -154,6 +227,29 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const sources = data.deploySources.map((s) => ({ ...s, label: sourceLabel(t, s.source) }));
   const failRate = data.health.deployFailRate;
   const lag = data.health.analyticsLagMinutes;
+  // 部署：埋点开始日期在窗口内时，图上方写「部署从 X 开始统计」，渠道 / 失败率也注明起始日
+  const trackedSince = k.deploys?.trackedSince ?? data.tracking?.deploys ?? null;
+  const sinceInWindow = !!trackedSince && series.length > 0 && trackedSince > series[0].date;
+  const sinceText = trackedSince ? fmtSinceDate(trackedSince, language) : "";
+  const hasDerived = series.some((p) => p.deployDerived != null);
+  // 分界线小字要知道图有多宽（手机上决定标在哪一侧、要不要折行）
+  const deployChartRef = useRef<HTMLDivElement | null>(null);
+  const [deployChartWidth, setDeployChartWidth] = useState(640);
+  useEffect(() => {
+    const el = deployChartRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setDeployChartWidth(el.clientWidth || 640));
+    ro.observe(el);
+    setDeployChartWidth(el.clientWidth || 640);
+    return () => ro.disconnect();
+  }, []);
+  // 分界线画在第一根「按埋点画」的柱子左边（之前有补算时才画）。
+  // 开始那天如果画的是补算（补算 > 埋点），它算在线的左边，线挪到下一天。
+  const boundary = hasDerived ? series.find((p) => p.deploySuccess != null) : undefined;
+  const deployLast = (() => {
+    for (let i = series.length - 1; i >= 0; i -= 1) if (series[i].deploySuccess != null) return i;
+    return -1;
+  })();
   const last = series.length - 1;
   const lp = series[last];
   // 两条线尾标注互相避让：末值大的标在上方，小的标在下方
@@ -226,24 +322,36 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         <SectionHead index={2} title={t.secUsage} desc={t.secUsageDesc} />
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
           <Panel title={t.cDeploysDaily}>
-            <div className="h-64">
+            {sinceInWindow ? (
+              <div className="-mt-2 mb-2 text-[11px] text-zinc-500" data-testid="bi-deploys-since">{fill(t.deploysSince, { d: sinceText })}</div>
+            ) : null}
+            <div className="h-64" data-testid="bi-deploys-chart" ref={deployChartRef}>
               <ResponsiveContainer>
-                <BarChart data={series} margin={{ left: -18, right: 76, top: 8 }}>
+                <BarChart data={series} margin={{ left: -18, right: 76, top: hasDerived ? 34 : 8 }}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: ink.wash }} />
+                  <Tooltip content={<DeployTooltip t={t} n={n} style={tooltipStyle} />} cursor={{ fill: ink.wash }} />
+                  {/* 补算（站点记录 / 日志回填）= 只有虚线描边的空心柱，只有总数，不拆成功 / 失败。没有记录的日子值是 null，不画柱，也不画 0。
+                      开始那天后端只给一种（埋点或补算），所以这里的堆叠不会出现「补算上再叠埋点」 */}
+                  <Bar dataKey="deployDerived" name={t.sDerived} stackId="d" fill="transparent" stroke={LOW} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false} />
                   {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
                   <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={SOFT} />} />
+                    label={<BarEndLabel lastIndex={deployLast} text={t.sSuccess} color={SOFT} />} />
                   <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={LOW} stroke={MID} strokeWidth={0.75} radius={[3, 3, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sFail} color={MID} dy={-8} />} />
+                    label={<BarEndLabel lastIndex={deployLast} text={t.sFail} color={MID} dy={-8} />} />
+                  {boundary ? (
+                    <ReferenceLine x={boundary.label} position="start" stroke={MID} strokeWidth={1} ifOverflow="extendDomain"
+                      label={<DividerLabel text={t.derivedDivider} color={AXIS} chartWidth={deployChartWidth} />} />
+                  ) : null}
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            {hasDerived ? <div className="mt-2 text-[11px] text-zinc-500">{t.derivedNote}</div> : null}
           </Panel>
           <div className="grid gap-4">
             <Panel title={t.cSources}>
+              {sinceInWindow ? <div className="-mt-2 mb-2 text-[11px] text-zinc-500">{fill(t.since, { d: sinceText })}</div> : null}
               {sources.length ? (
                 <ul className="space-y-2">
                   {sources.map((s) => {
@@ -321,7 +429,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
               {fmtPct(failRate)}
             </div>
             <div className="mt-1 text-xs text-zinc-500">
-              {k.deploys ? `${t.sSuccess} ${n(k.deploys.success)} · ${t.sFail} ${n(k.deploys.fail)}` : t.unavailable}
+              {k.deploys ? `${t.sSuccess} ${n(k.deploys.success)} · ${t.sFail} ${n(k.deploys.fail)}${sinceInWindow ? ` · ${fill(t.since, { d: sinceText })}` : ""}` : t.unavailable}
             </div>
           </Panel>
           <Panel title={t.cErrors}>

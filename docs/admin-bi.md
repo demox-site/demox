@@ -61,3 +61,48 @@
 
 - 后端：`demox functions alias set production --id EPX2UU43 --slug website --version=11`（mcp 同理切回发布前的版本号，先记下来）。回滚后已写入的服务端部署事件留在表里，不影响旧版本。
 - 前端：revert 合并提交，CI 重新部署 www。
+
+## 部署历史（埋点之前的日子）
+
+服务端部署埋点（`deploy_success` / `deploy_fail`，`page` 以 `server:` 开头）从 website v12 上线（2026-10-09 13:25 UTC+8）才开始写，所以在这之前「部署（按天）」只有今天有数。
+
+### 读时补算（已实现，不写库）
+
+`get_admin_bi` 先查每个埋点第一次出现的时间（`MIN(created_at)`，部署只看 `server:` 行）。窗口里早于这个时间的部分，按站点记录**读时补算**：
+
+| 来源 | 能回溯到 | 说明 |
+|---|---|---|
+| `websites.created_at` | 平台上线起（被删的站点除外） | 新站点只在第一次部署成功时插入，每个新站点 = 当天至少 1 次成功部署 |
+| `deploy_upload_sessions`（`COMPLETED`）的 `updated_at` | 约 7 天（结束 7 天后被清理） | 分块上传完成 = 一次成功部署，能补上老站点的重部署 |
+
+两张表按（UTC+8 日期, 站点）并集去重，**每站每天最多算 1 次，是下限**；只有总数，没有成功 / 失败，也没有渠道。
+
+返回值：
+- `series[].deploySource`：`events`（埋点，0 就是 0）/ `derived`（补算，只有 `deployDerived`）/ `mixed`（开始那天：埋点 ≥ 补算画埋点，否则画补算，取较大值不相加）/ `none`（没有任何记录，三个值都是 `null`，图上留空）。
+- `series[].deploySplitKnown`：这天成功 / 失败是否完整可知。补算的日子 `deploySuccess` / `deployFail` 是 `null`，前端不按比例拆。
+- `kpis.deploys.prev` / `prevSuccessRate`：上期没被埋点完整覆盖时是 `null`，前端不画涨跌箭头；`trackedSince`、`complete`、`derivedTotal` 给出口径。
+- `series[].landing` / `deployClick`：同样，早于各自埋点开始的日子是 `null`。`kpis.funnel.prevLanding` / `prevDeployClick` 同理。
+- `tracking`：各埋点开始日期。
+
+图上：补算（站点记录 / 日志回填）的柱子只有虚线描边；第一天有埋点的位置画一条细竖线，小字「此前为根据站点记录和日志补算」；图上方小字「部署从 MM-DD 开始统计」。没有记录的日子不画柱子，也不画 0。
+
+查开始时间失败时（表 / 权限问题）退回旧口径：窗口内每天都按埋点算，并在 `warnings` 里写 `trackingStart: …`。
+
+### 没有用的来源
+
+- `product_events` 里旧前端上报的 `deploy_success` / `deploy_fail`（`page` 不是 `server:`，2026-07 起）：只有网页上传，且不带站点 ID，和上面两张表合并会重复计数，所以不用。
+- `websites.updated_at`：改名、改可见性等也会更新，而且只留最后一次，不能当部署。
+
+### 日志回填（v14，Chief 2026-10-09 批准）
+
+CLS（`SCF_logtopic_yorder`）只保留 **7 天**，滚动过期。website 函数（`demox-user-nodejs`）每次部署成功会留一条带 `uploadedCount` 的响应，按 SCF RequestId 去重后按 UTC+8 日期数出**成功次数**。请求事件没有记录请求体和请求头，所以**没有渠道**，失败也认不出，都写 `NULL`（未知）。
+
+- 数据：`/workspace/v14/log-backfill.json`（只有按天聚合）。审计时下载的副本（10-02 13:10 至 10-09 12:20）+ 线上 CLS 只读补 12:20 至 13:25:21（v12 切 production，埋点开始）。
+- 覆盖：2026-10-02 13:10:03 至 2026-10-09 13:25:21（UTC+8）。10-02、10-09 是部分覆盖。
+- 按天成功次数：10-02 0、10-03 0、10-04 24、10-05 18、10-06 22、10-07 136、10-08 124、10-09 26（13:25:21 之前）。
+- 迁移 `022_add_deploy_daily_backfill.sql`：**只建表** `deploy_daily_backfill`，不动任何已有表。
+- 一次性写入 `migrations/seeds/022_seed_deploy_daily_backfill.sql`：8 行，`source='log_backfill'`，`fail` / `channel` 为 `NULL`，`INSERT IGNORE` 可重复执行。
+- 读：埋点之前的每一天取 `max(站点记录补算, 日志回填)`，从不相加；`series[].deployDerivedFrom` 标出取的是 `sites` 还是 `logs`。表不存在时安静跳过（只用站点记录补算）。
+- 埋点开始那天只画一种：埋点总数 ≥ 补算时画埋点（成功 / 失败），否则画补算总数；`deployLiveTotal` 给出埋点已记到的数，只在提示里显示。
+- 发布顺序：执行 022 → 执行 seed → 发 website 后端 → 合前端。
+- 回滚：`DELETE FROM deploy_daily_backfill WHERE source = 'log_backfill';` 或 `DROP TABLE deploy_daily_backfill;`，看板自动退回只用站点记录补算。
