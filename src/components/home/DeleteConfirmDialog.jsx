@@ -1,38 +1,31 @@
 import React from "react";
-// @ts-ignore;
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle
-} from "@/components/ui";
+import { Trash2 } from "lucide-react";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 
 /**
  * DeleteConfirmDialog
- * 删除站点的二次确认弹窗。
+ * 删除站点的二次确认弹窗：墨色实心按钮 + 警告图标，按钮写清后果（「删除站点」）。
  */
 export default function DeleteConfirmDialog({ open, onOpenChange, onConfirm, t }) {
+  const [busy, setBusy] = React.useState(false);
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t.deleteConfirmTitle}</AlertDialogTitle>
-          <AlertDialogDescription>{t.deleteConfirmDesc}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t.cancel}</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            onClick={onConfirm}
-          >
-            {t.deleteConfirmButton}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmDestructive
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t.deleteConfirmTitle}
+      description={t.deleteConfirmDesc}
+      confirmLabel={t.deleteConfirmButton}
+      cancelLabel={t.cancel}
+      icon={<Trash2 className="mr-2 h-4 w-4" aria-hidden />}
+      busy={busy}
+      onConfirm={async () => {
+        setBusy(true);
+        try {
+          await onConfirm();
+        } finally {
+          setBusy(false);
+        }
+      }}
+    />
   );
 }

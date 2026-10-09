@@ -22,6 +22,7 @@
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
     "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
+    "test:mobile-overflow": "node --experimental-websocket --test scripts/check-mobile-overflow.test.mjs",
     "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs",
     "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
     "test:admin-audit": "node --test scf-code/website-api/admin-audit.test.cjs",

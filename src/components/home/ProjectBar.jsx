@@ -193,7 +193,7 @@ export default function ProjectBar({
                         const archived = await onArchiveProject(activeProject);
                         if (archived && fallbackProject) onSelectProject(fallbackProject.id);
                       }}
-                      className="h-8 text-zinc-500 hover:bg-red-950/30 hover:text-red-400"
+                      className="h-8 text-zinc-500 hover:bg-[var(--stitch-blue-soft)] hover:text-[var(--stitch-ink)]"
                     >
                       {activeBusy ? (
                         <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />

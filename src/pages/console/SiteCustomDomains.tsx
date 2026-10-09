@@ -1,13 +1,5 @@
 import React from "react";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
   Badge,
   Button,
   Dialog,
@@ -22,6 +14,7 @@ import {
 } from "@/components/ui";
 import { Check, Copy, Globe, Loader2, Plus, Trash2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 import { websiteApi, type ProjectCustomDomain } from "@/api";
 import { CUSTOM_DOMAIN_CNAME_TARGET } from "@/lib/official-domains";
 import { translations } from "../home-translations";
@@ -60,6 +53,7 @@ const texts = {
     statusPending: "等待 DNS",
     statusActive: "已生效",
     remove: "移除",
+    removeConfirm: "移除域名",
     removeTitle: "移除这个域名？",
     removeDesc: "域名服务商里的 CNAME 需要你自己删。",
     memberHint: "只有项目所有者和管理员可以改域名。",
@@ -98,6 +92,7 @@ const texts = {
     statusPending: "Waiting for DNS",
     statusActive: "Active",
     remove: "Remove",
+    removeConfirm: "Remove domain",
     removeTitle: "Remove this domain?",
     removeDesc: "Delete the CNAME at your DNS provider yourself.",
     memberHint: "Only project owners and admins can change domains.",
@@ -457,18 +452,16 @@ export default function SiteCustomDomains({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={Boolean(removeTarget)} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}>
-        <AlertDialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t.removeTitle}</AlertDialogTitle>
-            <AlertDialogDescription className="text-[var(--stitch-muted)]">{t.removeDesc}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{shared.cancel || "Cancel"}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void handleRemoveDomain()}>{t.remove}</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDestructive
+        open={Boolean(removeTarget)}
+        onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}
+        title={t.removeTitle}
+        description={t.removeDesc}
+        confirmLabel={t.removeConfirm}
+        cancelLabel={shared.cancel || "Cancel"}
+        busy={Boolean(removeTarget && busyKey === `remove:${removeTarget.id}`)}
+        onConfirm={() => handleRemoveDomain()}
+      />
     </section>
   );
 }

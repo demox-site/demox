@@ -26,8 +26,9 @@
     --accent: 210 40% 96.1%;
     --accent-foreground: 222.2 47.4% 11.2%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    /* 坏消息不用红色（设计原则 10-09）：危险操作和报错用墨色，配图标和文字表达。 */
+    --destructive: 0 0% 7%;
+    --destructive-foreground: 0 0% 98%;
 
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
@@ -38,16 +39,17 @@
     /* Brand & status — shared across light/dark (use sparingly). */
     --brand: 142 71% 40%;
     --brand-foreground: 0 0% 100%;
-    --success: 142 71% 40%;
+    /* 唯一的彩色：只表示成功 / 变好。亮色下加深到 green-700，小字在白底上对比度 ≥ 4.5 */
+    --success: 142 72% 29%;
     --success-foreground: 0 0% 100%;
     --link: 142 71% 35%;
     --warning: 38 92% 45%;
     --warning-foreground: 24 10% 10%;
 
-    /* Workflow step accents */
-    --step-1: 142 71% 40%;
-    --step-2: 199 89% 48%;
-    --step-3: 280 68% 52%;
+    /* Workflow step accents — 墨色三档（原来是绿 / 蓝 / 紫，设计原则第 7 节要求改成墨色） */
+    --step-1: 0 0% 7%;
+    --step-2: 0 0% 32%;
+    --step-3: 0 0% 52%;
 
     /*
      * Neutral scale (zinc / black / white).
@@ -124,8 +126,8 @@
     --accent: 217.2 32.6% 17.5%;
     --accent-foreground: 210 40% 98%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 0% 96%;
+    --destructive-foreground: 0 0% 4%;
 
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
@@ -139,9 +141,9 @@
     --warning: 45 93% 58%;
     --warning-foreground: 240 10% 3.9%;
 
-    --step-1: 142 69% 58%;
-    --step-2: 199 89% 58%;
-    --step-3: 280 68% 62%;
+    --step-1: 0 0% 96%;
+    --step-2: 0 0% 72%;
+    --step-3: 0 0% 52%;
 
     /* Neutral scale — identity (true Tailwind zinc values, original look). */
     --black: 0 0 0;
@@ -238,7 +240,7 @@
     background:
       linear-gradient(180deg, var(--stitch-surface-strong), var(--stitch-surface)),
       var(--stitch-bg);
-    box-shadow: 18px 0 60px rgba(25, 45, 90, 0.08);
+    box-shadow: 18px 0 60px rgba(0, 0, 0, 0.08);
     backdrop-filter: blur(22px);
   }
 
@@ -279,7 +281,7 @@
     background: var(--stitch-surface);
     padding: 0.75rem;
     text-align: left;
-    box-shadow: 0 12px 35px rgba(25, 45, 90, 0.08);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
   }
 
   .stitch-brand-mark {
@@ -441,13 +443,13 @@
     border: 1px solid var(--stitch-line);
     border-radius: 1.45rem;
     background: var(--stitch-surface);
-    box-shadow: 0 14px 40px rgba(25, 45, 90, 0.08);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.08);
     transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
   }
 
   .stitch-card:hover {
     border-color: color-mix(in srgb, var(--stitch-blue) 38%, var(--stitch-line));
-    box-shadow: 0 20px 58px rgba(25, 45, 90, 0.14);
+    box-shadow: 0 20px 58px rgba(0, 0, 0, 0.14);
     transform: translateY(-2px);
   }
 

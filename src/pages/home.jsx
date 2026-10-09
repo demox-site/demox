@@ -85,12 +85,12 @@ export default function Home({ style }) {
   return (
     <div style={style} className="stitch-page">
       {upload.successBanner && (
-        <div className="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-5">
+        <div className="mb-6 rounded-2xl border border-success/30 bg-success/5 p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
               <div>
-                <p className="font-medium text-emerald-300">
+                <p className="font-medium text-success">
                   {lang === "zh" ? "部署成功" : "Deployed successfully"}
                 </p>
                 <a
@@ -113,7 +113,7 @@ export default function Home({ style }) {
             </button>
           </div>
 
-          <div className="mt-4 border-t border-emerald-500/20 pt-4">
+          <div className="mt-4 border-t border-success/20 pt-4">
             <p className="mb-2 flex items-center gap-1.5 text-sm text-[var(--stitch-ink)]">
               <MessageSquare className="h-4 w-4 text-[var(--stitch-muted)]" />
               {lang === "zh"

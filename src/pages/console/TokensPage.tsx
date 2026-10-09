@@ -11,6 +11,7 @@ import {
 } from "@/components/ui";
 import { KeyRound, Copy, Trash2, Plus, Terminal, Check, AlertTriangle } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 import { websiteApi } from "@/api";
 
 const texts = {
@@ -30,7 +31,10 @@ const texts = {
     revoke: "吊销",
     copy: "复制",
     copied: "已复制",
-    revokeConfirm: "确定吊销此令牌？吊销后使用该令牌的 CLI/MCP 将无法部署。",
+    revokeTitle: "吊销这个令牌？",
+    revokeConfirm: "吊销后，使用该令牌的 CLI / MCP 将无法部署，且无法恢复。",
+    revokeButton: "吊销令牌",
+    cancel: "取消",
     revokeSuccess: "令牌已吊销",
     revokeFailed: "吊销失败",
     createFailed: "创建失败",
@@ -58,7 +62,10 @@ const texts = {
     revoke: "Revoke",
     copy: "Copy",
     copied: "Copied",
-    revokeConfirm: "Revoke this token? CLI/MCP clients using it will no longer be able to deploy.",
+    revokeTitle: "Revoke this token?",
+    revokeConfirm: "CLI / MCP clients using it will no longer be able to deploy. This cannot be undone.",
+    revokeButton: "Revoke token",
+    cancel: "Cancel",
     revokeSuccess: "Token revoked",
     revokeFailed: "Revoke failed",
     createFailed: "Create failed",
@@ -140,8 +147,9 @@ const TokensPage: React.FC = () => {
     }
   };
 
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+
   const handleRevoke = async (id: string) => {
-    if (!window.confirm(t.revokeConfirm)) return;
     setRevokingId(id);
     try {
       const res = await websiteApi.revokeToken(id);
@@ -155,6 +163,7 @@ const TokensPage: React.FC = () => {
       toast({ title: t.revokeFailed, description: (e as Error)?.message, variant: "destructive" });
     } finally {
       setRevokingId(null);
+      setConfirmRevokeId(null);
     }
   };
 
@@ -184,9 +193,9 @@ const TokensPage: React.FC = () => {
       </div>
 
       {created && (
-        <Card className="stitch-panel mb-6 border-amber-500/40">
+        <Card className="stitch-panel mb-6 border-[var(--stitch-ink)]">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-amber-400">
+            <CardTitle className="flex items-center gap-2 text-[var(--stitch-ink)]">
               <AlertTriangle className="w-4 h-4" />
               {created.name}
             </CardTitle>
@@ -277,8 +286,8 @@ const TokensPage: React.FC = () => {
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full font-mono ${
                           inactive
-                            ? "text-red-400 bg-red-500/10"
-                            : "text-green-400 bg-green-500/10"
+                            ? "text-[var(--stitch-muted)] bg-[var(--stitch-blue-soft)]"
+                            : "text-success bg-success/10"
                         }`}
                       >
                         {tok.revoked ? t.revoke : expired ? t.expired : t.active}
@@ -294,9 +303,9 @@ const TokensPage: React.FC = () => {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => handleRevoke(tok.id)}
+                        onClick={() => setConfirmRevokeId(tok.id)}
                         disabled={tok.revoked || revokingId === tok.id}
-                        className="text-destructive hover:text-destructive"
+                        className="text-[var(--stitch-ink)]"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>
@@ -308,6 +317,17 @@ const TokensPage: React.FC = () => {
           )}
         </CardContent>
       </Card>
+      <ConfirmDestructive
+        open={confirmRevokeId != null}
+        onOpenChange={(open) => { if (!open) setConfirmRevokeId(null); }}
+        title={t.revokeTitle}
+        description={t.revokeConfirm}
+        confirmLabel={t.revokeButton}
+        cancelLabel={t.cancel}
+        icon={<Trash2 className="mr-2 h-4 w-4" aria-hidden />}
+        busy={revokingId != null}
+        onConfirm={() => (confirmRevokeId ? handleRevoke(confirmRevokeId) : undefined)}
+      />
     </div>
   );
 };

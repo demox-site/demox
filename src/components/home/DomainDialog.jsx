@@ -86,7 +86,7 @@ export default function DomainDialog({
                   size="sm"
                   onClick={onUnbind}
                   disabled={domainBusy}
-                  className="rounded-full border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                  className="rounded-full border-[var(--stitch-line)] text-[var(--stitch-ink)] hover:bg-[var(--stitch-blue-soft)]"
                 >
                   {domainBusy ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -104,7 +104,7 @@ export default function DomainDialog({
                 <div
                   className={`flex flex-1 items-center overflow-hidden rounded-full border ${
                     domainCheck.status === "taken" || domainCheck.status === "invalid"
-                      ? "border-red-400"
+                      ? "border-[var(--stitch-ink)] border-dashed"
                       : domainCheck.status === "ok"
                       ? "border-[var(--stitch-ink)]"
                       : "border-[var(--stitch-line)]"
@@ -142,13 +142,13 @@ export default function DomainDialog({
                 </p>
               )}
               {domainCheck.status === "ok" && domainInput.trim() && (
-                <p className="flex items-center gap-1 text-xs text-emerald-600">
+                <p className="flex items-center gap-1 text-xs text-success">
                   <Check className="h-3 w-3" />
                   {t.domainAvailable}
                 </p>
               )}
               {(domainCheck.status === "taken" || domainCheck.status === "invalid") && (
-                <p className="flex items-center gap-1 text-xs text-red-500">
+                <p role="alert" className="flex items-center gap-1 text-xs text-[var(--stitch-ink)]">
                   <XCircle className="h-3 w-3" />
                   {domainCheck.message || (domainCheck.status === "taken" ? t.domainTaken : t.domainHint)}
                 </p>

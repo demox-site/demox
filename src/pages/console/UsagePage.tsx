@@ -9,7 +9,7 @@ import {
   Progress
 } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
-import { Gauge, HardDrive, FileStack, Rocket, Crown } from "lucide-react";
+import { AlertCircle, Gauge, HardDrive, FileStack, Rocket, Crown } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { ContactWebmaster } from "@/components/ContactWebmaster";
 
@@ -171,7 +171,7 @@ const UsagePage: React.FC = () => {
                     {t.membershipRemaining.replace("{days}", String(data.membership.remainingDays))}
                   </p>
                 ) : !loading && data?.membership?.proExpired ? (
-                  <p className="mt-1 text-xs text-red-400">{t.membershipExpired}</p>
+                  <p className="mt-1 flex items-center gap-1 text-xs text-[var(--stitch-ink)]"><AlertCircle className="h-3.5 w-3.5" aria-hidden />{t.membershipExpired}</p>
                 ) : null}
               </div>
             </div>
