@@ -10,7 +10,7 @@ export interface BiDelta {
  * 部署按天的数据来源：
  * - events：服务端埋点，success / fail 是真实值（0 就是 0）；
  * - derived：埋点前按站点记录补算，只有 deployDerived 总数（不拆成功 / 失败，不按比例分）；
- * - mixed：埋点开始那天，开始前补算 + 开始后埋点；
+ * - mixed：埋点开始那天，只画一种：埋点总数 ≥ 补算时画埋点，否则画补算总数（取较大值，不相加）；
  * - none：没有任何记录，图上留空，不画 0。
  */
 export type BiDeploySource = "events" | "derived" | "mixed" | "none";
@@ -27,6 +27,10 @@ export interface BiSeriesPoint {
   deploySource?: BiDeploySource;
   /** 这天的成功 / 失败拆分是否完整可知 */
   deploySplitKnown?: boolean;
+  /** 补算取的是哪一种（站点记录 / 日志回填，两者取较大值） */
+  deployDerivedFrom?: "sites" | "logs" | null;
+  /** 埋点记到的总数（开始那天画补算时，提示里仍给出埋点数） */
+  deployLiveTotal?: number | null;
   pv: number;
   uv: number | null;
   /** null = 埋点开始之前 */

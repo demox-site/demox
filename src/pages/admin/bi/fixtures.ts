@@ -33,16 +33,24 @@ export function buildFixture(range: BiRange, now = Date.now()): AdminBiData {
     const fail = Math.round(rand() * 2.4);
     const derivedRaw = Math.round(2 + rand() * 6 * wave);
     const live = date >= trackedSince;
-    const derived = date >= derivedSince && date <= trackedSince ? (date === trackedSince ? 3 : derivedRaw) : 0;
+    const isStart = date === trackedSince;
+    // 开始那天：埋点只记到半天（9），补算更大（14）→ 只画补算 14，不叠加
+    const liveS = isStart ? 8 : success;
+    const liveF = isStart ? 1 : fail;
+    const derived = date >= derivedSince && date <= trackedSince ? (isStart ? 14 : derivedRaw) : 0;
+    const asLive = live && (!derived || liveS + liveF >= derived);
+    const fromLogs = date >= all[all.length - 17];
     return {
       date,
       newUsers: Math.round(3 + rand() * 7 * wave),
       newSites: Math.round(4 + rand() * 8 * wave),
-      deploySuccess: live ? success : null,
-      deployFail: live ? fail : null,
-      deployDerived: derived > 0 ? derived : null,
+      deploySuccess: asLive ? liveS : null,
+      deployFail: asLive ? liveF : null,
+      deployDerived: derived > 0 && !asLive ? derived : null,
       deploySource: (live ? (derived > 0 ? "mixed" : "events") : derived > 0 ? "derived" : "none") as BiDeploySource,
       deploySplitKnown: live && derived === 0,
+      deployDerivedFrom: (derived > 0 && !asLive ? (fromLogs ? "logs" : "sites") : null) as "logs" | "sites" | null,
+      deployLiveTotal: live ? liveS + liveF : null,
       pv,
       uv: Math.round(pv * (0.34 + rand() * 0.08)),
       landing,

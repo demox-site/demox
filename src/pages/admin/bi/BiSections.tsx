@@ -72,6 +72,8 @@ function DeployTooltip(props: {
   if (p.deploySuccess != null) rows.push([t.sSuccess, n(p.deploySuccess)]);
   if (p.deployFail != null) rows.push([t.sFail, n(p.deployFail)]);
   if (p.deployDerived != null) rows.push([t.sDerived, n(p.deployDerived)]);
+  // 开始那天画的是补算时，埋点已记到的数也写出来（只是提示，不叠到柱子上）
+  if (p.deploySource === "mixed" && p.deployDerived != null && p.deployLiveTotal != null) rows.push([t.sLiveSoFar, n(p.deployLiveTotal)]);
   return (
     <div style={{ ...style, padding: "6px 10px" }} data-deploy-tooltip={p.deploySource || "events"}>
       <div style={{ marginBottom: 2, fontWeight: 500 }}>{p.label}</div>
@@ -201,8 +203,9 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const sinceInWindow = !!trackedSince && series.length > 0 && trackedSince > series[0].date;
   const sinceText = trackedSince ? fmtSinceDate(trackedSince, language) : "";
   const hasDerived = series.some((p) => p.deployDerived != null);
-  // 分界线画在第一天有埋点的日子（之前有补算时才画）
-  const boundary = hasDerived ? series.find((p) => p.deploySource === "events" || p.deploySource === "mixed") : undefined;
+  // 分界线画在第一根「按埋点画」的柱子左边（之前有补算时才画）。
+  // 开始那天如果画的是补算（补算 > 埋点），它算在线的左边，线挪到下一天。
+  const boundary = hasDerived ? series.find((p) => p.deploySuccess != null) : undefined;
   const deployLast = (() => {
     for (let i = series.length - 1; i >= 0; i -= 1) if (series[i].deploySuccess != null) return i;
     return -1;
@@ -289,7 +292,8 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
                   <Tooltip content={<DeployTooltip t={t} n={n} style={tooltipStyle} />} cursor={{ fill: ink.wash }} />
-                  {/* 补算 = 只有描边的空心柱（比成功、失败都弱），只有总数，不拆成功 / 失败。没有记录的日子值是 null，不画柱，也不画 0 */}
+                  {/* 补算（站点记录 / 日志回填）= 只有虚线描边的空心柱，只有总数，不拆成功 / 失败。没有记录的日子值是 null，不画柱，也不画 0。
+                      开始那天后端只给一种（埋点或补算），所以这里的堆叠不会出现「补算上再叠埋点」 */}
                   <Bar dataKey="deployDerived" name={t.sDerived} stackId="d" fill="transparent" stroke={LOW} strokeWidth={1} strokeDasharray="3 2" isAnimationActive={false} />
                   {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
                   <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
