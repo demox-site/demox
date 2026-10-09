@@ -25,12 +25,15 @@ import {
   SheetTitle
 } from "@/components/ui";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { useInkPalette } from "@/lib/ink-palette";
+import { useLanguage } from "@/hooks/use-language";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 import { useToast } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, Ban, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, Trash2, UserPlus } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Ban, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 
 // BI 概览单独分包：只有打开「数据概览」时才下载图表代码。
 const AdminBiOverview = React.lazy(() => import("./admin/bi/AdminBiOverview"));
@@ -143,6 +146,11 @@ const roleBadgeClass = (roleId: string) => {
  */
 const AdminDashboard: React.FC = () => {
   const { toast } = useToast();
+  const ink = useInkPalette();
+  const { language } = useLanguage();
+  const isZh = language !== "en";
+  const [bucketDeleteTarget, setBucketDeleteTarget] = useState<BucketRow | null>(null);
+  const [bucketDeleting, setBucketDeleting] = useState(false);
   const { section } = useParams<{ section?: string }>();
   const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" | "reports" =
     section === "roles" ? "roles"
@@ -774,7 +782,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const removeBucket = async (b: BucketRow) => {
-    if (!window.confirm(`确定删除存储桶「${b.name}」？仅删除注册记录，不影响桶内文件。`)) return;
+    setBucketDeleting(true);
     try {
       const res = await adminApi.deleteBucket(b.id);
       if (!res.success) throw new Error(res.message || "删除失败");
@@ -782,6 +790,9 @@ const AdminDashboard: React.FC = () => {
       fetchBuckets();
     } catch (e: unknown) {
       toast({ title: "删除失败", description: e instanceof Error ? e.message : "", variant: "destructive" });
+    } finally {
+      setBucketDeleting(false);
+      setBucketDeleteTarget(null);
     }
   };
 
@@ -1349,17 +1360,17 @@ const AdminDashboard: React.FC = () => {
                               <div style={{ width: "100%", height: 220 }}>
                                 <ResponsiveContainer>
                                   <LineChart data={userOverview.traffic?.daily || []} margin={{ top: 12, right: 44, left: 0, bottom: 0 }}>
-                                    <CartesianGrid stroke="#27272a" strokeDasharray="3 3" vertical={false} />
-                                    <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
-                                    <YAxis stroke="#71717a" allowDecimals={false} />
+                                    <CartesianGrid stroke={ink.grid} strokeDasharray="3 3" vertical={false} />
+                                    <XAxis dataKey="date" stroke={ink.axis} tick={{ fontSize: 11 }} />
+                                    <YAxis stroke={ink.axis} allowDecimals={false} />
                                     <Tooltip
                                       formatter={(value: number | string) => [formatCount(Number(value)), VIEWS_LABEL]}
-                                      contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a" }}
+                                      contentStyle={{ background: ink.tooltipBg, border: `1px solid ${ink.tooltipBorder}`, color: ink.tooltipText }}
                                     />
-                                    <Line type="monotone" dataKey="views" name={VIEWS_LABEL} stroke="#f4f4f5" strokeWidth={2} dot={false} isAnimationActive={false}
+                                    <Line type="monotone" dataKey="views" name={VIEWS_LABEL} stroke={ink.ink} strokeWidth={2} dot={false} isAnimationActive={false}
                                       label={(props: { x?: number; y?: number; index?: number }) =>
                                         props.index === (userOverview.traffic?.daily || []).length - 1 && props.x != null && props.y != null ? (
-                                          <text key="end" x={props.x + 6} y={props.y + 4} textAnchor="start" fill="#f4f4f5" fontSize={11} fontWeight={600}>{VIEWS_LABEL}</text>
+                                          <text key="end" x={props.x + 6} y={props.y + 4} textAnchor="start" fill={ink.ink} fontSize={11} fontWeight={600}>{VIEWS_LABEL}</text>
                                         ) : <g key={props.index} />
                                       } />
                                   </LineChart>
@@ -1761,12 +1772,12 @@ const AdminDashboard: React.FC = () => {
               </div>
             ) : activeTab === "reports" ? (
               <div className="space-y-6">
-                <div className="flex items-end justify-between gap-4">
-                  <div>
+                <div className="flex flex-wrap items-end justify-between gap-4">
+                  <div className="min-w-0">
                     <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">站点举报</h1>
                     <p className="mt-2 text-sm text-zinc-400">查看被举报页面，确认后可禁用该站点。主站不能禁用。</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {(["open", "reviewed", "all"] as const).map((key) => (
                       <Button
                         key={key}
@@ -1851,7 +1862,7 @@ const AdminDashboard: React.FC = () => {
                 <Dialog open={!!disableTarget} onOpenChange={(open) => { if (!open && !disableSaving) setDisableTarget(null); }}>
                   <DialogContent className="bg-zinc-950 border-zinc-800 text-zinc-100 max-w-lg">
                     <DialogHeader>
-                      <DialogTitle>禁用站点</DialogTitle>
+                      <DialogTitle className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 shrink-0" aria-hidden />禁用站点</DialogTitle>
                       <DialogDescription className="text-zinc-400">
                         必须填写理由。提交后会按标准格式邮件发给站点所有者，访客将无法打开该站。
                       </DialogDescription>
@@ -1878,7 +1889,7 @@ const AdminDashboard: React.FC = () => {
                           <Button variant="outline" className="border-zinc-700 bg-zinc-900" disabled={disableSaving} onClick={() => setDisableTarget(null)}>取消</Button>
                           <Button className="gap-1.5 bg-zinc-100 text-zinc-900 hover:bg-zinc-300" disabled={disableSaving} onClick={disableReportedSite}>
                             <Ban className="h-4 w-4" aria-hidden />
-                            {disableSaving ? "提交中..." : "确认禁用并发送邮件"}
+                            {disableSaving ? "提交中..." : "禁用站点并邮件通知"}
                           </Button>
                         </div>
                       </div>
@@ -1998,7 +2009,7 @@ const AdminDashboard: React.FC = () => {
                                     {b.enabled ? "停用" : "启用"}
                                   </button>
                                   {!b.isDefault ? (
-                                    <button className="inline-flex items-center gap-1 text-zinc-100 hover:underline" onClick={() => removeBucket(b)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</button>
+                                    <button className="inline-flex items-center gap-1 text-zinc-100 hover:underline" onClick={() => setBucketDeleteTarget(b)}><Trash2 className="h-3.5 w-3.5" aria-hidden />删除</button>
                                   ) : null}
                                 </td>
                               </tr>
@@ -2010,6 +2021,17 @@ const AdminDashboard: React.FC = () => {
                   </CardContent>
                 </Card>
                 {BUCKET_DIALOG}
+                <ConfirmDestructive
+                  open={bucketDeleteTarget != null}
+                  onOpenChange={(open) => { if (!open) setBucketDeleteTarget(null); }}
+                  title={isZh ? `删除存储桶「${bucketDeleteTarget?.name || ""}」？` : `Delete bucket “${bucketDeleteTarget?.name || ""}”?`}
+                  description={isZh ? "只删除注册记录，不影响桶内文件。" : "Only the registration is removed; files in the bucket are not touched."}
+                  confirmLabel={isZh ? "删除存储桶" : "Delete bucket"}
+                  cancelLabel={isZh ? "取消" : "Cancel"}
+                  icon={<Trash2 className="mr-2 h-4 w-4" aria-hidden />}
+                  busy={bucketDeleting}
+                  onConfirm={() => (bucketDeleteTarget ? removeBucket(bucketDeleteTarget) : undefined)}
+                />
               </div>
             )}
           </div>

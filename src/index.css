@@ -39,7 +39,8 @@
     /* Brand & status — shared across light/dark (use sparingly). */
     --brand: 142 71% 40%;
     --brand-foreground: 0 0% 100%;
-    --success: 142 71% 40%;
+    /* 唯一的彩色：只表示成功 / 变好。亮色下加深到 green-700，小字在白底上对比度 ≥ 4.5 */
+    --success: 142 72% 29%;
     --success-foreground: 0 0% 100%;
     --link: 142 71% 35%;
     --warning: 38 92% 45%;

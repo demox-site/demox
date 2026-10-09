@@ -18,6 +18,7 @@ import {
 } from "recharts";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
+import { useInkPalette } from "@/lib/ink-palette";
 import { formatBytes } from "@/lib/utils";
 import { shortDateLabel } from "@/lib/stat-date";
 import type { AdminBiData, BiTopItem } from "./types";
@@ -29,14 +30,7 @@ import { fmtNum, fmtPct } from "./format";
  * 后台是深色底，所以三档灰阶按「对比度」排：INK 最强（深色底上接近白）、MID 中灰、LOW 浅（弱）灰。
  * 每张图最多 3 条系列；系列名直接标在线尾，次要系列再用虚线区分，不只靠图例。
  */
-const INK = "#f4f4f5"; // zinc-100：主系列
-const MID = "#a1a1aa"; // zinc-400：次系列
-const LOW = "#52525b"; // zinc-600：第三系列 / 弱化
-const SOFT = "#d4d4d8"; // zinc-300：柱状图里的「正常」主体（成功）
-const GRID = "#27272a";
-const AXIS = "#71717a";
-const tooltipStyle = { background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12, color: INK };
-const tooltipItemStyle = { color: "#d4d4d8" };
+// 颜色跟着亮 / 暗主题走（src/lib/ink-palette.ts）：亮色下主系列是墨黑、次系列中灰；暗色下反过来接近白。
 
 /** 线尾直接标注系列名：只在最后一个点画文字。 */
 function EndLabel(props: { x?: number | string; y?: number | string; index?: number; lastIndex: number; text: string; color: string; dy?: number }) {
@@ -166,6 +160,10 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const above = (a: number | null | undefined, b: number | null | undefined) => Number(a || 0) >= Number(b || 0);
   const dyUsers = lp && above(lp.newUsers, lp.newSites) ? -7 : 9;
   const dyPv = lp && above(lp.pv, lp.uv) ? -7 : 9;
+  const ink = useInkPalette();
+  const { ink: INK, mid: MID, low: LOW, soft: SOFT, grid: GRID, axis: AXIS } = ink;
+  const tooltipStyle = { background: ink.tooltipBg, border: `1px solid ${ink.tooltipBorder}`, borderRadius: 8, fontSize: 12, color: ink.tooltipText };
+  const tooltipItemStyle = { color: ink.tooltipText };
   const axisProps = { stroke: AXIS, tick: { fontSize: 11 }, tickLine: false, axisLine: false } as const;
 
   return (
@@ -234,7 +232,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: "rgba(255,255,255,0.05)" }} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: ink.wash }} />
                   {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
                   <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
                     label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={SOFT} />} />
@@ -357,7 +355,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         </div>
         <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-xs text-zinc-400">
           <div className="mb-2 flex items-center gap-1.5 font-medium text-zinc-300">
-            {data.warnings.length ? <AlertTriangle className="h-3.5 w-3.5 text-zinc-100" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+            {data.warnings.length ? <AlertTriangle className="h-3.5 w-3.5 text-zinc-100" /> : <CheckCircle2 className="h-3.5 w-3.5 text-success" />}
             {t.cWarnings}
           </div>
           {data.warnings.length ? (

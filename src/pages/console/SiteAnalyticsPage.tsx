@@ -662,7 +662,7 @@ export default function SiteAnalyticsPage() {
               </div>
             </div>
             {logsLoading ? <LoadingPanel text="加载访问日志中..." /> : logs.length === 0 ? <EmptyChart text="暂无访问日志" /> : (
-              <div className="rounded-[1.4rem] border border-[var(--stitch-line)]">
+              <div className="max-w-full overflow-x-auto rounded-[1.4rem] border border-[var(--stitch-line)]">
                   <table className="w-full table-fixed border-collapse text-left text-sm">
                     <thead className="bg-[var(--stitch-surface-strong)] text-xs uppercase tracking-[0.14em] text-[var(--stitch-muted)]">
                       <tr>

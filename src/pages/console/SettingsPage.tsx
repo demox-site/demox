@@ -18,6 +18,7 @@ import {
 import { Github, Lock, User as UserIcon } from "lucide-react";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 
 const texts = {
   zh: {
@@ -56,10 +57,13 @@ const texts = {
     newPasswordRequired: "请填写新密码和确认新密码",
     currentPasswordRequired: "请输入当前密码",
     passwordFailed: "修改失败",
-    confirmUnbind: "确定要解绑 GitHub 吗？",
+    confirmUnbind: "解绑 GitHub？",
+    unbindGithubButton: "解绑 GitHub",
+    unbindFeishuButton: "解绑飞书",
+    cancel: "取消",
     confirmUnbindDesc: "解绑后将无法使用 GitHub 一键登录。",
     githubUnbound: "GitHub 已解绑",
-    confirmUnbindFeishu: "确定要解绑飞书吗？",
+    confirmUnbindFeishu: "解绑飞书？",
     confirmUnbindFeishuDesc: "解绑后将无法使用飞书一键登录。",
     feishuUnbound: "飞书已解绑",
     unbindFailed: "解绑失败"
@@ -101,6 +105,9 @@ const texts = {
     currentPasswordRequired: "Enter your current password",
     passwordFailed: "Update failed",
     confirmUnbind: "Unbind GitHub?",
+    unbindGithubButton: "Unbind GitHub",
+    unbindFeishuButton: "Unbind Feishu",
+    cancel: "Cancel",
     confirmUnbindDesc: "You won't be able to sign in with GitHub after unbinding.",
     githubUnbound: "GitHub unbound",
     confirmUnbindFeishu: "Unbind Feishu?",
@@ -228,8 +235,9 @@ const SettingsPage: React.FC = () => {
     }
   };
 
+  const [unbindConfirm, setUnbindConfirm] = useState<null | "github" | "feishu">(null);
+
   const handleUnbindGithub = async () => {
-    if (!window.confirm(`${t.confirmUnbind}\n${t.confirmUnbindDesc}`)) return;
     setUnbindingGithub(true);
     try {
       await authApi.unbindGithub();
@@ -254,7 +262,6 @@ const SettingsPage: React.FC = () => {
   };
 
   const handleUnbindFeishu = async () => {
-    if (!window.confirm(`${t.confirmUnbindFeishu}\n${t.confirmUnbindFeishuDesc}`)) return;
     setUnbindingFeishu(true);
     try {
       await authApi.unbindFeishu();
@@ -475,7 +482,7 @@ const SettingsPage: React.FC = () => {
                   variant="outline"
                   onClick={() => {
                     if (githubBound) {
-                      handleUnbindGithub();
+                      setUnbindConfirm("github");
                       return;
                     }
                     try {
@@ -517,7 +524,7 @@ const SettingsPage: React.FC = () => {
                   <Button
                     variant="outline"
                     onClick={() =>
-                      feishuBound ? handleUnbindFeishu() : handleBindFeishu()
+                      feishuBound ? setUnbindConfirm("feishu") : handleBindFeishu()
                     }
                     disabled={unbindingFeishu}
                     className="stitch-action rounded-full"
@@ -530,6 +537,20 @@ const SettingsPage: React.FC = () => {
           </Card>
         </TabsContent>
       </Tabs>
+      <ConfirmDestructive
+        open={unbindConfirm != null}
+        onOpenChange={(open) => { if (!open) setUnbindConfirm(null); }}
+        title={unbindConfirm === "feishu" ? t.confirmUnbindFeishu : t.confirmUnbind}
+        description={unbindConfirm === "feishu" ? t.confirmUnbindFeishuDesc : t.confirmUnbindDesc}
+        confirmLabel={unbindConfirm === "feishu" ? t.unbindFeishuButton : t.unbindGithubButton}
+        cancelLabel={t.cancel}
+        busy={unbindingGithub || unbindingFeishu}
+        onConfirm={async () => {
+          if (unbindConfirm === "feishu") await handleUnbindFeishu();
+          else await handleUnbindGithub();
+          setUnbindConfirm(null);
+        }}
+      />
     </div>
   );
 };

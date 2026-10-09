@@ -142,7 +142,7 @@ export default function DomainDialog({
                 </p>
               )}
               {domainCheck.status === "ok" && domainInput.trim() && (
-                <p className="flex items-center gap-1 text-xs text-emerald-600">
+                <p className="flex items-center gap-1 text-xs text-success">
                   <Check className="h-3 w-3" />
                   {t.domainAvailable}
                 </p>

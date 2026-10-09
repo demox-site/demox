@@ -234,7 +234,7 @@ export const MainHeader: React.FC = () => {
 
                       <DropdownMenuItem
                         onClick={handleLogout}
-                        className="cursor-pointer text-red-400 focus:bg-red-950/20 focus:text-red-300 my-0.5"
+                        className="cursor-pointer font-medium text-zinc-100 focus:bg-zinc-900 focus:text-zinc-50 my-0.5"
                       >
                         <LogOut className="mr-2 h-4 w-4" />
                         <span>{t.logout}</span>
@@ -343,7 +343,7 @@ export const MainHeader: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="flex items-center gap-3 w-full text-left px-2 py-2 text-sm font-medium text-red-400 hover:bg-red-950/20 rounded-md transition-colors"
+                    className="flex items-center gap-3 w-full text-left px-2 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-900 rounded-md transition-colors"
                   >
                     <LogOut size={16} />
                     {t.logout}

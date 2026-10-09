@@ -3,14 +3,6 @@ import { useNavigate } from "react-router-dom";
 // @ts-ignore;
 import {
   Button,
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
   Card,
   CardContent,
   Dialog,
@@ -25,6 +17,7 @@ import {
 // @ts-ignore;
 import { FolderKanban, Loader2, Plus, ArrowRight, Globe2, Sparkles, Trash2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
+import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 import { translations } from "../home-translations";
 import { useProjects } from "../use-projects";
 
@@ -64,8 +57,7 @@ export default function ProjectsPage() {
     }
   };
 
-  const handleDeleteProject = async (event) => {
-    event.preventDefault();
+  const handleDeleteProject = async () => {
     if (!deleteTarget || deleteTarget.websitesCount > 0) return;
     const deleted = await projects.deleteProject(deleteTarget);
     if (deleted) setDeleteTarget(null);
@@ -179,43 +171,22 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <AlertDialog
-        open={!!deleteTarget}
+      <ConfirmDestructive
+        open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
           if (!open && !projects.projectBusyId) setDeleteTarget(null);
         }}
-      >
-        <AlertDialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t.projectDeleteDialogTitle}</AlertDialogTitle>
-            <AlertDialogDescription className="text-[var(--stitch-muted)]">
-              {deleteTarget?.websitesCount > 0
-                ? t.projectDeleteBlockedSites
-                : t.projectDeleteDialogDesc(deleteTarget?.name || "")}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={!!projects.projectBusyId}
-              className="border-[var(--stitch-line)] bg-[var(--stitch-surface)] text-[var(--stitch-ink)]"
-            >
-              {t.cancel}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              disabled={!!projects.projectBusyId || deleteTarget?.websitesCount > 0}
-              onClick={handleDeleteProject}
-              className="bg-[var(--stitch-ink)] text-[var(--stitch-bg)] hover:opacity-90"
-            >
-              {projects.projectBusyId ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Trash2 className="mr-2 h-4 w-4" />
-              )}
-              {t.projectDeleteConfirm}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={t.projectDeleteDialogTitle}
+        description={deleteTarget?.websitesCount > 0
+          ? t.projectDeleteBlockedSites
+          : t.projectDeleteDialogDesc(deleteTarget?.name || "")}
+        confirmLabel={t.projectDeleteConfirm}
+        cancelLabel={t.cancel}
+        icon={<Trash2 className="mr-2 h-4 w-4" aria-hidden />}
+        busy={!!projects.projectBusyId}
+        disabled={deleteTarget?.websitesCount > 0}
+        onConfirm={handleDeleteProject}
+      />
 
       <Dialog open={createOpen} onOpenChange={handleCreateOpenChange}>
         <DialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">

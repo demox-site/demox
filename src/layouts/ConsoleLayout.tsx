@@ -521,8 +521,8 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="bg-transparent text-[var(--stitch-ink)]">
-        <header className="stitch-topbar">
+      <SidebarInset className="min-w-0 bg-transparent text-[var(--stitch-ink)]">
+        <header className="stitch-topbar min-w-0">
           {inProjectWorkspace ? (
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="hidden text-xs font-bold uppercase tracking-[0.16em] text-[var(--stitch-muted)] sm:inline">
@@ -533,7 +533,7 @@ export const ConsoleLayout: React.FC = () => {
                 onChange={(event) => handleSwitchProject(event.target.value)}
                 disabled={projects.length === 0}
                 title={t.projectSelect}
-                className="stitch-select h-9 min-w-[150px] max-w-[52vw] sm:min-w-[220px]"
+                className="stitch-select h-9 min-w-0 w-[150px] max-w-[52vw] sm:w-auto sm:min-w-[220px]"
               >
                 {projects.length === 0 && <option value="">{t.noProjects}</option>}
                 {projects.map((project) => (
@@ -548,12 +548,12 @@ export const ConsoleLayout: React.FC = () => {
               {t.projects}
             </div>
           )}
-          <div className="flex-1" />
+          <div className="min-w-0 flex-1" />
 
           <button
             type="button"
             onClick={toggleLang}
-            className="flex items-center gap-1.5 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1.5 text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--stitch-line)] bg-[var(--stitch-surface)] px-3 py-1.5 text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
           >
             <Languages size={16} />
             <span className="text-xs font-mono uppercase">{lang}</span>
@@ -613,7 +613,7 @@ export const ConsoleLayout: React.FC = () => {
           </DropdownMenu>
         </header>
 
-        <main className="flex-1 min-h-[calc(100vh-4rem)]">
+        <main className="min-w-0 flex-1 min-h-[calc(100vh-4rem)]">
           <Outlet context={{ user }} />
         </main>
       </SidebarInset>

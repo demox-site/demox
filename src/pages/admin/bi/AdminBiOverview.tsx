@@ -5,6 +5,7 @@
  * - mock=true 时只用本地示例数据（fixtures），不请求任何接口。
  */
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useInkPalette } from "@/lib/ink-palette";
 import { Activity, ArrowDownRight, ArrowUpRight, Crown, Flag, Globe, MousePointerClick, RefreshCw, Rocket, UserPlus } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { adminApi } from "@/api";
@@ -31,6 +32,7 @@ type Kpi = {
 };
 
 function Sparkline({ values }: { values: number[] }) {
+  const ink = useInkPalette();
   if (!values.length || values.every((v) => v === 0)) return <div className="h-6 md:h-8" />;
   const w = 120;
   const h = 32;
@@ -39,8 +41,8 @@ function Sparkline({ values }: { values: number[] }) {
   const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`);
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-6 w-full md:h-8" aria-hidden="true">
-      <polygon points={`0,${h} ${pts.join(" ")} ${w},${h}`} fill="rgba(244,244,245,0.07)" />
-      <polyline points={pts.join(" ")} fill="none" stroke="#d4d4d8" strokeWidth="1.5" strokeLinejoin="round" />
+      <polygon points={`0,${h} ${pts.join(" ")} ${w},${h}`} fill={ink.wash} />
+      <polyline points={pts.join(" ")} fill="none" stroke={ink.mid} strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -65,7 +67,7 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
         </span>
         {!loading && kpi.change != null ? (
           <span
-            className={`flex shrink-0 items-center text-[11px] font-medium tabular-nums ${good ? "text-emerald-400" : "text-zinc-400"}`}
+            className={`flex shrink-0 items-center text-[11px] font-medium tabular-nums ${good ? "text-success" : "text-zinc-400"}`}
             title={vsPrev}
           >
             {up ? <ArrowUpRight className="h-3 w-3" /> : down ? <ArrowDownRight className="h-3 w-3" /> : null}

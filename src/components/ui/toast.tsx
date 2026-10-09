@@ -130,7 +130,7 @@ const ToastDescription = React.forwardRef<
           onClick={copyToClipboard}
           className={cn(
             "inline-flex h-4 w-4 items-center justify-center rounded text-current bg-black/5 transition-all hover:bg-black/10 focus:outline-none focus:ring-1 focus:ring-current/20 active:scale-95 dark:bg-white/10 dark:hover:bg-white/20 dark:focus:ring-white/30",
-            copied && "!text-green-500 bg-green-500/10 hover:bg-green-500/20 dark:bg-green-500/20 dark:hover:bg-green-500/30",
+            copied && "!text-success bg-success/10 hover:bg-success/20",
           )}
           title={copied ? "已复制!" : "复制内容"}
         >

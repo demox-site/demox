@@ -148,7 +148,7 @@ function bucketStats() {
   return { success: true, code: 0, data: { storage: series, traffic: series, requests: series } };
 }
 
-function websiteAction(action: string, body: Record<string, any>): unknown {
+function websiteAction(action: string, body: Record<string, unknown>): unknown {
   switch (action) {
     case "list": return { success: true, websites: websites, count: websites.length };
     case "list_all": return { success: true, websites: websites, count: websites.length };
@@ -189,7 +189,7 @@ export function installConsoleDemo(apiOrigin: string) {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (!url.startsWith(apiOrigin)) return realFetch(input, init);
     const path = url.slice(apiOrigin.length);
-    let body: Record<string, any> = {};
+    let body: Record<string, unknown> = {};
     try { body = init?.body ? JSON.parse(String(init.body)) : {}; } catch { body = {}; }
     let payload: unknown;
     if (/\/auth\/me$/.test(path)) payload = { success: true, user: DEMO_USER };

@@ -9,6 +9,10 @@ export type InkPalette = {
   ink: string;
   mid: string;
   low: string;
+  /** 柱状图里「正常 / 成功」的主体：比 ink 弱、比 low 强 */
+  soft: string;
+  /** 悬停时柱状图背后的高亮带、迷你折线下的淡填充 */
+  wash: string;
   grid: string;
   axis: string;
   tooltipBg: string;
@@ -24,6 +28,8 @@ export const INK_LIGHT: InkPalette = {
   ink: "#111111",
   mid: "#5f5f5f",
   low: "#a8a8a8",
+  soft: "#6b6b6b",
+  wash: "rgba(17,17,17,.06)",
   grid: "rgba(17,17,17,.08)",
   axis: "#696969",
   tooltipBg: "#ffffff",
@@ -38,6 +44,8 @@ export const INK_DARK: InkPalette = {
   ink: "#f5f5f5",
   mid: "#a3a3a3",
   low: "#5c5c5c",
+  soft: "#d4d4d4",
+  wash: "rgba(255,255,255,.06)",
   grid: "rgba(255,255,255,.08)",
   axis: "#a3a3a3",
   tooltipBg: "#0a0a0a",

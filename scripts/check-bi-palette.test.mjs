@@ -1,5 +1,6 @@
 // 设计规则（DESIGN-PRINCIPLES.md 第 1 节 + 第 7 节「要清理的」）：
-// 整个控制台和管理后台只用黑 / 白 / 灰；绿色（emerald）只表示变好或成功；坏消息用墨色加图标，不用红色。
+// 整个控制台和管理后台只用黑 / 白 / 灰；唯一的彩色是 --success（Tailwind 里写 text-success / bg-success），只表示变好或成功；
+// 坏消息用墨色加图标，不用红色。emerald-* / green-* 等写死的绿色一律不允许（亮色下太浅，且会出现好几种绿）。
 // 原来只查 BI 看板（src/pages/admin/bi），v13 起扩大到整个控制台和后台。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +15,11 @@ const SCOPE = [
   "src/components/console",
   "src/components/home", // 控制台站点页用的组件（站点行、设置、域名、删除确认）
   "src/layouts/ConsoleLayout.tsx",
+  "src/layouts/components/header.tsx", // 顶部导航，每个页面都有
+  "src/pages/home.jsx", // 控制台「部署」页
+  "src/components/ui/toast.tsx",
+  "src/components/ui/toaster.tsx",
+  "src/components/ui/confirm-destructive.tsx",
   "src/lib/ink-palette.ts"
 ];
 const SKIP = new Set(["src/pages/admin/bi/fixtures.ts"]);
@@ -25,8 +31,8 @@ function walk(p) {
 }
 const files = SCOPE.flatMap(walk).filter((f) => /\.(tsx?|jsx?|css)$/.test(f) && !/\.test\./.test(f) && !SKIP.has(f));
 
-// 只允许 emerald（成功 / 变好）这一种彩色；其他 Tailwind 色板一律不允许。
-const TW_COLORS = /\b(?:bg|text|border|from|via|to|ring|fill|stroke|decoration|outline|shadow|divide|accent|caret|placeholder)-(red|orange|amber|yellow|lime|green|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate)-\d{2,3}\b/g;
+// Tailwind 彩色色板一律不允许（包括 emerald / green）；成功用 success token。
+const TW_COLORS = /\b(?:bg|text|border|from|via|to|ring|fill|stroke|decoration|outline|shadow|divide|accent|caret|placeholder)-(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate)-\d{2,3}\b/g;
 const STATUS_TOKENS = /\b(?:bg|text|border|ring|fill|stroke)-(warning|brand|link)\b|hsl\(var\(--(warning|brand|link)\)/g;
 
 function isGray(hex) {
@@ -44,7 +50,7 @@ function paletteViolations(src) {
     const [r, g, b] = m.slice(1, 4).map(Number);
     if (Math.max(r, g, b) - Math.min(r, g, b) > 12) bad.push(m[0]);
   }
-  for (const m of src.matchAll(/\b(violet|purple|amber|cyan|teal)\b/gi)) bad.push(m[0]);
+  for (const m of src.matchAll(/\b(violet|purple|amber|cyan|teal|emerald)\b/gi)) bad.push(m[0]);
   return bad;
 }
 
@@ -101,10 +107,54 @@ test("error messages in the console carry an icon", () => {
   }
 });
 
-test("the checker itself rejects red, purple, blue and amber", () => {
+test("the checker itself rejects red, purple, blue, amber and hard-coded greens", () => {
   assert.deepEqual(paletteViolations('className="text-red-400 bg-violet-500/10" style={{ color: "#38bdf8" }} stroke="#f59e0b"'),
     ["text-red-400", "bg-violet-500", "#38bdf8", "#f59e0b", "violet"]);
-  assert.deepEqual(paletteViolations('className="text-emerald-400 text-zinc-300" fill="#111111" stroke="rgba(17,17,17,.1)"'), []);
+  assert.deepEqual(paletteViolations('className="text-emerald-400 bg-green-500/10" fill="#22c55e"'),
+    ["text-emerald-400", "bg-green-500", "#22c55e", "emerald"]);
+  assert.deepEqual(paletteViolations('className="text-success bg-success/10 text-zinc-300" fill="#111111" stroke="rgba(17,17,17,.1)"'), []);
+});
+
+// --success 是唯一的绿色：亮色下要够深（小字在白底上能读），暗色下要够亮。
+test("--success is the single green and readable in both themes", () => {
+  const css = readFileSync(join(ROOT, "src/index.css"), "utf8");
+  const values = [...css.matchAll(/--success:\s*([^;]+);/g)].map((m) => m[1].trim().split(/\s+/));
+  assert.equal(values.length, 2, "--success 应该在 :root 和 .dark 各定义一次");
+  const [light, dark] = values;
+  assert.ok(parseFloat(light[2]) <= 35, `亮色 --success 太浅（L=${light[2]}），白底上的小字看不清`);
+  assert.ok(parseFloat(dark[2]) >= 50, `暗色 --success 太暗（L=${dark[2]}）`);
+});
+
+// 图表颜色要跟着亮 / 暗主题走：页面里不能写死十六进制颜色，统一从 src/lib/ink-palette.ts（useInkPalette）取。
+test("no hard-coded hex colors outside ink-palette.ts (charts must be theme-aware)", () => {
+  for (const f of files.filter((x) => /\.(tsx|jsx)$/.test(x))) {
+    const src = readFileSync(join(ROOT, f), "utf8");
+    assert.deepEqual(src.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![\w-])/g) || [], [], `${f} 写死了颜色，改用 useInkPalette()`);
+  }
+});
+
+// 危险操作确认：统一用 ConfirmDestructive（墨色实心按钮 + 警告图标），按钮写后果，不写「确定 / OK」，也不用 window.confirm。
+test("destructive confirms use ConfirmDestructive with a consequence label", () => {
+  for (const f of files) {
+    const src = readFileSync(join(ROOT, f), "utf8");
+    assert.doesNotMatch(src, /window\.confirm\(/, `${f} 用了 window.confirm（只能显示「确定 / OK」）`);
+    if (!f.endsWith("confirm-destructive.tsx")) {
+      assert.doesNotMatch(src, /<AlertDialogAction\b/, `${f} 直接用了 AlertDialogAction，改用 ConfirmDestructive`);
+    }
+    for (const m of src.matchAll(/confirmLabel=\{?\s*["'`]([^"'`]+)["'`]/g)) {
+      assert.doesNotMatch(m[1], /^(确定|确认|好的?|OK|Ok|Confirm|Yes)$/, `${f}: 按钮要写后果，不要写「${m[1]}」`);
+    }
+  }
+  const tr = readFileSync(join(ROOT, "src/pages/home-translations.js"), "utf8");
+  for (const key of ["deleteConfirmButton", "projectDeleteConfirm"]) {
+    for (const m of tr.matchAll(new RegExp(`${key}:\\s*"([^"]+)"`, "g"))) {
+      assert.match(m[1], /删除|Delete/, `${key}「${m[1]}」要写清后果`);
+      assert.doesNotMatch(m[1], /^(确定|确认)/, `${key}「${m[1]}」不要以「确定 / 确认」开头`);
+    }
+  }
+  const dialog = readFileSync(join(ROOT, "src/components/ui/confirm-destructive.tsx"), "utf8");
+  assert.match(dialog, /<AlertTriangle\b/, "确认弹窗要有警告图标");
+  assert.match(dialog, /bg-\[var\(--stitch-ink\)\]/, "确认按钮要是实心墨色");
 });
 
 // 设计规则：KPI 卡标题 / 说明不允许用省略号截断（手机端改用短标题 + 换行）。
