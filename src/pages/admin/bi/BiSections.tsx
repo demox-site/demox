@@ -9,7 +9,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -25,13 +24,40 @@ import type { AdminBiData, BiTopItem } from "./types";
 import { biText, fill, sourceLabel, type BiText } from "./bi-i18n";
 import { fmtNum, fmtPct } from "./format";
 
-const VIOLET = "#a78bfa";
-const VIOLET_DEEP = "#7c3aed";
-const VIOLET_SOFT = "#ddd6fe";
-const AMBER = "#f59e0b";
+/**
+ * 配色规则（设计）：全站只用黑 / 白 / 灰；绿色只表示变好或成功，其他颜色一律不用。
+ * 后台是深色底，所以三档灰阶按「对比度」排：INK 最强（深色底上接近白）、MID 中灰、LOW 浅（弱）灰。
+ * 每张图最多 3 条系列；系列名直接标在线尾，次要系列再用虚线区分，不只靠图例。
+ */
+const INK = "#f4f4f5"; // zinc-100：主系列
+const MID = "#a1a1aa"; // zinc-400：次系列
+const LOW = "#52525b"; // zinc-600：第三系列 / 弱化
 const GRID = "#27272a";
 const AXIS = "#71717a";
-const tooltipStyle = { background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12 };
+const tooltipStyle = { background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12, color: INK };
+const tooltipItemStyle = { color: "#d4d4d8" };
+
+/** 线尾直接标注系列名：只在最后一个点画文字。 */
+function EndLabel(props: { x?: number | string; y?: number | string; index?: number; lastIndex: number; text: string; color: string; dy?: number }) {
+  const { x, y, index, lastIndex, text, color, dy = 0 } = props;
+  if (index !== lastIndex || x == null || y == null) return null;
+  return (
+    <text x={Number(x) + 6} y={Number(y) + dy} dy={4} fill={color} fontSize={11} fontWeight={500}>
+      {text}
+    </text>
+  );
+}
+
+/** 堆叠柱的线尾标注：标在最后一根柱子对应段的右侧。 */
+function BarEndLabel(props: { x?: number | string; y?: number | string; width?: number | string; height?: number | string; index?: number; lastIndex: number; text: string; color: string; dy?: number }) {
+  const { x, y, width, height, index, lastIndex, text, color, dy = 0 } = props;
+  if (index !== lastIndex || x == null || y == null) return null;
+  return (
+    <text x={Number(x) + Number(width || 0) + 6} y={Number(y) + Number(height || 0) / 2 + dy} dy={4} fill={color} fontSize={11} fontWeight={500}>
+      {text}
+    </text>
+  );
+}
 
 function Reveal({ children, id }: { children: React.ReactNode; id: string }) {
   const ref = useRef<HTMLElement | null>(null);
@@ -68,7 +94,7 @@ function Reveal({ children, id }: { children: React.ReactNode; id: string }) {
 function SectionHead({ title, desc, index }: { title: string; desc: string; index: number }) {
   return (
     <div className="mb-3 flex items-baseline gap-3">
-      <span className="font-mono text-xs text-violet-400">0{index}</span>
+      <span className="font-mono text-xs text-zinc-500">0{index}</span>
       <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
       <span className="text-xs text-zinc-500">{desc}</span>
     </div>
@@ -96,7 +122,7 @@ function BarList({ items, t, format }: { items: BiTopItem[]; t: BiText; format: 
     <ul className="space-y-1.5">
       {items.map((it) => (
         <li key={it.key} className="relative overflow-hidden rounded-md bg-zinc-950/60 px-2.5 py-1.5 text-xs">
-          <div className="absolute inset-y-0 left-0 bg-violet-500/20" style={{ width: `${(it.views / max) * 100}%` }} />
+          <div className="absolute inset-y-0 left-0 bg-zinc-700/40" style={{ width: `${(it.views / max) * 100}%` }} />
           <div className="relative flex items-center justify-between gap-3">
             <span className="truncate text-zinc-200">{format(it)}</span>
             <span className="shrink-0 tabular-nums text-zinc-400">{fmtNum(it.views, language)}</span>
@@ -111,7 +137,7 @@ function Stat({ label, value, tone = "default" }: { label: string; value: string
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-3 py-2.5">
       <div className="text-[11px] text-zinc-500">{label}</div>
-      <div className={`mt-0.5 text-lg font-semibold tabular-nums ${tone === "warn" ? "text-amber-300" : "text-zinc-100"}`}>{value}</div>
+      <div className={`mt-0.5 text-lg font-semibold tabular-nums ${tone === "warn" ? "text-white underline decoration-zinc-500 underline-offset-4" : "text-zinc-100"}`}>{value}</div>
     </div>
   );
 }
@@ -133,6 +159,12 @@ export default function BiSections({ data }: { data: AdminBiData }) {
   const sources = data.deploySources.map((s) => ({ ...s, label: sourceLabel(t, s.source) }));
   const failRate = data.health.deployFailRate;
   const lag = data.health.analyticsLagMinutes;
+  const last = series.length - 1;
+  const lp = series[last];
+  // 两条线尾标注互相避让：末值大的标在上方，小的标在下方
+  const above = (a: number | null | undefined, b: number | null | undefined) => Number(a || 0) >= Number(b || 0);
+  const dyUsers = lp && above(lp.newUsers, lp.newSites) ? -7 : 9;
+  const dyPv = lp && above(lp.pv, lp.uv) ? -7 : 9;
   const axisProps = { stroke: AXIS, tick: { fontSize: 11 }, tickLine: false, axisLine: false } as const;
 
   return (
@@ -143,20 +175,21 @@ export default function BiSections({ data }: { data: AdminBiData }) {
           <Panel title={t.cNewUsersSites}>
             <div className="h-64">
               <ResponsiveContainer>
-                <AreaChart data={series} margin={{ left: -18, right: 8, top: 4 }}>
+                <AreaChart data={series} margin={{ left: -18, right: 64, top: 8 }}>
                   <defs>
                     <linearGradient id="biUsers" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={VIOLET} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={VIOLET} stopOpacity={0} />
+                      <stop offset="0%" stopColor={INK} stopOpacity={0.14} />
+                      <stop offset="100%" stopColor={INK} stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Area type="monotone" dataKey="newUsers" name={t.sNewUsers} stroke={VIOLET} fill="url(#biUsers)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="newSites" name={t.sNewSites} stroke={VIOLET_SOFT} fill="transparent" strokeDasharray="4 3" strokeWidth={1.5} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ stroke: LOW }} />
+                  <Area type="monotone" dataKey="newUsers" name={t.sNewUsers} stroke={INK} fill="url(#biUsers)" strokeWidth={2} isAnimationActive={false}
+                    label={<EndLabel lastIndex={last} text={t.sNewUsers} color={INK} dy={dyUsers} />} />
+                  <Area type="monotone" dataKey="newSites" name={t.sNewSites} stroke={MID} fill="transparent" strokeDasharray="5 4" strokeWidth={1.5} isAnimationActive={false}
+                    label={<EndLabel lastIndex={last} text={t.sNewSites} color={MID} dy={-dyUsers + 2} />} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -176,7 +209,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                     <div className="h-6 rounded-md bg-zinc-950/70">
                       <div
                         className="h-6 rounded-md"
-                        style={{ width: `${Math.max(2, (s.value / funnelMax) * 100)}%`, background: `linear-gradient(90deg, ${VIOLET_DEEP}, ${VIOLET})`, opacity: 1 - i * 0.18 }}
+                        style={{ width: `${Math.max(2, (s.value / funnelMax) * 100)}%`, background: [INK, MID, LOW][i] ?? LOW }}
                       />
                     </div>
                   </div>
@@ -196,14 +229,15 @@ export default function BiSections({ data }: { data: AdminBiData }) {
           <Panel title={t.cDeploysDaily}>
             <div className="h-64">
               <ResponsiveContainer>
-                <BarChart data={series} margin={{ left: -18, right: 8, top: 4 }}>
+                <BarChart data={series} margin={{ left: -18, right: 56, top: 8 }}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
-                  <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(139,92,246,0.08)" }} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={VIOLET_DEEP} radius={[0, 0, 0, 0]} />
-                  <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={AMBER} fillOpacity={0.75} radius={[3, 3, 0, 0]} />
+                  <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: "rgba(255,255,255,0.05)" }} />
+                  <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={MID} radius={[0, 0, 0, 0]} isAnimationActive={false}
+                    label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={MID} />} />
+                  <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={INK} radius={[3, 3, 0, 0]} isAnimationActive={false}
+                    label={<BarEndLabel lastIndex={last} text={t.sFail} color={INK} dy={-8} />} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -224,7 +258,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                           </span>
                         </div>
                         <div className="h-1.5 rounded-full bg-zinc-800">
-                          <div className="h-1.5 rounded-full bg-violet-500" style={{ width: `${(total / all) * 100}%` }} />
+                          <div className="h-1.5 rounded-full bg-zinc-300" style={{ width: `${(total / all) * 100}%` }} />
                         </div>
                       </li>
                     );
@@ -249,14 +283,15 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         <Panel title={t.cTrafficDaily}>
           <div className="h-64">
             <ResponsiveContainer>
-              <LineChart data={series} margin={{ left: -10, right: 8, top: 4 }}>
+              <LineChart data={series} margin={{ left: -10, right: 64, top: 8 }}>
                 <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                 <YAxis {...axisProps} allowDecimals={false} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="pv" name={t.sPv} stroke={VIOLET} strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="uv" name={t.sUv} stroke={VIOLET_SOFT} strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ stroke: LOW }} />
+                <Line type="monotone" dataKey="pv" name={t.sPv} stroke={INK} strokeWidth={2} dot={false} isAnimationActive={false}
+                  label={<EndLabel lastIndex={last} text={t.sPv} color={INK} dy={dyPv} />} />
+                <Line type="monotone" dataKey="uv" name={t.sUv} stroke={MID} strokeWidth={1.5} strokeDasharray="5 4" dot={false} isAnimationActive={false}
+                  label={<EndLabel lastIndex={last} text="UV" color={MID} dy={-dyPv + 2} />} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -282,7 +317,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         <SectionHead index={4} title={t.secHealth} desc={t.secHealthDesc} />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Panel title={t.cFailRate}>
-            <div className={`text-3xl font-semibold tabular-nums ${failRate != null && failRate > 0.2 ? "text-amber-300" : "text-zinc-100"}`}>
+            <div className={`text-3xl font-semibold tabular-nums ${failRate != null && failRate > 0.2 ? "text-white underline decoration-zinc-500 underline-offset-4" : "text-zinc-100"}`}>
               {fmtPct(failRate)}
             </div>
             <div className="mt-1 text-xs text-zinc-500">
@@ -302,7 +337,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
             ) : <div className="text-sm text-zinc-500">{t.noData}</div>}
           </Panel>
           <Panel title={t.cIngest}>
-            <div className={`text-3xl font-semibold tabular-nums ${lag != null && lag > 60 ? "text-amber-300" : "text-zinc-100"}`}>
+            <div className={`text-3xl font-semibold tabular-nums ${lag != null && lag > 60 ? "text-white underline decoration-zinc-500 underline-offset-4" : "text-zinc-100"}`}>
               {lag == null ? "—" : fill(t.ingestMinutes, { n: lag })}
             </div>
             <div className="mt-1 text-xs text-zinc-500">
@@ -320,11 +355,11 @@ export default function BiSections({ data }: { data: AdminBiData }) {
         </div>
         <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-xs text-zinc-400">
           <div className="mb-2 flex items-center gap-1.5 font-medium text-zinc-300">
-            {data.warnings.length ? <AlertTriangle className="h-3.5 w-3.5 text-amber-400" /> : <CheckCircle2 className="h-3.5 w-3.5 text-violet-300" />}
+            {data.warnings.length ? <AlertTriangle className="h-3.5 w-3.5 text-zinc-100" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
             {t.cWarnings}
           </div>
           {data.warnings.length ? (
-            <ul className="mb-2 list-inside list-disc font-mono text-amber-200/90">
+            <ul className="mb-2 list-inside list-disc font-mono text-zinc-200">
               {data.warnings.map((w) => <li key={w}>{w}</li>)}
             </ul>
           ) : (

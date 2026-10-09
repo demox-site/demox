@@ -37,8 +37,8 @@ function Sparkline({ values }: { values: number[] }) {
   const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`);
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-6 w-full md:h-8" aria-hidden="true">
-      <polygon points={`0,${h} ${pts.join(" ")} ${w},${h}`} fill="rgba(139,92,246,0.14)" />
-      <polyline points={pts.join(" ")} fill="none" stroke="#a78bfa" strokeWidth="1.6" strokeLinejoin="round" />
+      <polygon points={`0,${h} ${pts.join(" ")} ${w},${h}`} fill="rgba(244,244,245,0.07)" />
+      <polyline points={pts.join(" ")} fill="none" stroke="#d4d4d8" strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -50,12 +50,12 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
   const good = (up && kpi.goodWhenUp) || (down && !kpi.goodWhenUp);
   return (
     <div
-      className={`flex h-[124px] flex-col rounded-xl border p-3 md:h-[156px] md:p-4 ${kpi.warn ? "border-amber-700/70 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}`}
+      className={`flex h-[124px] flex-col rounded-xl border p-3 md:h-[156px] md:p-4 ${kpi.warn ? "border-zinc-400 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}`}
       data-kpi={kpi.id}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className={`flex min-w-0 items-center gap-1.5 text-xs ${kpi.warn ? "text-amber-300" : "text-zinc-400"}`}>
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-violet-300">
+        <span className={`flex min-w-0 items-center gap-1.5 text-xs ${kpi.warn ? "font-medium text-zinc-100" : "text-zinc-400"}`}>
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-zinc-300">
             <Icon className="h-3 w-3" />
           </span>
           <span className="truncate">{kpi.label}</span>
@@ -79,7 +79,7 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
       ) : (
         <>
           <div className="mt-1.5 text-xl font-semibold tabular-nums tracking-tight text-zinc-50 md:mt-2 md:text-2xl">{kpi.value}</div>
-          <div className={`mt-1 truncate text-xs ${kpi.warn ? "text-amber-300/90" : "text-zinc-500"}`} title={kpi.hint}>
+          <div className={`mt-1 truncate text-xs ${kpi.warn ? "text-zinc-200" : "text-zinc-500"}`} title={kpi.hint}>
             {kpi.hint}
           </div>
           <div className="mt-auto">{kpi.spark ? <Sparkline values={kpi.spark} /> : <div className="h-6 md:h-8" />}</div>
@@ -191,7 +191,7 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl">{t.title}</h1>
             {mock ? (
-              <span className="rounded-full border border-violet-400/40 bg-violet-500/15 px-2.5 py-0.5 text-xs font-medium text-violet-200" data-testid="bi-demo-badge">
+              <span className="rounded-full border border-zinc-600 bg-zinc-800 px-2.5 py-0.5 text-xs font-medium text-zinc-100" data-testid="bi-demo-badge">
                 {t.demoBadge}
               </span>
             ) : null}
@@ -207,7 +207,7 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
                 role="tab"
                 aria-selected={range === r}
                 onClick={() => setRange(r)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${range === r ? "bg-violet-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${range === r ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-zinc-200"}`}
               >
                 {fill(t.rangeDays, { n: r })}
               </button>
@@ -226,7 +226,7 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
       </div>
 
       {error ? (
-        <div className="flex items-center justify-between rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
+        <div className="flex items-center justify-between rounded-lg border border-zinc-500 bg-zinc-900 px-4 py-2 text-sm text-zinc-100">
           <span>{t.loadFailed}: {error}</span>
           <button type="button" className="underline" onClick={() => load(range)}>{t.retry}</button>
         </div>
