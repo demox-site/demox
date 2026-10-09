@@ -22,7 +22,7 @@ if (import.meta.env.VITE_ADMIN_BI_DEMO === "1") {
     const route = params.get("route") || "/console/admin/dashboard";
     if (params.get("lang")) localStorage.setItem("app_language", params.get("lang") === "en" ? "en" : "zh");
     if (params.get("theme")) localStorage.setItem("app_theme", params.get("theme") === "light" ? "light" : "dark");
-    if (route.startsWith("/console")) {
+    if (route.startsWith("/") && !route.startsWith("//")) {
       window.history.replaceState(null, "", route);
       // App 的 history 对象在模块加载时已读过地址，用 popstate 让它同步到新地址
       window.dispatchEvent(new PopStateEvent("popstate"));
