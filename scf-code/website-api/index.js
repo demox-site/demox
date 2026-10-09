@@ -6798,9 +6798,68 @@ const adminBi = createAdminBiService({
  * 管理员：BI 汇总。纯 SELECT，不跑 ensure* / backfill；60 秒进程内缓存。
  * body: { range: 7 | 30 | 90 }
  */
+/**
+ * 部署按天的日志回填（迁移 022 + seeds/022，Chief 2026-10-09 批准）。
+ * box 没有数据库凭证、安全组也不开，所以和 021（admin_audit_log）一样，由已发布的 website 函数自己建表：
+ * 管理员第一次打开看板（get_admin_bi）时，每个实例跑一次：
+ *   1. CREATE TABLE IF NOT EXISTS deploy_daily_backfill（与 migrations/022 一致）；
+ *   2. INSERT IGNORE 这 8 行（与 migrations/seeds/022 一致，主键 stat_date+source，已有的行不覆盖）。
+ * 只碰 deploy_daily_backfill 这一张表。失败只记错误码，看板照常（退回只用站点记录补算），下次再试。
+ * 数据只有按天汇总（UTC+8 日期、成功次数），fail / channel 为 NULL（未知），不含任何日志原文或用户信息。
+ */
+const DEPLOY_LOG_BACKFILL_ROWS = [
+  // [stat_date, total, partial, covered_from(UTC), covered_until(UTC)]
+  ['2026-10-02', 0, 1, '2026-10-02 05:10:03', '2026-10-02 16:00:00'],
+  ['2026-10-03', 0, 0, '2026-10-02 16:00:00', '2026-10-03 16:00:00'],
+  ['2026-10-04', 24, 0, '2026-10-03 16:00:00', '2026-10-04 16:00:00'],
+  ['2026-10-05', 18, 0, '2026-10-04 16:00:00', '2026-10-05 16:00:00'],
+  ['2026-10-06', 22, 0, '2026-10-05 16:00:00', '2026-10-06 16:00:00'],
+  ['2026-10-07', 136, 0, '2026-10-06 16:00:00', '2026-10-07 16:00:00'],
+  ['2026-10-08', 124, 0, '2026-10-07 16:00:00', '2026-10-08 16:00:00'],
+  ['2026-10-09', 26, 1, '2026-10-08 16:00:00', '2026-10-09 05:25:21']
+];
+const DEPLOY_LOG_BACKFILL_NOTE = 'CLS demox-user-nodejs, uploadedCount responses, dedup by RequestId';
+let deployBackfillReady = null;
+function ensureDeployDailyBackfill() {
+  if (!deployBackfillReady) {
+    deployBackfillReady = (async () => {
+      await query(`CREATE TABLE IF NOT EXISTS deploy_daily_backfill (
+        stat_date     DATE NOT NULL COMMENT 'UTC+8 日期',
+        source        VARCHAR(16) NOT NULL DEFAULT 'log_backfill' COMMENT '数据来源；目前只有 log_backfill',
+        total         INT UNSIGNED NOT NULL COMMENT '当天成功部署次数（按请求去重）',
+        fail          INT UNSIGNED DEFAULT NULL COMMENT '失败次数；日志里认不出，NULL = 未知',
+        channel       VARCHAR(16) DEFAULT NULL COMMENT '渠道；日志里没有，NULL = 未知',
+        partial       TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = 这天只覆盖了一部分（日志开始那天 / 埋点开始那天）',
+        covered_from  DATETIME DEFAULT NULL COMMENT '这一行覆盖的起点（UTC）',
+        covered_until DATETIME DEFAULT NULL COMMENT '这一行覆盖的终点（UTC，不含）',
+        note          VARCHAR(255) DEFAULT NULL,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (stat_date, source)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署按天回填（埋点之前，只有总数）'`);
+      const values = DEPLOY_LOG_BACKFILL_ROWS.map(() => "(?, 'log_backfill', ?, NULL, NULL, ?, ?, ?, ?)").join(', ');
+      const params = DEPLOY_LOG_BACKFILL_ROWS.flatMap(([d, total, partial, from, until]) => [d, total, partial, from, until, DEPLOY_LOG_BACKFILL_NOTE]);
+      await query(
+        `INSERT IGNORE INTO deploy_daily_backfill
+           (stat_date, source, total, fail, channel, partial, covered_from, covered_until, note)
+         VALUES ${values}`,
+        params
+      );
+    })().catch((error) => {
+      deployBackfillReady = null;
+      throw error;
+    });
+  }
+  return deployBackfillReady;
+}
+
 async function handleGetAdminBi(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
+  try {
+    await ensureDeployDailyBackfill();
+  } catch (e) {
+    console.warn('部署日志回填建表/写入失败:', (e && e.code) || 'ERROR');
+  }
   try {
     const data = await adminBi.get(event.body && event.body.range);
     return ok({ success: true, data });
@@ -9745,4 +9804,5 @@ exports.classifyDeploySource = classifyDeploySource;
 exports._adminBiForTest = adminBi;
 exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
+exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };

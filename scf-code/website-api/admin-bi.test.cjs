@@ -385,8 +385,9 @@ test('get_admin_bi rejects anonymous and non-admin callers', async () => {
   assert.equal(res.statusCode, 403);
 });
 
-test('get_admin_bi returns data for admins without running DDL or writes', async () => {
+test('get_admin_bi: the only writes are the one-time deploy_daily_backfill ensure; no audit row', async () => {
   websiteApi._adminBiForTest.clear();
+  websiteApi._deployBackfillForTest.reset();
   const seen = [];
   queryImpl = async (sql) => {
     seen.push(sql);
@@ -399,9 +400,62 @@ test('get_admin_bi returns data for admins without running DDL or writes', async
   assert.equal(body.success, true);
   assert.equal(body.data.range.days, 7);
   assert.equal(body.data.series.length, 7);
-  // v14：BI 看板属于汇总类读，不再写管理员审计；整个请求纯读。
+  // v14：BI 看板属于汇总类读，不再写管理员审计
   assert.deepEqual(seen.filter((sql) => /admin_audit_log/.test(sql)), [], 'no audit row for get_admin_bi');
+  // 唯一的写：迁移 022 的建表 + 8 行 INSERT IGNORE，只碰 deploy_daily_backfill
+  const writes = seen.filter((sql) => /\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|REPLACE|TRUNCATE)\b/i.test(sql));
+  assert.equal(writes.length, 2);
+  assert.match(writes[0], /^CREATE TABLE IF NOT EXISTS deploy_daily_backfill \(/);
+  assert.match(writes[1].trim(), /^INSERT IGNORE INTO deploy_daily_backfill\b/);
+  for (const w of writes) {
+    const tables = [...w.matchAll(/\b(?:TABLE(?: IF NOT EXISTS)?|INTO|UPDATE|FROM|JOIN)\s+`?(\w+)/gi)].map((m) => m[1]);
+    assert.deepEqual([...new Set(tables)], ['deploy_daily_backfill'], w);
+  }
+  // 同一实例第二次打开看板：不再建表 / 写入
+  websiteApi._adminBiForTest.clear();
+  seen.length = 0;
+  await call('get_admin_bi', { range: 30 });
   for (const sql of seen) assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|CREATE|ALTER)\b/i, sql);
+});
+
+test('deploy backfill ensure failing does not break get_admin_bi and is retried next time', async () => {
+  websiteApi._adminBiForTest.clear();
+  websiteApi._deployBackfillForTest.reset();
+  let fail = true;
+  const seen = [];
+  queryImpl = async (sql) => {
+    seen.push(sql);
+    if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin'] }];
+    if (fail && sql.includes('CREATE TABLE IF NOT EXISTS deploy_daily_backfill')) throw Object.assign(new Error('denied'), { code: 'ER_TABLEACCESS_DENIED_ERROR' });
+    return [];
+  };
+  const res = await call('get_admin_bi', { range: 7 });
+  assert.equal(JSON.parse(res.body).success, true);
+  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 0);
+  fail = false;
+  websiteApi._adminBiForTest.clear();
+  await call('get_admin_bi', { range: 7 });
+  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 1);
+});
+
+test('the inline ensure matches migration 022, seeds/022 and /workspace/v14/log-backfill.json', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  const inline = src.slice(src.indexOf('CREATE TABLE IF NOT EXISTS deploy_daily_backfill'), src.indexOf("COMMENT='部署按天回填（埋点之前，只有总数）'`"));
+  const mig = fs.readFileSync(path.join(__dirname, 'migrations/022_add_deploy_daily_backfill.sql'), 'utf8');
+  const cols = (t) => [...t.matchAll(/^\s+(\w+)\s+(DATE|VARCHAR\(\d+\)|INT UNSIGNED|TINYINT\(1\)|DATETIME|TIMESTAMP)(?=\s)/gm)].map((m) => `${m[1]} ${m[2]}`);
+  assert.equal(cols(mig).length, 10);
+  assert.deepEqual(cols(inline), cols(mig));
+  const seed = fs.readFileSync(path.join(__dirname, 'migrations/seeds/022_seed_deploy_daily_backfill.sql'), 'utf8');
+  const seedRows = [...seed.matchAll(/\('(\d{4}-\d{2}-\d{2})', 'log_backfill', (\d+), NULL, NULL, ([01]), '([^']+)', '([^']+)'/g)]
+    .map((m) => [m[1], Number(m[2]), Number(m[3]), m[4], m[5]]);
+  assert.deepEqual(websiteApi._deployBackfillForTest.rows, seedRows);
+  assert.deepEqual(websiteApi._deployBackfillForTest.rows.map((r) => [r[0], r[1]]),
+    [['2026-10-02', 0], ['2026-10-03', 0], ['2026-10-04', 24], ['2026-10-05', 18], ['2026-10-06', 22], ['2026-10-07', 136], ['2026-10-08', 124], ['2026-10-09', 26]]);
+  const jsonPath = '/workspace/v14/log-backfill.json';
+  if (fs.existsSync(jsonPath)) {
+    const j = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    assert.deepEqual(websiteApi._deployBackfillForTest.rows.map((r) => [r[0], r[1]]), j.days.map((d) => [d.date, d.total]));
+  }
 });
 
 // ── tracking ────────────────────────────────────────────────
