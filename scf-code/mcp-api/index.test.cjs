@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 const { EventEmitter } = require('node:events');
 const https = require('node:https');
 const { afterEach, before, mock, test } = require('node:test');
@@ -127,4 +128,17 @@ test('prefers in-process backend invoker over HTTP', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://website.example.test/upload');
   assert.deepEqual(calls[0].data, { ...payload, deploySource: 'mcp' });
+});
+
+test('mcp request logs never carry the bearer token or email (v13)', async () => {
+  const before = logGuard.lines.length;
+  const token = sign({ userId: 'u-mail', email: 'mcp.user@example.com' });
+  await api.main({ httpMethod: 'POST', path: '/deploy', headers: { Authorization: `Bearer ${token}` }, body: 'not json {' }).catch(() => {});
+  await api.main({ httpMethod: 'POST', path: '/deploy', headers: { Authorization: 'Bearer eyJbad.eyJbad.sig-not-valid' }, body: '{}' }).catch(() => {});
+  assert.ok(logGuard.lines.length > before);
+});
+
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
 });

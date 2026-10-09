@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 const { EventEmitter } = require('node:events');
 const https = require('node:https');
 
@@ -881,4 +882,9 @@ test('password login tells code-only accounts to use a verification code', async
   });
   assert.equal(response.statusCode, 401);
   assert.match(JSON.parse(response.body).error, /未设置密码/);
+});
+
+// ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
+test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
+  logGuard.assertNoLeaks();
 });

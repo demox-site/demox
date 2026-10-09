@@ -2,6 +2,10 @@
 
 const crypto = require('crypto');
 const { executeNodejsPayload } = require('./runtime-nodejs.js');
+const { sealPayload } = require('./response-seal.js');
+const { installLogRedaction } = require('./log-redact.js');
+
+installLogRedaction(console);
 
 /**
  * Secretless Node.js runtime pool. The router (demox-function-api) invokes this
@@ -20,6 +24,7 @@ async function main(event = {}) {
     }
   }
   const payload = incoming.payload;
+  const seal = payload && payload.responseSeal;
   if (!payload || payload.type !== 'demox.runtime.execute' || payload.runtime !== 'nodejs') {
     return respond(incoming.http, {
       ok: false,
@@ -37,15 +42,15 @@ async function main(event = {}) {
       packageName: payload.packageName,
       callingConvention: payload.callingConvention
     });
-    return respond(incoming.http, { ok: true, result });
+    return respond(incoming.http, sealPayload({ ok: true, result }, seal));
   } catch (error) {
-    return respond(incoming.http, {
+    return respond(incoming.http, sealPayload({
       ok: false,
       error: {
         code: error.code || 'FUNCTION_EXECUTION_ERROR',
         message: error.message || '函数执行失败'
       }
-    });
+    }, seal));
   }
 }
 
