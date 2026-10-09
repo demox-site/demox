@@ -7,20 +7,23 @@
     {
       "name": "demox-website-api",
       "localPath": "scf-code/website-api/index.js",
-      "liveSha256": "4e4ce28b25d518d3f2168a110e7e5c1afa60a3174f577c216a5e53d3f013b8d8",
-      "exactMatch": true
+      "liveSha256": "8a24cb85764ce184f936591e8fa0f1461811cdd31604fef8555b9521c7d6e183",
+      "exactMatch": false,
+      "note": "Re-checked 2026-10-09: standalone demox-website-api $LATEST (ModTime 2026-10-09 12:05:38) is behind master; master website-api ships via EPX2UU43 and the unified demox-function-api."
     },
     {
       "name": "demox-auth-api",
       "localPath": "scf-deploy-packages/auth-api/index.cjs",
       "liveSha256": "f97e83779942b3a89829cdc371b07cf14bb54c70d99f1ed7285ac567eade1d16",
-      "exactMatch": true
+      "exactMatch": false,
+      "note": "Re-checked 2026-10-09: standalone function $LATEST (12:05) still has this hash; master is ahead and ships via the unified demox-function-api."
     },
     {
       "name": "demox-mcp-api",
       "localPath": "scf-code/mcp-api/index.js",
       "liveSha256": "eb4fde9609d2f99180481ac4fe02e3f381deb01144357e397daeaa994407179f",
-      "exactMatch": true
+      "exactMatch": false,
+      "note": "Re-checked 2026-10-09: standalone function $LATEST (12:05) still has this hash; master is ahead and ships via the unified demox-function-api."
     },
     {
       "name": "demox-cert-renew",
