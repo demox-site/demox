@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// 已停用：CI 发布见 .github/workflows/deploy-function-api.yml 和 docs/function-api-ci.md。
+// 本脚本依赖 phosa Mac 上的工具路径，而且 --apply 会用 UpdateFunctionConfiguration 覆盖函数环境变量，
+// 不要再用它发布生产。
+
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
