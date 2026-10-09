@@ -104,7 +104,7 @@ test('auth method is pat for personal access tokens and oauth for CLI/MCP tokens
   assert.deepEqual(auditInserts().map((r) => [r.authMethod, r.kind]), [['pat', 'read'], ['oauth', 'read'], ['jwt', 'read']]);
 });
 
-test('every requireAdmin action is audited (read and write)', async () => {
+test('every requireAdmin action is audited (read and write) except aggregate dashboard reads', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
   const adminHandlers = [...source.matchAll(/async function (handle\w+)\(event\) \{\n  const a = await requireAdmin\(event\);/g)].map((m) => m[1]);
   assert.ok(adminHandlers.length >= 18, `found ${adminHandlers.length}`);
@@ -118,6 +118,10 @@ test('every requireAdmin action is audited (read and write)', async () => {
     reset();
     await call(action, { id: 1, uid: 'u_target', role: ['user'] }).catch(() => {});
     const rows = auditInserts();
+    if (audit.adminAuditSkipped(action)) {
+      assert.equal(rows.length, 0, `${action} is an aggregate dashboard read and must not be audited`);
+      continue;
+    }
     assert.equal(rows.length, 1, `${action} should write exactly one audit row`);
     assert.equal(rows[0].action, action);
     assert.equal(rows[0].operatorUid, ADMIN);
@@ -203,8 +207,8 @@ test('list_admin_audit is read-only, parameterized and paginates', async () => {
   assert.deepEqual(select.params, [13, ADMIN, "x' OR 1=1", 'oauth', 2]);
   const writes = calls.filter((c) => /\b(UPDATE|DELETE|ALTER)\b/i.test(c.sql) && /admin_audit_log/.test(c.sql));
   assert.deepEqual(writes, []);
-  // 查看审计本身也是一次管理员读操作
-  assert.deepEqual(auditInserts().map((r) => [r.action, r.kind]), [['list_admin_audit', 'read']]);
+  // v14：查看审计本身属于看板读，不再记一行（避免“看日志”刷出日志）
+  assert.deepEqual(auditInserts(), []);
 });
 
 test('list_admin_audit rejects non-admins and degrades to empty when the table is missing', async () => {
@@ -233,4 +237,64 @@ test('migration 021 and the inline DDL define the same columns', () => {
   const numbers = fs.readdirSync(path.join(__dirname, 'migrations')).filter((f) => /^\d{3}_.*\.sql$/.test(f)).map((f) => Number(f.slice(0, 3)));
   assert.ok(numbers.includes(21));
   assert.equal(numbers.filter((n) => n === 21).length, 1);
+});
+
+// ── v14：保留期 + 看板读不记 ──────────────────────────────────────────────
+
+test('aggregate dashboard reads are not audited; per-user reads and writes still are', async () => {
+  reset();
+  await call('get_admin_bi', { range: 7 });
+  await call('list_admin_audit', {});
+  await call('get_platform_overview', {});
+  assert.deepEqual(auditInserts(), []);
+  await call('get_user_overview', { uid: 'u_target' });
+  await call('list_role_limits', {});
+  assert.deepEqual(auditInserts().map((r) => r.action), ['get_user_overview', 'list_role_limits']);
+  for (const a of ['get_admin_bi', 'get_platform_overview', 'get_product_funnel', 'list_admin_audit']) assert.equal(audit.adminAuditSkipped(a), true);
+  for (const a of ['get_user_overview', 'resolve_user_emails', 'set_user_role', 'list_user_roles']) assert.equal(audit.adminAuditSkipped(a), false);
+});
+
+test('retention defaults to 180 days and is configurable within 7..3650', () => {
+  assert.equal(audit.adminAuditRetentionDays({}), 180);
+  assert.equal(audit.adminAuditRetentionDays({ ADMIN_AUDIT_RETENTION_DAYS: '90' }), 90);
+  assert.equal(audit.adminAuditRetentionDays({ ADMIN_AUDIT_RETENTION_DAYS: '1' }), 7);
+  assert.equal(audit.adminAuditRetentionDays({ ADMIN_AUDIT_RETENTION_DAYS: '99999' }), 3650);
+  assert.equal(audit.adminAuditRetentionDays({ ADMIN_AUDIT_RETENTION_DAYS: 'abc' }), 180);
+});
+
+test('prune only DELETEs old rows from admin_audit_log, in batches, at most hourly', async () => {
+  reset();
+  let batches = [5000, 5000, 12];
+  extra = async (sql) => (/^DELETE FROM admin_audit_log/.test(sql) ? { affectedRows: batches.shift() } : undefined);
+  const r = await audit.pruneAdminAuditLog({ force: true });
+  assert.deepEqual(r, { skipped: false, deleted: 10012, days: 180 });
+  const sqls = calls.map((c) => c.sql);
+  assert.equal(sqls.length, 3);
+  for (const c of calls) {
+    assert.match(c.sql, /^DELETE FROM admin_audit_log WHERE created_at < \(CURRENT_TIMESTAMP\(3\) - INTERVAL \? DAY\) ORDER BY created_at LIMIT \?$/);
+    assert.deepEqual(c.params, [180, 5000]);
+  }
+  calls = [];
+  const again = await audit.pruneAdminAuditLog({ now: Date.now() + 1000 });
+  assert.equal(again.skipped, true);
+  assert.equal(calls.length, 0);
+});
+
+test('prune failure is swallowed and a missing table is fine', async () => {
+  reset();
+  extra = async (sql) => { if (/^DELETE/.test(sql)) throw Object.assign(new Error('x'), { code: 'ER_NO_SUCH_TABLE' }); };
+  assert.equal((await audit.pruneAdminAuditLog({ force: true })).tableMissing, true);
+  extra = async (sql) => { if (/^DELETE/.test(sql)) throw Object.assign(new Error('down'), { code: 'ECONNREFUSED' }); };
+  assert.equal((await audit.pruneAdminAuditLog({ force: true })).error, true);
+});
+
+test('the analytics rollup timer runs the prune; HTTP calls do not', async () => {
+  reset();
+  await websiteApi.main({ Type: 'Timer', TriggerName: 'analytics-rollup-5m', Time: new Date().toISOString() });
+  // prune may be throttled from an earlier test in this process; force a fresh window by checking the source wiring too
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.match(source, /if \(isAnalyticsRollupTimerEvent\(event\)\) \{[\s\S]{0,200}await pruneAdminAuditLog\(\);[\s\S]{0,80}handleRollupSiteAnalytics/);
+  reset();
+  await call('get_usage', {}, { userId: USER });
+  assert.ok(!calls.some((c) => /^DELETE FROM admin_audit_log/.test(c.sql)));
 });

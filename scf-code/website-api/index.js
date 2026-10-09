@@ -2011,6 +2011,8 @@ async function dispatchWebsiteRequest(event, context) {
     }
 
     if (isAnalyticsRollupTimerEvent(event)) {
+      // v14：顺带清理过期的管理员审计（每实例每小时最多一次，失败不影响聚合）。
+      await pruneAdminAuditLog();
       return await handleRollupSiteAnalytics(event);
     }
 
@@ -3458,6 +3460,16 @@ const ADMIN_AUDIT_TARGET_KEYS = [
   'archived', 'includeAll', 'range', 'days', 'subdomain', 'operatorUid', 'beforeId'
 ];
 const ADMIN_AUDIT_READ_ACTION = /^(?:list|get|check|resolve|search|bucket_stats)/;
+// v14：只返回汇总数字、不涉及具体用户的看板读接口不记审计（BI 页每次打开/刷新都会调，
+// 占了绝大多数行）。看具体用户、站点、举报的读操作照常记；写操作全部记。
+const ADMIN_AUDIT_SKIP_READ_ACTIONS = new Set([
+  'get_admin_bi', 'get_platform_overview', 'get_product_funnel', 'list_admin_audit'
+]);
+// v14：保留期，默认 180 天，ADMIN_AUDIT_RETENTION_DAYS 可调（7–3650）。
+const ADMIN_AUDIT_RETENTION_DEFAULT_DAYS = 180;
+const ADMIN_AUDIT_PRUNE_BATCH = 5000;
+const ADMIN_AUDIT_PRUNE_MAX_BATCHES = 20;
+const ADMIN_AUDIT_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 function markAdminAction(_event, userId, via) {
   const store = adminAuditStorage.getStore();
@@ -3537,9 +3549,51 @@ function ensureAdminAuditTable() {
   return adminAuditTableReady;
 }
 
+function adminAuditSkipped(action) {
+  return ADMIN_AUDIT_SKIP_READ_ACTIONS.has(action);
+}
+
+function adminAuditRetentionDays(env = process.env) {
+  const raw = String(env.ADMIN_AUDIT_RETENTION_DAYS || '').trim();
+  const n = Number.parseInt(raw, 10);
+  if (!raw || !Number.isFinite(n)) return ADMIN_AUDIT_RETENTION_DEFAULT_DAYS;
+  return Math.max(7, Math.min(3650, n));
+}
+
+let adminAuditLastPruneAt = 0;
+/**
+ * 删除 admin_audit_log 里早于保留期的行。只 DELETE 这一张表、只按 created_at 删，分批（每批 5000 行，
+ * 单次最多 20 批）。由 5 分钟统计聚合定时器顺带调用，每个实例每小时最多跑一次；失败只记日志。
+ */
+async function pruneAdminAuditLog({ now = Date.now(), force = false } = {}) {
+  if (!force && now - adminAuditLastPruneAt < ADMIN_AUDIT_PRUNE_INTERVAL_MS) return { skipped: true, deleted: 0 };
+  adminAuditLastPruneAt = now;
+  const days = adminAuditRetentionDays();
+  let deleted = 0;
+  try {
+    for (let batch = 0; batch < ADMIN_AUDIT_PRUNE_MAX_BATCHES; batch += 1) {
+      const result = await query(
+        'DELETE FROM admin_audit_log WHERE created_at < (CURRENT_TIMESTAMP(3) - INTERVAL ? DAY) ORDER BY created_at LIMIT ?',
+        [days, ADMIN_AUDIT_PRUNE_BATCH]
+      );
+      const affected = Number(result && result.affectedRows) || 0;
+      deleted += affected;
+      if (affected < ADMIN_AUDIT_PRUNE_BATCH) break;
+    }
+    return { skipped: false, deleted, days };
+  } catch (error) {
+    if (error && (error.code === 'ER_NO_SUCH_TABLE' || /doesn't exist/.test(String(error.message)))) {
+      return { skipped: false, deleted: 0, days, tableMissing: true };
+    }
+    console.error('清理管理员审计失败:', error && (error.code || error.message));
+    return { skipped: false, deleted, days, error: true };
+  }
+}
+
 async function recordAdminAudit(event, admin, response) {
   try {
     const action = adminAuditActionName(event);
+    if (adminAuditSkipped(action)) return;
     const kind = ADMIN_AUDIT_READ_ACTION.test(action) ? 'read' : 'write';
     const { statusCode, success } = adminAuditOutcome(response);
     const via = [...admin.via].sort().join(',').slice(0, 64);
@@ -3602,7 +3656,7 @@ async function handleListAdminAudit(event) {
   }
 }
 
-exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome };
+exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome, adminAuditSkipped, adminAuditRetentionDays, pruneAdminAuditLog };
 
 function normalizeProjectKey(input) {
   const value = String(input || '').trim().toUpperCase();
