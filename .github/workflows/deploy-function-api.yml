@@ -3,13 +3,14 @@ name: Deploy function-api (SCF demox-function-api)
 # 统一 SCF 路由 demox-function-api（ap-guangzhou / namespace demox）的发布。
 # 只更新代码：不改函数环境变量（里面有 JWT_SECRET 等），也不改内存、超时、VPC。
 # 流程：打包 → 上传 COS → UpdateFunctionCode → PublishVersion → 对新版本做健康检查
-#      → develop / production 别名指向新版本 → 公网复查（失败自动切回上一个版本）。
+#      → develop 别名指向新版本 → 经 develop 公网 HTTPS 地址健康检查（不用 Invoke）
+#      → production 别名指向新版本 → api.demox.site 公网复查（失败自动切回上一个版本）。
 # 前置：api.demox.site 和定时触发器必须已经绑定到别名 production（一次性迁移见 docs/function-api-ci.md），
 #      否则脚本在任何写操作之前就退出。
 # 凭证：不用任何腾讯云 secret。job 在 environment function-api-production（只允许 master，需要 PhosAQy 批准）里，
 #      用 GitHub OIDC 扮演 CAM 角色 demox-ci-deploy（信任条件 sub=repo:demox-site/demox:environment:function-api-production），
 #      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
-#      打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
+#      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 on:
   push:
@@ -89,6 +90,8 @@ jobs:
         env:
           TENCENTCLOUD_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
           TENCENTCLOUD_REGION: ap-guangzhou
+          # 别名 develop 的公网 HTTPS 地址（一次性迁移时建好），健康检查只走它，不用 scf:Invoke。
+          FUNCTION_API_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
           ROLLBACK_VERSION: ${{ inputs.version }}
           WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
         run: |

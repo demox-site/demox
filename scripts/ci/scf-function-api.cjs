@@ -8,7 +8,8 @@
  * - 只更新代码，绝不调用 UpdateFunctionConfiguration / GetFunction：函数环境变量里有 JWT_SECRET、
  *   MYSQL_PASSWORD 等，CI 既不读也不写。CAM 角色 demox-ci-deploy 对这两个接口是显式 Deny，
  *   UpdateFunctionCode 也不带 Environment，所以环境变量由权限保证不变，不再靠读取比对。
- * - 先 PublishVersion 生成不可变版本，用 Invoke(Qualifier=N) 做健康检查，
+ * - 先 PublishVersion 生成不可变版本，把别名 develop 指向 N，通过 develop 的公网 HTTPS 地址
+ *   （FUNCTION_API_DEVELOP_URL）做健康检查；绝不调用 Invoke（CI 角色对 scf:Invoke 显式 Deny），
  *   通过后才把别名 production 指向新版本；公网复查失败自动切回上一个版本。
  * - 只有 api.demox.site 的所有入口和定时触发器都已绑定到别名 production 时才允许发布
  *   （否则更新 $LATEST 就等于直接切流量）。一次性迁移见 docs/function-api-ci.md。
@@ -47,13 +48,15 @@ const CONFIG = Object.freeze({
   oidcAudience: 'sts.tencentcloudapi.com'
 });
 
-// 健康检查：都不带凭证，返回体里没有用户数据。
+// 健康检查：只走公网 HTTPS，不带凭证，只看状态码，不读返回体。
 const HEALTH_CHECKS = Object.freeze([
-  { name: 'mcp health', event: { httpMethod: 'GET', path: '/health', headers: {} }, expect: [200] },
-  { name: 'api root requires login', event: { httpMethod: 'GET', path: '/', headers: {} }, expect: [401] },
+  { name: 'GET /health', method: 'GET', path: '/health', headers: {}, expect: [200] },
+  { name: 'GET / (401)', method: 'GET', path: '/', headers: {}, expect: [401] },
   {
-    name: 'auth preflight',
-    event: { httpMethod: 'OPTIONS', path: '/auth/login', headers: { origin: 'https://www.demox.site', 'access-control-request-method': 'POST' } },
+    name: 'OPTIONS /auth/login',
+    method: 'OPTIONS',
+    path: '/auth/login',
+    headers: { origin: 'https://www.demox.site', 'access-control-request-method': 'POST' },
     expect: [200, 204]
   }
 ]);
@@ -110,10 +113,13 @@ async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fet
 }
 
 /** 只读前置检查。fn = { Status, Triggers }（来自 ListVersionByFunction + ListTriggers，不用 GetFunction）。 */
-function checkPreconditions({ fn, domain, aliases }) {
+function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   const errors = [];
   const warnings = [];
   if (!fn) errors.push(`${CONFIG.functionName} 不存在`);
+  if (!(aliases || []).some((item) => item.Name === CONFIG.stagingAlias)) errors.push(`别名 ${CONFIG.stagingAlias} 不存在（健康检查要通过它访问新版本）`);
+  if (!/^https:\/\/[^/]+/.test(String(developBaseUrl || ''))) errors.push('没有配置 FUNCTION_API_DEVELOP_URL（别名 develop 的公网 HTTPS 地址）');
+  else if (String(developBaseUrl).replace(/\/+$/, '') === CONFIG.publicBaseUrl) errors.push('FUNCTION_API_DEVELOP_URL 不能是 production 地址');
   if (fn && !['Active'].includes(fn.Status)) errors.push(`函数状态 ${fn.Status}，不是 Active`);
 
   const production = (aliases || []).find((item) => item.Name === CONFIG.alias);
@@ -137,18 +143,8 @@ function checkPreconditions({ fn, domain, aliases }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-function parseInvokeStatus(result) {
-  const r = (result && (result.Result || result)) || {};
-  if (Number(r.InvokeResult || 0) !== 0) return { statusCode: null, error: `InvokeResult=${r.InvokeResult}` };
-  try {
-    const payload = JSON.parse(r.RetMsg || '{}');
-    return { statusCode: Number(payload.statusCode) || null };
-  } catch {
-    return { statusCode: null, error: 'RetMsg 不是 JSON' };
-  }
-}
-
-function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {} }) {
+function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '' }) {
+  const developUrl = String(developBaseUrl || '').replace(/\/+$/, '');
   const base = { FunctionName: CONFIG.functionName, Namespace: CONFIG.namespace };
 
   async function versionStatus(name, qualifier = '$LATEST') {
@@ -165,7 +161,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
       scf.ListAliases({ ...base })
     ]);
     const fn = status === null ? null : { Status: status, Triggers: triggerList.Triggers || [] };
-    return { fn, domain, aliases: aliasList.Aliases || [] };
+    return { fn, domain, aliases: aliasList.Aliases || [], developBaseUrl: developUrl };
   }
 
   async function plan() {
@@ -188,38 +184,43 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     throw new Error(`等待 ${name} Active 超时`);
   }
 
-  async function healthCheckVersion(version) {
-    const failures = [];
-    for (const check of HEALTH_CHECKS) {
-      let status;
-      try {
-        status = parseInvokeStatus(await scf.Invoke({
-          ...base,
-          Qualifier: String(version),
-          InvocationType: 'RequestResponse',
-          ClientContext: JSON.stringify(check.event)
-        }));
-      } catch (error) {
-        status = { statusCode: null, error: error.code || error.message };
+  async function httpStatus(url, { method = 'GET', headers = {} } = {}) {
+    try {
+      const res = await fetchImpl(url, { method, headers, redirect: 'manual' });
+      return res.status;
+    } catch (error) {
+      return `ERR ${error.code || error.message}`;
+    }
+  }
+
+  /** 把 develop 指向 version 后，经 develop 的公网地址做健康检查（重试几轮，等别名生效）。返回失败项。 */
+  async function healthCheckDevelop(version, { rounds = 4, gapMs = 10000 } = {}) {
+    let failures = [];
+    for (let round = 0; round < rounds; round += 1) {
+      if (round) await wait(gapMs);
+      failures = [];
+      for (const check of HEALTH_CHECKS) {
+        const code = await httpStatus(`${developUrl}${check.path}`, { method: check.method, headers: check.headers });
+        const ok = check.expect.includes(code);
+        log(`  健康检查 develop→v${version} #${round + 1} ${check.name}: ${code} ${ok ? 'OK' : 'FAIL'}`);
+        if (!ok) failures.push(check.name);
       }
-      const ok = check.expect.includes(status.statusCode);
-      log(`  健康检查 v${version} ${check.name}: ${status.statusCode ?? status.error} ${ok ? 'OK' : 'FAIL'}`);
-      if (!ok) failures.push(check.name);
+      if (!failures.length) return [];
     }
     return failures;
+  }
+
+  async function aliasVersion(name) {
+    const aliases = (await scf.ListAliases({ ...base })).Aliases || [];
+    const hit = aliases.find((item) => item.Name === name);
+    return hit ? String(hit.FunctionVersion) : null;
   }
 
   async function publicCheck({ rounds = 3, gapMs = 20000 } = {}) {
     for (let round = 0; round < rounds; round += 1) {
       if (round) await wait(gapMs);
       for (const check of PUBLIC_CHECKS) {
-        let code = null;
-        try {
-          const res = await fetchImpl(`${CONFIG.publicBaseUrl}${check.path}`, { method: 'GET', redirect: 'manual' });
-          code = res.status;
-        } catch (error) {
-          code = `ERR ${error.code || error.message}`;
-        }
+        const code = await httpStatus(`${CONFIG.publicBaseUrl}${check.path}`);
         const ok = check.expect.includes(code);
         log(`  公网复查 #${round + 1} ${check.name}: ${code} ${ok ? 'OK' : 'FAIL'}`);
         if (!ok) return false;
@@ -271,10 +272,14 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await waitActive(CONFIG.functionName, version);
     log(`已发布 v${version}`);
 
-    const failures = await healthCheckVersion(version);
-    if (failures.length) throw new Error(`v${version} 健康检查失败（${failures.join(', ')}），未切流量，production 仍是 v${previous}`);
-
+    const developBefore = await aliasVersion(CONFIG.stagingAlias);
     await pointAlias(CONFIG.stagingAlias, version);
+    const failures = await healthCheckDevelop(version);
+    if (failures.length) {
+      if (developBefore) await pointAlias(CONFIG.stagingAlias, developBefore);
+      throw new Error(`v${version} 健康检查失败（${failures.join(', ')}），未切流量，production 仍是 v${previous}`);
+    }
+
     await pointAlias(CONFIG.alias, version);
     log(`别名 ${CONFIG.alias}: v${previous} → v${version}`);
     if (!(await publicCheck())) {
@@ -320,8 +325,14 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     if (!/^\d+$/.test(String(version || ''))) throw new Error('rollback 需要 --version <数字>');
     const pre = await plan();
     const current = pre.productionVersion;
-    const failures = await healthCheckVersion(version);
-    if (failures.length) throw new Error(`v${version} 健康检查失败，不切换`);
+    if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
+    const developBefore = await aliasVersion(CONFIG.stagingAlias);
+    await pointAlias(CONFIG.stagingAlias, version);
+    const failures = await healthCheckDevelop(version);
+    if (failures.length) {
+      if (developBefore) await pointAlias(CONFIG.stagingAlias, developBefore);
+      throw new Error(`v${version} 健康检查失败，不切换`);
+    }
     await pointAlias(CONFIG.alias, version);
     log(`别名 ${CONFIG.alias}: v${current} → v${version}`);
     if (!(await publicCheck())) throw new Error('回滚后公网复查失败，请人工检查');
@@ -329,7 +340,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous: current, version: String(version) };
   }
 
-  return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckVersion, publicCheck, readState };
+  return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState };
 }
 
 async function createClients(env = process.env) {
@@ -356,7 +367,7 @@ async function cli(argv = process.argv.slice(2)) {
   const command = argv[0];
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
-  const deployer = createDeployer({ ...(await createClients()), summary });
+  const deployer = createDeployer({ ...(await createClients()), summary, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
   if (command === 'plan') {
     const result = await deployer.plan();
     if (!result.ok) process.exitCode = 1;
@@ -383,4 +394,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, checkPreconditions, parseInvokeStatus, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { CONFIG, HEALTH_CHECKS, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
