@@ -28,3 +28,9 @@ for (const f of files) {
     assert.deepEqual(bad, [], `${f} 用了黑白灰 / emerald 以外的颜色`);
   });
 }
+
+// 设计规则：KPI 卡标题 / 说明不允许用省略号截断（手机端改用短标题 + 换行）。
+test("no ellipsis truncation in KPI cards", () => {
+  const src = readFileSync(join(DIR, "AdminBiOverview.tsx"), "utf8");
+  assert.deepEqual(src.match(/\b(truncate|text-ellipsis|line-clamp-\d)\b/g) || [], []);
+});

@@ -32,6 +32,7 @@ import { fmtNum, fmtPct } from "./format";
 const INK = "#f4f4f5"; // zinc-100：主系列
 const MID = "#a1a1aa"; // zinc-400：次系列
 const LOW = "#52525b"; // zinc-600：第三系列 / 弱化
+const SOFT = "#d4d4d8"; // zinc-300：柱状图里的「正常」主体（成功）
 const GRID = "#27272a";
 const AXIS = "#71717a";
 const tooltipStyle = { background: "#0a0a0a", border: "1px solid #3f3f46", borderRadius: 8, fontSize: 12, color: INK };
@@ -234,10 +235,11 @@ export default function BiSections({ data }: { data: AdminBiData }) {
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
                   <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} cursor={{ fill: "rgba(255,255,255,0.05)" }} />
-                  <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={MID} radius={[0, 0, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={MID} />} />
-                  <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={INK} radius={[3, 3, 0, 0]} isAnimationActive={false}
-                    label={<BarEndLabel lastIndex={last} text={t.sFail} color={INK} dy={-8} />} />
+                  {/* 成功 = 浅灰实心（主体），失败 = 深灰 + 细描边：失败不能比成功更抢眼 */}
+                  <Bar dataKey="deploySuccess" name={t.sSuccess} stackId="d" fill={SOFT} radius={[0, 0, 0, 0]} isAnimationActive={false}
+                    label={<BarEndLabel lastIndex={last} text={t.sSuccess} color={SOFT} />} />
+                  <Bar dataKey="deployFail" name={t.sFail} stackId="d" fill={LOW} stroke={MID} strokeWidth={0.75} radius={[3, 3, 0, 0]} isAnimationActive={false}
+                    label={<BarEndLabel lastIndex={last} text={t.sFail} color={MID} dy={-8} />} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

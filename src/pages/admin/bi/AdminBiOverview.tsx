@@ -19,6 +19,8 @@ const RANGES: BiRange[] = [7, 30, 90];
 type Kpi = {
   id: string;
   label: string;
+  /** 手机端标题：更短，保证 375px 宽也能完整显示（不截断、不加省略号） */
+  short: string;
   icon: React.ComponentType<{ className?: string }>;
   value: string;
   hint: string;
@@ -50,7 +52,7 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
   const good = (up && kpi.goodWhenUp) || (down && !kpi.goodWhenUp);
   return (
     <div
-      className={`flex h-[124px] flex-col rounded-xl border p-3 md:h-[156px] md:p-4 ${kpi.warn ? "border-zinc-400 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}`}
+      className={`flex min-h-[124px] flex-col rounded-xl border p-3 md:min-h-[156px] md:p-4 ${kpi.warn ? "border-zinc-400 bg-zinc-900" : "border-zinc-800 bg-zinc-900"}`}
       data-kpi={kpi.id}
     >
       <div className="flex items-center justify-between gap-2">
@@ -58,7 +60,8 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-zinc-300">
             <Icon className="h-3 w-3" />
           </span>
-          <span className="truncate">{kpi.label}</span>
+          <span className="min-w-0 break-words leading-tight md:hidden" data-kpi-title>{kpi.short}</span>
+          <span className="hidden min-w-0 break-words leading-tight md:inline" data-kpi-title>{kpi.label}</span>
         </span>
         {!loading && kpi.change != null ? (
           <span
@@ -79,7 +82,7 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
       ) : (
         <>
           <div className="mt-1.5 text-xl font-semibold tabular-nums tracking-tight text-zinc-50 md:mt-2 md:text-2xl">{kpi.value}</div>
-          <div className={`mt-1 truncate text-xs ${kpi.warn ? "text-zinc-200" : "text-zinc-500"}`} title={kpi.hint}>
+          <div className={`mt-1 break-words text-xs leading-snug ${kpi.warn ? "text-zinc-200" : "text-zinc-500"}`} title={kpi.hint}>
             {kpi.hint}
           </div>
           <div className="mt-auto">{kpi.spark ? <Sparkline values={kpi.spark} /> : <div className="h-6 md:h-8" />}</div>
@@ -129,17 +132,17 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
     const deployRate = k?.deploys?.successRate;
     return [
       {
-        id: "newUsers", label: t.kNewUsers, icon: UserPlus, goodWhenUp: true,
+        id: "newUsers", label: t.kNewUsers, short: t.kNewUsersShort, icon: UserPlus, goodWhenUp: true,
         value: n(k?.newUsers?.value), hint: fill(t.kNewUsersHint, { total: n(k?.newUsers?.total) }),
         change: delta(k?.newUsers?.value, k?.newUsers?.prev), spark: pick(s, (p) => p.newUsers)
       },
       {
-        id: "activeDeployers", label: t.kActive, icon: Activity, goodWhenUp: true,
+        id: "activeDeployers", label: t.kActive, short: t.kActiveShort, icon: Activity, goodWhenUp: true,
         value: n(k?.activeDeployers7d?.value), hint: t.kActiveHint,
         change: delta(k?.activeDeployers7d?.value, k?.activeDeployers7d?.prev)
       },
       {
-        id: "deploys", label: t.kDeploys, icon: Rocket, goodWhenUp: true,
+        id: "deploys", label: t.kDeploys, short: t.kDeploysShort, icon: Rocket, goodWhenUp: true,
         value: n(k?.deploys?.value),
         hint: k?.deploys ? fill(t.kDeploysHint, { rate: fmtPct(deployRate), fail: n(k.deploys.fail) }) : t.unavailable,
         change: delta(k?.deploys?.value, k?.deploys?.prev),
@@ -147,17 +150,17 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
         spark: pick(s, (p) => p.deploySuccess + p.deployFail)
       },
       {
-        id: "sites", label: t.kSites, icon: Globe, goodWhenUp: true,
+        id: "sites", label: t.kSites, short: t.kSitesShort, icon: Globe, goodWhenUp: true,
         value: n(k?.sites?.value), hint: fill(t.kSitesHint, { total: n(k?.sites?.total) }),
         change: delta(k?.sites?.value, k?.sites?.prev), spark: pick(s, (p) => p.newSites)
       },
       {
-        id: "pv", label: t.kPv, icon: Activity, goodWhenUp: true,
+        id: "pv", label: t.kPv, short: t.kPvShort, icon: Activity, goodWhenUp: true,
         value: n(k?.pv?.value), hint: fill(t.kPvHint, { uv: n(k?.uv?.value) }),
         change: delta(k?.pv?.value, k?.pv?.prev), spark: pick(s, (p) => p.pv)
       },
       {
-        id: "funnel", label: t.kFunnel, icon: MousePointerClick, goodWhenUp: true,
+        id: "funnel", label: t.kFunnel, short: t.kFunnelShort, icon: MousePointerClick, goodWhenUp: true,
         value: fmtPct(k?.funnel?.successRate),
         hint: k?.funnel
           ? fill(t.kFunnelHint, { landing: n(k.funnel.landing), click: n(k.funnel.deployClick), success: n(k.funnel.deploySuccess) })
@@ -166,13 +169,13 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
         spark: pick(s, (p) => p.landing)
       },
       {
-        id: "pro", label: t.kPro, icon: Crown, goodWhenUp: true,
+        id: "pro", label: t.kPro, short: t.kProShort, icon: Crown, goodWhenUp: true,
         value: n(k?.pro?.active),
         hint: k?.pro ? fill(t.kProHint, { n: n(k.pro.expiring30d), m: n(k.pro.lifetime) }) : t.unavailable,
         change: null
       },
       {
-        id: "reports", label: t.kReports, icon: Flag, goodWhenUp: false,
+        id: "reports", label: t.kReports, short: t.kReportsShort, icon: Flag, goodWhenUp: false,
         value: n(k?.reports?.open),
         hint: k?.reports ? fill(t.kReportsHint, { n: n(k.reports.recent) }) : t.unavailable,
         change: null,
