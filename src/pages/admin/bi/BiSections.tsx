@@ -229,7 +229,7 @@ export default function BiSections({ data }: { data: AdminBiData }) {
           <Panel title={t.cDeploysDaily}>
             <div className="h-64">
               <ResponsiveContainer>
-                <BarChart data={series} margin={{ left: -18, right: 56, top: 8 }}>
+                <BarChart data={series} margin={{ left: -18, right: 76, top: 8 }}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="label" {...axisProps} minTickGap={16} />
                   <YAxis {...axisProps} allowDecimals={false} />
