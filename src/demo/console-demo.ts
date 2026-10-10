@@ -182,9 +182,9 @@ function websiteAction(action: string, body: Record<string, unknown>): unknown {
   }
 }
 
-// 自定义域名示例：卡在解析（Cloudflare 代理）/ 卡在证书（第 3 次检测后变成已生效）/ 根域名 A 记录 / 已生效
+// 自定义域名示例：卡在解析（Cloudflare 代理）/ 卡在证书（第 3 次检测后变成已生效）/ 根域名 CNAME @（附备用 A 记录）/ 已生效
 const GATEWAY_IP = "119.91.123.2";
-const demoDomainBase = (id: string, hostname: string, status: "pending" | "active", record: { recordType: "CNAME" | "A"; recordName: string; recordValue: string; apex: boolean }) => ({
+const demoDomainBase = (id: string, hostname: string, status: "pending" | "active", record: { recordType: "CNAME"; recordName: string; recordValue: string; apex: boolean; fallbackRecordType?: "A" | null; fallbackRecordValue?: string | null }) => ({
   id, hostname, status, cnameTarget: "customers.demox.site", cnameHost: record.recordName, ...record,
   url: `https://${hostname}/`, defaultWebsiteId: "DEMO0001", defaultWebsiteName: "Launch page",
   routes: [{ label: "", host: hostname, websiteId: "DEMO0001", websiteName: "Launch page", isDefault: true }],
@@ -194,7 +194,7 @@ const cnameRecord = (name: string) => ({ recordType: "CNAME" as const, recordNam
 const demoDomains = [
   demoDomainBase("d-cf", "www.example.cn", "pending", cnameRecord("www")),
   demoDomainBase("d-cert", "shop.example.org", "pending", cnameRecord("shop")),
-  demoDomainBase("d-apex", "example.com.cn", "pending", { recordType: "A", recordName: "@", recordValue: GATEWAY_IP, apex: true }),
+  demoDomainBase("d-apex", "example.com.cn", "pending", { recordType: "CNAME", recordName: "@", recordValue: "customers.demox.site", apex: true, fallbackRecordType: "A", fallbackRecordValue: GATEWAY_IP }),
   demoDomainBase("d-icp", "blog.example.net", "pending", cnameRecord("blog")),
   demoDomainBase("d-live", "docs.example.com", "active", cnameRecord("docs"))
 ];
@@ -212,7 +212,7 @@ function verifyDemoDomain(id: string) {
     return { success: true, message, domain: { ...base, checkStep: "icp", icpStatus: "unfiled", pendingMessage: message, checkedAt } };
   }
   if (base.id === "d-apex") {
-    const message = `还查不到记录。请确认 A 记录 @ 指向 ${GATEWAY_IP}，新记录一般 1–10 分钟生效`;
+    const message = "还查不到记录。请确认 CNAME @ 指向 customers.demox.site，新记录一般 1–10 分钟生效";
     return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "no_record", pendingMessage: message, checkedAt } };
   }
   if (base.id === "d-cert" && demoChecks[base.id] < 4) {

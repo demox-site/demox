@@ -12,7 +12,7 @@ import {
   Label,
   useToast
 } from "@/components/ui";
-import { AlertCircle, Check, Copy, Globe, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Check, ChevronRight, Copy, Globe, Loader2, Plus, Trash2 } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
 import { websiteApi, type ProjectCustomDomain } from "@/api";
@@ -32,8 +32,8 @@ const texts = {
     next: "下一步",
     adding: "创建中…",
     dnsTitle: "添加这条 CNAME",
-    dnsTitleA: "添加这条 A 记录",
-    aRecordNote: "推荐用 CNAME，根域名才用 A 记录。",
+    aFallbackToggle: "根域名写不了 CNAME？",
+    aFallback: "如果 DNS 服务商不支持根域名写 CNAME，或根域名配了企业邮箱（MX 记录），改用 A 记录",
     close: "关闭",
     closeHint: "关掉也会在后台继续检测。",
     dnsDesc: "到域名服务商添加下面这条记录。",
@@ -92,8 +92,8 @@ const texts = {
     next: "Next",
     adding: "Creating…",
     dnsTitle: "Add this CNAME",
-    dnsTitleA: "Add this A record",
-    aRecordNote: "CNAME is preferred; use an A record only for a root domain.",
+    aFallbackToggle: "Can't add a CNAME on the root domain?",
+    aFallback: "If your DNS provider doesn't allow a CNAME on the root domain, or the root domain has email (MX records), use an A record instead:",
     close: "Close",
     closeHint: "Checks keep running after you close this.",
     dnsDesc: "Create the record below at your DNS provider.",
@@ -291,6 +291,8 @@ export default function SiteCustomDomains({
   const [saving, setSaving] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
   const [copied, setCopied] = React.useState("");
+  // 备用 A 记录默认收起，点开才显示网关 IP
+  const [fallbackOpen, setFallbackOpen] = React.useState(false);
   const [removeTarget, setRemoveTarget] = React.useState<ProjectCustomDomain | null>(null);
 
   const siteDomains = domains.filter((item) => belongsToSite(item, websiteId));
@@ -357,6 +359,7 @@ export default function SiteCustomDomains({
     setHostname("");
     setDraftDomain(null);
     setSaving(false);
+    setFallbackOpen(false);
   };
 
   const openCreate = () => {
@@ -504,8 +507,10 @@ export default function SiteCustomDomains({
 
   const guideHostname = draftDomain?.hostname || hostname;
   const guideHost = draftDomain?.recordName || draftDomain?.cnameHost || cnameHostFromHostname(guideHostname);
-  const guideType = draftDomain?.recordType || "CNAME";
-  const guideValue = draftDomain?.recordValue || cnameTarget;
+  // 一律写 CNAME（根域名也是 @ → 入口）。老数据里 recordType 可能是 A，也按 CNAME 显示。
+  const guideType = "CNAME";
+  const guideValue = draftDomain?.recordType === "A" ? cnameTarget : draftDomain?.recordValue || cnameTarget;
+  const guideFallbackA = draftDomain?.apex && draftDomain?.fallbackRecordType === "A" ? draftDomain.fallbackRecordValue || "" : "";
   const guidePassed = draftDomain?.status === "active";
 
   return (
@@ -611,7 +616,7 @@ export default function SiteCustomDomains({
           ) : (
             <div className="space-y-5">
               <DialogHeader>
-                <DialogTitle>{guideType === "A" ? t.dnsTitleA : t.dnsTitle}</DialogTitle>
+                <DialogTitle>{t.dnsTitle}</DialogTitle>
                 <DialogDescription className="text-[var(--stitch-muted)]">{t.dnsDesc}</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-4">
@@ -630,7 +635,24 @@ export default function SiteCustomDomains({
                     {copied === "create" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   </Button>
                 </div>
-                {guideType === "A" ? <p className="text-xs text-[var(--stitch-muted)]">{t.aRecordNote}</p> : null}
+                {guideFallbackA ? (
+                  <div className="text-xs text-[var(--stitch-muted)]" data-testid="custom-domain-a-fallback">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 hover:text-[var(--stitch-ink)]"
+                      aria-expanded={fallbackOpen}
+                      onClick={() => setFallbackOpen((open) => !open)}
+                    >
+                      <ChevronRight className={`h-3 w-3 transition-transform ${fallbackOpen ? "rotate-90" : ""}`} />
+                      {t.aFallbackToggle}
+                    </button>
+                    {fallbackOpen ? (
+                      <p className="mt-1 pl-4">
+                        {t.aFallback} <span className="whitespace-nowrap font-mono">@ → {guideFallbackA}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <CheckProgress domain={draftDomain} checking={busyKey === "verify-draft"} t={t} />
               {!guidePassed && draftDomain?.checkStep !== "icp" ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}

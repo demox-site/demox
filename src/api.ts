@@ -184,12 +184,15 @@ export type ProjectCustomDomain = {
   dnsVia?: "cname" | "a" | null;
   pendingMessage?: string;
   checkedAt?: string;
-  /** 该加哪条记录（后端按根域名 / 子域名 / Cloudflare 判断，用户不用选） */
+  /** 该加哪条记录：一律 CNAME 到 customers.demox.site（根域名主机记录是 @），用户不用选 */
   apex?: boolean;
   recordType?: "CNAME" | "A";
   recordName?: string;
   recordValue?: string;
   dnsProvider?: "cloudflare" | null;
+  /** 只有根域名才有：DNS 服务商不支持根域名 CNAME 时的备用 A 记录（@ → 网关 IP） */
+  fallbackRecordType?: "A" | null;
+  fallbackRecordValue?: string | null;
 };
 
 // 认证API

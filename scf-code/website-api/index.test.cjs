@@ -1644,13 +1644,31 @@ test('custom domain instructions: subdomain gets CNAME with the full host part',
   assert.match(body.message, /CNAME a\.b 指向 customers\.demox\.site/);
 });
 
-test('custom domain instructions: apex (public-suffix aware) gets an A record to the gateway', async () => {
+test('custom domain instructions: apex (public-suffix aware) gets CNAME @, A record only as fallback', async () => {
   const body = await verifyWith({ hostname: 'example.com.cn', nameservers: ['dns23.hichina.com'] });
   assert.equal(body.domain.apex, true);
-  assert.equal(body.domain.recordType, 'A');
+  assert.equal(body.domain.recordType, 'CNAME');
   assert.equal(body.domain.recordName, '@');
-  assert.equal(body.domain.recordValue, '119.91.123.2');
-  assert.match(body.message, /A 记录 @ 指向 119\.91\.123\.2/);
+  assert.equal(body.domain.recordValue, 'customers.demox.site');
+  assert.equal(body.domain.fallbackRecordType, 'A');
+  assert.equal(body.domain.fallbackRecordValue, '119.91.123.2');
+  assert.match(body.message, /CNAME @ 指向 customers\.demox\.site/);
+  assert.doesNotMatch(body.message, /A 记录/);
+});
+
+test('custom domain instructions: subdomain has no A-record fallback', async () => {
+  const body = await verifyWith({ hostname: 'www.example.com.cn', nameservers: ['dns23.hichina.com'] });
+  assert.equal(body.domain.recordType, 'CNAME');
+  assert.equal(body.domain.fallbackRecordType, null);
+  assert.equal(body.domain.fallbackRecordValue, null);
+});
+
+test('custom domain verify: apex already configured with an A record to the gateway still goes live', async () => {
+  const body = await verifyWith({ hostname: 'example.com.cn', nameservers: ['dns23.hichina.com'], addresses: ['119.91.123.2'] });
+  assert.equal(body.domain.status, 'active', JSON.stringify(body));
+  assert.equal(body.domain.dnsVia, 'a');
+  assert.equal(body.domain.checkStep, 'active');
+  assert.equal(body.domain.recordType, 'CNAME');
 });
 
 test('custom domain instructions: apex on Cloudflare DNS still gets CNAME (flattened)', async () => {
@@ -1659,6 +1677,7 @@ test('custom domain instructions: apex on Cloudflare DNS still gets CNAME (flatt
   assert.equal(body.domain.recordType, 'CNAME');
   assert.equal(body.domain.recordName, '@');
   assert.equal(body.domain.dnsProvider, 'cloudflare');
+  assert.equal(body.domain.fallbackRecordType, null);
 });
 
 
