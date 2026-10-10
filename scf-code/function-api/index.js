@@ -724,7 +724,7 @@ function createConfiguredDefaultHandler() {
 const defaultHandler = createConfiguredDefaultHandler();
 
 module.exports = {
-  main: defaultHandler,
+  main: require('./ip-debug.js').withIpDebug(defaultHandler),
   createFunctionHttpHandler,
   createPlatformHandler,
   bindInProcessSystemBackends,
