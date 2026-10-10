@@ -52,7 +52,7 @@ function fakeFetch({ devStatus = OK_STATUS, prodStatus = OK_STATUS } = {}) {
   return fn;
 }
 const okFetch = fakeFetch();
-const fakeCos = { putObject: (_p, cb) => cb(null, {}) };
+const fakeCos = { sliceUploadFile: (p, cb) => { p.onTaskReady && p.onTaskReady('t1'); p.onProgress && p.onProgress({ percent: 1 }); cb(null, {}); } };
 const zip = () => { const p = path.join(os.tmpdir(), `t-${process.pid}.zip`); fs.writeFileSync(p, 'zip'); return p; };
 const quiet = () => {};
 
@@ -187,4 +187,74 @@ test('rollback checks the target through develop before moving production', asyn
   await assert.rejects(d.rollback({ version: '4' }), /健康检查失败/);
   assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '5');
   assert.equal(s.aliases.find((a) => a.Name === 'develop').FunctionVersion, '5');
+});
+
+
+// ---- COS 分片上传：重试 + 总超时 ----
+function scriptedCos(script) {
+  const calls = [];
+  const cancelled = [];
+  return {
+    calls, cancelled,
+    cancelTask: (id) => cancelled.push(id),
+    sliceUploadFile: (p, cb) => {
+      const step = script[calls.length] || 'ok';
+      calls.push({ Key: p.Key, FilePath: p.FilePath, ChunkSize: p.ChunkSize, AsyncLimit: p.AsyncLimit });
+      p.onTaskReady && p.onTaskReady(`task-${calls.length}`);
+      if (step === 'ok') cb(null, {});
+      else if (step === 'fail') cb({ code: 'RequestTimeout', message: 'socket hang up' });
+      // 'hang'：永不回调
+    }
+  };
+}
+
+test('upload: chunked (sliceUploadFile, 8 MB, 3 parallel), never putObject', async () => {
+  const s = fakeScf();
+  const cos = scriptedCos(['ok']);
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.deploy({ zipPath: zip(), sha: 'abc' });
+  assert.equal(cos.calls.length, 1);
+  assert.equal(cos.calls[0].ChunkSize, 8 * 1024 * 1024);
+  assert.equal(cos.calls[0].AsyncLimit, 3);
+  assert.match(cos.calls[0].Key, /^scf-deploy\/ci\/demox-unified-scf-/);
+});
+
+test('upload: retries after a failed attempt, then deploys', async () => {
+  const s = fakeScf();
+  const cos = scriptedCos(['fail', 'ok']);
+  const lines = [];
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: (l) => lines.push(l), wait: async () => {} });
+  const r = await d.deploy({ zipPath: zip(), sha: 'abc' });
+  assert.equal(cos.calls.length, 2);
+  assert.equal(r.version, '4');
+  assert.ok(lines.some((l) => l.includes('::warning::上传 COS 第 1 次失败')));
+});
+
+test('upload: 3 failures → loud error, no function writes', async () => {
+  const s = fakeScf();
+  const cos = scriptedCos(['fail', 'fail', 'fail', 'ok']);
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*未做任何函数修改/);
+  assert.equal(cos.calls.length, 3);
+  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
+});
+
+test('upload: a hung upload hits the overall timeout, cancels the task, no function writes', async () => {
+  const s = fakeScf();
+  const cos = scriptedCos(['hang', 'hang', 'hang']);
+  let clock = 0;
+  const timers = [];
+  const d = createDeployer({
+    developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet,
+    wait: async (ms) => { clock += ms; },
+    now: () => clock,
+    // 假定时器：立刻把时钟拨到到期并触发
+    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); setImmediate(() => { clock += ms; fn(); }); return t; },
+    clearTimer: () => {}
+  });
+  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*10 分钟/);
+  assert.equal(timers[0].ms, 10 * 60 * 1000, 'first attempt gets the whole 10-minute budget');
+  assert.equal(cos.calls.length, 1, 'no retry once the overall deadline is spent');
+  assert.deepEqual(cos.cancelled, ['task-1']);
+  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
 });

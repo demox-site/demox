@@ -143,7 +143,17 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '' }) {
+// COS 上传：分片 + 重试 + 总超时（2026-10-10 run 38017096251 单流 putObject 55 MB 挂住 18 分钟）。
+const UPLOAD = Object.freeze({
+  chunkSize: 8 * 1024 * 1024,
+  asyncLimit: 3,
+  attempts: 3,
+  retryGapMs: 10000,
+  totalTimeoutMs: 10 * 60 * 1000
+});
+
+function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  const upload = { ...UPLOAD, ...uploadOptions };
   const developUrl = String(developBaseUrl || '').replace(/\/+$/, '');
   const base = { FunctionName: CONFIG.functionName, Namespace: CONFIG.namespace };
 
@@ -241,11 +251,58 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await scf.UpdateAlias(params);
   }
 
+  /**
+   * 分片上传到 COS：8 MB 一片、3 片并发；整次上传失败最多重试 UPLOAD.attempts 次；
+   * 总时长超过 UPLOAD.totalTimeoutMs 直接报错（取消上传任务），不再像单流 putObject 那样无限挂住。
+   * 单片请求超时 / 重试由 COS 客户端的 Timeout、ChunkRetryTimes 负责（见 createClients）。
+   */
   async function uploadZip(zipPath, key) {
     if (!cos) throw new Error('缺少 COS 客户端');
-    await new Promise((resolve, reject) => {
-      cos.putObject({ Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key, Body: fs.createReadStream(zipPath) },
-        (error, data) => (error ? reject(error) : resolve(data)));
+    if (typeof cos.sliceUploadFile !== 'function') throw new Error('COS 客户端不支持分片上传（sliceUploadFile）');
+    const size = fs.statSync(zipPath).size;
+    const deadline = now() + upload.totalTimeoutMs;
+    let lastError;
+    for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，分片 ${upload.chunkSize / 1048576} MB）`);
+      try {
+        await sliceUploadOnce(zipPath, key, remaining);
+        log('上传 COS 完成');
+        return;
+      } catch (error) {
+        lastError = error;
+        log(`::warning::上传 COS 第 ${attempt} 次失败：${error.message}`);
+        if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
+      }
+    }
+    const minutes = Math.round(upload.totalTimeoutMs / 60000);
+    throw new Error(`上传 COS 失败（${upload.attempts} 次内或 ${minutes} 分钟内未完成），未做任何函数修改：${lastError ? lastError.message : '超时'}`);
+  }
+
+  function sliceUploadOnce(zipPath, key, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let taskId = null;
+      let settled = false;
+      let lastPct = -1;
+      const finish = (fn, value) => { if (settled) return; settled = true; clearTimer(timer); fn(value); };
+      const timer = setTimer(() => {
+        if (taskId && typeof cos.cancelTask === 'function') { try { cos.cancelTask(taskId); } catch { /* ignore */ } }
+        finish(reject, new Error(`超时 ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+      cos.sliceUploadFile({
+        Bucket: CONFIG.cosBucket,
+        Region: CONFIG.cosRegion,
+        Key: key,
+        FilePath: zipPath,
+        ChunkSize: upload.chunkSize,
+        AsyncLimit: upload.asyncLimit,
+        onTaskReady: (id) => { taskId = id; },
+        onProgress: (info) => {
+          const pct = Math.floor(((info && info.percent) || 0) * 100 / 20) * 20;
+          if (pct > lastPct) { lastPct = pct; log(`上传进度 ${pct}%`); }
+        }
+      }, (error, data) => (error ? finish(reject, new Error(error.message || error.code || String(error))) : finish(resolve, data)));
     });
   }
 
@@ -340,7 +397,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous: current, version: String(version) };
   }
 
-  return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState };
+  return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
 }
 
 async function createClients(env = process.env) {
@@ -354,7 +411,8 @@ async function createClients(env = process.env) {
   });
   let COS;
   try { COS = require('cos-nodejs-sdk-v5'); } catch { COS = require(path.join(__dirname, '../../scf-code/function-api/node_modules/cos-nodejs-sdk-v5')); }
-  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}) });
+  // 单个请求 2 分钟超时；每片失败自动重试 3 次。
+  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: 120000, ChunkRetryTimes: 3 });
   return { scf, cos };
 }
 
@@ -394,4 +452,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
