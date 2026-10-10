@@ -52,7 +52,7 @@ function fakeFetch({ devStatus = OK_STATUS, prodStatus = OK_STATUS } = {}) {
   return fn;
 }
 const okFetch = fakeFetch();
-const fakeCos = { sliceUploadFile: (p, cb) => { p.onTaskReady && p.onTaskReady('t1'); p.onProgress && p.onProgress({ percent: 1 }); cb(null, {}); } };
+const fakeCos = { putObject: (_p, cb) => cb(null, {}) };
 const zip = () => { const p = path.join(os.tmpdir(), `t-${process.pid}.zip`); fs.writeFileSync(p, 'zip'); return p; };
 const quiet = () => {};
 
@@ -190,32 +190,30 @@ test('rollback checks the target through develop before moving production', asyn
 });
 
 
-// ---- COS 分片上传：重试 + 总超时 ----
+// ---- COS 上传：只用 PutObject（CI 角色权限）+ 重试 + 超时 ----
 function scriptedCos(script) {
   const calls = [];
-  const cancelled = [];
   return {
-    calls, cancelled,
-    cancelTask: (id) => cancelled.push(id),
-    sliceUploadFile: (p, cb) => {
+    calls,
+    putObject: (p, cb) => {
       const step = script[calls.length] || 'ok';
-      calls.push({ Key: p.Key, FilePath: p.FilePath, ChunkSize: p.ChunkSize, AsyncLimit: p.AsyncLimit });
-      p.onTaskReady && p.onTaskReady(`task-${calls.length}`);
+      calls.push({ Key: p.Key });
       if (step === 'ok') cb(null, {});
       else if (step === 'fail') cb({ code: 'RequestTimeout', message: 'socket hang up' });
+      else if (step === 'denied') cb({ code: 'AccessDenied', message: 'Access Denied.' });
       // 'hang'：永不回调
     }
   };
 }
+const NO_MULTIPART = ['sliceUploadFile', 'multipartInit', 'multipartUpload', 'multipartComplete', 'uploadFile'];
+const strictCos = (inner) => new Proxy(inner, { get: (t, n) => { if (NO_MULTIPART.includes(n)) throw new Error(`CI 角色不允许 ${String(n)}`); return t[n]; } });
 
-test('upload: chunked (sliceUploadFile, 8 MB, 3 parallel), never putObject', async () => {
+test('upload: single PutObject only (CI role has no multipart permissions)', async () => {
   const s = fakeScf();
   const cos = scriptedCos(['ok']);
-  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: strictCos(cos), fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await d.deploy({ zipPath: zip(), sha: 'abc' });
   assert.equal(cos.calls.length, 1);
-  assert.equal(cos.calls[0].ChunkSize, 8 * 1024 * 1024);
-  assert.equal(cos.calls[0].AsyncLimit, 3);
   assert.match(cos.calls[0].Key, /^scf-deploy\/ci\/demox-unified-scf-/);
 });
 
@@ -230,6 +228,15 @@ test('upload: retries after a failed attempt, then deploys', async () => {
   assert.ok(lines.some((l) => l.includes('::warning::上传 COS 第 1 次失败')));
 });
 
+test('upload: Access Denied fails fast without retry, no function writes', async () => {
+  const s = fakeScf();
+  const cos = scriptedCos(['denied', 'ok']);
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*Access Denied/);
+  assert.equal(cos.calls.length, 1);
+  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
+});
+
 test('upload: 3 failures → loud error, no function writes', async () => {
   const s = fakeScf();
   const cos = scriptedCos(['fail', 'fail', 'fail', 'ok']);
@@ -239,22 +246,21 @@ test('upload: 3 failures → loud error, no function writes', async () => {
   assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
 });
 
-test('upload: a hung upload hits the overall timeout, cancels the task, no function writes', async () => {
+test('upload: hung attempts time out at 4 min each, whole upload capped at 10 min, no function writes', async () => {
   const s = fakeScf();
   const cos = scriptedCos(['hang', 'hang', 'hang']);
   let clock = 0;
-  const timers = [];
+  const timeouts = [];
   const d = createDeployer({
     developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet,
     wait: async (ms) => { clock += ms; },
     now: () => clock,
-    // 假定时器：立刻把时钟拨到到期并触发
-    setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); setImmediate(() => { clock += ms; fn(); }); return t; },
+    setTimer: (fn, ms) => { timeouts.push(ms); setImmediate(() => { clock += ms; fn(); }); return ms; },
     clearTimer: () => {}
   });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*10 分钟/);
-  assert.equal(timers[0].ms, 10 * 60 * 1000, 'first attempt gets the whole 10-minute budget');
-  assert.equal(cos.calls.length, 1, 'no retry once the overall deadline is spent');
-  assert.deepEqual(cos.cancelled, ['task-1']);
+  assert.deepEqual(timeouts.slice(0, 2), [240000, 240000]);
+  assert.ok(timeouts.reduce((a, b) => a + b, 0) <= 10 * 60 * 1000, 'never exceeds the 10-minute budget');
+  assert.equal(cos.calls.length, 3);
   assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
 });
