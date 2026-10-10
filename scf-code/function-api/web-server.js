@@ -17,6 +17,7 @@
 const http = require('http');
 const crypto = require('crypto');
 const { clientIpFromForwardedFor } = require('./client-ip.js');
+const { isClientError, typedErrorResponse } = require('./errors.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 
@@ -130,6 +131,11 @@ function createWebServer({ handler, logger = console } = {}) {
         const result = await handler(event, { request_id: event.requestId, requestId: event.requestId });
         writeResult(res, result);
       } catch (error) {
+        // 已知 4xx（如 RATE_LIMITED → 429）按事件入口同样的形状返回，不当成 500。
+        if (isClientError(error)) {
+          writeResult(res, typedErrorResponse(error, event.requestId));
+          return;
+        }
         // 只记错误码，不记请求/响应内容。
         logger.error?.('Web 入口处理失败:', (error && (error.code || error.name)) || 'ERROR');
         writeResult(res, {

@@ -9,7 +9,7 @@ const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
 const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, createHttpNodeInvoker } = require('./runtime-nodejs.js');
 const { FunctionService } = require('./service.js');
-const { FunctionApiError, badRequest, unauthorized } = require('./errors.js');
+const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
 const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
@@ -271,7 +271,19 @@ function createPlatformHandler({
   });
 
   let seedOnce = null;
+  // 用户函数/平台站点函数抛出的已知 4xx（如 RATE_LIMITED）在这里转成正常响应，
+  // 事件入口和 Web 入口（web-server.js）拿到的状态码和 body 一样，不再冒泡成 500。
   async function platformMain(event = {}, context = {}) {
+    try {
+      return await routePlatform(event, context);
+    } catch (error) {
+      if (!isClientError(error)) throw error;
+      logger.warn?.('平台入口请求被拒:', error.code);
+      return errorResponse(error, event);
+    }
+  }
+
+  async function routePlatform(event = {}, context = {}) {
     if (seedPlatformSite && resolvedUserHandler.service && !seedOnce) {
       seedOnce = seedPlatformSiteFunctions({
         service: resolvedUserHandler.service,
@@ -470,26 +482,15 @@ function response(statusCode, headers, body) {
 
 function errorResponse(error, event) {
   const requestId = event.requestId || event.requestContext?.requestId || crypto.randomBytes(8).toString('hex');
-  const statusCode = error instanceof FunctionApiError
-    ? error.statusCode
-    : (error?.code === 'FUNCTION_TIMEOUT' ? 504 : (error?.code === 'FUNCTION_EXECUTION_ERROR' ? 502 : 500));
-  const code = error instanceof FunctionApiError ? error.code : (error?.code || 'INTERNAL_ERROR');
-  const message = error instanceof FunctionApiError
-    ? error.message
-    : (statusCode === 504 ? '函数执行超时' : (statusCode === 502 ? '函数执行失败' : '函数服务暂时不可用'));
+  if (error instanceof FunctionApiError) return typedErrorResponse(error, requestId);
+  const statusCode = error?.code === 'FUNCTION_TIMEOUT' ? 504 : (error?.code === 'FUNCTION_EXECUTION_ERROR' ? 502 : 500);
+  const code = error?.code || 'INTERNAL_ERROR';
+  const message = statusCode === 504 ? '函数执行超时' : (statusCode === 502 ? '函数执行失败' : '函数服务暂时不可用');
   return {
     statusCode,
     headers: { ...corsHeaders(), 'x-demox-request-id': requestId },
     body: JSON.stringify({ success: false, error: code, message, requestId }),
     isBase64Encoded: false
-  };
-}
-
-function corsHeaders() {
-  return {
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'Content-Type, Authorization'
   };
 }
 
