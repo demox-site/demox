@@ -1623,6 +1623,12 @@ test('expiry Set-Cookie: origin response with immutable headers (set/append thro
   }
 });
 
+test('withExpiredAuthCookie uses the proven re-wrap form (status/statusText/new Headers), not new Response(body, resp)', () => {
+  const fnSrc = source.slice(source.indexOf('function withExpiredAuthCookie('), source.indexOf('function runtimeEnv('));
+  assert.match(fnSrc, /new Response\(resp\.body, \{ status: resp\.status, statusText: resp\.statusText, headers: new Headers\(resp\.headers\) \}\)/);
+  assert.doesNotMatch(fnSrc, /new Response\(resp\.body, resp\)/);
+});
+
 test('withExpiredAuthCookie: if re-wrapping the response throws, the original response is returned (never 500)', () => {
   const h = routerWith(async () => { throw new Error('unused'); });
   const weird = { status: 101, statusText: 'Switching Protocols', headers: new Headers(), body: null };

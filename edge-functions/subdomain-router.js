@@ -134,12 +134,13 @@ function expireAuthCookieHeaders(domain) {
   ];
 }
 
-// 用 new Response(resp.body, resp) 包一层（fetch 回来的响应头可能是只读的），再 append：
-// 源站自己的 Set-Cookie 保留，不覆盖。包装失败（例如状态码不允许重建）就原样返回，绝不因此 500。
+// 包一层新 Response（fetch 回来的响应头可能是只读的），再 append：源站自己的 Set-Cookie 保留，不覆盖。
+// 用前三次发布在函数路径上都验证过的写法 new Response(body, { status, statusText, headers: new Headers(...) })（云架构 review #53）。
+// 包装失败（例如状态码不允许重建）就原样返回，绝不因此 500。
 function withExpiredAuthCookie(resp, domain) {
   if (!resp || !domain) return resp;
   try {
-    const out = new Response(resp.body, resp);
+    const out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
     const values = expireAuthCookieHeaders(domain);
     for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
     return out;
