@@ -34,6 +34,14 @@ on:
       version:
         description: "rollback 的目标版本号（数字）"
         required: false
+      cos_bucket:
+        description: "部署包 COS 桶（<name>-<appid>）；空 = vars.DEMOX_COS_BUCKET，再空 = 成都老桶"
+        required: false
+        default: ""
+      cos_region:
+        description: "部署包 COS 地域（如 ap-guangzhou）；空 = vars.DEMOX_COS_REGION，再空 = ap-chengdu"
+        required: false
+        default: ""
       with_runtime:
         description: "同时更新 demox-user-nodejs（无别名，直接替换 $LATEST，先发快照版本作回滚点）"
         type: boolean
@@ -97,6 +105,8 @@ jobs:
           # 别名 develop 的公网 HTTPS 地址（一次性迁移时建好），健康检查只走它，不用 scf:Invoke。
           FUNCTION_API_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
           ROLLBACK_VERSION: ${{ inputs.version }}
+          DEMOX_COS_BUCKET: ${{ inputs.cos_bucket || vars.DEMOX_COS_BUCKET }}
+          DEMOX_COS_REGION: ${{ inputs.cos_region || vars.DEMOX_COS_REGION }}
           WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
         run: |
           set -euo pipefail
