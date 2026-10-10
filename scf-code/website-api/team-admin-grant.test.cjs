@@ -69,10 +69,10 @@ function reset() {
   failAudit = false;
 }
 
-test('placeholder ships empty, so the default is a no-op', async () => {
-  assert.equal(TEAM_ADMIN_USER_ID, '');
+test('the constant holds the team account id; an empty constant is a no-op', async () => {
+  assert.match(TEAM_ADMIN_USER_ID, /^[0-9]{10,32}$/);
   reset();
-  assert.deepEqual(await ensureTeamAdminGrant({ force: true }), { skipped: true, reason: 'unset' });
+  assert.deepEqual(await run(''), { skipped: true, reason: 'unset' });
   assert.deepEqual(calls, [], 'not even a read when unset');
   assert.deepEqual(userRoles.get(TEAM), ['user']);
 });
@@ -156,15 +156,17 @@ test('the rollup timer calls the grant; the SQL migration is a no-op placeholder
 
 test('the TEAM_ADMIN_USER_ID environment variable is ignored (env editors cannot grant admin)', async () => {
   reset();
-  process.env.TEAM_ADMIN_USER_ID = TEAM;
+  const ATTACKER = 'u_env_attacker';
+  users.add(ATTACKER);
+  userRoles.set(ATTACKER, ['user']);
+  process.env.TEAM_ADMIN_USER_ID = ATTACKER;
   try {
-    assert.deepEqual(configuredTeamAdminUserId(), { userId: '' });
-    assert.deepEqual(await ensureTeamAdminGrant({ force: true }), { skipped: true, reason: 'unset' });
-    // 走真实入口：定时器触发也不会因为环境变量去授权
+    assert.deepEqual(configuredTeamAdminUserId(), { userId: TEAM_ADMIN_USER_ID });
+    await ensureTeamAdminGrant({ force: true });
     await websiteApi.main({ Type: 'Timer', TriggerName: 'analytics-rollup-5m', Time: new Date().toISOString() }).catch(() => {});
-    assert.deepEqual(userRoles.get(TEAM), ['user']);
-    assert.deepEqual(auditLog, []);
-    assert.ok(!calls.some((c) => /user_roles|grant_team_admin/.test(c.sql) || (c.params || []).includes(TEAM)));
+    assert.deepEqual(userRoles.get(ATTACKER), ['user'], 'env-named account never gets admin');
+    assert.ok(!auditLog.some((r) => r.target.includes(ATTACKER)));
+    assert.ok(!calls.some((c) => (c.params || []).includes(ATTACKER) || (c.params || []).some((p) => String(p).includes(ATTACKER))));
   } finally {
     delete process.env.TEAM_ADMIN_USER_ID;
   }
