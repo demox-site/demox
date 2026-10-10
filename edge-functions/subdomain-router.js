@@ -107,49 +107,11 @@ function withoutAuthCookieHeaders(source) {
   return headers;
 }
 
-// 带 demox_access 的请求转发时用「普通 init 对象」，不要用入站 Request 去构造新的 Request。
-// 2026-10-10 17:18–17:23 事故：#49 用重建的 Request 回源/透传，EdgeOne 上带这个 cookie 的请求
-// 公开站点全部 503（origin=error）、www 404；不带 cookie 的请求正常（Node 单测发现不了）。
-// 推测：EdgeOne 运行时不支持用 Request 构造 Request，或不接受重建的 Request 作为 fetch 的 init。
-// 不带 demox_access 的请求保持原样（fetch(url, req) / fetch(req)），这条路径在线上已验证过。
-// 普通 init 的头会原样发出：EdgeOne 不会再替我们改 Host / 逐跳头（传入站 Request 当 init 时它会改）。
-// 2026-10-10 17:52–17:53：500284c 把入站 `Host: <用户站点>` 原样带去 COS 源站（site-N.demox.site
-// → *.cos-website…），COS 回 400 UserCnameInvalid，所有带 demox_access 的用户站点访问都是 400。
-// 所以这里去掉 host 和逐跳头，让 fetch 按目标 URL 自己填 Host / Content-Length / 连接相关头。
-var NON_FORWARDED_REQUEST_HEADERS = [
-  'host', 'content-length', 'connection', 'keep-alive', 'proxy-connection',
-  'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate'
-];
-
-// 只去掉固定列表；不按 Connection 里列的名字额外删头，保持和「传入站 Request」那条路径一致。
-function withoutHopByHopHeaders(headers) {
-  for (let i = 0; i < NON_FORWARDED_REQUEST_HEADERS.length; i += 1) headers.delete(NON_FORWARDED_REQUEST_HEADERS[i]);
-  return headers;
-}
-
-function strippedFetchInit(req) {
-  const init = {
-    method: req.method,
-    headers: withoutHopByHopHeaders(withoutAuthCookieHeaders(req.headers))
-  };
-  if (req.redirect) init.redirect = req.redirect;
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
-    init.body = req.body;
-    init.duplex = 'half';
-  }
-  return init;
-}
-
-// 回源用的 init：没有 demox_access 时仍传原始 req（与 #49 之前完全一致）。
-function originFetchInit(req) {
-  return hasAuthCookie(req.headers) ? strippedFetchInit(req) : req;
-}
-
-// 透传（同 URL 回源）：没有 demox_access 时仍 fetch(req)。
-function passThroughWithoutAuthCookie(req) {
-  if (!hasAuthCookie(req.headers)) return fetch(req);
-  return fetch(req.url, strippedFetchInit(req));
-}
+// 2026-10-10 决定（Chief + 云架构）：静态站点 / 源站 / 透传路径恢复 #49 之前的转发方式，原样 fetch(req)，
+// 不重建请求、不改头、不剥 cookie。三次发布都是在这条路径上出事：17:18 重建 Request → 503/404；
+// 17:52 普通 init 带上入站 Host → COS 400；18:04 普通 init 原样 POST → COS 405，而原样传 req 时 EdgeOne 是用 GET 回源的。
+// 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access。静态源站（COS）不执行代码，收到这个 cookie 也不会用。
+// 凡是带 demox_access 的请求，响应上都追加两条过期 Set-Cookie（见 withExpiredAuthCookie），让浏览器删掉它。
 
 function isOfficialDomain(domain) {
   return OFFICIAL_DOMAINS.indexOf(String(domain || '').toLowerCase()) !== -1;
@@ -165,23 +127,25 @@ function officialDomainOfHost(host) {
 }
 
 function expireAuthCookieHeaders(domain) {
+  const gone = '=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/';
   return [
-    DEMOX_AUTH_COOKIE + '=; Max-Age=0; Path=/; Domain=.' + domain + '; Secure; SameSite=Lax',
-    DEMOX_AUTH_COOKIE + '=; Max-Age=0; Path=/; Secure; SameSite=Lax'
+    DEMOX_AUTH_COOKIE + gone + '; Domain=.' + domain + '; Secure; SameSite=Lax',
+    DEMOX_AUTH_COOKIE + gone + '; Secure; SameSite=Lax'
   ];
 }
 
+// 用 new Response(resp.body, resp) 包一层（fetch 回来的响应头可能是只读的），再 append：
+// 源站自己的 Set-Cookie 保留，不覆盖。包装失败（例如状态码不允许重建）就原样返回，绝不因此 500。
 function withExpiredAuthCookie(resp, domain) {
   if (!resp || !domain) return resp;
-  let out;
   try {
-    out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
+    const out = new Response(resp.body, resp);
+    const values = expireAuthCookieHeaders(domain);
+    for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
+    return out;
   } catch (e) {
     return resp;
   }
-  const values = expireAuthCookieHeaders(domain);
-  for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
-  return out;
 }
 
 function runtimeEnv(name) {
@@ -492,7 +456,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), originFetchInit(req));
+  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
@@ -1798,12 +1762,8 @@ async function handle(req, event) {
     // 绝不让 passThroughOnException 回源到桶根返回「站点未发布」。
     if (ctx.siteTraffic) {
       try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
-      return siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
-    }
-    // passThroughOnException 会把原始请求（含 demox_access）回源；带着它时改为自己去掉后再回源（普通 init，见 strippedFetchInit）。
-    if (hasAuthCookie(req.headers)) {
-      const resp = await passThroughWithoutAuthCookie(req);
-      return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
+      const unavailable = siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
+      return staleCookieDomain ? withExpiredAuthCookie(unavailable, staleCookieDomain) : unavailable;
     }
     throw e;
   }
@@ -1831,7 +1791,7 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return passThroughWithoutAuthCookie(req);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -1931,7 +1891,7 @@ async function handleRequest(req, event, ctx) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
-  return passThroughWithoutAuthCookie(req);
+  return fetch(req);
 }
 
 // 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。

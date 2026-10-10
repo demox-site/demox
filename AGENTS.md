@@ -14,7 +14,7 @@
   1. `https://www.demox.site/` → 200，且是主站页面
   2. 至少一个真实用户站点 → 200
   3. 这才去看未绑定 host 的 404
-  4. 以上每一项都要**带和不带假的 `demox_access` cookie 各跑一遍**：`npm run p0:edge`（`scripts/edge-p0-check.sh`），任何一项 FAIL 就回滚。2026-10-10 #49 只核对了不带 cookie 的情况，带 cookie 的用户访问公开站点全是 503、www 是 404，见 [docs/incidents/2026-10-10-edge-cookie-strip-503.md](docs/incidents/2026-10-10-edge-cookie-strip-503.md)。
+  4. 以上每一项都要**带和不带假的 `demox_access` cookie 各跑一遍**：发布前在旧代码上 `npm run p0:edge:baseline -- baseline.json`，发布后 `BASELINE=baseline.json npm run p0:edge`（带 cookie 的结果逐项和 baseline 比状态码 + 正文 sha256），任何一项 FAIL 就回滚。静态 / 源站 / 透传路径必须保持 #49 之前的 `fetch(req)` 写法（三次失败都出在这里），只有 `/api/*` 剥离 demox_access。2026-10-10 #49 只核对了不带 cookie 的情况，带 cookie 的用户访问公开站点全是 503、www 是 404，见 [docs/incidents/2026-10-10-edge-cookie-strip-503.md](docs/incidents/2026-10-10-edge-cookie-strip-503.md)。
 - 核对失败：把上一份 `subdomain-router.js` 写回 `ef-1281msyw`，不要继续改。
 - 未绑定子域名的品牌 404：更新 COS 桶 `resource-game-1307257815` 根对象 `404.html`（源文件 `edge-functions/cos-root-404.html`）。**不要为这件事改边缘函数。**
 

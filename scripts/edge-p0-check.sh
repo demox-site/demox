@@ -9,14 +9,19 @@
 #   scripts/edge-p0-check.sh
 # 可覆盖：
 #   WWW_URL=https://www.demox.site/
-#   SITE_URLS="https://coverage.demox.site/ https://uv0fkz31.demox.site/"   # 至少一个真实公开站点
+#   SITE_URLS="https://coverage.demox.site/ https://uv0fkz31.demox.site/ https://letters-from-the-hill.demox.site/"
+#       # 至少一个真实公开站点；这三个都在 site-3 源站（COS 按 Host 找桶，2026-10-10 17:52 带 cookie 时 400）
+#       # 每个站点页面：带 cookie 的正文长度和 sha256 必须和不带时一样（只看 200 不够）
 #   UNBOUND_URL=https://your-demo.demox.site/                               # 未绑定 host，期望 404
 #   FN_URL=https://uv0fkz31.demox.site/api/cookies                          # 探针函数（只回显 cookie 名），可留空跳过
 #   POST_URLS=https://uv0fkz31.demox.site/                                  # 页面 POST 也要 200（探针站），可留空跳过
 #   SKIP_WWW=1                                                              # 预发（只绑测试 host）时跳过 www / 未绑定 host
+#   BASELINE=/path/baseline.json   # 必填（生产发布时）：发布前用 `python3 scripts/edge-p0-matrix.py baseline OUT.json`
+#                                  # 在旧代码上记一份（GET/HEAD/POST/PUT/OPTIONS × www/coverage/uv0fkz31/letters-from-the-hill/函数）；
+#                                  # 发布后带 cookie 逐项比状态码 + 正文 sha256，并检查两条过期 Set-Cookie、函数看不到 demox_access。
 set -u
 WWW_URL=${WWW_URL:-https://www.demox.site/}
-SITE_URLS=${SITE_URLS:-"https://coverage.demox.site/ https://uv0fkz31.demox.site/"}
+SITE_URLS=${SITE_URLS:-"https://coverage.demox.site/ https://uv0fkz31.demox.site/ https://letters-from-the-hill.demox.site/"}
 UNBOUND_URL=${UNBOUND_URL:-https://your-demo.demox.site/}
 FN_URL=${FN_URL-https://uv0fkz31.demox.site/api/cookies}
 POST_URLS=${POST_URLS-https://uv0fkz31.demox.site/}
@@ -51,6 +56,18 @@ for variant in nocookie cookie; do
   fi
   for s in $SITE_URLS; do
     req GET "$s" "$c"; check "$tag GET site $s" 200 '站点未发布|暂时无法访问|需要重新验证'
+    if [ $variant = cookie ]; then
+      n=$(tr -d '\r' < "$tmp/hdr" | grep -ciE '^set-cookie: demox_access=; Max-Age=0')
+      [ "$n" -ge 2 ] && echo "PASS $tag expiry Set-Cookie x$n $s" || { echo "FAIL $tag expiry Set-Cookie missing ($n) $s"; fail=1; }
+    fi
+    key=$(printf %s "$s" | sha256sum | cut -c1-16)
+    len=$(wc -c < "$tmp/body"); sum=$(sha256sum "$tmp/body" | cut -c1-16)
+    if [ $variant = nocookie ]; then
+      echo "$len $sum" > "$tmp/ref-$key"
+    else
+      read -r rlen rsum < "$tmp/ref-$key"
+      if [ "$len $sum" = "$rlen $rsum" ]; then echo "PASS $tag body equal $s (len $len sha $sum)"; else echo "FAIL $tag body differs $s (cookie len $len sha $sum vs no-cookie len $rlen sha $rsum)"; fail=1; fi
+    fi
   done
   for s in $POST_URLS; do
     req POST "$s" "$c"; check "$tag POST site $s" 200 '站点未发布|暂时无法访问|需要重新验证'
@@ -66,6 +83,12 @@ for variant in nocookie cookie; do
     req GET "$UNBOUND_URL" "$c"; check "$tag GET unbound $UNBOUND_URL" 404
   fi
 done
+
+if [ -n "${BASELINE:-}" ]; then
+  python3 "$(dirname "$0")/edge-p0-matrix.py" compare "$BASELINE" || fail=1
+else
+  echo "WARN BASELINE not set: method matrix vs baseline skipped (required for production releases)"
+fi
 
 if [ $fail = 0 ]; then echo "P0 OK (with and without demox_access)"; else echo "P0 FAILED → roll back ef-1281msyw now"; fi
 exit $fail
