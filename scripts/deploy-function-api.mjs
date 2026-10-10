@@ -175,7 +175,7 @@ function routerEnvironment(copied, current, { secret, runtimeUrl } = {}) {
     FUNCTIONS_COS_REGION: cosRegion,
     FUNCTION_PUBLIC_BASE_URL: unified ? "https://api.demox.site" : publicBaseUrl,
     AUTH_API_URL: unified ? "https://api.demox.site/auth" : `${publicBaseUrl}/auth`,
-    WEBSITE_API_URL: unified ? "https://api.demox.site" : publicBaseUrl,
+    WEBSITE_API_URL: unified ? "https://api.demox.site/website" : publicBaseUrl,
     DEMOX_SITE_WEBSITE_ID: "EPX2UU43",
     DEMOX_PLATFORM_WEBSITE_ID: "EPX2UU43",
     FUNCTION_ENV: "production",

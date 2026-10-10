@@ -422,8 +422,64 @@ test('unified MCP deploy dispatches to the website system function in process', 
   }));
   assert.equal(response.statusCode, 200);
   assert.deepEqual(JSON.parse(response.body), { ok: true });
-  assert.equal(calls[0].path, '/upload');
+  assert.equal(calls[0].path, '/website/upload');
   assert.equal(calls[0].body.action, 'init_deploy_upload');
+});
+
+test('in-process MCP delete reaches system-website even when WEBSITE_API_URL is a bare host (no self-loop)', async () => {
+  process.env.AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.example.test';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || randomTestSecret();
+  const previous = process.env.WEBSITE_API_URL;
+  const previousMode = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE; // #42 默认：平台站点进程内执行
+  const { sign } = require('../mcp-api/shared/jwt.js');
+  const websiteCalls = [];
+  let mcpCalls = 0;
+  const realMcp = require('../mcp-api/index.js');
+  const handler = createPlatformHandler({
+    systemRouterOptions: {
+      loaders: {
+        'demox-system-website': () => ({
+          main: async (request) => {
+            websiteCalls.push({ path: request.path, body: request.body });
+            return { statusCode: 200, body: JSON.stringify({ success: true }) };
+          }
+        }),
+        'demox-system-mcp': () => ({
+          main: async (request, context) => {
+            mcpCalls += 1;
+            if (mcpCalls > 1) throw new Error('MCP 请求绕回了 system-mcp');
+            return realMcp.main(request, context);
+          }
+        }),
+        'demox-system-auth': () => ({ main: async () => ({ statusCode: 200, body: '{}' }) }),
+        'demox-system-cert-renew': () => ({ main: async () => ({ statusCode: 204, body: '' }) })
+      }
+    },
+    userHandler: async () => ({ statusCode: 418, body: 'user' })
+  });
+  try {
+    // 线上事故时的值：只有域名。模块早已加载，这里改 process.env 验证「用到时才读并规范化」。
+    for (const value of ['https://api.demox.site', 'https://api.demox.site/', 'https://api.demox.site/website']) {
+      process.env.WEBSITE_API_URL = value;
+      websiteCalls.length = 0;
+      mcpCalls = 0;
+      const response = await handler(event('/delete', 'POST', { action: 'delete', websiteId: 'UWR3PJ2L' }, {
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${sign({ userId: 'user-1' })}`
+        }
+      }));
+      assert.equal(response.statusCode, 200, value);
+      assert.equal(mcpCalls, 1, value);
+      assert.equal(websiteCalls.length, 1, value);
+      assert.equal(websiteCalls[0].path, '/website/delete', value);
+      assert.deepEqual(websiteCalls[0].body, { action: 'delete', websiteId: 'UWR3PJ2L' });
+    }
+  } finally {
+    if (previous === undefined) delete process.env.WEBSITE_API_URL; else process.env.WEBSITE_API_URL = previous;
+    if (previousMode !== undefined) process.env.FUNCTIONS_PLATFORM_SITE_MODE = previousMode;
+  }
 });
 
 test('site-scoped paths dispatch to the same backends as /auth /website /deploy', async () => {

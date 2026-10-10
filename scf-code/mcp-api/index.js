@@ -102,8 +102,33 @@ function requiredEnv(name) {
   return value.replace(/\/+$/, '');
 }
 
+// WEBSITE_API_URL 必须指到 website 后端（统一入口下是 https://api.demox.site/website）。
+// 只写域名时，`${base}/delete` 会落到 /delete，而 /delete 在统一入口里归 system-mcp，
+// 也就是请求绕回本函数自己，形成自循环（2026-10-10 13:41–13:47 事故）。
+// 这里统一补成以 /website 结尾，域名写错也不会再绕回 MCP。
+function normalizeWebsiteApiUrl(value) {
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    const pathname = url.pathname.replace(/\/+$/, '');
+    url.pathname = /\/website$/.test(pathname) ? pathname : `${pathname}/website`;
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return /\/website$/.test(raw) ? raw : `${raw}/website`;
+  }
+}
+
 const AUTH_API_URL = requiredEnv('AUTH_API_URL');
-const WEBSITE_API_URL = requiredEnv('WEBSITE_API_URL');
+requiredEnv('WEBSITE_API_URL');
+
+// 在用到的时候再读 process.env 并规范化，而不是只在模块加载时读一次：
+// 进程内模式（function-api / api-web 直接 require 本模块）和测试里环境变量可能在加载后才变。
+function websiteApiUrl() {
+  return normalizeWebsiteApiUrl(requiredEnv('WEBSITE_API_URL'));
+}
 
 let backendInvoker = null;
 
@@ -260,18 +285,18 @@ exports.main = async (event) => {
 
       console.log('[MCP API] 部署请求，用户:', user.userId);
       const token = extractToken(event);
-      return proxy(`${WEBSITE_API_URL}/upload`, deployPayload, token);
+      return proxy(`${websiteApiUrl()}/upload`, deployPayload, token);
     }
 
     if (method === 'POST' && (path.includes('websites') || requestData.action === 'list')) {
       if (!verifyToken(event)) return unauthorized();
       const action = requestData.action === 'list_all' ? 'list_all' : 'list';
-      return proxy(`${WEBSITE_API_URL}/list`, { action }, extractToken(event));
+      return proxy(`${websiteApiUrl()}/list`, { action }, extractToken(event));
     }
 
     if (method === 'POST' && (path.includes('delete') || requestData.action === 'delete')) {
       if (!verifyToken(event)) return unauthorized();
-      return proxy(`${WEBSITE_API_URL}/delete`, {
+      return proxy(`${websiteApiUrl()}/delete`, {
         action: 'delete',
         websiteId: requestData.websiteId || requestData.id
       }, extractToken(event));
@@ -342,5 +367,5 @@ exports.main = async (event) => {
 };
 
 exports.setBackendInvoker = setBackendInvoker;
-exports.__private = { normalizeDeployPayload, isDeployRequest };
+exports.__private = { normalizeDeployPayload, isDeployRequest, normalizeWebsiteApiUrl, websiteApiUrl };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
