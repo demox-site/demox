@@ -77,6 +77,27 @@ type RequestOptions = RequestInit & {
 };
 
 // API请求封装
+/** 接口返回非 2xx 时抛出：带上状态码、业务 code 和（限速时）要等几秒。 */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  retryAfterSeconds?: number;
+  constructor(message: string, status: number, code?: string, retryAfterSeconds?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/** 登录被限速（429 LOGIN_THROTTLED）时返回可以再试的时间点（毫秒时间戳），否则 null。 */
+export function loginThrottledUntil(error: unknown, now = Date.now()): number | null {
+  if (!(error instanceof ApiError) || error.code !== "LOGIN_THROTTLED") return null;
+  const seconds = Number(error.retryAfterSeconds);
+  return now + (Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000;
+}
+
 async function request<T>(baseUrl: string, path: string, options: RequestOptions = {}): Promise<T> {
   const { skipAuth, headers: optionHeaders, body, ...rest } = options;
   const token = skipAuth ? null : tokenManager.get();
@@ -105,7 +126,13 @@ async function request<T>(baseUrl: string, path: string, options: RequestOptions
   }
 
   if (!response.ok) {
-    throw new Error(data.error_description || data.message || data.error || "请求失败");
+    const retryAfter = Number(data?.retryAfterSeconds ?? response.headers.get("Retry-After"));
+    throw new ApiError(
+      data.error_description || data.message || data.error || "请求失败",
+      response.status,
+      typeof bodyCode === "string" ? bodyCode : undefined,
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined
+    );
   }
 
   return data;
