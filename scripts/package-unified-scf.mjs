@@ -197,7 +197,8 @@ async function writeZip(stageDir, zipPath) {
   archive.pipe(output);
   const files = await listAllFiles(stageDir);
   for (const relative of files) {
-    archive.file(path.join(stageDir, relative), { name: relative.split(path.sep).join("/"), date: new Date(0) });
+    const name = relative.split(path.sep).join("/");
+    archive.file(path.join(stageDir, relative), { name, date: new Date(0), ...(name === "scf_bootstrap" ? { mode: 0o755 } : {}) });
   }
   await archive.finalize();
   await completion;
@@ -218,11 +219,13 @@ async function applyBundle(inventory) {
   }
   const rootFiles = {
     "index.js": "module.exports = require('./scf-code/function-api/index.js');\n",
-    "runtime-nodejs.js": "module.exports = require('./scf-code/function-api/runtime-nodejs-handler.js');\n"
+    "runtime-nodejs.js": "module.exports = require('./scf-code/function-api/runtime-nodejs-handler.js');\n",
+    // v14：同一个包也能当 Web 函数用（api.demox.site 迁到 Web 函数后，响应体不再进 SCF 日志）。
+    "scf_bootstrap": "#!/bin/bash\nexport PORT=9000\nNODE=/var/lang/node18/bin/node\n[ -x \"$NODE\" ] || NODE=node\nexec \"$NODE\" scf-code/function-api/web-server.js\n"
   };
   for (const [relative, contents] of Object.entries(rootFiles)) {
     await mkdir(path.join(stageDir, path.dirname(relative)), { recursive: true });
-    await writeFile(path.join(stageDir, relative), contents);
+    await writeFile(path.join(stageDir, relative), contents, { mode: relative === "scf_bootstrap" ? 0o755 : 0o644 });
   }
   for (const source of sourcePackages) await copySourcePackage(source, stageDir);
   await installDependencies(stageDir, inventory.dependencies);
