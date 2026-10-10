@@ -52,7 +52,31 @@ function fakeFetch({ devStatus = OK_STATUS, prodStatus = OK_STATUS } = {}) {
   return fn;
 }
 const okFetch = fakeFetch();
-const fakeCos = { putObject: (_p, cb) => cb(null, {}) };
+// 只实现 CI 角色被允许的 4 个分片接口；调用其它 COS 接口（含桶级 ListMultipartUploads）直接失败。
+function multipartCos(script = {}) {
+  const calls = [];
+  let partCalls = 0;
+  const allowed = {
+    multipartInit: (p, cb) => { calls.push(['init', p.Key]); script.init === 'denied' ? cb({ code: 'AccessDenied', message: 'Access Denied.' }) : cb(null, { UploadId: 'u1' }); },
+    multipartUpload: (p, cb) => {
+      const step = (script.parts || [])[partCalls++] || 'ok';
+      calls.push(['part', p.PartNumber, p.Body.length]);
+      if (step === 'ok') cb(null, { ETag: `"e${p.PartNumber}"` });
+      else if (step === 'fail') cb({ code: 'RequestTimeout', message: 'socket hang up' });
+      else if (step === 'denied') cb({ code: 'AccessDenied', message: 'Access Denied.' });
+      // 'hang'：不回调
+    },
+    multipartComplete: (p, cb) => { calls.push(['complete', p.Parts.map((x) => x.PartNumber).join(',')]); cb(null, {}); },
+    multipartAbort: (p, cb) => { calls.push(['abort', p.UploadId]); cb(null, {}); }
+  };
+  return new Proxy({ calls }, { get: (t, n) => {
+    if (n === 'calls') return calls;
+    if (n in allowed) return allowed[n];
+    if (typeof n === 'string' && n !== 'then') throw new Error(`CI 角色没有 COS 接口 ${n} 的权限`);
+    return undefined;
+  } });
+}
+const fakeCos = multipartCos();
 const zip = () => { const p = path.join(os.tmpdir(), `t-${process.pid}.zip`); fs.writeFileSync(p, 'zip'); return p; };
 const quiet = () => {};
 
@@ -190,77 +214,86 @@ test('rollback checks the target through develop before moving production', asyn
 });
 
 
-// ---- COS 上传：只用 PutObject（CI 角色权限）+ 重试 + 超时 ----
-function scriptedCos(script) {
-  const calls = [];
-  return {
-    calls,
-    putObject: (p, cb) => {
-      const step = script[calls.length] || 'ok';
-      calls.push({ Key: p.Key });
-      if (step === 'ok') cb(null, {});
-      else if (step === 'fail') cb({ code: 'RequestTimeout', message: 'socket hang up' });
-      else if (step === 'denied') cb({ code: 'AccessDenied', message: 'Access Denied.' });
-      // 'hang'：永不回调
-    }
-  };
-}
-const NO_MULTIPART = ['sliceUploadFile', 'multipartInit', 'multipartUpload', 'multipartComplete', 'uploadFile'];
-const strictCos = (inner) => new Proxy(inner, { get: (t, n) => { if (NO_MULTIPART.includes(n)) throw new Error(`CI 角色不允许 ${String(n)}`); return t[n]; } });
+// ---- COS 分片上传：只用 Init/UploadPart/Complete/Abort + 单片超时/重试 + 总超时 ----
+const bigZip = (mb) => { const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mp-')), 'big.zip'); fs.writeFileSync(f, Buffer.alloc(Math.round(mb * 1048576), 1)); return f; };
+const NO_WRITES = (s) => !s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name));
 
-test('upload: single PutObject only (CI role has no multipart permissions)', async () => {
+test('upload: multipart with 5 MB parts using only Init/UploadPart/Complete (no ListMultipartUploads, no sliceUploadFile)', async () => {
   const s = fakeScf();
-  const cos = scriptedCos(['ok']);
-  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: strictCos(cos), fetchImpl: okFetch, log: quiet, wait: async () => {} });
-  await d.deploy({ zipPath: zip(), sha: 'abc' });
-  assert.equal(cos.calls.length, 1);
-  assert.match(cos.calls[0].Key, /^scf-deploy\/ci\/demox-unified-scf-/);
+  const cos = multipartCos();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.uploadZip(bigZip(20), 'scf-deploy/ci/x.zip');
+  const parts = cos.calls.filter((c) => c[0] === 'part');
+  assert.equal(parts.length, 4);
+  assert.ok(parts.every((p) => p[2] === 5 * 1048576));
+  assert.deepEqual(cos.calls.find((c) => c[0] === 'complete'), ['complete', '1,2,3,4']);
+  assert.equal(cos.calls[0][0], 'init');
 });
 
-test('upload: retries after a failed attempt, then deploys', async () => {
+test('upload: deploy uses multipart before any function write', async () => {
   const s = fakeScf();
-  const cos = scriptedCos(['fail', 'ok']);
-  const lines = [];
-  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: (l) => lines.push(l), wait: async () => {} });
+  const cos = multipartCos();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
   const r = await d.deploy({ zipPath: zip(), sha: 'abc' });
-  assert.equal(cos.calls.length, 2);
   assert.equal(r.version, '4');
-  assert.ok(lines.some((l) => l.includes('::warning::上传 COS 第 1 次失败')));
+  assert.ok(cos.calls.some((c) => c[0] === 'complete'));
 });
 
-test('upload: Access Denied fails fast without retry, no function writes', async () => {
+test('upload: a failed part is retried and the upload completes', async () => {
   const s = fakeScf();
-  const cos = scriptedCos(['denied', 'ok']);
+  const cos = multipartCos({ parts: ['fail', 'ok', 'ok', 'ok'] });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.uploadZip(bigZip(20), 'scf-deploy/ci/x.zip');
+  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 5);
+  assert.ok(cos.calls.some((c) => c[0] === 'complete'));
+});
+
+test('upload: a stalled part times out on its own and is retried', async () => {
+  const s = fakeScf();
+  const cos = multipartCos({ parts: ['hang', 'ok', 'ok', 'ok', 'ok'] });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {}, uploadOptions: { partTimeoutMs: 30 } });
+  await d.uploadZip(bigZip(20), 'scf-deploy/ci/x.zip');
+  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 5);
+  assert.deepEqual(cos.calls.find((c) => c[0] === 'complete'), ['complete', '1,2,3,4']);
+});
+
+test('upload: Access Denied fails fast (no retry), aborts, no function writes', async () => {
+  const s = fakeScf();
+  const cos = multipartCos({ parts: ['denied'] });
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*Access Denied/);
-  assert.equal(cos.calls.length, 1);
-  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
+  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
+  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 1);
+  await new Promise((r) => setImmediate(r));
+  assert.ok(cos.calls.some((c) => c[0] === 'abort'));
+  assert.ok(NO_WRITES(s));
 });
 
-test('upload: 3 failures → loud error, no function writes', async () => {
+test('upload: parts failing every time → 3 whole attempts then a loud error, no function writes', async () => {
   const s = fakeScf();
-  const cos = scriptedCos(['fail', 'fail', 'fail', 'ok']);
+  const cos = multipartCos({ parts: Array(20).fill('fail') });
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*未做任何函数修改/);
-  assert.equal(cos.calls.length, 3);
-  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
+  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 3);
+  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 12, '4 tries per part × 3 attempts');
+  assert.ok(NO_WRITES(s));
 });
 
-test('upload: hung attempts time out at 4 min each, whole upload capped at 10 min, no function writes', async () => {
+test('upload: a hung part hits the 10-minute cap, aborts, no function writes', async () => {
   const s = fakeScf();
-  const cos = scriptedCos(['hang', 'hang', 'hang']);
+  const cos = multipartCos({ parts: Array(20).fill('hang') });
   let clock = 0;
   const timeouts = [];
   const d = createDeployer({
-    developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet,
+    developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, uploadOptions: { partTimeoutMs: 20 },
     wait: async (ms) => { clock += ms; },
     now: () => clock,
     setTimer: (fn, ms) => { timeouts.push(ms); setImmediate(() => { clock += ms; fn(); }); return ms; },
     clearTimer: () => {}
   });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*10 分钟/);
-  assert.deepEqual(timeouts.slice(0, 2), [240000, 240000]);
-  assert.ok(timeouts.reduce((a, b) => a + b, 0) <= 10 * 60 * 1000, 'never exceeds the 10-minute budget');
-  assert.equal(cos.calls.length, 3);
-  assert.ok(!s.calls.some((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)));
+  assert.equal(timeouts[0], 10 * 60 * 1000);
+  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
+  assert.ok(cos.calls.some((c) => c[0] === 'abort'));
+  assert.ok(NO_WRITES(s));
 });
