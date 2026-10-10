@@ -97,6 +97,17 @@ async function request<T>(baseUrl: string, path: string, options: RequestOptions
 
   const data = await response.json();
 
+  // 本地有令牌却被拒：中途会话失效（含 JWT 轮换），弹统一「请重新登录」窗。
+  const bodyCode = data?.code;
+  const sessionRejected =
+    !!token &&
+    (response.status === 401 || bodyCode === 401 || bodyCode === "401");
+  if (sessionRejected) {
+    try {
+      (window as any).showTokenExpiredModal?.();
+    } catch {}
+  }
+
   if (!response.ok) {
     throw new Error(data.error_description || data.message || data.error || "请求失败");
   }

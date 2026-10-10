@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { userManager } from "../api";
+import { readLoginNext } from "../lib/login-next";
 import { AuthDialog } from "../components/AuthDialog";
 import { ExternalLink } from "lucide-react";
 
@@ -58,11 +59,21 @@ const CloudHostLanding: React.FC = () => {
     track("landing_view");
     const currentUser = userManager.get();
     if (currentUser) setUser(currentUser);
+    const next = readLoginNext(window.location.search);
+    if (next && !currentUser) {
+      setIsLoginOpen(true);
+    }
   }, []);
 
   const handleLoginSuccess = () => {
     const currentUser = userManager.get();
     if (currentUser) setUser(currentUser);
+    const next = readLoginNext(window.location.search);
+    if (next) {
+      window.history.replaceState(null, "", "/");
+      navigate(next);
+      return;
+    }
     navigate("/console/projects");
   };
 

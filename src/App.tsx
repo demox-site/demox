@@ -8,7 +8,6 @@ import { ThemeProvider } from "@/hooks/use-theme";
 import {
   AlertDialog,
   AlertDialogAction,
-  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -26,6 +25,7 @@ import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
 import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
+import { buildLoginRedirect } from "./lib/login-next";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
 import SitesPage from "./pages/console/SitesPage.jsx";
@@ -51,15 +51,12 @@ const queryClient = new QueryClient();
 const App: React.FC = () => {
   const [tokenExpiredOpen, setTokenExpiredOpen] = React.useState(false);
 
-  const handleConfirmRefresh = async () => {
+  const handleGoLogin = () => {
     try {
       authApi.logout();
     } catch {}
-    try {
-      window.location.reload();
-    } catch {
-      setTokenExpiredOpen(false);
-    }
+    const here = `${window.location.pathname}${window.location.search}`;
+    window.location.assign(buildLoginRedirect(here));
   };
 
   React.useEffect(() => {
@@ -89,22 +86,19 @@ const App: React.FC = () => {
               <Toaster />
               <Sonner position="top-center" />
               <AlertDialog open={tokenExpiredOpen} onOpenChange={setTokenExpiredOpen}>
-                <AlertDialogContent className="border-zinc-800 bg-zinc-900 text-zinc-100">
+                <AlertDialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
                   <AlertDialogHeader>
-                    <AlertDialogTitle>凭证过期</AlertDialogTitle>
-                    <AlertDialogDescription className="text-zinc-400">
-                      凭证已过期，是否刷新页面以重新获取登录状态？
+                    <AlertDialogTitle>请重新登录</AlertDialogTitle>
+                    <AlertDialogDescription className="text-[var(--stitch-muted)]">
+                      为了账号安全，请重新登录一次。
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
-                    <AlertDialogCancel className="border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800">
-                      取消
-                    </AlertDialogCancel>
                     <AlertDialogAction
-                      className="bg-zinc-100 text-zinc-900 hover:bg-white"
-                      onClick={handleConfirmRefresh}
+                      className="bg-[var(--stitch-ink)] font-semibold text-[var(--stitch-bg)] hover:bg-[var(--stitch-ink)] hover:opacity-90"
+                      onClick={handleGoLogin}
                     >
-                      确认
+                      去登录
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
