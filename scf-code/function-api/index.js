@@ -173,11 +173,21 @@ function isManagementPath(path) {
   return path === '/functions' || path.startsWith('/functions/') || path === '/env';
 }
 
+// #42：平台站点函数被 service.invoke 拦下（PLATFORM_SITE_IN_PROCESS）时返回 null，让平台入口回落到进程内处理，而不是报错。
+function isPlatformInProcessError(error) {
+  return error?.code === 'PLATFORM_SITE_IN_PROCESS';
+}
+
 async function tryInvokeUserRoute(service, event = {}, context = {}) {
   if (isTimerEvent(event)) {
     const record = await service.findPublishedByTimer(timerNameOf(event));
     if (!record) return null;
-    return responseFromInvoke(await service.invoke({ functionId: record.functionId, event, context }));
+    try {
+      return responseFromInvoke(await service.invoke({ functionId: record.functionId, event, context }));
+    } catch (error) {
+      if (isPlatformInProcessError(error)) return null;
+      throw error;
+    }
   }
 
   const body = parseBody(event);
@@ -207,12 +217,17 @@ async function tryInvokeUserRoute(service, event = {}, context = {}) {
   if (!websiteId) return null;
   const record = await service.findPublishedByRoute(websiteId, path);
   if (!record) return null;
-  return responseFromInvoke(await service.invoke({
-    functionId: record.functionId,
-    event,
-    context,
-    alias: scope.env || 'production'
-  }));
+  try {
+    return responseFromInvoke(await service.invoke({
+      functionId: record.functionId,
+      event,
+      context,
+      alias: scope.env || 'production'
+    }));
+  } catch (error) {
+    if (isPlatformInProcessError(error)) return null;
+    throw error;
+  }
 }
 
 async function invokePublishedSystemFunction(service, entry, event, context) {
