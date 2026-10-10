@@ -212,11 +212,11 @@ function verifyDemoDomain(id: string) {
     return { success: true, message, domain: { ...base, checkStep: "icp", icpStatus: "unfiled", pendingMessage: message, checkedAt } };
   }
   if (base.id === "d-apex") {
-    const message = "还查不到记录。请确认 CNAME @ 指向 customers.demox.site，新记录一般 1–10 分钟生效";
+    const message = "还查不到记录。请确认 CNAME @ 指向 customers.demox.site，新记录一般 1–10 分钟生效。";
     return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "no_record", pendingMessage: message, checkedAt } };
   }
   if (base.id === "d-cert" && demoChecks[base.id] < 4) {
-    const message = "解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS";
+    const message = "解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS。";
     return { success: true, message, domain: { ...base, checkStep: "cert", dnsVia: "cname", pendingMessage: message, checkedAt } };
   }
   return { success: true, message: "自定义域名已可访问", domain: { ...base, status: "active", checkStep: "active", dnsVia: "cname", pendingMessage: "", checkedAt, verifiedAt: checkedAt } };

@@ -74,7 +74,7 @@
     },
     {
       "file": "src/demo/console-demo.ts",
-      "text": "还查不到记录。请确认 CNAME @ 指向 customers.demox.site，新记录一般 1–10 分钟生效",
+      "text": "还查不到记录。请确认 CNAME @ 指向 customers.demox.site，新记录一般 1–10 分钟生效。",
       "reason": "Console demo fixture (VITE_CONSOLE_DEMO only, never in the www build path) mirroring website-api custom-domain pendingMessage, which the API returns in Chinese"
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "file": "src/demo/console-demo.ts",
-      "text": "解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS",
+      "text": "解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS。",
       "reason": "Console demo fixture (VITE_CONSOLE_DEMO only, never in the www build path) mirroring website-api custom-domain pendingMessage, which the API returns in Chinese"
     },
     {

@@ -1472,14 +1472,14 @@ function customDomainPendingMessage({ dns, gateway, live, hostname, instruction 
       case 'other_ip':
         return `解析到了 ${dns.addresses.slice(0, 2).join('、')}，不是 Demox。请改成 ${want}`;
       default:
-        return `还查不到记录。请确认 ${want}，新记录一般 1–10 分钟生效`;
+        return `还查不到记录。请确认 ${want}，新记录一般 1–10 分钟生效。`;
     }
   }
   if (gateway && gateway.ok === false) {
     return gateway.message || `平台入口 ${host} 未指向网关，域名还不能生效`;
   }
   if (live && live.ok === false) {
-    return '解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS';
+    return '解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS。';
   }
   return `还查不到记录。请确认 ${want}`;
 }

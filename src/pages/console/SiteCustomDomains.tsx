@@ -620,20 +620,23 @@ export default function SiteCustomDomains({
                 <DialogDescription className="text-[var(--stitch-muted)]">{t.dnsDesc}</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-4">
-                <div className="grid gap-3 sm:grid-cols-[4.5rem_minmax(0,1fr)_auto_auto] sm:items-center">
+                <div className="grid gap-3 sm:grid-cols-[4.5rem_minmax(0,1fr)_auto] sm:items-center">
                   <div className="font-mono text-sm text-[var(--stitch-ink)]">{guideType}</div>
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.recordHost}</div>
                     <div className="font-mono text-sm text-[var(--stitch-ink)]">{guideHost}</div>
                     <div className="text-xs text-[var(--stitch-muted)]">{guideHostname}</div>
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.recordValue}</div>
-                    <code className="block whitespace-nowrap font-mono text-sm text-[var(--stitch-ink)]">{guideValue}</code>
+                  {/* 复制按钮和记录值同一行（手机上也不换行） */}
+                  <div className="flex min-w-0 items-end gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.recordValue}</div>
+                      <code className="block whitespace-nowrap font-mono text-sm text-[var(--stitch-ink)]">{guideValue}</code>
+                    </div>
+                    <Button type="button" variant="ghost" size="icon" className="-mb-1.5 h-8 w-8 shrink-0" onClick={() => void handleCopy(guideValue, "create")}>
+                      {copied === "create" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    </Button>
                   </div>
-                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void handleCopy(guideValue, "create")}>
-                    {copied === "create" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                  </Button>
                 </div>
                 {guideFallbackA ? (
                   <div className="text-xs text-[var(--stitch-muted)]" data-testid="custom-domain-a-fallback">
