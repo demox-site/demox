@@ -143,11 +143,16 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-// COS 上传：单次 PutObject + 每次 4 分钟超时 + 最多 3 次 + 总 10 分钟。
-// 不用分片上传：CI 角色只允许 PutObject/GetObject/HeadObject（分片需要 InitiateMultipartUpload 等，run 38018593079 Access Denied）。
+// COS 上传：分片（5 MB，3 片并发，每片 90 秒超时、最多 4 次）+ 整次最多 3 次 + 总 10 分钟。
+// 只用 InitiateMultipartUpload / UploadPart / CompleteMultipartUpload / AbortMultipartUpload（云架构 2026-10-10 11:14 为
+// demox-ci-deploy 在 scf-deploy/ci/* 上加的权限）；不用 SDK 的 sliceUploadFile，它会先调桶级 ListMultipartUploads（没有权限）。
+// 历史：run 38017096251 单流 putObject 挂 18 分钟；run 38018842590 单次 PutObject 三次都超时（westus3 → ap-chengdu）。
 const UPLOAD = Object.freeze({
+  partSize: 5 * 1024 * 1024,
+  concurrency: 3,
+  partAttempts: 4,
+  partTimeoutMs: 90 * 1000,
   attempts: 3,
-  attemptTimeoutMs: 4 * 60 * 1000,
   retryGapMs: 10000,
   totalTimeoutMs: 10 * 60 * 1000
 });
@@ -251,10 +256,14 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await scf.UpdateAlias(params);
   }
 
+  const isDenied = (error) => /AccessDenied|Access Denied/i.test(`${error && error.code} ${error && error.message}`);
+  const cosCall = (name, params) => new Promise((resolve, reject) => {
+    cos[name](params, (error, data) => (error ? reject(Object.assign(new Error(error.message || error.code || String(error)), { code: error.code })) : resolve(data)));
+  });
+
   /**
-   * 上传到 COS：单次 PutObject（CI 角色只允许这个），每次最多 attemptTimeoutMs，失败重试，
-   * 总时长超过 totalTimeoutMs 直接报错；上传在任何 SCF 写操作之前，失败时函数和别名都不动。
-   * 2026-10-10 run 38017096251：无超时的 putObject 挂了 18 分钟。
+   * 分片上传到 COS；任何 SCF 写操作之前执行，失败时函数和别名都不动。
+   * 总时长超过 totalTimeoutMs 直接报错（并 Abort 掉未完成的分片任务）；Access Denied 不重试。
    */
   async function uploadZip(zipPath, key) {
     if (!cos) throw new Error('缺少 COS 客户端');
@@ -264,15 +273,15 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
       const remaining = deadline - now();
       if (remaining <= 0) break;
-      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB）`);
+      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB）`);
       try {
-        await putOnce(zipPath, key, Math.min(upload.attemptTimeoutMs, remaining));
+        await withTimeout(multipartOnce(zipPath, key, size), remaining);
         log('上传 COS 完成');
         return;
       } catch (error) {
         lastError = error;
         log(`::warning::上传 COS 第 ${attempt} 次失败：${error.message}`);
-        if (/AccessDenied|Access Denied/i.test(String(error.message))) break; // 权限问题重试无用
+        if (isDenied(error)) break; // 权限问题重试无用
         if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
       }
     }
@@ -280,18 +289,78 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     throw new Error(`上传 COS 失败（${upload.attempts} 次内或 ${minutes} 分钟内未完成），未做任何函数修改：${lastError ? lastError.message : '超时'}`);
   }
 
-  function putOnce(zipPath, key, timeoutMs) {
+  function withTimeout(task, timeoutMs) {
     return new Promise((resolve, reject) => {
-      let settled = false;
-      const body = fs.createReadStream(zipPath);
-      const finish = (fn, value) => { if (settled) return; settled = true; clearTimer(timer); fn(value); };
-      const timer = setTimer(() => {
-        try { body.destroy(); } catch { /* ignore */ }
-        finish(reject, new Error(`超时 ${Math.round(timeoutMs / 1000)}s`));
-      }, timeoutMs);
-      cos.putObject({ Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key, Body: body, ContentLength: fs.statSync(zipPath).size },
-        (error, data) => (error ? finish(reject, new Error(error.message || error.code || String(error))) : finish(resolve, data)));
+      let done = false;
+      const timer = setTimer(() => { if (!done) { done = true; task.abort && task.abort(); reject(new Error(`超时 ${Math.round(timeoutMs / 1000)}s`)); } }, timeoutMs);
+      task.promise.then((v) => { if (!done) { done = true; clearTimer(timer); resolve(v); } },
+        (e) => { if (!done) { done = true; clearTimer(timer); reject(e); } });
     });
+  }
+
+  // 单片超时用真实定时器（与总超时分开）：卡住的分片 90 秒后重试，不会把 10 分钟全部耗在一片上。
+  function partWithTimeout(promise, partNumber) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`分片 ${partNumber} 超时 ${Math.round(upload.partTimeoutMs / 1000)}s`)), upload.partTimeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  function multipartOnce(zipPath, key, size) {
+    const base = { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key };
+    let uploadId = null;
+    let aborted = false;
+    const abort = () => {
+      aborted = true;
+      if (uploadId) cosCall('multipartAbort', { ...base, UploadId: uploadId }).catch(() => {});
+    };
+    const promise = (async () => {
+      const init = await cosCall('multipartInit', base);
+      uploadId = init.UploadId;
+      if (!uploadId) throw new Error('InitiateMultipartUpload 没有返回 UploadId');
+      if (aborted) { abort(); throw new Error('已取消'); }
+      const count = Math.max(1, Math.ceil(size / upload.partSize));
+      const parts = new Array(count);
+      let next = 0;
+      let lastPct = -1;
+      let doneCount = 0;
+      const fd = fs.openSync(zipPath, 'r');
+      try {
+        const worker = async () => {
+          while (!aborted && next < count) {
+            const index = next++;
+            const start = index * upload.partSize;
+            const length = Math.min(upload.partSize, size - start);
+            const body = Buffer.alloc(length);
+            fs.readSync(fd, body, 0, length, start);
+            let partError;
+            for (let tryNo = 1; tryNo <= upload.partAttempts && !aborted; tryNo += 1) {
+              try {
+                const res = await partWithTimeout(cosCall('multipartUpload', { ...base, UploadId: uploadId, PartNumber: index + 1, Body: body, ContentLength: length }), index + 1);
+                parts[index] = { PartNumber: index + 1, ETag: res.ETag };
+                partError = null;
+                break;
+              } catch (error) {
+                partError = error;
+                if (isDenied(error)) break;
+              }
+            }
+            if (partError) throw partError;
+            doneCount += 1;
+            const pct = Math.floor((doneCount / count) * 5) * 20;
+            if (pct > lastPct) { lastPct = pct; log(`上传进度 ${pct}%`); }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(upload.concurrency, count) }, worker));
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (aborted) throw new Error('已取消');
+      await cosCall('multipartComplete', { ...base, UploadId: uploadId, Parts: parts });
+    })();
+    promise.catch(() => abort());
+    return { promise, abort };
   }
 
   function cosCode(key) {
@@ -399,8 +468,8 @@ async function createClients(env = process.env) {
   });
   let COS;
   try { COS = require('cos-nodejs-sdk-v5'); } catch { COS = require(path.join(__dirname, '../../scf-code/function-api/node_modules/cos-nodejs-sdk-v5')); }
-  // 单个请求 4 分钟超时（与 UPLOAD.attemptTimeoutMs 一致）。
-  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: UPLOAD.attemptTimeoutMs });
+  // 单个请求（一片 8 MB）2 分钟超时。
+  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: 120000 });
   return { scf, cos };
 }
 
