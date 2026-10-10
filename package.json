@@ -25,7 +25,7 @@
     "test:mobile-overflow": "node --experimental-websocket --test scripts/check-mobile-overflow.test.mjs",
     "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs",
     "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
-    "test:admin-audit": "node --test scf-code/website-api/admin-audit.test.cjs",
+    "test:admin-audit": "node --test scf-code/website-api/admin-audit.test.cjs scf-code/website-api/revoke-refresh-token.test.cjs scf-code/website-api/team-admin-grant.test.cjs",
     "test:changelog": "node --test src/content/changelog.test.mjs",
     "test:admin-bi": "node --test scripts/check-bi-palette.test.mjs && node scf-code/website-api/admin-bi.test.cjs && node scf-code/website-api/index.test.cjs && node scf-code/mcp-api/index.test.cjs",
     "test:log-redaction": "node --test scripts/check-log-redaction.test.mjs scf-code/function-api/log-redaction.test.cjs",

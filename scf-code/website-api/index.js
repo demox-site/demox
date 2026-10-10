@@ -2192,6 +2192,7 @@ async function dispatchWebsiteRequest(event, context) {
       get_product_funnel: handleGetProductFunnel,
       get_admin_bi: handleGetAdminBi,
       list_admin_audit: handleListAdminAudit,
+      revoke_oauth_refresh_token: handleRevokeOAuthRefreshToken,
       // 多云存储桶注册制
       list_buckets: handleListBuckets,
       register_bucket: handleRegisterBucket,
@@ -2205,6 +2206,7 @@ async function dispatchWebsiteRequest(event, context) {
     }
 
     if (isAnalyticsRollupTimerEvent(event)) {
+      await ensureTeamAdminGrant(); // 023：团队管理员账号授权，未配置时什么也不做
       // v14：顺带清理过期的管理员审计（每实例每小时最多一次，失败不影响聚合）。
       await pruneAdminAuditLog();
       return await handleRollupSiteAnalytics(event);
@@ -2235,6 +2237,8 @@ async function dispatchWebsiteRequest(event, context) {
       return await handleCreateToken(event);
     } else if (pathUrl.includes('/list-tokens')) {
       return await handleListTokens(event);
+    } else if (pathUrl.includes('/revoke-oauth-refresh-token')) {
+      return await handleRevokeOAuthRefreshToken(event);
     } else if (pathUrl.includes('/revoke-token')) {
       return await handleRevokeToken(event);
     } else if (pathUrl.includes('/track-product-event')) {
@@ -3659,6 +3663,8 @@ const ADMIN_AUDIT_READ_ACTION = /^(?:list|get|check|resolve|search|bucket_stats)
 const ADMIN_AUDIT_SKIP_READ_ACTIONS = new Set([
   'get_admin_bi', 'get_platform_overview', 'get_product_funnel', 'list_admin_audit'
 ]);
+// 处理函数自己写审计行的接口（例如作废刷新令牌：删除和审计在同一个事务里，审计写不进去就不删）。
+const ADMIN_AUDIT_SELF_RECORDED = new Set(['revoke_oauth_refresh_token']);
 // v14：保留期，默认 180 天，ADMIN_AUDIT_RETENTION_DAYS 可调（7–3650）。
 const ADMIN_AUDIT_RETENTION_DEFAULT_DAYS = 180;
 const ADMIN_AUDIT_PRUNE_BATCH = 5000;
@@ -3788,6 +3794,8 @@ async function recordAdminAudit(event, admin, response) {
   try {
     const action = adminAuditActionName(event);
     if (adminAuditSkipped(action)) return;
+    // 自己在处理函数里写审计的接口（和业务写在同一个事务里），这里不再重复记。
+    if (ADMIN_AUDIT_SELF_RECORDED.has(action)) return;
     const kind = ADMIN_AUDIT_READ_ACTION.test(action) ? 'read' : 'write';
     const { statusCode, success } = adminAuditOutcome(response);
     const via = [...admin.via].sort().join(',').slice(0, 64);
@@ -3849,6 +3857,230 @@ async function handleListAdminAudit(event) {
     return ok({ success: false, message: '读取管理员审计失败' });
   }
 }
+
+// ── 管理员按指纹作废 OAuth 刷新令牌（2026-10-10 日志泄露处置）──────────────────
+// 背景：泄露排查脚本（oauth-leak-id.py）只输出刷新令牌的指纹 rt_fp = sha256(令牌原文) 的 hex 前 12 位，
+// 不输出令牌本身。这个接口让管理员凭「用户 ID + 指纹」删掉那一行，不用再直连数据库。
+// - 只收 userId + fingerprint；请求里出现任何令牌字段或多余字段一律 400，永远不接收令牌原文。
+// - 指纹在数据库里算：DELETE ... WHERE user_id = ? AND LEFT(SHA2(token, 256), 12) = ?，令牌不出库。
+// - 一次只处理一个用户；单次删除超过 REVOKE_RT_MAX_ROWS 行视为异常，整笔回滚。
+// - 限流：每个管理员每 60 秒最多 REVOKE_RT_RATE_LIMIT 次（按 admin_audit_log 里本接口的记录数，查不到就拒绝）。
+// - 审计：删除和审计行在同一个事务里，审计写失败则不删。拒绝、限流、出错也都记一行。
+// - 返回只有 { success, revoked }，不带任何令牌内容。
+const REVOKE_RT_ACTION = 'revoke_oauth_refresh_token';
+const REVOKE_RT_RATE_LIMIT = 5;
+const REVOKE_RT_RATE_WINDOW_SECONDS = 60;
+const REVOKE_RT_MAX_ROWS = 5;
+const REVOKE_RT_FP_PATTERN = /^[0-9a-f]{12}$/;
+const REVOKE_RT_USER_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
+const REVOKE_RT_ALLOWED_KEYS = new Set(['action', 'path', 'userId', 'fingerprint']);
+const REVOKE_RT_TOKEN_KEYS = /token|secret|password|credential|^rt$|^at$/i;
+
+function revokeRtResponse(statusCode, obj) {
+  return { statusCode, headers: getCORSHeaders(), body: JSON.stringify(obj) };
+}
+
+/** 校验请求体。返回 { userId, fingerprint } 或 { error }（error 里不回显任何输入值）。 */
+function parseRevokeRtInput(body) {
+  const src = body && typeof body === 'object' ? body : {};
+  const keys = Object.keys(src);
+  if (keys.some((k) => REVOKE_RT_TOKEN_KEYS.test(k))) {
+    return { error: '只接收指纹（fingerprint），不要传令牌原文' };
+  }
+  if (keys.some((k) => !REVOKE_RT_ALLOWED_KEYS.has(k))) {
+    return { error: '只接受 userId 和 fingerprint 两个参数' };
+  }
+  const userId = typeof src.userId === 'string' ? src.userId.trim() : '';
+  if (!REVOKE_RT_USER_ID_PATTERN.test(userId)) {
+    return { error: 'userId 格式不对' };
+  }
+  const rawFp = typeof src.fingerprint === 'string' ? src.fingerprint.trim() : '';
+  if (rawFp.length > 12 && /^[A-Za-z0-9_\-.]+$/.test(rawFp)) {
+    return { error: 'fingerprint 必须是 12 位十六进制指纹，不要传令牌原文' };
+  }
+  const fingerprint = rawFp.toLowerCase();
+  if (!REVOKE_RT_FP_PATTERN.test(fingerprint)) {
+    return { error: 'fingerprint 必须是 12 位十六进制（sha256 前 12 位）' };
+  }
+  return { userId, fingerprint };
+}
+
+function revokeRtAuditTarget({ userId, fingerprint, revoked }) {
+  const parts = [];
+  if (userId) parts.push(`userId=${userId}`);
+  if (fingerprint) parts.push(`fp=${fingerprint}`);
+  if (revoked !== undefined) parts.push(`revoked=${revoked}`);
+  return parts.join(';').slice(0, 255);
+}
+
+async function writeRevokeRtAudit(runner, event, adminUid, { target, statusCode, success }) {
+  return runner(
+    `INSERT INTO admin_audit_log (operator_uid, auth_method, action, kind, target, via, status_code, success)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [String(adminUid), adminAuthMethod(authenticate(event)), REVOKE_RT_ACTION, 'write', target, 'admin_only', statusCode, success ? 1 : 0]
+  );
+}
+
+/** 失败路径的审计：尽力写，写不进去只记错误码，不影响返回。 */
+async function recordRevokeRtFailure(event, adminUid, target, statusCode) {
+  try {
+    await ensureAdminAuditTable();
+    await writeRevokeRtAudit(query, event, adminUid, { target, statusCode, success: false });
+  } catch (error) {
+    console.error('写管理员审计失败:', error && (error.code || error.message));
+  }
+}
+
+/**
+ * 管理员：按指纹作废某个用户的 OAuth 刷新令牌。
+ * body: { action: 'revoke_oauth_refresh_token', userId: '<用户 ID>', fingerprint: '<12 位十六进制>' }
+ * 返回: { success: true, revoked: <删掉的行数> }
+ */
+async function handleRevokeOAuthRefreshToken(event) {
+  const a = await requireAdmin(event);
+  if (a.err) return a.err;
+  const adminUid = a.userId;
+  const body = event.body && typeof event.body === 'object' ? event.body : {};
+
+  // 1) 限流（先于参数校验，乱传参数也算次数）。查不到计数就拒绝，不放行。
+  try {
+    await ensureAdminAuditTable();
+    const rows = await query(
+      `SELECT COUNT(*) AS n FROM admin_audit_log
+       WHERE operator_uid = ? AND action = ? AND created_at > (CURRENT_TIMESTAMP(3) - INTERVAL ? SECOND)`,
+      [String(adminUid), REVOKE_RT_ACTION, REVOKE_RT_RATE_WINDOW_SECONDS]
+    );
+    const n = Number(rows && rows[0] && rows[0].n) || 0;
+    if (n >= REVOKE_RT_RATE_LIMIT) {
+      await recordRevokeRtFailure(event, adminUid, 'rate_limited', 429);
+      return revokeRtResponse(429, { success: false, error: `操作太频繁，每分钟最多 ${REVOKE_RT_RATE_LIMIT} 次，请稍后再试` });
+    }
+  } catch (error) {
+    console.error('作废刷新令牌：限流检查失败', error && (error.code || error.message));
+    return revokeRtResponse(503, { success: false, error: '暂时无法处理，请稍后再试' });
+  }
+
+  // 2) 参数校验
+  const input = parseRevokeRtInput(body);
+  if (input.error) {
+    await recordRevokeRtFailure(event, adminUid, 'invalid_input', 400);
+    return revokeRtResponse(400, { success: false, error: input.error });
+  }
+
+  // 3) 删除 + 审计，同一个事务
+  try {
+    const revoked = await transaction(async (conn) => {
+      const run = async (sql, params) => (await conn.query(sql, params))[0];
+      const result = await run(
+        'DELETE FROM oauth_refresh_tokens WHERE user_id = ? AND LEFT(SHA2(token, 256), 12) = ?',
+        [input.userId, input.fingerprint]
+      );
+      const affected = Number(result && result.affectedRows) || 0;
+      if (affected > REVOKE_RT_MAX_ROWS) {
+        throw Object.assign(new Error('too many rows'), { code: 'REVOKE_RT_TOO_MANY' });
+      }
+      await writeRevokeRtAudit(run, event, adminUid, {
+        target: revokeRtAuditTarget({ ...input, revoked: affected }),
+        statusCode: 200,
+        success: true
+      });
+      return affected;
+    });
+    return revokeRtResponse(200, { success: true, revoked });
+  } catch (error) {
+    const tooMany = error && error.code === 'REVOKE_RT_TOO_MANY';
+    if (!tooMany) console.error('作废刷新令牌失败:', error && (error.code || error.message));
+    const statusCode = tooMany ? 409 : 500;
+    await recordRevokeRtFailure(event, adminUid, revokeRtAuditTarget({ ...input, revoked: 0 }), statusCode);
+    return revokeRtResponse(statusCode, {
+      success: false,
+      error: tooMany ? `匹配到的行数超过 ${REVOKE_RT_MAX_ROWS}，已整笔撤销，请人工核对` : '作废失败，已回滚'
+    });
+  }
+}
+
+exports._revokeRtForTest = { parseRevokeRtInput, revokeRtAuditTarget, REVOKE_RT_RATE_LIMIT, REVOKE_RT_MAX_ROWS };
+
+// ── 023：给团队管理员账号授 admin（2026-10-10，Chief 批准思路，等账号建好再填 ID）──────────
+// 团队用一个专门的 Demox 账号调用管理员接口（例如 revoke_oauth_refresh_token），不再借用 phosa 的账号。
+// 账号注册好以后，把它的用户 ID 填进下面的常量 TEAM_ADMIN_USER_ID，改代码、走评审再发布。
+// 不读环境变量（云架构 2026-10-10 要求：改函数环境变量的权限不能变成授 admin 的权限）。
+// - 没填：什么也不做（no-op）。
+// - 幂等：已经是 admin 就不写；只追加 admin，不删任何已有角色。
+// - 只授一次：admin_audit_log 里已经有这个 ID 的 grant_team_admin 成功记录就不再授，
+//   所以之后有人在后台手动撤掉它的 admin，这里不会偷偷加回来（要彻底撤销：先把常量改回空字符串再撤角色）。
+// - 有审计：改 user_roles 和写 admin_audit_log 在同一个事务里（operator_uid=system:023，auth_method=system）。
+// - 用户不存在 / ID 格式不对：不写，只打一行警告（不含 ID 以外的信息）。
+// 由 5 分钟统计定时器顺带调用，每个实例每小时最多查一次；SQL 等价版本见 migrations/023_grant_team_admin.sql。
+const TEAM_ADMIN_USER_ID = '1791602821563094181'; // demox-team@demox.site（2026-10-10 注册，Chief 批准）。只认这里，环境变量无效
+const TEAM_ADMIN_AUDIT_ACTION = 'grant_team_admin';
+const TEAM_ADMIN_OPERATOR = 'system:023';
+const TEAM_ADMIN_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let teamAdminLastCheckAt = 0;
+
+// 只读代码常量，故意不读环境变量：能改函数环境变量的人（例如 demox-ops）不应能借此给任意账号授 admin。
+function configuredTeamAdminUserId(constant = TEAM_ADMIN_USER_ID) {
+  const raw = String(constant || '').trim();
+  if (!raw) return { userId: '' };
+  if (!REVOKE_RT_USER_ID_PATTERN.test(raw)) return { userId: '', invalid: true };
+  return { userId: raw };
+}
+
+function parseRoleList(value) {
+  let list = value;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { list = []; }
+  }
+  return Array.isArray(list) ? list.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean) : [];
+}
+
+async function ensureTeamAdminGrant({ now = Date.now(), force = false, constant = TEAM_ADMIN_USER_ID } = {}) {
+  const { userId, invalid } = configuredTeamAdminUserId(constant);
+  if (invalid) {
+    console.warn('TEAM_ADMIN_USER_ID 格式不对，已跳过团队管理员授权');
+    return { skipped: true, reason: 'invalid' };
+  }
+  if (!userId) return { skipped: true, reason: 'unset' };
+  if (!force && now - teamAdminLastCheckAt < TEAM_ADMIN_CHECK_INTERVAL_MS) return { skipped: true, reason: 'throttled' };
+  teamAdminLastCheckAt = now;
+  try {
+    await ensureAdminAuditTable();
+    const granted = await query(
+      'SELECT id FROM admin_audit_log WHERE action = ? AND target = ? AND success = 1 LIMIT 1',
+      [TEAM_ADMIN_AUDIT_ACTION, `uid=${userId};role=admin`]
+    );
+    if (granted.length) return { skipped: true, reason: 'already_granted_once' };
+    const users = await query('SELECT id FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!users.length) {
+      console.warn('TEAM_ADMIN_USER_ID 对应的用户不存在，已跳过团队管理员授权');
+      return { skipped: true, reason: 'user_not_found' };
+    }
+    return await transaction(async (conn) => {
+      const run = async (sql, params) => (await conn.query(sql, params))[0];
+      const rows = await run('SELECT roles FROM user_roles WHERE user_id = ? LIMIT 1 FOR UPDATE', [userId]);
+      const current = rows.length ? parseRoleList(rows[0].roles) : [];
+      if (current.includes('admin')) return { skipped: true, reason: 'already_admin' };
+      const next = [...new Set(['user', ...current, 'admin'])];
+      await run(
+        `INSERT INTO user_roles (user_id, roles, updated_at) VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE roles = VALUES(roles), updated_at = NOW()`,
+        [userId, JSON.stringify(next)]
+      );
+      await run(
+        `INSERT INTO admin_audit_log (operator_uid, auth_method, action, kind, target, via, status_code, success)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [TEAM_ADMIN_OPERATOR, 'system', TEAM_ADMIN_AUDIT_ACTION, 'write', `uid=${userId};role=admin`, 'migration', 200, 1]
+      );
+      console.log('团队管理员授权完成');
+      return { skipped: false, granted: true, roles: next };
+    });
+  } catch (error) {
+    console.error('团队管理员授权失败:', error && (error.code || error.message));
+    return { skipped: true, reason: 'error' };
+  }
+}
+
+exports._teamAdminForTest = { ensureTeamAdminGrant, configuredTeamAdminUserId, TEAM_ADMIN_USER_ID };
 
 exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome, adminAuditSkipped, adminAuditRetentionDays, pruneAdminAuditLog };
 
