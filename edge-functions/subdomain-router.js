@@ -112,10 +112,25 @@ function withoutAuthCookieHeaders(source) {
 // 公开站点全部 503（origin=error）、www 404；不带 cookie 的请求正常（Node 单测发现不了）。
 // 推测：EdgeOne 运行时不支持用 Request 构造 Request，或不接受重建的 Request 作为 fetch 的 init。
 // 不带 demox_access 的请求保持原样（fetch(url, req) / fetch(req)），这条路径在线上已验证过。
+// 普通 init 的头会原样发出：EdgeOne 不会再替我们改 Host / 逐跳头（传入站 Request 当 init 时它会改）。
+// 2026-10-10 17:52–17:53：500284c 把入站 `Host: <用户站点>` 原样带去 COS 源站（site-N.demox.site
+// → *.cos-website…），COS 回 400 UserCnameInvalid，所有带 demox_access 的用户站点访问都是 400。
+// 所以这里去掉 host 和逐跳头，让 fetch 按目标 URL 自己填 Host / Content-Length / 连接相关头。
+var NON_FORWARDED_REQUEST_HEADERS = [
+  'host', 'content-length', 'connection', 'keep-alive', 'proxy-connection',
+  'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate'
+];
+
+// 只去掉固定列表；不按 Connection 里列的名字额外删头，保持和「传入站 Request」那条路径一致。
+function withoutHopByHopHeaders(headers) {
+  for (let i = 0; i < NON_FORWARDED_REQUEST_HEADERS.length; i += 1) headers.delete(NON_FORWARDED_REQUEST_HEADERS[i]);
+  return headers;
+}
+
 function strippedFetchInit(req) {
   const init = {
     method: req.method,
-    headers: withoutAuthCookieHeaders(req.headers)
+    headers: withoutHopByHopHeaders(withoutAuthCookieHeaders(req.headers))
   };
   if (req.redirect) init.redirect = req.redirect;
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {

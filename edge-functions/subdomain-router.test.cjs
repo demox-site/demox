@@ -1287,6 +1287,22 @@ test('private *.demox.site auth-complete never sets a token cookie or redirects'
 // 只接受原始入站请求（#49 之前线上一直这么用）；fetch(Request, init) 抛错。
 // fetch(new Request(字符串URL, init)) 允许：/api/* 函数转发一直这么用，事故期间探针站带 cookie 调函数是正常的。
 const NativeRequest = Request;
+// EdgeOne 发到上游的「实际头」模型（依据 2026-10-10 17:52 生产现象 + 源站 curl 复现）：
+//  - 入站 Request 当 init / 直接 fetch(入站 Request)：EdgeOne 按目标 URL 重新填 Host，自己管逐跳头。
+//  - 普通 init 对象：头原样发出（包括 Host）——带 `Host: 用户站点` 去 COS 源站会 400 UserCnameInvalid。
+const HOP_BY_HOP = ['host', 'content-length', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade'];
+function edgeOneWireHeaders(input, init, incoming) {
+  const target = new URL(input instanceof NativeRequest ? input.url : String(input));
+  const viaIncoming = input === incoming || init === incoming;
+  const src = viaIncoming ? incoming.headers : (init && init.headers ? new Headers(init.headers) : new Headers());
+  const out = {};
+  for (const [k, v] of src.entries()) {
+    if (viaIncoming && HOP_BY_HOP.includes(k)) continue;
+    out[k] = v;
+  }
+  if (!out.host) out.host = target.host;
+  return out;
+}
 async function handleEdgeOneLike(url, { cookie, resolve, method = 'GET', accept = 'text/html', body, headers = {} } = {}) {
   const calls = [];
   const errors = [];
@@ -1310,6 +1326,7 @@ async function handleEdgeOneLike(url, { cookie, resolve, method = 'GET', accept 
         errors.push('rebuilt Request as init'); throw new TypeError('EdgeOne mock: rebuilt Request as init');
       }
       const c = cookieOf(input, init);
+      c.wire = edgeOneWireHeaders(input, init, incoming);
       c.method = (init && init.method) || (input && input.method) || 'GET';
       const b = init && init.body !== undefined ? init.body : (input instanceof NativeRequest ? input.body : undefined);
       c.body = b == null ? null : await new Response(b).text();
@@ -1419,3 +1436,78 @@ test('EdgeOne-like: requests without demox_access keep the pre-#49 fetch shape (
   assert.match(source, /if \(!hasAuthCookie\(req\.headers\)\) return fetch\(req\);/);
   assert.doesNotMatch(source, /new Request\(req\b/);
 });
+
+// ── 2026-10-10 17:52–17:53 回归：带 cookie 的普通 init 把入站 Host 带去 COS 源站 → 400 ─────────────────
+const BROWSER_HEADERS = {
+  'Accept-Encoding': 'gzip, br', 'Accept-Language': 'zh-CN', 'User-Agent': 'Mozilla/5.0 test',
+  Connection: 'keep-alive', 'Keep-Alive': 'timeout=5', TE: 'trailers', Upgrade: 'h2c'
+};
+
+function originCalls(r, needle) {
+  return r.calls.filter((c) => c.url.includes(needle));
+}
+
+for (const withCookie of [false, true]) {
+  const label = withCookie ? 'WITH demox_access' : 'without demox_access';
+  const cookie = withCookie ? 'a=1; demox_access=ACCOUNT_TOKEN; b=2' : 'a=1; b=2';
+  for (const [name, url, resolve, method, accept] of [
+    ['public site GET', 'https://pub1.demox.site/', PUBLIC_SITE, 'GET', 'text/html'],
+    ['public site POST', 'https://pub1.demox.site/form', PUBLIC_SITE, 'POST', 'text/html'],
+    ['private-bucket site GET (site-3 origin)', 'https://pub3.demox.site/', { ...PUBLIC_SITE, path: 'sites/demo/PUB3/dist', websiteId: 'PUB3', origin: 'site-3.demox.site' }, 'GET', 'text/html'],
+    ['www GET', 'https://www.demox.site/', WWW_SITE, 'GET', 'text/html'],
+    ['function GET', 'https://pub1.demox.site/api/echo', PUBLIC_SITE, 'GET', 'application/json'],
+    ['function POST', 'https://pub1.demox.site/api/echo', PUBLIC_SITE, 'POST', 'application/json'],
+    ['unknown host passthrough GET', 'https://nobody-here.demox.site/x', undefined, 'GET', 'text/html']
+  ]) {
+    test(`EdgeOne wire: ${name} ${label} never sends the incoming Host or hop-by-hop headers upstream`, async () => {
+      const incomingHost = new URL(url).host;
+      const r = await handleEdgeOneLike(url, {
+        cookie, resolve, method, accept,
+        body: method === 'POST' ? '{"x":1}' : undefined,
+        headers: Object.assign({ Host: incomingHost, 'Content-Type': 'application/json' }, BROWSER_HEADERS)
+      });
+      assert.equal(r.thrown, null);
+      assert.deepEqual(r.errors, []);
+      const upstream = r.calls.filter((c) => !c.url.includes('/resolve-subdomain') && !c.url.includes('/check-site-access'));
+      assert.ok(upstream.length >= 1, 'something was fetched upstream');
+      for (const c of upstream) {
+        const target = new URL(c.url).host;
+        if (target === incomingHost) continue; // 同 URL 透传：Host 本来就是它
+        assert.equal(c.wire.host, target, `${c.url} carried Host ${c.wire.host}`);
+        if (!c.url.startsWith('https://api.test/')) {
+          for (const h of ['connection', 'keep-alive', 'te', 'upgrade', 'transfer-encoding', 'content-length']) {
+            assert.equal(c.wire[h], undefined, `${c.url} carried ${h}`);
+          }
+        }
+        assert.doesNotMatch(String(c.wire.cookie || ''), /demox_access|ACCOUNT_TOKEN/);
+      }
+    });
+  }
+}
+
+for (const [name, url, resolve, method, needle] of [
+  ['public site GET', 'https://pub1.demox.site/', PUBLIC_SITE, 'GET', 'sites.demox.site/sites/demo/PUB1/'],
+  ['site-3 origin GET', 'https://pub3.demox.site/', { ...PUBLIC_SITE, path: 'sites/demo/PUB3/dist', websiteId: 'PUB3', origin: 'site-3.demox.site' }, 'GET', 'site-3.demox.site/sites/demo/PUB3/'],
+  ['public site POST', 'https://pub1.demox.site/form', PUBLIC_SITE, 'POST', 'sites.demox.site/sites/demo/PUB1/dist/form'],
+  ['www GET', 'https://www.demox.site/', WWW_SITE, 'GET', 'sites.demox.site/sites/owner/EPX2UU43/'],
+  ['unknown host passthrough', 'https://nobody-here.demox.site/x', undefined, 'GET', 'https://nobody-here.demox.site/x']
+]) {
+  test(`EdgeOne wire: ${name} — origin request with and without demox_access is identical except Cookie`, async () => {
+    const host = new URL(url).host;
+    const common = { resolve, method, body: method === 'POST' ? '{"x":1}' : undefined, headers: Object.assign({ Host: host, 'Content-Type': 'application/json' }, BROWSER_HEADERS) };
+    const without = await handleEdgeOneLike(url, { ...common, cookie: 'a=1; b=2' });
+    const withC = await handleEdgeOneLike(url, { ...common, cookie: 'a=1; demox_access=ACCOUNT_TOKEN; b=2' });
+    const o1 = originCalls(without, needle);
+    const o2 = originCalls(withC, needle);
+    assert.ok(o1.length >= 1 && o1.length === o2.length, `origin calls ${o1.length} vs ${o2.length}`);
+    for (let i = 0; i < o1.length; i += 1) {
+      assert.equal(o2[i].url, o1[i].url);
+      assert.equal(o2[i].method, o1[i].method);
+      assert.equal(o2[i].body, o1[i].body);
+      const a = { ...o1[i].wire }; const b = { ...o2[i].wire };
+      assert.equal(a.cookie, 'a=1; b=2');
+      assert.equal(b.cookie, 'a=1; b=2');
+      assert.deepEqual(b, a);
+    }
+  });
+}
