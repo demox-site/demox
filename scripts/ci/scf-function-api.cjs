@@ -40,8 +40,9 @@ const CONFIG = Object.freeze({
   runtimeHandler: 'runtime-nodejs.main',
   runtime: 'Nodejs18.15',
   domain: 'api.demox.site',
-  cosBucket: 'demox-analytics-raw-1307257815',
-  cosRegion: 'ap-chengdu',
+  // 部署包 COS 桶：默认仍是成都老桶；workflow 用 inputs.cos_bucket / vars.DEMOX_COS_BUCKET 覆盖（同理 region）。
+  cosBucket: process.env.DEMOX_COS_BUCKET || 'demox-analytics-raw-1307257815',
+  cosRegion: process.env.DEMOX_COS_REGION || 'ap-chengdu',
   cosPrefix: 'scf-deploy/ci/',
   publicBaseUrl: 'https://api.demox.site',
   oidcProviderId: 'github-actions',
@@ -154,8 +155,16 @@ const UPLOAD = Object.freeze({
   partTimeoutMs: 60 * 1000,
   attempts: 3,
   retryGapMs: 10000,
-  totalTimeoutMs: 35 * 60 * 1000
+  totalTimeoutMs: 35 * 60 * 1000,
+  firstPartTimeoutMs: 3 * 60 * 1000 // 上传开始 3 分钟内一片都没完成（0%）→ 立刻放弃，别空等 35 分钟
 });
+
+/** 桶名必须带 APPID 后缀，地域必须是 ap-xxx；不合法直接拒绝（防止 vars 写错把包传到别处）。 */
+function validateCosTarget(bucket = CONFIG.cosBucket, region = CONFIG.cosRegion) {
+  if (!/^[a-z0-9][a-z0-9-]{0,48}-\d{6,12}$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（需要 <name>-<appid>）`);
+  if (!/^ap-[a-z]+(?:-[a-z]+)*$/.test(String(region))) throw new Error(`COS 地域不合法：${region}`);
+  return { bucket, region };
+}
 
 function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const upload = { ...UPLOAD, ...uploadOptions };
@@ -271,26 +280,49 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     const deadline = now() + upload.totalTimeoutMs;
     const state = { uploadId: null, parts: [] }; // 跨次续传：同一个 UploadId，已传好的片不重传
     let lastError;
-    for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
-      const remaining = deadline - now();
-      if (remaining <= 0) break;
-      // 给后面的续传留预算：本轮最多用掉剩余时间的 (attempts-attempt+1) 等分，至少 3 分钟
-      const slicesLeft = upload.attempts - attempt + 1;
-      const slice = Math.max(3 * 60 * 1000, Math.floor(remaining / slicesLeft));
-      const have = state.parts.filter(Boolean).length;
-      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB${have ? `，续传：已有 ${have} 片` : ''}，本轮 ≤${Math.round(slice / 1000)}s）`);
-      try {
-        await withTimeout(multipartOnce(zipPath, key, size, state), Math.min(slice, remaining));
-        log('上传 COS 完成');
-        return;
-      } catch (error) {
-        lastError = error;
-        log(`::warning::上传 COS 第 ${attempt} 次失败：${error.message}`);
-        if (isDenied(error)) break; // 权限问题重试无用
-        if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
+    // 0% 看门狗：上传开始 firstPartTimeoutMs 内一片都没完成 → 停掉当前轮、不再重试
+    let zeroProgress = false;
+    let current = null;
+    let watchReject;
+    const watch = new Promise((_, reject) => { watchReject = reject; });
+    watch.catch(() => {});
+    const minutesZero = Math.round(upload.firstPartTimeoutMs / 60000);
+    const watchdog = upload.firstPartTimeoutMs > 0 ? setTimer(() => {
+      if (!state.parts.some(Boolean)) {
+        zeroProgress = true;
+        if (current && current.stop) current.stop();
+        watchReject(new Error(`${minutesZero} 分钟内一片都没传完（0%）`));
       }
+    }, upload.firstPartTimeoutMs) : null;
+    try {
+      for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
+        if (zeroProgress) break;
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        // 给后面的续传留预算：本轮最多用掉剩余时间的 (attempts-attempt+1) 等分，至少 3 分钟
+        const slicesLeft = upload.attempts - attempt + 1;
+        const slice = Math.max(3 * 60 * 1000, Math.floor(remaining / slicesLeft));
+        const have = state.parts.filter(Boolean).length;
+        log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB${have ? `，续传：已有 ${have} 片` : ''}，本轮 ≤${Math.round(slice / 1000)}s）→ cos://${CONFIG.cosBucket}（${CONFIG.cosRegion}）`);
+        try {
+          current = multipartOnce(zipPath, key, size, state);
+          await Promise.race([withTimeout(current, Math.min(slice, remaining)), watch]);
+          log('上传 COS 完成');
+          return;
+        } catch (error) {
+          lastError = error;
+          log(`::warning::上传 COS 第 ${attempt} 次失败：${error.message}`);
+          if (zeroProgress || isDenied(error)) break; // 0% 或权限问题：重试无用
+          if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
+        }
+      }
+    } finally {
+      if (watchdog !== null) clearTimer(watchdog);
     }
     if (state.uploadId) cosCall('multipartAbort', { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key, UploadId: state.uploadId }).catch(() => {});
+    if (zeroProgress) {
+      throw new Error(`上传 COS 失败：${minutesZero} 分钟内 0%（一片都没传完），已停止，未做任何函数修改。runner → ${CONFIG.cosRegion} 的 COS 链路可能不通`);
+    }
     const minutes = Math.round(upload.totalTimeoutMs / 60000);
     throw new Error(`上传 COS 失败（${upload.attempts} 次内或 ${minutes} 分钟内未完成），未做任何函数修改：${lastError ? lastError.message : '超时'}`);
   }
@@ -503,6 +535,8 @@ function argValue(argv, name) {
 
 async function cli(argv = process.argv.slice(2)) {
   const command = argv[0];
+  validateCosTarget();
+  console.log(`COS 部署桶：${CONFIG.cosBucket}（${CONFIG.cosRegion}）`);
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
   const deployer = createDeployer({ ...(await createClients()), summary, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
@@ -549,4 +583,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };

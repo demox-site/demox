@@ -308,8 +308,9 @@ test('upload: a hung part hits the totalTimeoutMs cap, aborts, no function write
     clearTimer: () => {}
   });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*\d+ 分钟/);
-  // 预算按轮次等分，第一轮 ≤ total/attempts（至少 3 分钟）
-  assert.equal(timeouts[0], Math.max(3 * 60 * 1000, Math.floor(UPLOAD.totalTimeoutMs / 3)));
+  // 先挂 0% 看门狗，再按轮次等分预算
+  assert.equal(timeouts[0], UPLOAD.firstPartTimeoutMs);
+  assert.ok(timeouts.includes(Math.max(3 * 60 * 1000, Math.floor(UPLOAD.totalTimeoutMs / 3))));
   assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
   assert.ok(cos.calls.some((c) => c[0] === 'abort'), '最终失败才 Abort');
   assert.ok(NO_WRITES(s));
@@ -332,3 +333,39 @@ test('stray socket errors from abandoned part requests are recognised (not fatal
   assert.ok(!isStraySocketError(Object.assign(new Error('x'), { code: 'ERR_ASSERTION' })));
 });
 
+
+test('upload: 0% after firstPartTimeoutMs → stop immediately, abort, clear message, no retries, no function writes', async () => {
+  const s = fakeScf();
+  const cos = multipartCos({ parts: Array(50).fill('hang') });
+  const lines = [];
+  const d = createDeployer({
+    developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: (l) => lines.push(l), wait: async () => {},
+    uploadOptions: { firstPartTimeoutMs: 40, partTimeoutMs: 1000, attempts: 3 }
+  });
+  const started = Date.now();
+  await assert.rejects(d.deploy({ zipPath: bigZip(12), sha: 'abc' }), /0%（一片都没传完）.*未做任何函数修改/);
+  assert.ok(Date.now() - started < 1000, 'gave up quickly, did not wait for part timeouts / other attempts');
+  assert.equal(lines.filter((l) => l.includes('上传 COS 第')).filter((l) => !l.includes('失败')).length, 1, 'no second attempt');
+  assert.ok(cos.calls.some((c) => c[0] === 'abort'));
+  assert.ok(NO_WRITES(s));
+});
+
+test('upload: progress before firstPartTimeoutMs → watchdog does not fire', async () => {
+  const s = fakeScf();
+  const cos = multipartCos({});
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: () => {}, wait: async () => {}, uploadOptions: { firstPartTimeoutMs: 5000 } });
+  await d.uploadZip(bigZip(12), 'scf-deploy/ci/x.zip');
+  assert.ok(cos.calls.some((c) => c[0] === 'complete'));
+  assert.ok(!cos.calls.some((c) => c[0] === 'abort'));
+});
+
+test('COS bucket/region come from env (default Chengdu) and are validated', () => {
+  const { execFileSync } = require('node:child_process');
+  const run = (env) => execFileSync(process.execPath, ['-e', "const m=require('./scripts/ci/scf-function-api.cjs');console.log(m.CONFIG.cosBucket+' '+m.CONFIG.cosRegion)"], { cwd: require('node:path').join(__dirname, '..', '..'), env: { PATH: process.env.PATH, ...env } }).toString().trim();
+  assert.equal(run({}), 'demox-analytics-raw-1307257815 ap-chengdu');
+  assert.equal(run({ DEMOX_COS_BUCKET: 'demox-scf-deploy-1307257815', DEMOX_COS_REGION: 'ap-guangzhou' }), 'demox-scf-deploy-1307257815 ap-guangzhou');
+  const { validateCosTarget } = require('./scf-function-api.cjs');
+  assert.doesNotThrow(() => validateCosTarget('demox-scf-deploy-1307257815', 'ap-guangzhou'));
+  assert.throws(() => validateCosTarget('no-appid', 'ap-guangzhou'), /桶名不合法/);
+  assert.throws(() => validateCosTarget('demox-x-1307257815', 'guangzhou'), /地域不合法/);
+});
