@@ -4012,7 +4012,7 @@ exports._revokeRtForTest = { parseRevokeRtInput, revokeRtAuditTarget, REVOKE_RT_
 // - 有审计：改 user_roles 和写 admin_audit_log 在同一个事务里（operator_uid=system:023，auth_method=system）。
 // - 用户不存在 / ID 格式不对：不写，只打一行警告（不含 ID 以外的信息）。
 // 由 5 分钟统计定时器顺带调用，每个实例每小时最多查一次；SQL 等价版本见 migrations/023_grant_team_admin.sql。
-const TEAM_ADMIN_USER_ID = '1791602821563094181'; // demox-team@demox.site（2026-10-10 注册，Chief 批准）。只认这里，环境变量无效
+const TEAM_ADMIN_USER_ID = '1791604277396366896'; // demox-team2@demox.site（2026-10-10 11:51 注册，#20 上线后；Chief 11:37 批准）。旧账号 1791602821563094181 已撤 admin 停用。只认这里，环境变量无效
 const TEAM_ADMIN_AUDIT_ACTION = 'grant_team_admin';
 const TEAM_ADMIN_OPERATOR = 'system:023';
 const TEAM_ADMIN_CHECK_INTERVAL_MS = 60 * 60 * 1000;
