@@ -1,0 +1,106 @@
+name: Deploy function-api (SCF demox-function-api)
+
+# 统一 SCF 路由 demox-function-api（ap-guangzhou / namespace demox）的发布。
+# 只更新代码：不改函数环境变量（里面有 JWT_SECRET 等），也不改内存、超时、VPC。
+# 流程：打包 → 上传 COS → UpdateFunctionCode → PublishVersion → 对新版本做健康检查
+#      → develop 别名指向新版本 → 经 develop 公网 HTTPS 地址健康检查（不用 Invoke）
+#      → production 别名指向新版本 → api.demox.site 公网复查（失败自动切回上一个版本）。
+# 前置：api.demox.site 和定时触发器必须已经绑定到别名 production（一次性迁移见 docs/function-api-ci.md），
+#      否则脚本在任何写操作之前就退出。
+# 凭证：不用任何腾讯云 secret。job 在 environment function-api-production（只允许 master，需要 PhosAQy 批准）里，
+#      用 GitHub OIDC 扮演 CAM 角色 demox-ci-deploy（信任条件 sub=repo:demox-site/demox:environment:function-api-production），
+#      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
+#      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
+# 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
+on:
+  push:
+    branches: [master]
+    paths:
+      - "scf-code/function-api/**"
+      - "scf-code/website-api/**"
+      - "scf-code/mcp-api/**"
+      - "scf-code/cert-renew/**"
+      - "scf-deploy-packages/auth-api/**"
+      - "scripts/package-unified-scf.mjs"
+      - "scripts/ci/scf-function-api.cjs"
+      - ".github/workflows/deploy-function-api.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan = 只读检查；deploy = 发布当前分支；rollback = 把 production 切回指定版本"
+        type: choice
+        options: [plan, deploy, rollback]
+        default: plan
+      version:
+        description: "rollback 的目标版本号（数字）"
+        required: false
+      with_runtime:
+        description: "同时更新 demox-user-nodejs（无别名，直接替换 $LATEST，先发快照版本作回滚点）"
+        type: boolean
+        default: false
+
+# 同一时间只跑一个，且不取消正在进行的发布（切一半被取消比排队更危险）。
+concurrency:
+  group: deploy-function-api
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  function-api:
+    # push 触发只有在仓库变量 FUNCTION_API_AUTO_DEPLOY=true 时才发布；手动触发总是可用。
+    if: github.event_name == 'workflow_dispatch' || vars.FUNCTION_API_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    # 需要人工批准；只有在这个 environment 里 OIDC token 的 sub 才能通过 demox-ci-deploy 的信任策略。
+    environment: function-api-production
+    timeout-minutes: 30
+    env:
+      ACTION: ${{ github.event_name == 'push' && 'deploy' || inputs.action }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install tooling
+        run: |
+          npm config set fetch-retries 5
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm ci --prefix scf-code/function-api --omit=dev --no-audit --no-fund
+          npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund
+
+      - name: Unit tests (deploy script + function-api)
+        if: env.ACTION == 'deploy'
+        run: |
+          node --test scripts/ci/scf-function-api.test.cjs
+          npm test --prefix scf-code/function-api
+
+      - name: Build unified package
+        if: env.ACTION == 'deploy'
+        run: |
+          node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
+          node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
+
+      - name: ${{ env.ACTION }}
+        env:
+          TENCENTCLOUD_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
+          TENCENTCLOUD_REGION: ap-guangzhou
+          # 别名 develop 的公网 HTTPS 地址（一次性迁移时建好），健康检查只走它，不用 scf:Invoke。
+          FUNCTION_API_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
+          ROLLBACK_VERSION: ${{ inputs.version }}
+          WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
+        run: |
+          set -euo pipefail
+          echo "## function-api ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
+          case "$ACTION" in
+            plan)     node scripts/ci/scf-function-api.cjs plan ;;
+            deploy)   node scripts/ci/scf-function-api.cjs deploy --zip .artifacts/unified-scf/demox-unified-scf.zip $WITH_RUNTIME ;;
+            rollback) node scripts/ci/scf-function-api.cjs rollback --version "$ROLLBACK_VERSION" ;;
+            *) echo "::error::未知 action: $ACTION"; exit 1 ;;
+          esac

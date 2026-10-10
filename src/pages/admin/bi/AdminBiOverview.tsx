@@ -11,7 +11,7 @@ import { useLanguage } from "@/hooks/use-language";
 import { adminApi } from "@/api";
 import type { AdminBiData, BiRange, BiSeriesPoint } from "./types";
 import { biText, fill } from "./bi-i18n";
-import { delta, fmtNum, fmtPct } from "./format";
+import { definedValues, delta, fmtNum, fmtPct, fmtSinceDate } from "./format";
 
 const BiSections = React.lazy(() => import("./BiSections"));
 
@@ -95,6 +95,11 @@ function KpiCard({ kpi, loading, vsPrev }: { kpi: Kpi; loading: boolean; vsPrev:
 }
 
 const pick = (series: BiSeriesPoint[], f: (p: BiSeriesPoint) => number | null) => series.map((p) => Number(f(p) || 0));
+/** 部署按天合计；没有任何记录的日子是 null（迷你折线里跳过，不画 0） */
+const deployTotal = (p: BiSeriesPoint): number | null =>
+  p.deploySuccess == null && p.deployFail == null && p.deployDerived == null
+    ? null
+    : Number(p.deploySuccess || 0) + Number(p.deployFail || 0) + Number(p.deployDerived || 0);
 
 export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
   const { language } = useLanguage();
@@ -132,6 +137,8 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
     const s = data?.series || [];
     const n = (v: number | null | undefined) => fmtNum(v, language);
     const deployRate = k?.deploys?.successRate;
+    // 本期没被服务端埋点完整覆盖：提示从哪天开始算；上期不完整时后端给 prev=null，涨跌箭头自然不显示
+    const deploySince = k?.deploys && k.deploys.complete === false && k.deploys.trackedSince ? fmtSinceDate(k.deploys.trackedSince, language) : "";
     return [
       {
         id: "newUsers", label: t.kNewUsers, short: t.kNewUsersShort, icon: UserPlus, goodWhenUp: true,
@@ -146,10 +153,12 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
       {
         id: "deploys", label: t.kDeploys, short: t.kDeploysShort, icon: Rocket, goodWhenUp: true,
         value: n(k?.deploys?.value),
-        hint: k?.deploys ? fill(t.kDeploysHint, { rate: fmtPct(deployRate), fail: n(k.deploys.fail) }) : t.unavailable,
+        hint: k?.deploys
+          ? fill(deploySince ? t.kDeploysSinceHint : t.kDeploysHint, { rate: fmtPct(deployRate), fail: n(k.deploys.fail), d: deploySince })
+          : t.unavailable,
         change: delta(k?.deploys?.value, k?.deploys?.prev),
         warn: deployRate != null && deployRate < 0.8,
-        spark: pick(s, (p) => p.deploySuccess + p.deployFail)
+        spark: definedValues(s.map(deployTotal))
       },
       {
         id: "sites", label: t.kSites, short: t.kSitesShort, icon: Globe, goodWhenUp: true,
@@ -168,7 +177,7 @@ export default function AdminBiOverview({ mock = false }: { mock?: boolean }) {
           ? fill(t.kFunnelHint, { landing: n(k.funnel.landing), click: n(k.funnel.deployClick), success: n(k.funnel.deploySuccess) })
           : t.unavailable,
         change: delta(k?.funnel?.deployClick, k?.funnel?.prevDeployClick),
-        spark: pick(s, (p) => p.landing)
+        spark: definedValues(s.map((p) => p.landing))
       },
       {
         id: "pro", label: t.kPro, short: t.kProShort, icon: Crown, goodWhenUp: true,

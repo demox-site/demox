@@ -526,6 +526,113 @@ const adminBiLib = (() => {
     };
   }
 
+  /** mysql2 读出的 TIMESTAMP（Date 或 'YYYY-MM-DD HH:MM:SS' UTC 字符串）→ 毫秒；读不出返回 null */
+  function toMs(v) {
+    if (v == null) return null;
+    if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.getTime() : null;
+    const str = String(v);
+    const ms = Date.parse(str.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(str) ? '' : 'Z'));
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function msToUtcSql(ms) {
+    return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  /**
+   * 埋点开始时间：每个事件第一次出现的时间（部署只看服务端写的 server: 行）。
+   * 早于开始时间的日期在序列里是 null（没有记录），不是 0。
+   */
+  function parseTrackingStarts(rows) {
+    const out = { deploys: null, landing: null, deployClick: null };
+    for (const r of rows || []) {
+      const ms = toMs(r.t);
+      if (ms == null) continue;
+      const key = r.event_name === 'landing_view' ? 'landing'
+        : r.event_name === 'deploy_click' ? 'deployClick'
+          : (r.event_name === 'deploy_success' || r.event_name === 'deploy_fail') ? 'deploys' : null;
+      if (key && (out[key] == null || ms < out[key])) out[key] = ms;
+    }
+    return out;
+  }
+
+  /**
+   * 服务端部署埋点之前的「补算」：每个 (UTC+8 日期, 站点) 算一次部署，来源取并集去重：
+   * - websites.created_at：新站点只在第一次部署成功时插入，所以每个新站点 = 当天至少 1 次成功部署；
+   * - deploy_upload_sessions（COMPLETED）的 updated_at：分块上传完成 = 一次成功部署（这张表只留约 7 天）。
+   * 同一站点同一天多次部署只算 1 次，删掉的站点也找不回来，所以是**下限**；只有总数，没有成功 / 失败拆分，也没有渠道。
+   */
+  function aggregateDerivedDeploys(siteRows, sessionRows) {
+    const pairs = new Set();
+    for (const r of [...(siteRows || []), ...(sessionRows || [])]) {
+      const d = statTime.toDateKey(r.d);
+      if (!d || !r.website_id) continue;
+      pairs.add(`${d}|${String(r.website_id).toUpperCase()}`);
+    }
+    const byDay = new Map();
+    for (const k of pairs) {
+      const d = k.slice(0, 10);
+      byDay.set(d, (byDay.get(d) || 0) + 1);
+    }
+    return byDay;
+  }
+
+  /**
+   * 两种补算按天取较大值（同一批部署的两种估计，不能相加）：
+   * - sites：上面的站点记录补算；
+   * - logs：deploy_daily_backfill（source='log_backfill'，从 CLS 日志一次性算出的成功次数）。
+   * 返回 Map(date → { total, from })，from 标出取的是哪一种（相等时记 sites）。
+   */
+  function mergeDerived(siteByDay, logByDay) {
+    const out = new Map();
+    const dates = new Set([...(siteByDay ? siteByDay.keys() : []), ...(logByDay ? logByDay.keys() : [])]);
+    for (const d of dates) {
+      const a = (siteByDay && siteByDay.get(d)) || 0;
+      const b = (logByDay && logByDay.get(d)) || 0;
+      const total = Math.max(a, b);
+      if (total > 0) out.set(d, { total, from: b > a ? 'logs' : 'sites' });
+    }
+    return out;
+  }
+
+  /**
+   * 部署按天：每一天标出数据来源和是否知道成功 / 失败。
+   * - events：服务端埋点，success / fail 都是真实值（0 就是 0）；
+   * - derived：埋点前，按站点记录 / 日志补算，只有 deployDerived 总数，success / fail 为 null（不按比例拆）；
+   * - mixed：埋点开始那天。只画一种：埋点总数 ≥ 补算时画埋点（success / fail），否则画补算总数。
+   *   取两者较大值，从不相加（相加会把同一批部署算两次，柱子也会叠成一根尖刺）；
+   * - none：没有任何记录，三个值都是 null（图上留空，不画 0）。
+   */
+  function buildDeployDay(date, deployStartKey, liveByDay, derivedByDay) {
+    const live = deployStartKey != null && date >= deployStartKey;
+    const dv = derivedByDay.get(date);
+    const derived = dv == null ? 0 : (typeof dv === 'number' ? dv : dv.total);
+    const derivedFrom = derived > 0 ? (typeof dv === 'number' ? 'sites' : dv.from) : null;
+    const l = liveByDay.get(date) || { success: 0, fail: 0 };
+    const liveTotal = l.success + l.fail;
+    if (live && derived > 0) {
+      const asLive = liveTotal >= derived;
+      return {
+        deploySuccess: asLive ? l.success : null,
+        deployFail: asLive ? l.fail : null,
+        deployDerived: asLive ? null : derived,
+        deploySource: 'mixed',
+        deploySplitKnown: false,
+        deployDerivedFrom: derivedFrom,
+        deployLiveTotal: liveTotal
+      };
+    }
+    return {
+      deploySuccess: live ? l.success : null,
+      deployFail: live ? l.fail : null,
+      deployDerived: !live && derived > 0 ? derived : null,
+      deploySource: live ? 'events' : (derived > 0 ? 'derived' : 'none'),
+      deploySplitKnown: live,
+      deployDerivedFrom: !live && derived > 0 ? derivedFrom : null,
+      deployLiveTotal: live ? liveTotal : null
+    };
+  }
+
   async function computeAdminBi({ query, range, now = Date.now(), wwwWebsiteId = 'EPX2UU43', scannerPathPredicate }) {
     const win = buildWindow(range, now);
     const warnings = [];
@@ -573,6 +680,59 @@ const adminBiLib = (() => {
       [win.prevStartUtc < win.activePrev7StartUtc ? win.prevStartUtc : win.activePrev7StartUtc]
     ), warnings);
     const deploys = aggregateDeployEvents(deployRows || [], win);
+
+    // 3b. 埋点开始时间 + 埋点之前的补算（只读、读时计算，不回写）
+    const trackingRows = await safe('trackingStart', () => query(
+      `SELECT event_name, MIN(created_at) AS t
+       FROM product_events
+       WHERE (event_name IN ('landing_view', 'deploy_click'))
+          OR (event_name IN ('deploy_fail', 'deploy_success') AND page LIKE 'server:%')
+       GROUP BY event_name`
+    ), warnings);
+    // 查不到开始时间（表 / 权限问题）时退回旧口径：窗口内每天都按埋点算
+    const tracking = trackingRows ? parseTrackingStarts(trackingRows) : { deploys: 0, landing: 0, deployClick: 0 };
+    const windowStartMs = Date.parse(win.prevStartUtc.replace(' ', 'T') + 'Z');
+    const deployStartKey = tracking.deploys != null ? statTime.statDateKey(tracking.deploys) : null;
+    let derivedByDay = new Map();
+    // 窗口（含上期）里有埋点之前的日子才需要补算
+    if (tracking.deploys == null || tracking.deploys > windowStartMs) {
+      const until = msToUtcSql(tracking.deploys != null ? tracking.deploys : now);
+      const derivedSites = await safe('derivedSites', () => query(
+        `SELECT DISTINCT ${sd('created_at')} AS d, website_id
+         FROM websites WHERE created_at >= ? AND created_at < ?`,
+        [win.prevStartUtc, until]
+      ), warnings);
+      const derivedSessions = await safe('derivedUploads', () => query(
+        `SELECT DISTINCT ${sd('updated_at')} AS d, website_id
+         FROM deploy_upload_sessions WHERE status = 'COMPLETED' AND updated_at >= ? AND updated_at < ?`,
+        [win.prevStartUtc, until]
+      ), warnings);
+      // 日志回填（迁移 022 建表后才有；表不存在时安静跳过，不算数据缺失）
+      let logRows = null;
+      try {
+        logRows = await query(
+          `SELECT stat_date AS d, total
+           FROM deploy_daily_backfill
+           WHERE source = 'log_backfill' AND stat_date >= ? AND stat_date <= ?`,
+          [win.prevStartKey, statTime.statDateKey(tracking.deploys != null ? tracking.deploys : now)]
+        );
+      } catch (e) {
+        if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) warnings.push(`logBackfill: ${e && e.code ? e.code : 'ERROR'}`);
+      }
+      const logByDay = new Map();
+      for (const r of logRows || []) logByDay.set(statTime.toDateKey(r.d), num(r.total));
+      derivedByDay = mergeDerived(aggregateDerivedDeploys(derivedSites, derivedSessions), logByDay);
+    }
+    const deployDays = new Map(win.days.map((date) => [date, buildDeployDay(date, deployStartKey, deploys.byDay, derivedByDay)]));
+    // 本期画出来的补算总数（开始那天按「只画一种」的规则）
+    const derivedCur = win.days.reduce((a, d) => a + (deployDays.get(d).deployDerived || 0), 0);
+    // 本期 / 上期是否完整被埋点覆盖（开始那天只覆盖半天，不算完整）
+    const deploysCurComplete = deployStartKey != null && win.startKey > deployStartKey;
+    const deploysPrevComplete = deployStartKey != null && win.prevStartKey > deployStartKey;
+    const landingStartKey = tracking.landing != null ? statTime.statDateKey(tracking.landing) : null;
+    const clickStartKey = tracking.deployClick != null ? statTime.statDateKey(tracking.deployClick) : null;
+    const funnelPrevComplete = landingStartKey != null && clickStartKey != null
+      && win.prevStartKey > landingStartKey && win.prevStartKey > clickStartKey;
 
     // 活跃部署者兜底：分块上传完成 + 新建站点
     const sessionDeployers = await safe('uploadSessions', () => query(
@@ -730,12 +890,12 @@ const adminBiLib = (() => {
       date,
       newUsers: users.byDay.get(date) || 0,
       newSites: sites.byDay.get(date) || 0,
-      deploySuccess: (deploys.byDay.get(date) || {}).success || 0,
-      deployFail: (deploys.byDay.get(date) || {}).fail || 0,
+      ...deployDays.get(date),
       pv: pv.byDay.get(date) || 0,
       uv: uvDaily ? (uvDay.byDay.get(date) || 0) : null,
-      landing: landingDay.get(date) || 0,
-      deployClick: clickDay.get(date) || 0
+      // 埋点开始之前：null（没有记录），不是 0
+      landing: landingStartKey != null && date >= landingStartKey ? (landingDay.get(date) || 0) : null,
+      deployClick: clickStartKey != null && date >= clickStartKey ? (clickDay.get(date) || 0) : null
     }));
 
     const tops = (rows) => (rows || []).map((r) => ({ key: String(r.k == null ? '' : r.k), views: num(r.v), ...(r.name ? { name: String(r.name) } : {}) }));
@@ -751,11 +911,15 @@ const adminBiLib = (() => {
         activeDeployers7d: { value: active.size, prev: activePrev.size },
         deploys: deployRows ? {
           value: deploys.cur.total,
-          prev: deploys.prev.total,
+          // 上期没被埋点完整覆盖时为 null：前端据此不显示涨跌箭头
+          prev: deploysPrevComplete ? deploys.prev.total : null,
           success: deploys.cur.success,
           fail: deploys.cur.fail,
           successRate: deploys.cur.successRate,
-          prevSuccessRate: deploys.prev.successRate
+          prevSuccessRate: deploysPrevComplete ? deploys.prev.successRate : null,
+          trackedSince: deployStartKey,
+          complete: deploysCurComplete,
+          derivedTotal: derivedCur
         } : null,
         sites: sitesDaily ? { value: sites.cur, prev: sites.prev, total: totalSites } : null,
         pv: pvDaily ? { value: pv.cur, prev: pv.prev } : null,
@@ -765,8 +929,10 @@ const adminBiLib = (() => {
           deployClick: click.cur,
           guideClick: guide.cur,
           deploySuccess: converted,
-          prevLanding: landing.prev,
-          prevDeployClick: click.prev,
+          prevLanding: funnelPrevComplete ? landing.prev : null,
+          prevDeployClick: funnelPrevComplete ? click.prev : null,
+          // 「部署成功」这一步用的是服务端部署埋点，从这天开始
+          deploySuccessSince: deployStartKey,
           clickRate: landing.cur ? click.cur / landing.cur : null,
           successRate: landing.cur ? converted / landing.cur : null
         } : null,
@@ -794,8 +960,15 @@ const adminBiLib = (() => {
         analyticsLagMinutes: lastIngest && !Number.isNaN(lastIngest.getTime()) ? Math.max(0, Math.round((now - lastIngest.getTime()) / 60000)) : null,
         deployFailRate: deploys.cur.successRate == null ? null : 1 - deploys.cur.successRate
       },
+      tracking: {
+        deploys: deployStartKey,
+        deploysAt: trackingRows && tracking.deploys != null ? new Date(tracking.deploys).toISOString() : null,
+        deploysDerivedFrom: ['websites.created_at', 'deploy_upload_sessions.updated_at', 'deploy_daily_backfill(log_backfill)'],
+        landing: landingStartKey,
+        deployClick: clickStartKey
+      },
       notes: {
-        deploysSince: 'server-side deploy events start with the website-api release that ships this change',
+        deploysSince: 'server-side deploy events start at tracking.deploysAt; earlier days are derived from site records and log backfill (max of the two per day, total only, lower bound)',
         uvApprox: 'distinct (masked IP, user agent) from site_access_logs',
         statDateTz: 'stat_date rows written before the UTC+8 switch are UTC dates'
       },
@@ -825,6 +998,10 @@ const adminBiLib = (() => {
     normalizeRange,
     buildWindow,
     aggregateDeployEvents,
+    aggregateDerivedDeploys,
+    mergeDerived,
+    buildDeployDay,
+    parseTrackingStarts,
     computeAdminBi,
     createAdminBiService
   };
@@ -1834,6 +2011,8 @@ async function dispatchWebsiteRequest(event, context) {
     }
 
     if (isAnalyticsRollupTimerEvent(event)) {
+      // v14：顺带清理过期的管理员审计（每实例每小时最多一次，失败不影响聚合）。
+      await pruneAdminAuditLog();
       return await handleRollupSiteAnalytics(event);
     }
 
@@ -3281,6 +3460,16 @@ const ADMIN_AUDIT_TARGET_KEYS = [
   'archived', 'includeAll', 'range', 'days', 'subdomain', 'operatorUid', 'beforeId'
 ];
 const ADMIN_AUDIT_READ_ACTION = /^(?:list|get|check|resolve|search|bucket_stats)/;
+// v14：只返回汇总数字、不涉及具体用户的看板读接口不记审计（BI 页每次打开/刷新都会调，
+// 占了绝大多数行）。看具体用户、站点、举报的读操作照常记；写操作全部记。
+const ADMIN_AUDIT_SKIP_READ_ACTIONS = new Set([
+  'get_admin_bi', 'get_platform_overview', 'get_product_funnel', 'list_admin_audit'
+]);
+// v14：保留期，默认 180 天，ADMIN_AUDIT_RETENTION_DAYS 可调（7–3650）。
+const ADMIN_AUDIT_RETENTION_DEFAULT_DAYS = 180;
+const ADMIN_AUDIT_PRUNE_BATCH = 5000;
+const ADMIN_AUDIT_PRUNE_MAX_BATCHES = 20;
+const ADMIN_AUDIT_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 function markAdminAction(_event, userId, via) {
   const store = adminAuditStorage.getStore();
@@ -3360,9 +3549,51 @@ function ensureAdminAuditTable() {
   return adminAuditTableReady;
 }
 
+function adminAuditSkipped(action) {
+  return ADMIN_AUDIT_SKIP_READ_ACTIONS.has(action);
+}
+
+function adminAuditRetentionDays(env = process.env) {
+  const raw = String(env.ADMIN_AUDIT_RETENTION_DAYS || '').trim();
+  const n = Number.parseInt(raw, 10);
+  if (!raw || !Number.isFinite(n)) return ADMIN_AUDIT_RETENTION_DEFAULT_DAYS;
+  return Math.max(7, Math.min(3650, n));
+}
+
+let adminAuditLastPruneAt = 0;
+/**
+ * 删除 admin_audit_log 里早于保留期的行。只 DELETE 这一张表、只按 created_at 删，分批（每批 5000 行，
+ * 单次最多 20 批）。由 5 分钟统计聚合定时器顺带调用，每个实例每小时最多跑一次；失败只记日志。
+ */
+async function pruneAdminAuditLog({ now = Date.now(), force = false } = {}) {
+  if (!force && now - adminAuditLastPruneAt < ADMIN_AUDIT_PRUNE_INTERVAL_MS) return { skipped: true, deleted: 0 };
+  adminAuditLastPruneAt = now;
+  const days = adminAuditRetentionDays();
+  let deleted = 0;
+  try {
+    for (let batch = 0; batch < ADMIN_AUDIT_PRUNE_MAX_BATCHES; batch += 1) {
+      const result = await query(
+        'DELETE FROM admin_audit_log WHERE created_at < (CURRENT_TIMESTAMP(3) - INTERVAL ? DAY) ORDER BY created_at LIMIT ?',
+        [days, ADMIN_AUDIT_PRUNE_BATCH]
+      );
+      const affected = Number(result && result.affectedRows) || 0;
+      deleted += affected;
+      if (affected < ADMIN_AUDIT_PRUNE_BATCH) break;
+    }
+    return { skipped: false, deleted, days };
+  } catch (error) {
+    if (error && (error.code === 'ER_NO_SUCH_TABLE' || /doesn't exist/.test(String(error.message)))) {
+      return { skipped: false, deleted: 0, days, tableMissing: true };
+    }
+    console.error('清理管理员审计失败:', error && (error.code || error.message));
+    return { skipped: false, deleted, days, error: true };
+  }
+}
+
 async function recordAdminAudit(event, admin, response) {
   try {
     const action = adminAuditActionName(event);
+    if (adminAuditSkipped(action)) return;
     const kind = ADMIN_AUDIT_READ_ACTION.test(action) ? 'read' : 'write';
     const { statusCode, success } = adminAuditOutcome(response);
     const via = [...admin.via].sort().join(',').slice(0, 64);
@@ -3425,7 +3656,7 @@ async function handleListAdminAudit(event) {
   }
 }
 
-exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome };
+exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome, adminAuditSkipped, adminAuditRetentionDays, pruneAdminAuditLog };
 
 function normalizeProjectKey(input) {
   const value = String(input || '').trim().toUpperCase();
@@ -6567,9 +6798,68 @@ const adminBi = createAdminBiService({
  * 管理员：BI 汇总。纯 SELECT，不跑 ensure* / backfill；60 秒进程内缓存。
  * body: { range: 7 | 30 | 90 }
  */
+/**
+ * 部署按天的日志回填（迁移 022 + seeds/022，Chief 2026-10-09 批准）。
+ * box 没有数据库凭证、安全组也不开，所以和 021（admin_audit_log）一样，由已发布的 website 函数自己建表：
+ * 管理员第一次打开看板（get_admin_bi）时，每个实例跑一次：
+ *   1. CREATE TABLE IF NOT EXISTS deploy_daily_backfill（与 migrations/022 一致）；
+ *   2. INSERT IGNORE 这 8 行（与 migrations/seeds/022 一致，主键 stat_date+source，已有的行不覆盖）。
+ * 只碰 deploy_daily_backfill 这一张表。失败只记错误码，看板照常（退回只用站点记录补算），下次再试。
+ * 数据只有按天汇总（UTC+8 日期、成功次数），fail / channel 为 NULL（未知），不含任何日志原文或用户信息。
+ */
+const DEPLOY_LOG_BACKFILL_ROWS = [
+  // [stat_date, total, partial, covered_from(UTC), covered_until(UTC)]
+  ['2026-10-02', 0, 1, '2026-10-02 05:10:03', '2026-10-02 16:00:00'],
+  ['2026-10-03', 0, 0, '2026-10-02 16:00:00', '2026-10-03 16:00:00'],
+  ['2026-10-04', 24, 0, '2026-10-03 16:00:00', '2026-10-04 16:00:00'],
+  ['2026-10-05', 18, 0, '2026-10-04 16:00:00', '2026-10-05 16:00:00'],
+  ['2026-10-06', 22, 0, '2026-10-05 16:00:00', '2026-10-06 16:00:00'],
+  ['2026-10-07', 136, 0, '2026-10-06 16:00:00', '2026-10-07 16:00:00'],
+  ['2026-10-08', 124, 0, '2026-10-07 16:00:00', '2026-10-08 16:00:00'],
+  ['2026-10-09', 26, 1, '2026-10-08 16:00:00', '2026-10-09 05:25:21']
+];
+const DEPLOY_LOG_BACKFILL_NOTE = 'CLS demox-user-nodejs, uploadedCount responses, dedup by RequestId';
+let deployBackfillReady = null;
+function ensureDeployDailyBackfill() {
+  if (!deployBackfillReady) {
+    deployBackfillReady = (async () => {
+      await query(`CREATE TABLE IF NOT EXISTS deploy_daily_backfill (
+        stat_date     DATE NOT NULL COMMENT 'UTC+8 日期',
+        source        VARCHAR(16) NOT NULL DEFAULT 'log_backfill' COMMENT '数据来源；目前只有 log_backfill',
+        total         INT UNSIGNED NOT NULL COMMENT '当天成功部署次数（按请求去重）',
+        fail          INT UNSIGNED DEFAULT NULL COMMENT '失败次数；日志里认不出，NULL = 未知',
+        channel       VARCHAR(16) DEFAULT NULL COMMENT '渠道；日志里没有，NULL = 未知',
+        partial       TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = 这天只覆盖了一部分（日志开始那天 / 埋点开始那天）',
+        covered_from  DATETIME DEFAULT NULL COMMENT '这一行覆盖的起点（UTC）',
+        covered_until DATETIME DEFAULT NULL COMMENT '这一行覆盖的终点（UTC，不含）',
+        note          VARCHAR(255) DEFAULT NULL,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (stat_date, source)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署按天回填（埋点之前，只有总数）'`);
+      const values = DEPLOY_LOG_BACKFILL_ROWS.map(() => "(?, 'log_backfill', ?, NULL, NULL, ?, ?, ?, ?)").join(', ');
+      const params = DEPLOY_LOG_BACKFILL_ROWS.flatMap(([d, total, partial, from, until]) => [d, total, partial, from, until, DEPLOY_LOG_BACKFILL_NOTE]);
+      await query(
+        `INSERT IGNORE INTO deploy_daily_backfill
+           (stat_date, source, total, fail, channel, partial, covered_from, covered_until, note)
+         VALUES ${values}`,
+        params
+      );
+    })().catch((error) => {
+      deployBackfillReady = null;
+      throw error;
+    });
+  }
+  return deployBackfillReady;
+}
+
 async function handleGetAdminBi(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
+  try {
+    await ensureDeployDailyBackfill();
+  } catch (e) {
+    console.warn('部署日志回填建表/写入失败:', (e && e.code) || 'ERROR');
+  }
   try {
     const data = await adminBi.get(event.body && event.body.range);
     return ok({ success: true, data });
@@ -9514,4 +9804,5 @@ exports.classifyDeploySource = classifyDeploySource;
 exports._adminBiForTest = adminBi;
 exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
+exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
