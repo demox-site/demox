@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG } = require('./scf-function-api.cjs');
+const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD } = require('./scf-function-api.cjs');
 
 // CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
 const FORBIDDEN = ['Invoke', 'GetFunction', 'UpdateFunctionConfiguration', 'UpdateFunction', 'CreateAlias', 'CreateFunction', 'DeleteFunction', 'DeleteAlias', 'CreateTrigger', 'DeleteTrigger', 'UpdateTrigger'];
@@ -295,7 +295,7 @@ test('upload: parts failing every time → 3 whole attempts then a loud error, n
   assert.ok(NO_WRITES(s));
 });
 
-test('upload: a hung part hits the 15-minute cap, aborts, no function writes', async () => {
+test('upload: a hung part hits the totalTimeoutMs cap, aborts, no function writes', async () => {
   const s = fakeScf();
   const cos = multipartCos({ parts: Array(20).fill('hang') });
   let clock = 0;
@@ -307,10 +307,11 @@ test('upload: a hung part hits the 15-minute cap, aborts, no function writes', a
     setTimer: (fn, ms) => { timeouts.push(ms); setImmediate(() => { clock += ms; fn(); }); return ms; },
     clearTimer: () => {}
   });
-  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*15 分钟/);
-  assert.equal(timeouts[0], 15 * 60 * 1000);
+  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*\d+ 分钟/);
+  // 预算按轮次等分，第一轮 ≤ total/attempts（至少 3 分钟）
+  assert.equal(timeouts[0], Math.max(3 * 60 * 1000, Math.floor(UPLOAD.totalTimeoutMs / 3)));
   assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
-  assert.ok(cos.calls.some((c) => c[0] === 'abort'));
+  assert.ok(cos.calls.some((c) => c[0] === 'abort'), '最终失败才 Abort');
   assert.ok(NO_WRITES(s));
 });
 
@@ -330,3 +331,4 @@ test('stray socket errors from abandoned part requests are recognised (not fatal
   assert.ok(!isStraySocketError(new Error('AccessDenied')));
   assert.ok(!isStraySocketError(Object.assign(new Error('x'), { code: 'ERR_ASSERTION' })));
 });
+

@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     # 需要人工批准；只有在这个 environment 里 OIDC token 的 sub 才能通过 demox-ci-deploy 的信任策略。
     environment: function-api-production
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       ACTION: ${{ github.event_name == 'push' && 'deploy' || inputs.action }}
     steps:

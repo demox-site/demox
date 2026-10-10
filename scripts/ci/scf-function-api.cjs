@@ -143,7 +143,7 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-// COS 上传：分片（5 MB，3 片并发，每片 60 秒超时、最多 8 次；整次重试沿用同一个 UploadId，只补缺的片）+ 整次最多 3 次 + 总 15 分钟。
+// COS 上传：分片（5 MB，3 片并发，每片 60 秒超时、最多 8 次；整次重试沿用同一个 UploadId，只补缺的片）+ 整次最多 3 次 + 总 35 分钟。
 // 只用 InitiateMultipartUpload / UploadPart / CompleteMultipartUpload / AbortMultipartUpload（云架构 2026-10-10 11:14 为
 // demox-ci-deploy 在 scf-deploy/ci/* 上加的权限）；不用 SDK 的 sliceUploadFile，它会先调桶级 ListMultipartUploads（没有权限）。
 // 历史：run 38017096251 单流 putObject 挂 18 分钟；run 38018842590 单次 PutObject 三次都超时（westus3 → ap-chengdu）。
@@ -154,7 +154,7 @@ const UPLOAD = Object.freeze({
   partTimeoutMs: 60 * 1000,
   attempts: 3,
   retryGapMs: 10000,
-  totalTimeoutMs: 15 * 60 * 1000
+  totalTimeoutMs: 35 * 60 * 1000
 });
 
 function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
@@ -274,10 +274,13 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
       const remaining = deadline - now();
       if (remaining <= 0) break;
+      // 给后面的续传留预算：本轮最多用掉剩余时间的 (attempts-attempt+1) 等分，至少 3 分钟
+      const slicesLeft = upload.attempts - attempt + 1;
+      const slice = Math.max(3 * 60 * 1000, Math.floor(remaining / slicesLeft));
       const have = state.parts.filter(Boolean).length;
-      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB${have ? `，续传：已有 ${have} 片` : ''}）`);
+      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB${have ? `，续传：已有 ${have} 片` : ''}，本轮 ≤${Math.round(slice / 1000)}s）`);
       try {
-        await withTimeout(multipartOnce(zipPath, key, size, state), remaining);
+        await withTimeout(multipartOnce(zipPath, key, size, state), Math.min(slice, remaining));
         log('上传 COS 完成');
         return;
       } catch (error) {
@@ -295,13 +298,14 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   function withTimeout(task, timeoutMs) {
     return new Promise((resolve, reject) => {
       let done = false;
-      const timer = setTimer(() => { if (!done) { done = true; task.abort && task.abort(); reject(new Error(`超时 ${Math.round(timeoutMs / 1000)}s`)); } }, timeoutMs);
+      // 软取消：只停 worker，不 Abort / 不清 UploadId，下一轮可续传已完成的片
+      const timer = setTimer(() => { if (!done) { done = true; task.stop && task.stop(); reject(new Error(`超时 ${Math.round(timeoutMs / 1000)}s`)); } }, timeoutMs);
       task.promise.then((v) => { if (!done) { done = true; clearTimer(timer); resolve(v); } },
         (e) => { if (!done) { done = true; clearTimer(timer); reject(e); } });
     });
   }
 
-  // 单片超时用真实定时器（与总超时分开）：卡住的分片 60 秒后重试，不会把 15 分钟全部耗在一片上。
+  // 单片超时用真实定时器（与总超时分开）：卡住的分片 60 秒后重试，不会把整次预算全部耗在一片上。
   function partWithTimeout(promise, partNumber) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -313,11 +317,11 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   function multipartOnce(zipPath, key, size, state) {
     const base = { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key };
     let stopped = false;
-    // 只在总超时时调用：停掉本次并 Abort 整个分片任务
-    const abort = () => {
+    const stop = () => { stopped = true; }; // 软取消：保留 UploadId 和已完成片，供续传
+    const abort = () => { // 硬取消：最终失败才 Abort
       stopped = true;
       if (state.uploadId) cosCall('multipartAbort', { ...base, UploadId: state.uploadId }).catch(() => {});
-      state.uploadId = null;
+      state.uploadId = null; state.parts = [];
     };
     const promise = (async () => {
       if (!state.uploadId) {
@@ -369,7 +373,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
       if (stopped) throw new Error('已取消');
       await cosCall('multipartComplete', { ...base, UploadId: uploadId, Parts: state.parts.slice(0, count) });
     })();
-    return { promise, abort };
+    return { promise, abort, stop };
   }
 
   function cosCode(key) {
