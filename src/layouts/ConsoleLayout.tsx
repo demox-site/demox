@@ -6,6 +6,7 @@ import {
   Navigate
 } from "react-router-dom";
 import { authApi, websiteApi, userManager, isLoggedIn } from "@/api";
+import { buildLoginRedirect } from "@/lib/login-next";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLanguage } from "@/hooks/use-language";
 import logo from "@/assets/logo.svg";
@@ -243,7 +244,8 @@ export const ConsoleLayout: React.FC = () => {
   }, [location.pathname]);
 
   if (!isLoggedIn()) {
-    return <Navigate to="/index" replace />;
+    const here = `${location.pathname}${location.search}`;
+    return <Navigate to={buildLoginRedirect(here)} replace />;
   }
 
   const isAdmin = (user?.roles || []).includes("admin");
