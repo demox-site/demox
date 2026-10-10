@@ -8,7 +8,7 @@ const { normalizeRuntime, defaultEntrypointFor, isAllowedEntrypoint } = require(
 const { isTimerEvent } = require('./function-events.js');
 const { routeMatches } = require('./system-router.js');
 const { mergeLiveCredentials, packageNameFor, platformSiteInProcess } = require('./platform-site.js');
-const { rightmostForwardedFor } = require('./client-ip.js');
+const { clientIpFromForwardedFor } = require('./client-ip.js');
 const {
   badRequest,
   forbidden,
@@ -578,8 +578,8 @@ function normalizeInvocationRequest(event = {}) {
   const host = headers.host || 'function.local';
   return {
     bodyBytes: bodyBuffer.length,
-    // 没有网关给的 sourceIp 时用 XFF 最右段（最左段可被客户端伪造，会绕过按 IP 的限流）。
-    clientKey: event.requestContext?.sourceIp || rightmostForwardedFor(headers['x-forwarded-for']) || 'anonymous',
+    // 没有网关给的 sourceIp 时，从 XFF 右往左跳过受信任代理取客户端 IP（最左段可被客户端伪造，会绕过按 IP 的限流）。
+    clientKey: event.requestContext?.sourceIp || clientIpFromForwardedFor(headers['x-forwarded-for']) || 'anonymous',
     value: {
       method,
       url: `https://${host}${path}${queryString ? `?${queryString}` : ''}`,

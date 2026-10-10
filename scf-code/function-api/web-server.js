@@ -16,7 +16,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { rightmostForwardedFor } = require('./client-ip.js');
+const { clientIpFromForwardedFor } = require('./client-ip.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 
@@ -26,24 +26,14 @@ function firstHeader(value) {
 
 /**
  * 客户端 IP（只从已经去掉 x-scf-* 的头里取）：
- * 1. 不信任 x-scf-remote-addr：canary（2026-10-10 15:10，经 api.demox.site 自定义域名）实测平台并不注入这个头，
- *    客户端自己带的同名头会原样到达，会被用来伪造 IP、绕过按 IP 的限流。
- * 2. 不信任 x-real-ip（云架构 2026-10-10 确认：不用，开关也不留）。
- * 3. 用 X-Forwarded-For 最右边一个（离我们最近的代理追加的；左边的都可被客户端伪造）。云架构已确认。
- *    注意：如果以后 api.demox.site 放到 EdgeOne 后面，最右边的 XFF 会变成 EdgeOne 节点 IP，
- *    这里必须改成读 EdgeOne 的客户端 IP 头，否则所有用户会共用同一个限流键。
- * 4. 都没有才用 socket 地址（和以前一样）。
+ * 1. 不信任 x-scf-remote-addr：2026-10-10 实测客户端伪造的 X-Scf-Remote-Addr 会原样到达（函数 URL 和自定义域名都是）。
+ * 2. 不信任 x-real-ip（实测是 SCF 网关地址 11.163.x.x，不是客户端）。
+ * 3. X-Forwarded-For 从右往左跳过受信任代理网段（client-ip.js TRUSTED_PROXY_CIDRS），取第一个不受信任的地址；
+ *    整条链都受信任时取最右边一个。
+ * 4. 没有 XFF 才用 socket 地址（和以前一样）。
  */
 function clientIpFrom(headers, socket) {
-  return rightmostForwardedFor((headers || {})['x-forwarded-for']) || (socket && socket.remoteAddress) || '';
-}
-
-/**
- * 【临时，上生产前删除】DEMOX_DEBUG_CLIENT_IP=true 时，每个请求打一行：只含 X-Forwarded-For、X-Real-IP、
- * X-Scf-Remote-Addr 三个头的值和 clientIpFrom 的结果，用来在 api-web develop / 函数 URL 上核对 IP 来源。默认关。
- */
-function debugClientIpEnabled(env = process.env) {
-  return String(env.DEMOX_DEBUG_CLIENT_IP || '').trim().toLowerCase() === 'true';
+  return clientIpFromForwardedFor((headers || {})['x-forwarded-for']) || (socket && socket.remoteAddress) || '';
 }
 
 /**
@@ -67,7 +57,7 @@ function isTextContentType(contentType) {
 }
 
 /** Node 请求 → API 网关风格事件（只放路由需要的字段，不打印任何内容）。 */
-function eventFromRequest(req, rawBody, options = {}) {
+function eventFromRequest(req, rawBody) {
   const url = new URL(req.url || '/', 'http://localhost');
   const headers = {};
   for (const [key, value] of Object.entries(req.headers || {})) headers[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value;
@@ -79,15 +69,10 @@ function eventFromRequest(req, rawBody, options = {}) {
   }
   // 唯一的例外：取平台请求 ID 做日志关联（只认 UUID 形状），之后立刻去掉全部 x-scf-*，再做任何其他处理。
   const scfRequestId = String(headers['x-scf-request-id'] || '').trim();
-  const debugRemoteAddr = options.debugClientIp ? String(headers['x-scf-remote-addr'] || '') : ''; // 【临时】只用于下面的调试日志，不参与 IP 判断
   stripPlatformHeaders(headers);
   const text = isTextContentType(headers['content-type']);
   const requestId = (SCF_REQUEST_ID_PATTERN.test(scfRequestId) ? scfRequestId : '') || firstHeader(headers['x-request-id']) || crypto.randomBytes(8).toString('hex');
   const sourceIp = clientIpFrom(headers, req.socket);
-  if (options.debugClientIp) {
-    // 【临时，上生产前删除】
-    console.log(`web-server: DEBUG client-ip xff=${JSON.stringify(String(headers['x-forwarded-for'] || ''))} x-real-ip=${JSON.stringify(String(headers['x-real-ip'] || ''))} x-scf-remote-addr=${JSON.stringify(debugRemoteAddr)} clientIp=${JSON.stringify(sourceIp)}`);
-  }
   return {
     httpMethod: String(req.method || 'GET').toUpperCase(),
     path: url.pathname,
@@ -122,7 +107,7 @@ function writeResult(res, result) {
   res.end(payload);
 }
 
-function createWebServer({ handler, logger = console, debugClientIp = debugClientIpEnabled() } = {}) {
+function createWebServer({ handler, logger = console } = {}) {
   if (typeof handler !== 'function') throw new Error('createWebServer 需要 handler');
   return http.createServer((req, res) => {
     const chunks = [];
@@ -140,7 +125,7 @@ function createWebServer({ handler, logger = console, debugClientIp = debugClien
     });
     req.on('end', async () => {
       if (aborted) return;
-      const event = eventFromRequest(req, Buffer.concat(chunks), { debugClientIp });
+      const event = eventFromRequest(req, Buffer.concat(chunks));
       try {
         const result = await handler(event, { request_id: event.requestId, requestId: event.requestId });
         writeResult(res, result);
@@ -165,4 +150,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createWebServer, eventFromRequest, writeResult, clientIpFrom, stripPlatformHeaders, debugClientIpEnabled };
+module.exports = { createWebServer, eventFromRequest, writeResult, clientIpFrom, stripPlatformHeaders };
