@@ -2206,6 +2206,7 @@ async function dispatchWebsiteRequest(event, context) {
     }
 
     if (isAnalyticsRollupTimerEvent(event)) {
+      await ensureTeamAdminGrant(); // 023：团队管理员账号授权，未配置时什么也不做
       // v14：顺带清理过期的管理员审计（每实例每小时最多一次，失败不影响聚合）。
       await pruneAdminAuditLog();
       return await handleRollupSiteAnalytics(event);
@@ -3999,6 +4000,85 @@ async function handleRevokeOAuthRefreshToken(event) {
 }
 
 exports._revokeRtForTest = { parseRevokeRtInput, revokeRtAuditTarget, REVOKE_RT_RATE_LIMIT, REVOKE_RT_MAX_ROWS };
+
+// ── 023：给团队管理员账号授 admin（2026-10-10，Chief 批准思路，等账号建好再填 ID）──────────
+// 团队用一个专门的 Demox 账号调用管理员接口（例如 revoke_oauth_refresh_token），不再借用 phosa 的账号。
+// 账号注册好以后，把它的用户 ID 填进 TEAM_ADMIN_USER_ID（下面的常量，或 website 函数的同名环境变量，环境变量优先）。
+// - 没填：什么也不做（no-op）。
+// - 幂等：已经是 admin 就不写；只追加 admin，不删任何已有角色。
+// - 只授一次：admin_audit_log 里已经有这个 ID 的 grant_team_admin 成功记录就不再授，
+//   所以之后有人在后台手动撤掉它的 admin，这里不会偷偷加回来（要彻底撤销：先清空 TEAM_ADMIN_USER_ID 再撤角色）。
+// - 有审计：改 user_roles 和写 admin_audit_log 在同一个事务里（operator_uid=system:023，auth_method=system）。
+// - 用户不存在 / ID 格式不对：不写，只打一行警告（不含 ID 以外的信息）。
+// 由 5 分钟统计定时器顺带调用，每个实例每小时最多查一次；SQL 等价版本见 migrations/023_grant_team_admin.sql。
+const TEAM_ADMIN_USER_ID = ''; // 占位：账号建好后填用户 ID，或者设置环境变量 TEAM_ADMIN_USER_ID
+const TEAM_ADMIN_AUDIT_ACTION = 'grant_team_admin';
+const TEAM_ADMIN_OPERATOR = 'system:023';
+const TEAM_ADMIN_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+let teamAdminLastCheckAt = 0;
+
+function configuredTeamAdminUserId(env = process.env) {
+  const raw = String(env.TEAM_ADMIN_USER_ID || TEAM_ADMIN_USER_ID || '').trim();
+  if (!raw) return { userId: '' };
+  if (!REVOKE_RT_USER_ID_PATTERN.test(raw)) return { userId: '', invalid: true };
+  return { userId: raw };
+}
+
+function parseRoleList(value) {
+  let list = value;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { list = []; }
+  }
+  return Array.isArray(list) ? list.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean) : [];
+}
+
+async function ensureTeamAdminGrant({ now = Date.now(), force = false, env = process.env } = {}) {
+  const { userId, invalid } = configuredTeamAdminUserId(env);
+  if (invalid) {
+    console.warn('TEAM_ADMIN_USER_ID 格式不对，已跳过团队管理员授权');
+    return { skipped: true, reason: 'invalid' };
+  }
+  if (!userId) return { skipped: true, reason: 'unset' };
+  if (!force && now - teamAdminLastCheckAt < TEAM_ADMIN_CHECK_INTERVAL_MS) return { skipped: true, reason: 'throttled' };
+  teamAdminLastCheckAt = now;
+  try {
+    await ensureAdminAuditTable();
+    const granted = await query(
+      'SELECT id FROM admin_audit_log WHERE action = ? AND target = ? AND success = 1 LIMIT 1',
+      [TEAM_ADMIN_AUDIT_ACTION, `uid=${userId};role=admin`]
+    );
+    if (granted.length) return { skipped: true, reason: 'already_granted_once' };
+    const users = await query('SELECT id FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!users.length) {
+      console.warn('TEAM_ADMIN_USER_ID 对应的用户不存在，已跳过团队管理员授权');
+      return { skipped: true, reason: 'user_not_found' };
+    }
+    return await transaction(async (conn) => {
+      const run = async (sql, params) => (await conn.query(sql, params))[0];
+      const rows = await run('SELECT roles FROM user_roles WHERE user_id = ? LIMIT 1 FOR UPDATE', [userId]);
+      const current = rows.length ? parseRoleList(rows[0].roles) : [];
+      if (current.includes('admin')) return { skipped: true, reason: 'already_admin' };
+      const next = [...new Set(['user', ...current, 'admin'])];
+      await run(
+        `INSERT INTO user_roles (user_id, roles, updated_at) VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE roles = VALUES(roles), updated_at = NOW()`,
+        [userId, JSON.stringify(next)]
+      );
+      await run(
+        `INSERT INTO admin_audit_log (operator_uid, auth_method, action, kind, target, via, status_code, success)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [TEAM_ADMIN_OPERATOR, 'system', TEAM_ADMIN_AUDIT_ACTION, 'write', `uid=${userId};role=admin`, 'migration', 200, 1]
+      );
+      console.log('团队管理员授权完成');
+      return { skipped: false, granted: true, roles: next };
+    });
+  } catch (error) {
+    console.error('团队管理员授权失败:', error && (error.code || error.message));
+    return { skipped: true, reason: 'error' };
+  }
+}
+
+exports._teamAdminForTest = { ensureTeamAdminGrant, configuredTeamAdminUserId, TEAM_ADMIN_USER_ID };
 
 exports._adminAuditForTest = { adminAuthMethod, adminAuditTarget, adminAuditActionName, adminAuditOutcome, adminAuditSkipped, adminAuditRetentionDays, pruneAdminAuditLog };
 
