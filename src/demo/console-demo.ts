@@ -182,17 +182,20 @@ function websiteAction(action: string, body: Record<string, unknown>): unknown {
   }
 }
 
-// 自定义域名三种状态：已生效 / 卡在解析（Cloudflare 代理）/ 卡在证书（第 3 次检测后变成已生效）
-const demoDomainBase = (id: string, hostname: string, status: "pending" | "active") => ({
-  id, hostname, status, cnameTarget: "customers.demox.site", cnameHost: hostname.split(".")[0],
+// 自定义域名示例：卡在解析（Cloudflare 代理）/ 卡在证书（第 3 次检测后变成已生效）/ 根域名 A 记录 / 已生效
+const GATEWAY_IP = "119.91.123.2";
+const demoDomainBase = (id: string, hostname: string, status: "pending" | "active", record: { recordType: "CNAME" | "A"; recordName: string; recordValue: string; apex: boolean }) => ({
+  id, hostname, status, cnameTarget: "customers.demox.site", cnameHost: record.recordName, ...record,
   url: `https://${hostname}/`, defaultWebsiteId: "DEMO0001", defaultWebsiteName: "Launch page",
   routes: [{ label: "", host: hostname, websiteId: "DEMO0001", websiteName: "Launch page", isDefault: true }],
   verifiedAt: status === "active" ? iso(3) : null, createdAt: iso(status === "active" ? 5 : 0)
 });
+const cnameRecord = (name: string) => ({ recordType: "CNAME" as const, recordName: name, recordValue: "customers.demox.site", apex: false });
 const demoDomains = [
-  demoDomainBase("d-cf", "www.example.cn", "pending"),
-  demoDomainBase("d-cert", "shop.example.org", "pending"),
-  demoDomainBase("d-live", "docs.example.com", "active")
+  demoDomainBase("d-cf", "www.example.cn", "pending", cnameRecord("www")),
+  demoDomainBase("d-cert", "shop.example.org", "pending", cnameRecord("shop")),
+  demoDomainBase("d-apex", "example.com.cn", "pending", { recordType: "A", recordName: "@", recordValue: GATEWAY_IP, apex: true }),
+  demoDomainBase("d-live", "docs.example.com", "active", cnameRecord("docs"))
 ];
 const demoChecks: Record<string, number> = {};
 function verifyDemoDomain(id: string) {
@@ -203,8 +206,12 @@ function verifyDemoDomain(id: string) {
     const message = "开着 Cloudflare 代理，查不到 CNAME。到 Cloudflare 把这条记录的橙色云点成灰色（仅 DNS）：类型 CNAME，名称 www，内容 customers.demox.site";
     return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "cloudflare_proxy", pendingMessage: message, checkedAt } };
   }
-  if (base.id === "d-cert" && demoChecks[base.id] < 3) {
-    const message = "解析已通，正在签发证书，通常 2–5 分钟，稍后再点检测";
+  if (base.id === "d-apex") {
+    const message = `还查不到记录。请确认 A 记录 @ 指向 ${GATEWAY_IP}，新记录一般 1–10 分钟生效`;
+    return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "no_record", pendingMessage: message, checkedAt } };
+  }
+  if (base.id === "d-cert" && demoChecks[base.id] < 4) {
+    const message = "解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS";
     return { success: true, message, domain: { ...base, checkStep: "cert", dnsVia: "cname", pendingMessage: message, checkedAt } };
   }
   return { success: true, message: "自定义域名已可访问", domain: { ...base, status: "active", checkStep: "active", dnsVia: "cname", pendingMessage: "", checkedAt, verifiedAt: checkedAt } };

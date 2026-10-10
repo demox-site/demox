@@ -32,7 +32,11 @@ const texts = {
     next: "下一步",
     adding: "创建中…",
     dnsTitle: "添加这条 CNAME",
-    dnsDesc: "到域名服务商添加下面这条记录。记录值必须是 customers.demox.site。用 Cloudflare 的话，把橙色云点成灰色（仅 DNS）。",
+    dnsTitleA: "添加这条 A 记录",
+    aRecordNote: "推荐用 CNAME，根域名才用 A 记录。",
+    close: "关闭",
+    closeHint: "关掉也会在后台继续检测。",
+    dnsDesc: "到域名服务商添加下面这条记录。",
     recordHost: "主机记录",
     recordValue: "记录值",
     copy: "复制",
@@ -47,7 +51,7 @@ const texts = {
     stuckCert: "卡在第 2 步：证书",
     stuckGateway: "卡在第 2 步：平台入口",
     actionDns: "需要你改 DNS。改完不用重新添加。",
-    actionCert: "DNS 已经对了，不用再改。证书由 Demox 签发，超过 10 分钟还没好请联系我们。",
+    actionCert: "超过 10 分钟还没好，请联系我们。",
     actionGateway: "这是平台问题，不用改 DNS，我们会处理。",
     autoCheck: "每 30 秒自动检测",
     lastChecked: "上次检测",
@@ -84,7 +88,11 @@ const texts = {
     next: "Next",
     adding: "Creating…",
     dnsTitle: "Add this CNAME",
-    dnsDesc: "Create the record below at your DNS provider. The value must be customers.demox.site. On Cloudflare, click the orange cloud so it turns grey (DNS only).",
+    dnsTitleA: "Add this A record",
+    aRecordNote: "CNAME is preferred; use an A record only for a root domain.",
+    close: "Close",
+    closeHint: "Checks keep running after you close this.",
+    dnsDesc: "Create the record below at your DNS provider.",
     recordHost: "Host",
     recordValue: "Value",
     copy: "Copy",
@@ -99,7 +107,7 @@ const texts = {
     stuckCert: "Stuck at step 2: certificate",
     stuckGateway: "Stuck at step 2: platform entrance",
     actionDns: "Change your DNS record. No need to add the domain again.",
-    actionCert: "DNS is correct, nothing to change. We issue the certificate; contact us if it takes over 10 minutes.",
+    actionCert: "Contact us if it takes over 10 minutes.",
     actionGateway: "This is on our side. No DNS change needed.",
     autoCheck: "Auto-checking every 30s",
     lastChecked: "Last check",
@@ -126,11 +134,12 @@ const texts = {
   }
 } as const;
 
+// 只在还没拿到后端结果时兜底；正式的主机记录由后端按公共后缀表算（a.b.example.com → a.b）
 function cnameHostFromHostname(hostname: string) {
   const value = String(hostname || "").trim().toLowerCase().replace(/\.+$/, "");
   if (!value) return "";
-  if (!value.includes(".")) return value;
-  return value.slice(0, value.indexOf("."));
+  const labels = value.split(".");
+  return labels.length > 2 ? labels.slice(0, -2).join(".") : "@";
 }
 
 function belongsToSite(domain: ProjectCustomDomain, websiteId: string) {
@@ -247,7 +256,6 @@ export default function SiteCustomDomains({
   const [createStep, setCreateStep] = React.useState<"form" | "dns">("form");
   const [hostname, setHostname] = React.useState("");
   const [draftDomain, setDraftDomain] = React.useState<ProjectCustomDomain | null>(null);
-  const [dnsReady, setDnsReady] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState("");
   const [copied, setCopied] = React.useState("");
@@ -282,12 +290,40 @@ export default function SiteCustomDomains({
     void loadPage();
   }, [loadPage]);
 
+  // 弹窗关掉后也在后台继续检测：页面开着时，每分钟把本站未生效的域名静默测一次（最多 10 次）。
+  const backgroundRounds = React.useRef(0);
+  const [backgroundTick, setBackgroundTick] = React.useState(0);
+  const pendingIds = domains
+    .filter((item) => belongsToSite(item, websiteId) && item.status !== "active")
+    .map((item) => item.id)
+    .join(",");
+  React.useEffect(() => {
+    if (!projectId || !canManage || !pendingIds || createOpen) return;
+    if (backgroundRounds.current >= 10) return;
+    const delay = backgroundRounds.current === 0 ? 1500 : 60_000;
+    const timer = window.setTimeout(async () => {
+      backgroundRounds.current += 1;
+      for (const id of pendingIds.split(",")) {
+        try {
+          const res = await websiteApi.verifyProjectCustomDomain({ projectId, domainId: id });
+          if (res?.success && res.domain) {
+            const next = res.domain as ProjectCustomDomain;
+            setDomains((current) => current.map((item) => (item.id === next.id ? next : item)));
+          }
+        } catch {
+          // 后台检测失败不打扰用户
+        }
+      }
+      setBackgroundTick((value) => value + 1);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [projectId, canManage, pendingIds, createOpen, backgroundTick]);
+
   const resetCreate = () => {
     setCreateOpen(false);
     setCreateStep("form");
     setHostname("");
     setDraftDomain(null);
-    setDnsReady(false);
     setSaving(false);
   };
 
@@ -295,14 +331,12 @@ export default function SiteCustomDomains({
     setCreateStep("form");
     setHostname("");
     setDraftDomain(null);
-    setDnsReady(false);
     setCreateOpen(true);
   };
 
   const openDnsStep = (domain: ProjectCustomDomain) => {
     setDraftDomain(domain);
     setHostname(domain.hostname);
-    setDnsReady(false);
     setCreateStep("dns");
     setCreateOpen(true);
     // 回来继续配置时先测一次，直接告诉用户卡在哪一步
@@ -353,7 +387,6 @@ export default function SiteCustomDomains({
       }
       setDomains((current) => [domain, ...current.filter((item) => item.id !== domain.id)]);
       setDraftDomain(domain);
-      setDnsReady(false);
       setCreateStep("dns");
       onChanged?.();
     } catch (error) {
@@ -380,7 +413,6 @@ export default function SiteCustomDomains({
       setDomains((current) => current.map((item) => (item.id === res.domain?.id ? res.domain as ProjectCustomDomain : item)));
       setDraftDomain(res.domain);
       const passed = res.domain.status === "active";
-      setDnsReady(passed);
       onChanged?.();
       if (!silent || passed) {
         toast({
@@ -389,7 +421,6 @@ export default function SiteCustomDomains({
         });
       }
     } catch (error) {
-      setDnsReady(false);
       if (silent) return;
       toast({
         title: t.verifyError,
@@ -440,7 +471,10 @@ export default function SiteCustomDomains({
   }, [createOpen, createStep, draftStep, draftCheckedAt, busyKey]);
 
   const guideHostname = draftDomain?.hostname || hostname;
-  const guideHost = cnameHostFromHostname(guideHostname);
+  const guideHost = draftDomain?.recordName || draftDomain?.cnameHost || cnameHostFromHostname(guideHostname);
+  const guideType = draftDomain?.recordType || "CNAME";
+  const guideValue = draftDomain?.recordValue || cnameTarget;
+  const guidePassed = draftDomain?.status === "active";
 
   return (
     <section className="site-settings-group mb-6">
@@ -540,12 +574,12 @@ export default function SiteCustomDomains({
           ) : (
             <div className="space-y-5">
               <DialogHeader>
-                <DialogTitle>{t.dnsTitle}</DialogTitle>
+                <DialogTitle>{guideType === "A" ? t.dnsTitleA : t.dnsTitle}</DialogTitle>
                 <DialogDescription className="text-[var(--stitch-muted)]">{t.dnsDesc}</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 rounded-2xl border border-[var(--stitch-line)] bg-[var(--stitch-surface)] p-4">
                 <div className="grid gap-3 sm:grid-cols-[4.5rem_minmax(0,1fr)_auto_auto] sm:items-center">
-                  <div className="font-mono text-sm text-[var(--stitch-ink)]">CNAME</div>
+                  <div className="font-mono text-sm text-[var(--stitch-ink)]">{guideType}</div>
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.recordHost}</div>
                     <div className="font-mono text-sm text-[var(--stitch-ink)]">{guideHost}</div>
@@ -553,18 +587,21 @@ export default function SiteCustomDomains({
                   </div>
                   <div className="min-w-0">
                     <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--stitch-muted)]">{t.recordValue}</div>
-                    <code className="block whitespace-nowrap font-mono text-sm text-[var(--stitch-ink)]">{cnameTarget}</code>
+                    <code className="block whitespace-nowrap font-mono text-sm text-[var(--stitch-ink)]">{guideValue}</code>
                   </div>
-                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void handleCopy(cnameTarget, "create")}>
+                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => void handleCopy(guideValue, "create")}>
                     {copied === "create" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   </Button>
                 </div>
+                {guideType === "A" ? <p className="text-xs text-[var(--stitch-muted)]">{t.aRecordNote}</p> : null}
               </div>
               <CheckProgress domain={draftDomain} checking={busyKey === "verify-draft"} t={t} />
-              <DialogFooter>
+              {!guidePassed ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}
+              {/* 手机和电脑按钮顺序一致：检测（次要）在左，关闭 / 完成在右 */}
+              <DialogFooter className="flex-row justify-end gap-2 space-x-0 sm:space-x-0">
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="secondary"
                   disabled={busyKey === "verify-draft"}
                   onClick={() => void handleVerifyDraft()}
                 >
@@ -577,18 +614,15 @@ export default function SiteCustomDomains({
                     t.verify
                   )}
                 </Button>
-                <Button
-                  type="button"
-                  disabled={!dnsReady}
-                  className="stitch-primary"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    resetCreate();
-                  }}
-                >
-                  {t.complete}
-                </Button>
+                {guidePassed ? (
+                  <Button type="button" className="stitch-primary" onClick={() => resetCreate()}>
+                    {t.complete}
+                  </Button>
+                ) : (
+                  <Button type="button" variant="outline" onClick={() => resetCreate()}>
+                    {t.close}
+                  </Button>
+                )}
               </DialogFooter>
             </div>
           )}

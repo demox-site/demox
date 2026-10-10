@@ -175,6 +175,12 @@ export type ProjectCustomDomain = {
   dnsVia?: "cname" | "a" | null;
   pendingMessage?: string;
   checkedAt?: string;
+  /** 该加哪条记录（后端按根域名 / 子域名 / Cloudflare 判断，用户不用选） */
+  apex?: boolean;
+  recordType?: "CNAME" | "A";
+  recordName?: string;
+  recordValue?: string;
+  dnsProvider?: "cloudflare" | null;
 };
 
 // 认证API

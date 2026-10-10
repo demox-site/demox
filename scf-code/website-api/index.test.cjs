@@ -92,6 +92,7 @@ test.beforeEach(() => {
   setCustomDomainRuntime({
     lookupGatewayAddresses: async () => ['119.91.123.2'],
     lookupHostAddresses: async () => [],
+    lookupNameservers: async () => [],
     probeHttps: async () => ({ ok: true, status: 200 }),
     provision: async () => ({ ok: true })
   });
@@ -1542,6 +1543,8 @@ test('project custom domain stays pending until HTTPS actually serves the site',
     assert.equal(body.success, true, JSON.stringify(body));
     assert.equal(body.domain.status, 'pending');
     assert.match(body.message, /签发证书/);
+    assert.match(body.message, /不用点，也不用改 DNS/);
+    assert.doesNotMatch(body.message, /2–5 分钟/);
     assert.equal(body.domain.checkStep, 'cert');
   } finally {
     dns.promises.resolveCname = originalResolveCname;
@@ -1562,7 +1565,7 @@ function verifyFixture(hostname) {
   };
 }
 
-async function verifyWith({ hostname, cname = {}, addresses = [], probe = { ok: true, status: 200 } }) {
+async function verifyWith({ hostname, cname = {}, addresses = [], nameservers = [], probe = { ok: true, status: 200 } }) {
   dns.promises.resolveCname = async (name) => {
     if (cname[name]) return [cname[name]];
     throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
@@ -1570,6 +1573,7 @@ async function verifyWith({ hostname, cname = {}, addresses = [], probe = { ok: 
   setCustomDomainRuntime({
     lookupGatewayAddresses: async () => ['119.91.123.2'],
     lookupHostAddresses: async () => addresses,
+    lookupNameservers: async () => nameservers,
     probeHttps: async () => probe,
     provision: async () => ({ ok: true })
   });
@@ -1617,6 +1621,33 @@ test('custom domain verify with no record says how long DNS usually takes', asyn
   assert.equal(body.domain.checkStep, 'dns');
   assert.equal(body.domain.dnsReason, 'no_record');
   assert.match(body.message, /1–10 分钟/);
+});
+
+
+test('custom domain instructions: subdomain gets CNAME with the full host part', async () => {
+  const body = await verifyWith({ hostname: 'a.b.example.com.cn' });
+  assert.equal(body.domain.recordType, 'CNAME');
+  assert.equal(body.domain.recordName, 'a.b');
+  assert.equal(body.domain.cnameHost, 'a.b');
+  assert.equal(body.domain.apex, false);
+  assert.match(body.message, /CNAME a\.b 指向 customers\.demox\.site/);
+});
+
+test('custom domain instructions: apex (public-suffix aware) gets an A record to the gateway', async () => {
+  const body = await verifyWith({ hostname: 'example.com.cn', nameservers: ['dns23.hichina.com'] });
+  assert.equal(body.domain.apex, true);
+  assert.equal(body.domain.recordType, 'A');
+  assert.equal(body.domain.recordName, '@');
+  assert.equal(body.domain.recordValue, '119.91.123.2');
+  assert.match(body.message, /A 记录 @ 指向 119\.91\.123\.2/);
+});
+
+test('custom domain instructions: apex on Cloudflare DNS still gets CNAME (flattened)', async () => {
+  const body = await verifyWith({ hostname: 'example.cn', nameservers: ['rosalyn.ns.cloudflare.com', 'terry.ns.cloudflare.com'] });
+  assert.equal(body.domain.apex, true);
+  assert.equal(body.domain.recordType, 'CNAME');
+  assert.equal(body.domain.recordName, '@');
+  assert.equal(body.domain.dnsProvider, 'cloudflare');
 });
 
 
