@@ -125,15 +125,15 @@ export function MCPLogin() {
 
           <div className="space-y-3 text-sm text-muted-foreground">
             <p className="flex items-center gap-2">
-              <Check className="w-4 h-4 text-success shrink-0" />
+              <Check className="w-4 h-4 text-foreground shrink-0" />
               部署静态网站
             </p>
             <p className="flex items-center gap-2">
-              <Check className="w-4 h-4 text-success shrink-0" />
+              <Check className="w-4 h-4 text-foreground shrink-0" />
               查看网站列表
             </p>
             <p className="flex items-center gap-2">
-              <Check className="w-4 h-4 text-success shrink-0" />
+              <Check className="w-4 h-4 text-foreground shrink-0" />
               删除网站
             </p>
           </div>
@@ -165,7 +165,7 @@ export function MCPLogin() {
             <a
               href="/terms"
               target="_blank"
-              className="text-link hover:underline"
+              className="underline underline-offset-4 hover:text-foreground"
             >
               服务条款
             </a>{" "}
@@ -173,12 +173,12 @@ export function MCPLogin() {
             <a
               href="/privacy"
               target="_blank"
-              className="text-link hover:underline"
+              className="underline underline-offset-4 hover:text-foreground"
             >
               隐私政策
             </a>
           </p>
-          <p>© 2025 Demox. Powered by Tencent Cloud.</p>
+          <p>© {new Date().getFullYear()} Demox. Powered by Tencent Cloud.</p>
         </div>
       </div>
     </div>
