@@ -1,13 +1,13 @@
 'use strict';
 
 const { createFunctionId, isFunctionId, normalizeName, normalizeSlug } = require('./ids.js');
-const { requireWebsiteId } = require('./site-binding.js');
+const { requireWebsiteId, platformWebsiteId } = require('./site-binding.js');
 const { bundleKey, sha256 } = require('./bundle-store.js');
 const { normalizeLimits } = require('./limits.js');
 const { normalizeRuntime, defaultEntrypointFor, isAllowedEntrypoint } = require('./runtimes.js');
 const { isTimerEvent } = require('./function-events.js');
 const { routeMatches } = require('./system-router.js');
-const { mergeLiveCredentials, packageNameFor } = require('./platform-site.js');
+const { mergeLiveCredentials, packageNameFor, platformSiteInProcess } = require('./platform-site.js');
 const {
   badRequest,
   forbidden,
@@ -327,6 +327,12 @@ class FunctionService {
     const functionRecord = await this.repository.getFunction(functionId);
     if (!functionRecord) throw notFound();
     if (functionRecord.status !== 'active') throw notFound('函数已停用');
+    if (platformSiteInProcess() && String(functionRecord.websiteId || '') === platformWebsiteId()) {
+      // 平台站点函数只在进程内跑，不发到共享的 user-nodejs；404 让系统路由回落到进程内。
+      const error = notFound('平台站点函数在进程内执行');
+      error.code = 'PLATFORM_SITE_IN_PROCESS';
+      throw error;
+    }
 
     const aliasName = normalizeAliasName(alias || 'production');
     const versionNumber = await this.resolveAliasVersion(functionRecord, aliasName);

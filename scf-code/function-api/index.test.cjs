@@ -525,9 +525,9 @@ test('Node.js functions run outside the router process and can require jsonwebto
   assert.deepEqual(JSON.parse(invoked.body), { site: 'site-a', leaked: null, tokenOk: true });
 });
 
-test('published platform function source runs for system prefixes', async () => {
-  const { handler, repository, bundleStore } = makeApp();
-  const created = JSON.parse((await handler(event('/functions', 'POST', {
+async function publishPlatformAuth() {
+  const app = makeApp();
+  const created = JSON.parse((await app.handler(event('/functions', 'POST', {
     websiteId: 'EPX2UU43',
     name: 'Auth',
     slug: 'auth',
@@ -541,22 +541,60 @@ test('published platform function source runs for system prefixes', async () => 
       body: JSON.stringify({ from: 'published', path: event.path })
     };
   };`;
-  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
-  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
-  const platform = createPlatformHandler({
+  await app.handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await app.handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  return createPlatformHandler({
     userHandler: createFunctionHttpHandler({
-      repository,
-      bundleStore,
+      repository: app.repository,
+      bundleStore: app.bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
       publicBaseUrl: 'https://functions.test'
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });
-  const response = await platform(event('/auth/me', 'GET', {}));
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(JSON.parse(response.body), { from: 'published', path: '/auth/me' });
-  const fallback = await platform(event('/website/list', 'POST', {}));
-  assert.equal(fallback.statusCode, 418);
+}
+
+test('platform site functions run in process by default, never in the shared user runtime', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  try {
+    const platform = await publishPlatformAuth();
+    const response = await platform(event('/auth/me', 'GET', {}));
+    assert.equal(response.statusCode, 418);
+    assert.equal(response.body, 'system');
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
+});
+
+test('platform site does not receive runtime-role temp credentials by default', () => {
+  const { mergeLiveCredentials } = require('./platform-site.js');
+  const processEnv = {
+    DEMOX_PLATFORM_WEBSITE_ID: 'EPX2UU43',
+    TENCENTCLOUD_SECRETID: 'id',
+    TENCENTCLOUD_SECRETKEY: 'key',
+    TENCENTCLOUD_SESSIONTOKEN: 'token'
+  };
+  assert.deepEqual(mergeLiveCredentials({ A: '1' }, 'EPX2UU43', processEnv), { A: '1' });
+  const legacy = mergeLiveCredentials({ A: '1' }, 'EPX2UU43', { ...processEnv, FUNCTIONS_PLATFORM_SITE_MODE: 'user-runtime' });
+  assert.equal(legacy.TENCENTCLOUD_SECRETID, 'id');
+});
+
+test('published platform function source runs for system prefixes (FUNCTIONS_PLATFORM_SITE_MODE=user-runtime rollback)', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  process.env.FUNCTIONS_PLATFORM_SITE_MODE = 'user-runtime';
+  try {
+    const platform = await publishPlatformAuth();
+    const response = await platform(event('/auth/me', 'GET', {}));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { from: 'published', path: '/auth/me' });
+    const fallback = await platform(event('/website/list', 'POST', {}));
+    assert.equal(fallback.statusCode, 418);
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
 });
 
 test('platform seed replaces wrapper source with the real backend', async () => {
