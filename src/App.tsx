@@ -25,7 +25,11 @@ import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
 import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
-import { buildLoginRedirect } from "./lib/login-next";
+import {
+  buildLoginRedirect,
+  reloginDialogOpenChangeAction,
+  reloginDialogLockHandlers
+} from "./lib/login-next";
 import { ConsoleLayout } from "./layouts/ConsoleLayout";
 import Home from "./pages/home.jsx";
 import SitesPage from "./pages/console/SitesPage.jsx";
@@ -85,8 +89,22 @@ const App: React.FC = () => {
               <LanguageProvider>
               <Toaster />
               <Sonner position="top-center" />
-              <AlertDialog open={tokenExpiredOpen} onOpenChange={setTokenExpiredOpen}>
-                <AlertDialogContent className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]">
+              <AlertDialog
+                open={tokenExpiredOpen}
+                onOpenChange={(open) => {
+                  // Prefer hard-lock (Esc/outside preventDefault below).
+                  // If a close still lands, same path as「去登录」— never stay on broken page.
+                  if (reloginDialogOpenChangeAction(open) === "open") {
+                    setTokenExpiredOpen(true);
+                  } else {
+                    handleGoLogin();
+                  }
+                }}
+              >
+                <AlertDialogContent
+                  className="border-[var(--stitch-line)] bg-[var(--stitch-surface-strong)] text-[var(--stitch-ink)]"
+                  {...reloginDialogLockHandlers()}
+                >
                   <AlertDialogHeader>
                     <AlertDialogTitle>请重新登录</AlertDialogTitle>
                     <AlertDialogDescription className="text-[var(--stitch-muted)]">

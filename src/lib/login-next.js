@@ -24,3 +24,26 @@ export function readLoginNext(search) {
   const raw = new URLSearchParams(q).get("next");
   return isSafeLoginNext(raw) ? raw : null;
 }
+
+/**
+ * Controlled AlertDialog open policy for forced re-login.
+ * - open → keep/show dialog
+ * - close attempt → caller must run the same clear-tokens + ?next= path as「去登录」
+ *   (Esc/overlay are also preventDefault'd; this is the safety net if a close still lands)
+ * @returns {'open'|'force-login'}
+ */
+export function reloginDialogOpenChangeAction(nextOpen) {
+  return nextOpen ? "open" : "force-login";
+}
+
+/** Radix Content handlers: block Esc + outside dismiss (prefer hard-lock). */
+export function reloginDialogLockHandlers() {
+  const lock = (event) => {
+    event.preventDefault();
+  };
+  return {
+    onEscapeKeyDown: lock,
+    onPointerDownOutside: lock,
+    onInteractOutside: lock
+  };
+}
