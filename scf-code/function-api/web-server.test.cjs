@@ -28,7 +28,7 @@ test('HTTP request becomes an API-gateway style event and the result is written 
   assert.equal(seen.headers.authorization, 'Bearer t');
   assert.equal(seen.body, '{"email":"a@b.co"}');
   assert.equal(seen.isBase64Encoded, false);
-  assert.equal(seen.requestContext.sourceIp, '10.0.0.1', 'rightmost XFF (leftmost is spoofable)');
+  assert.equal(seen.requestContext.sourceIp, '1.2.3.4', 'rightmost non-trusted XFF hop (10.0.0.1 is a trusted proxy)');
   assert.equal(seen.requestId, '16de1459-c47a-11f1-89b5-525400551d54');
   assert.equal(seen.headers['x-scf-request-id'], undefined);
 });
@@ -106,24 +106,6 @@ test('client IP: x-real-ip is never trusted (no option)', () => {
   assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
 });
 
-test('TEMP debug client-ip log is off by default and logs only the 3 header values + result when on', () => {
-  const { debugClientIpEnabled } = require('./web-server.js');
-  assert.equal(debugClientIpEnabled({}), false);
-  assert.equal(debugClientIpEnabled({ DEMOX_DEBUG_CLIENT_IP: 'true' }), true);
-  const lines = []; const orig = console.log; console.log = (...a) => lines.push(a.join(' '));
-  try {
-    const req = { method: 'GET', url: '/', headers: { 'x-forwarded-for': '1.2.3.4, 203.0.113.50', 'x-real-ip': '5.5.5.5', 'x-scf-remote-addr': '6.6.6.6', 'x-scf-secret-key': 'fakekey', authorization: 'Bearer secret-tok' }, socket: {} };
-    eventFromRequest(req, Buffer.alloc(0));
-    assert.equal(lines.filter((l) => l.includes('DEBUG client-ip')).length, 0, 'off by default');
-    const ev = eventFromRequest(req, Buffer.alloc(0), { debugClientIp: true });
-    const dbg = lines.filter((l) => l.includes('DEBUG client-ip'));
-    assert.equal(dbg.length, 1);
-    assert.match(dbg[0], /xff="1\.2\.3\.4, 203\.0\.113\.50" x-real-ip="5\.5\.5\.5" x-scf-remote-addr="6\.6\.6\.6" clientIp="203\.0\.113\.50"/);
-    assert.ok(!dbg[0].includes('fakekey') && !dbg[0].includes('secret-tok'));
-    assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
-  } finally { console.log = orig; }
-});
-
 test('IP derivation never reads x-scf-* (all x-scf-* stripped first, even mixed case)', () => {
   const { clientIpFrom } = require('./web-server.js');
   assert.equal(clientIpFrom({ 'x-scf-remote-addr': '1.2.3.4' }, { remoteAddress: '10.0.0.2' }), '10.0.0.2');
@@ -168,11 +150,12 @@ test('rate limiter keys on the derived IP: forged X-Scf-Remote-Addr / leftmost X
   await service.invoke({ functionId: fn.functionId, event: other });
 });
 
-test('Event entry without sourceIp keys the rate limit on the RIGHTMOST XFF (forged leftmost cannot bypass)', async () => {
+test('Event entry without sourceIp keys the rate limit on the rightmost non-trusted XFF hop (forged leftmost cannot bypass)', async () => {
   const { normalizeInvocationRequest, FunctionService } = require('./service.js');
-  const { rightmostForwardedFor } = require('./client-ip.js');
-  assert.equal(rightmostForwardedFor(' 1.1.1.1 , 203.0.113.50 '), '203.0.113.50');
-  assert.equal(rightmostForwardedFor(''), '');
+  const { clientIpFromForwardedFor } = require('./client-ip.js');
+  assert.equal(clientIpFromForwardedFor(' 1.1.1.1 , 203.0.113.50 '), '203.0.113.50');
+  assert.equal(clientIpFromForwardedFor(''), '');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112' } }).clientKey, '140.248.50.98', 'Event fallback skips trusted proxies too');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'X-Forwarded-For': '1.2.3.4, 203.0.113.50' } }).clientKey, '203.0.113.50');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {}, requestContext: { sourceIp: '198.51.100.1' } }).clientKey, '198.51.100.1', 'gateway sourceIp still wins');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {} }).clientKey, 'anonymous');
@@ -186,4 +169,55 @@ test('Event entry without sourceIp keys the rate limit on the RIGHTMOST XFF (for
   const ev = (forged) => ({ httpMethod: 'GET', headers: { 'x-forwarded-for': `${forged}, 203.0.113.50` } });
   await service.invoke({ functionId: fn.functionId, event: ev('1.1.1.1') });
   await assert.rejects(service.invoke({ functionId: fn.functionId, event: ev('2.2.2.2') }), (error) => error.code === 'RATE_LIMITED');
+});
+
+// ---- 受信任代理网段（client-ip.js）。真实链来自 2026-10-10 api-web 实测（CLS DEBUG client-ip 行）。
+const { clientIpFromForwardedFor, isTrustedProxy, normalizeIp, TRUSTED_PROXY_CIDRS } = require('./client-ip.js');
+
+test('trusted list is exactly the 云架构 15:25 list (code constant)', () => {
+  assert.deepEqual([...TRUSTED_PROXY_CIDRS], ['10.0.0.0/8', '11.0.0.0/8', '9.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10']);
+  assert.ok(Object.isFrozen(TRUSTED_PROXY_CIDRS));
+  for (const ip of ['10.132.167.112', '11.163.17.81', '9.1.2.3', '100.64.0.1', '100.127.255.255', '127.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.1.1', '::1', 'fd00::1', 'fc00::1', 'fe80::1']) assert.equal(isTrustedProxy(ip), true, ip);
+  for (const ip of ['140.248.50.98', '30.0.0.1', '100.128.0.1', '172.32.0.1', '8.8.8.8', '2001:db8::1', 'unknown', '']) assert.equal(isTrustedProxy(ip), false, ip);
+});
+
+test('real function-URL chain → real client (140.248.50.98)', () => {
+  assert.equal(clientIpFromForwardedFor('1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112'), '140.248.50.98');
+  const ev = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112', 'x-real-ip': '11.163.17.81', 'x-scf-remote-addr': '3.3.3.3' }, socket: { remoteAddress: '10.0.0.9' } }, Buffer.alloc(0));
+  assert.equal(ev.requestContext.sourceIp, '140.248.50.98');
+});
+
+test('real api.demox.site domain chains → real client', () => {
+  assert.equal(clientIpFromForwardedFor('1.1.1.1, 140.248.50.34, 11.163.15.153, 10.132.167.77'), '140.248.50.34', 'forged');
+  assert.equal(clientIpFromForwardedFor('1.1.1.1, 140.248.50.126, 11.163.6.156, 10.132.167.39'), '140.248.50.126', 'forged');
+  assert.equal(clientIpFromForwardedFor('140.248.50.15, 11.163.15.87, 10.132.167.71'), '140.248.50.15', 'no forged headers');
+});
+
+test('forged entries left of the real client are ignored, including forged private addresses', () => {
+  assert.equal(clientIpFromForwardedFor('10.0.0.1, 192.168.0.1, 140.248.50.98, 11.163.17.81, 10.132.167.112'), '140.248.50.98');
+  assert.equal(clientIpFromForwardedFor('8.8.8.8, 127.0.0.1, 140.248.50.98, 11.163.17.81, 10.132.167.112'), '140.248.50.98');
+});
+
+test('IPv4-mapped IPv6 is normalized before comparing', () => {
+  assert.equal(normalizeIp('::ffff:10.1.2.3'), '10.1.2.3');
+  assert.equal(isTrustedProxy('::ffff:11.163.17.81'), true);
+  assert.equal(clientIpFromForwardedFor('::ffff:140.248.50.98, ::ffff:11.163.17.81, ::ffff:10.132.167.112'), '140.248.50.98');
+});
+
+test('IPv6 chains: trusted v6 proxies skipped, public v6 client returned', () => {
+  assert.equal(clientIpFromForwardedFor('2001:db8::1, fd12::5, ::1'), '2001:db8::1');
+  assert.equal(clientIpFromForwardedFor('2001:db8::1, fe80::1'), '2001:db8::1');
+});
+
+test('all-trusted chain falls back to the RIGHTMOST address (never leftmost, never socket)', () => {
+  assert.equal(clientIpFromForwardedFor('10.1.1.1, 11.163.17.81, 10.132.167.112'), '10.132.167.112');
+  assert.equal(clientIpFromForwardedFor('192.168.1.5, ::ffff:10.0.0.7'), '10.0.0.7');
+  const ev = eventFromRequest({ method: 'GET', url: '/', headers: { 'x-forwarded-for': '10.1.1.1, 10.132.167.112' }, socket: { remoteAddress: '127.0.0.1' } }, Buffer.alloc(0));
+  assert.equal(ev.requestContext.sourceIp, '10.132.167.112');
+});
+
+test('debug client-ip log code is gone', () => {
+  const ws = require('./web-server.js');
+  assert.equal(ws.debugClientIpEnabled, undefined);
+  assert.ok(!require('fs').readFileSync(require('path').join(__dirname, 'web-server.js'), 'utf8').includes('DEMOX_DEBUG_CLIENT_IP'));
 });
