@@ -195,6 +195,7 @@ const demoDomains = [
   demoDomainBase("d-cf", "www.example.cn", "pending", cnameRecord("www")),
   demoDomainBase("d-cert", "shop.example.org", "pending", cnameRecord("shop")),
   demoDomainBase("d-apex", "example.com.cn", "pending", { recordType: "A", recordName: "@", recordValue: GATEWAY_IP, apex: true }),
+  demoDomainBase("d-icp", "blog.example.net", "pending", cnameRecord("blog")),
   demoDomainBase("d-live", "docs.example.com", "active", cnameRecord("docs"))
 ];
 const demoChecks: Record<string, number> = {};
@@ -205,6 +206,10 @@ function verifyDemoDomain(id: string) {
   if (base.id === "d-cf") {
     const message = "开着 Cloudflare 代理，查不到 CNAME。到 Cloudflare 把这条记录的橙色云点成灰色（仅 DNS）：类型 CNAME，名称 www，内容 customers.demox.site";
     return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "cloudflare_proxy", pendingMessage: message, checkedAt } };
+  }
+  if (base.id === "d-icp") {
+    const message = "这个域名还没备案，大陆服务器接不进来。请先完成 ICP 备案，备案通过后再点检测";
+    return { success: true, message, domain: { ...base, checkStep: "icp", icpStatus: "unfiled", pendingMessage: message, checkedAt } };
   }
   if (base.id === "d-apex") {
     const message = `还查不到记录。请确认 A 记录 @ 指向 ${GATEWAY_IP}，新记录一般 1–10 分钟生效`;

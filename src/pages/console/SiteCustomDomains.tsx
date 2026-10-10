@@ -56,6 +56,10 @@ const texts = {
     autoCheck: "每 30 秒自动检测",
     lastChecked: "上次检测",
     doneTitle: "已可访问",
+    icpTitle: "这个域名还没备案，大陆服务器接不进来",
+    icpWhat: "先在腾讯云完成 ICP 备案，备案通过后回来点「检测」。DNS 记录可以先加好。",
+    icpLink: "去备案",
+    statusIcp: "需要先备案",
     verified: "自定义域名已可访问",
     verifyFailed: "还不能访问",
     verifyError: "检测失败",
@@ -112,6 +116,10 @@ const texts = {
     autoCheck: "Auto-checking every 30s",
     lastChecked: "Last check",
     doneTitle: "Live",
+    icpTitle: "This domain has no ICP filing, so our mainland servers can't serve it",
+    icpWhat: "File it with Tencent Cloud ICP first, then come back and click Check. You can add the DNS record now.",
+    icpLink: "Start ICP filing",
+    statusIcp: "Needs ICP filing",
     verified: "Custom domain is reachable",
     verifyFailed: "Not reachable yet",
     verifyError: "Check failed",
@@ -149,6 +157,11 @@ function belongsToSite(domain: ProjectCustomDomain, websiteId: string) {
 
 type CheckStep = NonNullable<ProjectCustomDomain["checkStep"]>;
 const STEP_ORDER: CheckStep[] = ["dns", "cert", "active"];
+const ICP_FILING_URL = "https://console.cloud.tencent.com/beian";
+// zinc/black/white 在亮色主题下会自动镜像（见 index.css），所以只写暗色一侧。
+const ZINC_SECONDARY = "bg-zinc-800 text-zinc-100 hover:bg-zinc-700";
+const ZINC_OUTLINE = "border-zinc-700 bg-transparent text-[var(--stitch-ink)] hover:bg-zinc-800";
+const OPAQUE_CARD = "bg-zinc-950";
 const AUTO_CHECK_MS = 30_000;
 const AUTO_CHECK_LIMIT = 20;
 
@@ -178,6 +191,25 @@ function CheckProgress({
   const live = step === "active";
   const stuckTitle = step === "dns" ? t.stuckDns : step === "gateway" ? t.stuckGateway : t.stuckCert;
   const action = step === "dns" ? t.actionDns : step === "gateway" ? t.actionGateway : t.actionCert;
+  if (step === "icp") {
+    return (
+      <div className={`space-y-1.5 rounded-xl border border-[var(--stitch-ink)] px-3 py-3 text-sm ${OPAQUE_CARD}`} role="status" data-testid="custom-domain-icp">
+        <div className="flex items-start gap-1.5 font-medium text-[var(--stitch-ink)]">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{t.icpTitle}</span>
+        </div>
+        <p className="text-[var(--stitch-muted)]">{t.icpWhat}</p>
+        <a
+          href={ICP_FILING_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center text-[var(--stitch-ink)] underline underline-offset-4"
+        >
+          {t.icpLink} · console.cloud.tencent.com/beian
+        </a>
+      </div>
+    );
+  }
   return (
     <div className="space-y-3" data-testid="custom-domain-progress">
       <ol className="grid grid-cols-3 gap-2">
@@ -188,7 +220,7 @@ function CheckProgress({
           return (
             <li
               key={label}
-              className={`rounded-xl border px-3 py-2 ${
+              className={`rounded-xl border px-3 py-2 ${OPAQUE_CARD} ${
                 isCurrent ? "border-[var(--stitch-ink)]" : "border-[var(--stitch-line)]"
               }`}
               aria-current={isCurrent ? "step" : undefined}
@@ -222,7 +254,7 @@ function CheckProgress({
           {t.doneTitle}
         </p>
       ) : (
-        <div className="space-y-1 rounded-xl border border-[var(--stitch-line)] px-3 py-2.5 text-sm" role="status" aria-live="polite">
+        <div className={`space-y-1 rounded-xl border border-[var(--stitch-line)] px-3 py-2.5 text-sm ${OPAQUE_CARD}`} role="status" aria-live="polite">
           <div className="font-medium text-[var(--stitch-ink)]">{stuckTitle}</div>
           {domain?.pendingMessage ? <div className="text-[var(--stitch-ink)]">{domain.pendingMessage}</div> : null}
           <div className="text-[var(--stitch-muted)]">{action}</div>
@@ -294,7 +326,7 @@ export default function SiteCustomDomains({
   const backgroundRounds = React.useRef(0);
   const [backgroundTick, setBackgroundTick] = React.useState(0);
   const pendingIds = domains
-    .filter((item) => belongsToSite(item, websiteId) && item.status !== "active")
+    .filter((item) => belongsToSite(item, websiteId) && item.status !== "active" && item.checkStep !== "icp")
     .map((item) => item.id)
     .join(",");
   React.useEffect(() => {
@@ -460,7 +492,7 @@ export default function SiteCustomDomains({
   const draftStep = draftDomain?.checkedAt ? draftDomain.checkStep : undefined;
   const draftCheckedAt = draftDomain?.checkedAt;
   React.useEffect(() => {
-    if (!createOpen || createStep !== "dns" || !draftStep || draftStep === "active") return;
+    if (!createOpen || createStep !== "dns" || !draftStep || draftStep === "active" || draftStep === "icp") return;
     if (busyKey === "verify-draft" || autoChecks.current >= AUTO_CHECK_LIMIT) return;
     const timer = window.setTimeout(() => {
       autoChecks.current += 1;
@@ -516,10 +548,15 @@ export default function SiteCustomDomains({
               >
                 {domain.hostname}
               </a>
-              <Badge variant={domain.status === "active" ? "default" : "secondary"}>
+              <Badge
+                variant={domain.status === "active" ? "default" : "secondary"}
+                className={domain.status === "active" ? undefined : "border-transparent bg-zinc-800 text-zinc-300 hover:bg-zinc-800"}
+              >
                 {domain.status === "active"
                   ? t.statusActive
-                  : domain.checkStep === "dns"
+                  : domain.checkStep === "icp"
+                    ? t.statusIcp
+                    : domain.checkStep === "dns"
                     ? t.statusDns
                     : domain.checkStep === "cert" || domain.checkStep === "gateway"
                       ? t.statusCert
@@ -529,11 +566,11 @@ export default function SiteCustomDomains({
             {canManage ? (
               <div className="flex shrink-0 items-center gap-2">
                 {domain.status !== "active" ? (
-                  <Button type="button" variant="outline" size="sm" onClick={() => openDnsStep(domain)}>
+                  <Button type="button" variant="outline" size="sm" className={ZINC_OUTLINE} onClick={() => openDnsStep(domain)}>
                     {t.continueSetup}
                   </Button>
                 ) : null}
-                <Button type="button" variant="outline" size="sm" onClick={() => setRemoveTarget(domain)}>
+                <Button type="button" variant="outline" size="sm" className={ZINC_OUTLINE} onClick={() => setRemoveTarget(domain)}>
                   <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                   {t.remove}
                 </Button>
@@ -596,12 +633,13 @@ export default function SiteCustomDomains({
                 {guideType === "A" ? <p className="text-xs text-[var(--stitch-muted)]">{t.aRecordNote}</p> : null}
               </div>
               <CheckProgress domain={draftDomain} checking={busyKey === "verify-draft"} t={t} />
-              {!guidePassed ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}
+              {!guidePassed && draftDomain?.checkStep !== "icp" ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}
               {/* 手机和电脑按钮顺序一致：检测（次要）在左，关闭 / 完成在右 */}
               <DialogFooter className="flex-row justify-end gap-2 space-x-0 sm:space-x-0">
                 <Button
                   type="button"
                   variant="secondary"
+                  className={ZINC_SECONDARY}
                   disabled={busyKey === "verify-draft"}
                   onClick={() => void handleVerifyDraft()}
                 >
@@ -619,7 +657,7 @@ export default function SiteCustomDomains({
                     {t.complete}
                   </Button>
                 ) : (
-                  <Button type="button" variant="outline" onClick={() => resetCreate()}>
+                  <Button type="button" variant="outline" className={ZINC_OUTLINE} onClick={() => resetCreate()}>
                     {t.close}
                   </Button>
                 )}

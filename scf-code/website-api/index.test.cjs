@@ -93,6 +93,8 @@ test.beforeEach(() => {
     lookupGatewayAddresses: async () => ['119.91.123.2'],
     lookupHostAddresses: async () => [],
     lookupNameservers: async () => [],
+    probeIcpHttp: async () => ({ ok: true, status: 301, location: 'https://x/', server: 'nginx' }),
+    probeIcpTls: async () => ({ handshake: true }),
     probeHttps: async () => ({ ok: true, status: 200 }),
     provision: async () => ({ ok: true })
   });
@@ -1491,6 +1493,9 @@ test('project custom domain stays pending when the shared CNAME target is not th
     throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
   };
   setCustomDomainRuntime({
+    probeIcpHttp: async () => ({ ok: true, status: 301, location: '', server: 'nginx' }),
+    probeIcpTls: async () => ({ handshake: true }),
+    lookupNameservers: async () => [],
     lookupGatewayAddresses: async () => ['1.1.1.1'],
     probeHttps: async () => ({ ok: true, status: 200 }),
     provision: async () => ({ ok: true })
@@ -1522,6 +1527,9 @@ test('project custom domain stays pending until HTTPS actually serves the site',
     throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
   };
   setCustomDomainRuntime({
+    probeIcpHttp: async () => ({ ok: true, status: 301, location: '', server: 'nginx' }),
+    probeIcpTls: async () => ({ handshake: true }),
+    lookupNameservers: async () => [],
     lookupGatewayAddresses: async () => ['119.91.123.2'],
     lookupHostAddresses: async () => [],
     probeHttps: async () => ({ ok: false, reason: 'teapot', status: 418 }),
@@ -1565,7 +1573,7 @@ function verifyFixture(hostname) {
   };
 }
 
-async function verifyWith({ hostname, cname = {}, addresses = [], nameservers = [], probe = { ok: true, status: 200 } }) {
+async function verifyWith({ hostname, cname = {}, addresses = [], nameservers = [], probe = { ok: true, status: 200 }, icpHttp = { ok: true, status: 301, location: 'https://x/', server: 'nginx' }, icpTls = () => ({ handshake: true }) }) {
   dns.promises.resolveCname = async (name) => {
     if (cname[name]) return [cname[name]];
     throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
@@ -1574,6 +1582,8 @@ async function verifyWith({ hostname, cname = {}, addresses = [], nameservers = 
     lookupGatewayAddresses: async () => ['119.91.123.2'],
     lookupHostAddresses: async () => addresses,
     lookupNameservers: async () => nameservers,
+    probeIcpHttp: async () => icpHttp,
+    probeIcpTls: async (servername) => icpTls(servername),
     probeHttps: async () => probe,
     provision: async () => ({ ok: true })
   });
@@ -1648,6 +1658,83 @@ test('custom domain instructions: apex on Cloudflare DNS still gets CNAME (flatt
   assert.equal(body.domain.recordType, 'CNAME');
   assert.equal(body.domain.recordName, '@');
   assert.equal(body.domain.dnsProvider, 'cloudflare');
+});
+
+
+test('ICP: Tencent webblock redirect on port 80 means not filed, regardless of DNS', async () => {
+  const body = await verifyWith({
+    hostname: 'test.unfiled.example',
+    cname: { 'test.unfiled.example': 'customers.demox.site.' },
+    icpHttp: { ok: true, status: 302, location: 'https://dnspod.qcloud.com/static/webblock.html?d=test.unfiled.example', server: '' }
+  });
+  assert.equal(body.domain.status, 'pending');
+  assert.equal(body.domain.checkStep, 'icp');
+  assert.equal(body.domain.icpStatus, 'unfiled');
+  assert.match(body.message, /还没备案/);
+});
+
+test('ICP: 443 reset only counts when the control SNI handshakes', async () => {
+  const blocked = await verifyWith({
+    hostname: 'test.unfiled.example',
+    icpHttp: { ok: false, reason: 'timeout' },
+    icpTls: (sni) => (sni === 'customers.demox.site' ? { handshake: true } : { handshake: false, reason: 'ECONNRESET' })
+  });
+  assert.equal(blocked.domain.checkStep, 'icp');
+  assert.equal(blocked.domain.icpSignal, 'tls_reset');
+
+  const unknown = await verifyWith({
+    hostname: 'www.filed.example',
+    cname: { 'www.filed.example': 'customers.demox.site.' },
+    icpHttp: { ok: false, reason: 'timeout' },
+    icpTls: () => ({ handshake: false, reason: 'ECONNRESET' })
+  });
+  assert.notEqual(unknown.domain.checkStep, 'icp');
+  assert.equal(unknown.domain.icpStatus, 'unknown');
+  assert.equal(unknown.domain.status, 'active');
+});
+
+test('ICP: a normal gateway response (even a redirect elsewhere) is never treated as unfiled', async () => {
+  const body = await verifyWith({
+    hostname: 'www.filed.example',
+    cname: { 'www.filed.example': 'customers.demox.site.' },
+    icpHttp: { ok: true, status: 301, location: 'https://www.filed.example/', server: 'nginx/1.28.3' }
+  });
+  assert.equal(body.domain.icpStatus, 'filed');
+  assert.equal(body.domain.status, 'active');
+});
+
+
+test('ICP: an already-active domain is not downgraded when port 80 starts getting blocked', async () => {
+  dns.promises.resolveCname = async (name) => (name === 'old.unfiled.example' ? ['customers.demox.site.'] : Promise.reject(Object.assign(new Error('x'), { code: 'ENODATA' })));
+  setCustomDomainRuntime({
+    probeIcpHttp: async () => ({ ok: true, status: 302, location: 'https://dnspod.qcloud.com/static/webblock.html', server: '' }),
+    probeIcpTls: async () => ({ handshake: true }),
+    lookupNameservers: async () => [],
+    lookupGatewayAddresses: async () => ['119.91.123.2'],
+    lookupHostAddresses: async () => [],
+    probeHttps: async () => ({ ok: true, status: 200 }),
+    provision: async () => ({ ok: true })
+  });
+  const updates = [];
+  queryImpl = async (sql, params) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) {
+      return [{ ...projectDomainRow, hostname: 'old.unfiled.example', status: 'active', verified_at: new Date() }];
+    }
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains')) { updates.push(params); return { affectedRows: 1 }; }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const body = JSON.parse((await request('verify_project_custom_domain', { projectId: 42, domainId: 17 }, 'project-owner')).body);
+    assert.equal(body.domain.status, 'active');
+    assert.equal(body.domain.icpStatus, 'unfiled');
+    assert.notEqual(body.domain.checkStep, 'icp');
+    assert.equal(updates.length, 0);
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
 });
 
 

@@ -170,7 +170,9 @@ export type ProjectCustomDomain = {
   createdAt?: string | null;
   cnameChain?: string[];
   /** 最近一次检测停在哪一步：dns 解析 / gateway 平台入口 / cert 证书 / active 已可访问 */
-  checkStep?: "dns" | "gateway" | "cert" | "active";
+  checkStep?: "icp" | "dns" | "gateway" | "cert" | "active";
+  /** 网关探测的 ICP 备案状态：unfiled 时接不进来 */
+  icpStatus?: "filed" | "unfiled" | "unknown";
   dnsReason?: string;
   dnsVia?: "cname" | "a" | null;
   pendingMessage?: string;

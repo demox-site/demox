@@ -95,6 +95,7 @@ const path = require('path');
 // 数据文件不存在时 getGeoip() 返回 null，调用方回落为 UNKNOWN（与原来加载失败时相同）。
 const fs = require('fs');
 const net = require('net');
+const tls = require('tls');
 let geoip = null;
 let geoipLoadAttempted = false;
 
@@ -1351,6 +1352,73 @@ function defaultTriggerCustomDomainProvision(hostname) {
   });
 }
 
+
+// ---- ICP 备案检测 ----
+// 网关在大陆（腾讯云）。未备案域名打到网关时，腾讯云会：
+//   80 端口：302 跳到 dnspod.qcloud.com/static/webblock.html
+//   443 端口：收到 ClientHello 后直接断开
+// 直接拿网关 IP + Host/SNI 探测，不依赖用户 DNS，加域名时就能判断。
+// 只有看到明确的拦截信号才判定为未备案，其他情况一律当作「不确定 / 已备案」，避免误伤。
+const ICP_WEBBLOCK_RE = /dnspod\.qcloud\.com\/static\/webblock|webblock\.html/i;
+
+function defaultProbeCustomDomainIcpHttp(hostname, gatewayIp) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      method: 'GET',
+      host: gatewayIp,
+      port: 80,
+      path: '/.well-known/acme-challenge/demox-icp-probe',
+      timeout: 5000,
+      headers: { Host: hostname, 'User-Agent': 'Demox-ICP-Probe' }
+    }, (res) => {
+      res.resume();
+      resolve({ ok: true, status: res.statusCode || 0, location: String(res.headers.location || ''), server: String(res.headers.server || '') });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); });
+    req.on('error', (error) => resolve({ ok: false, reason: error.code || error.message || 'error' }));
+    req.end();
+  });
+}
+
+function defaultProbeCustomDomainIcpTls(servername, gatewayIp) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; socket.destroy(); resolve(value); } };
+    const socket = tls.connect({ host: gatewayIp, port: 443, servername, rejectUnauthorized: false, timeout: 5000 });
+    socket.once('secureConnect', () => done({ handshake: true }));
+    socket.once('timeout', () => done({ handshake: false, reason: 'timeout' }));
+    socket.once('error', (error) => done({ handshake: false, reason: error.code || error.message || 'error' }));
+    socket.once('close', () => done({ handshake: false, reason: 'closed' }));
+  });
+}
+
+let probeCustomDomainIcpHttp = defaultProbeCustomDomainIcpHttp;
+let probeCustomDomainIcpTls = defaultProbeCustomDomainIcpTls;
+
+/** 返回 { status: 'filed' | 'unfiled' | 'unknown', signal } */
+async function checkCustomDomainIcp(hostname) {
+  const gatewayIp = [...CUSTOM_DOMAIN_GATEWAY_IPS][0];
+  if (!gatewayIp || String(process.env.CUSTOM_DOMAIN_ICP_CHECK || 'on') === 'off') return { status: 'unknown', signal: 'disabled' };
+  const httpProbe = await probeCustomDomainIcpHttp(hostname, gatewayIp).catch(() => ({ ok: false }));
+  if (httpProbe.ok) {
+    if (httpProbe.status >= 300 && httpProbe.status < 400 && ICP_WEBBLOCK_RE.test(httpProbe.location)) {
+      return { status: 'unfiled', signal: 'http_webblock' };
+    }
+    // 拿到了网关自己的响应（nginx），说明没被拦
+    return { status: 'filed', signal: `http_${httpProbe.status}` };
+  }
+  // 80 端口没结果时看 443：本域名 SNI 被断开、对照 SNI 能握手，才算被拦
+  const [mine, control] = await Promise.all([
+    probeCustomDomainIcpTls(hostname, gatewayIp).catch(() => ({ handshake: false })),
+    probeCustomDomainIcpTls(CUSTOM_DOMAIN_CNAME_TARGET, gatewayIp).catch(() => ({ handshake: false }))
+  ]);
+  if (mine.handshake) return { status: 'filed', signal: 'tls_ok' };
+  if (control.handshake && ['ECONNRESET', 'closed', 'EPIPE'].includes(mine.reason)) {
+    return { status: 'unfiled', signal: 'tls_reset' };
+  }
+  return { status: 'unknown', signal: `http_${httpProbe.reason || 'fail'}/tls_${mine.reason || 'fail'}` };
+}
+
 let lookupCustomDomainGatewayAddresses = defaultLookupCustomDomainGatewayAddresses;
 let lookupCustomDomainHostAddresses = defaultLookupCustomDomainHostAddresses;
 let lookupCustomDomainNameservers = defaultLookupCustomDomainNameservers;
@@ -1361,6 +1429,8 @@ function setCustomDomainRuntime(hooks = {}) {
   lookupCustomDomainGatewayAddresses = hooks.lookupGatewayAddresses || defaultLookupCustomDomainGatewayAddresses;
   lookupCustomDomainHostAddresses = hooks.lookupHostAddresses || defaultLookupCustomDomainHostAddresses;
   lookupCustomDomainNameservers = hooks.lookupNameservers || defaultLookupCustomDomainNameservers;
+  probeCustomDomainIcpHttp = hooks.probeIcpHttp || defaultProbeCustomDomainIcpHttp;
+  probeCustomDomainIcpTls = hooks.probeIcpTls || defaultProbeCustomDomainIcpTls;
   probeCustomDomainHttps = hooks.probeHttps || defaultProbeCustomDomainHttps;
   triggerCustomDomainProvision = hooks.provision || defaultTriggerCustomDomainProvision;
 }
@@ -4815,10 +4885,27 @@ async function loadFormattedCustomDomain(projectId, domainId, hostname, extra = 
 }
 
 async function refreshCustomDomainStatus(row, routes = []) {
-  const [dns, instruction] = await Promise.all([
+  const [dns, instruction, icp] = await Promise.all([
     inspectCustomDomainDns(row.hostname),
-    customDomainRecordInstruction(row.hostname)
+    customDomainRecordInstruction(row.hostname),
+    checkCustomDomainIcp(row.hostname)
   ]);
+  // 未备案：新域名签不出证书（80 端口被拦），直接给结论。
+  // 已经生效的域名（证书是以前签的）不降级，免得把正在用的站点标成不可用；只回传 icpStatus 供提醒续期风险。
+  if (icp.status === 'unfiled' && row.status !== CUSTOM_DOMAIN_STATUS_ACTIVE) {
+    return formatCustomDomainForClient(row, routes, {
+      ...instruction,
+      cnameChain: dns.chain,
+      dnsReason: dns.reason,
+      icpStatus: 'unfiled',
+      icpSignal: icp.signal,
+      liveOk: false,
+      gatewayOk: false,
+      checkStep: 'icp',
+      checkedAt: new Date().toISOString(),
+      pendingMessage: '这个域名还没备案，大陆服务器接不进来。请先完成 ICP 备案，备案通过后再点检测'
+    });
+  }
   let gateway = { ok: false, reason: 'unchecked' };
   let live = { ok: false, reason: 'unchecked' };
   if (dns.matched) {
@@ -4850,6 +4937,7 @@ async function refreshCustomDomainStatus(row, routes = []) {
     liveOk: !!live.ok,
     gatewayOk: !!gateway.ok,
     checkStep: customDomainCheckStep({ dns, gateway, live }),
+    icpStatus: icp.status,
     checkedAt: new Date().toISOString(),
     pendingMessage: nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE
       ? ''
@@ -4970,8 +5058,18 @@ async function handleAddProjectCustomDomain(event) {
       [projectId, hostname, CUSTOM_DOMAIN_STATUS_PENDING, String(userId)]
     );
     await upsertCustomDomainRoute(insert.insertId, '', siteAccess.site.id);
-    const instruction = await customDomainRecordInstruction(hostname);
-    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { ...instruction, cnameChain: lookup.chain, checkStep: 'dns' });
+    const [instruction, icp] = await Promise.all([
+      customDomainRecordInstruction(hostname),
+      checkCustomDomainIcp(hostname)
+    ]);
+    const unfiled = icp.status === 'unfiled';
+    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, {
+      ...instruction,
+      cnameChain: lookup.chain,
+      icpStatus: icp.status,
+      checkStep: unfiled ? 'icp' : 'dns',
+      ...(unfiled ? { checkedAt: new Date().toISOString(), pendingMessage: '这个域名还没备案，大陆服务器接不进来。请先完成 ICP 备案，备案通过后再点检测' } : {})
+    });
     return ok({
       success: true,
       domain,
@@ -9945,3 +10043,4 @@ exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
+exports.checkCustomDomainIcp = checkCustomDomainIcp;
