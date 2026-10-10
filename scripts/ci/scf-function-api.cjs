@@ -376,6 +376,16 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { CosBucketName: CONFIG.cosBucket.replace(/-\d+$/, ''), CosObjectName: key, CosBucketRegion: CONFIG.cosRegion };
   }
 
+  /** 只把统一包传到 COS（给 demox-api-web 等其它函数用），不做任何 SCF 调用。 */
+  async function stage({ zipPath, sha = 'local' }) {
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+    const key = `${CONFIG.cosPrefix}demox-unified-scf-${String(sha).slice(0, 12)}-${hash.slice(0, 12)}.zip`;
+    log(`stage：包 sha256:${hash} → cos://${CONFIG.cosBucket}/${key}`);
+    await uploadZip(zipPath, key);
+    summary(`- stage 完成：\`cos://${CONFIG.cosBucket}/${key}\`（sha256 ${hash}），没有改任何函数`);
+    return { key, sha256: hash };
+  }
+
   async function deploy({ zipPath, sha = 'local', runId = '', withRuntime = false }) {
     const pre = await plan();
     if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
@@ -463,7 +473,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous: current, version: String(version) };
   }
 
-  return { plan, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
+  return { plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
 }
 
 async function createClients(env = process.env) {
@@ -503,11 +513,17 @@ async function cli(argv = process.argv.slice(2)) {
     await deployer.deploy({ zipPath, sha: process.env.GITHUB_SHA || 'local', runId: process.env.GITHUB_RUN_ID || '', withRuntime: argv.includes('--with-runtime') });
     return;
   }
+  if (command === 'stage') {
+    const zipPath = argValue(argv, '--zip');
+    if (!zipPath || !fs.existsSync(zipPath)) throw new Error('stage 需要 --zip <统一包 zip>');
+    await deployer.stage({ zipPath, sha: process.env.GITHUB_SHA || 'local' });
+    return;
+  }
   if (command === 'rollback') {
     await deployer.rollback({ version: argValue(argv, '--version') });
     return;
   }
-  throw new Error('用法: scf-function-api.cjs plan | deploy --zip <zip> [--with-runtime] | rollback --version <N>');
+  throw new Error('用法: scf-function-api.cjs plan | stage --zip <zip> | deploy --zip <zip> [--with-runtime] | rollback --version <N>');
 }
 
 if (require.main === module) {

@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "plan = 只读检查；deploy = 发布当前分支；rollback = 把 production 切回指定版本"
+        description: "plan = 只读检查；stage = 只打包并上传 COS（不改任何函数）；deploy = 发布当前分支；rollback = 把 production 切回指定版本"
         type: choice
-        options: [plan, deploy, rollback]
+        options: [plan, stage, deploy, rollback]
         default: plan
       version:
         description: "rollback 的目标版本号（数字）"
@@ -76,13 +76,13 @@ jobs:
           npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund
 
       - name: Unit tests (deploy script + function-api)
-        if: env.ACTION == 'deploy'
+        if: env.ACTION == 'deploy' || env.ACTION == 'stage'
         run: |
           node --test scripts/ci/scf-function-api.test.cjs
           npm test --prefix scf-code/function-api
 
       - name: Build unified package
-        if: env.ACTION == 'deploy'
+        if: env.ACTION == 'deploy' || env.ACTION == 'stage'
         run: |
           node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
           node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
@@ -103,6 +103,7 @@ jobs:
           echo "## function-api ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
           case "$ACTION" in
             plan)     node scripts/ci/scf-function-api.cjs plan ;;
+            stage)    node scripts/ci/scf-function-api.cjs stage --zip .artifacts/unified-scf/demox-unified-scf.zip ;;
             deploy)   node scripts/ci/scf-function-api.cjs deploy --zip .artifacts/unified-scf/demox-unified-scf.zip $WITH_RUNTIME ;;
             rollback) node scripts/ci/scf-function-api.cjs rollback --version "$ROLLBACK_VERSION" ;;
             *) echo "::error::未知 action: $ACTION"; exit 1 ;;
