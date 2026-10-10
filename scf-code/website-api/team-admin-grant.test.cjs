@@ -59,7 +59,7 @@ require.cache[dbModulePath] = {
 
 const websiteApi = require('./index.js');
 const { ensureTeamAdminGrant, configuredTeamAdminUserId, TEAM_ADMIN_USER_ID } = websiteApi._teamAdminForTest;
-const run = (env) => ensureTeamAdminGrant({ force: true, env });
+const run = (constant) => ensureTeamAdminGrant({ force: true, constant });
 
 function reset() {
   users = new Set([TEAM]);
@@ -72,22 +72,22 @@ function reset() {
 test('placeholder ships empty, so the default is a no-op', async () => {
   assert.equal(TEAM_ADMIN_USER_ID, '');
   reset();
-  assert.deepEqual(await run({}), { skipped: true, reason: 'unset' });
+  assert.deepEqual(await ensureTeamAdminGrant({ force: true }), { skipped: true, reason: 'unset' });
   assert.deepEqual(calls, [], 'not even a read when unset');
   assert.deepEqual(userRoles.get(TEAM), ['user']);
 });
 
 test('invalid id is ignored without touching the DB', async () => {
   reset();
-  assert.equal((await run({ TEAM_ADMIN_USER_ID: "x' OR 1=1" })).reason, 'invalid');
+  assert.equal((await run("x' OR 1=1")).reason, 'invalid');
   assert.deepEqual(calls, []);
-  assert.deepEqual(configuredTeamAdminUserId({ TEAM_ADMIN_USER_ID: '  u_1 ' }), { userId: 'u_1' });
+  assert.deepEqual(configuredTeamAdminUserId('  u_1 '), { userId: 'u_1' });
 });
 
 test('grants admin once, keeps existing roles, and writes an audit row in the same transaction', async () => {
   reset();
   userRoles.set(TEAM, ['user', 'pro']);
-  const r = await run({ TEAM_ADMIN_USER_ID: TEAM });
+  const r = await run(TEAM);
   assert.equal(r.granted, true);
   assert.deepEqual(userRoles.get(TEAM), ['user', 'pro', 'admin']);
   assert.deepEqual(auditLog, [{
@@ -98,9 +98,9 @@ test('grants admin once, keeps existing roles, and writes an audit row in the sa
 
 test('idempotent: running again writes nothing', async () => {
   reset();
-  await run({ TEAM_ADMIN_USER_ID: TEAM });
+  await run(TEAM);
   calls = [];
-  const again = await run({ TEAM_ADMIN_USER_ID: TEAM });
+  const again = await run(TEAM);
   assert.equal(again.skipped, true);
   assert.equal(auditLog.length, 1);
   assert.ok(!calls.some((c) => /INSERT/.test(c.sql)));
@@ -109,21 +109,21 @@ test('idempotent: running again writes nothing', async () => {
 test('already admin (granted by hand): no write, no audit', async () => {
   reset();
   userRoles.set(TEAM, ['user', 'admin']);
-  assert.equal((await run({ TEAM_ADMIN_USER_ID: TEAM })).reason, 'already_admin');
+  assert.equal((await run(TEAM)).reason, 'already_admin');
   assert.deepEqual(auditLog, []);
 });
 
 test('grants only once: if admin is later removed by hand, it is not re-added', async () => {
   reset();
-  await run({ TEAM_ADMIN_USER_ID: TEAM });
+  await run(TEAM);
   userRoles.set(TEAM, ['user']);
-  assert.equal((await run({ TEAM_ADMIN_USER_ID: TEAM })).reason, 'already_granted_once');
+  assert.equal((await run(TEAM)).reason, 'already_granted_once');
   assert.deepEqual(userRoles.get(TEAM), ['user']);
 });
 
 test('user that does not exist yet: no write', async () => {
   reset();
-  assert.equal((await run({ TEAM_ADMIN_USER_ID: 'u_not_registered' })).reason, 'user_not_found');
+  assert.equal((await run('u_not_registered')).reason, 'user_not_found');
   assert.ok(!userRoles.has('u_not_registered'));
   assert.deepEqual(auditLog, []);
 });
@@ -131,15 +131,15 @@ test('user that does not exist yet: no write', async () => {
 test('audit failure rolls back the role change', async () => {
   reset();
   failAudit = true;
-  assert.equal((await run({ TEAM_ADMIN_USER_ID: TEAM })).reason, 'error');
+  assert.equal((await run(TEAM)).reason, 'error');
   assert.deepEqual(userRoles.get(TEAM), ['user']);
 });
 
 test('throttled to once per hour per instance when not forced', async () => {
   reset();
   const t = Date.now() + 10 * 3600 * 1000;
-  await ensureTeamAdminGrant({ now: t, env: { TEAM_ADMIN_USER_ID: 'u_not_registered' } });
-  assert.equal((await ensureTeamAdminGrant({ now: t + 1000, env: { TEAM_ADMIN_USER_ID: TEAM } })).reason, 'throttled');
+  await ensureTeamAdminGrant({ now: t, constant: 'u_not_registered' });
+  assert.equal((await ensureTeamAdminGrant({ now: t + 1000, constant: TEAM })).reason, 'throttled');
 });
 
 test('the rollup timer calls the grant; the SQL migration is a no-op placeholder', () => {
@@ -152,4 +152,22 @@ test('the rollup timer calls the grant; the SQL migration is a no-op placeholder
     assert.match(stmt, /WHERE @team_admin_ok/, 'every write is gated');
   }
   assert.doesNotMatch(sql.replace(/^--.*$/gm, ''), /\bDELETE\b|\bDROP\b/);
+});
+
+test('the TEAM_ADMIN_USER_ID environment variable is ignored (env editors cannot grant admin)', async () => {
+  reset();
+  process.env.TEAM_ADMIN_USER_ID = TEAM;
+  try {
+    assert.deepEqual(configuredTeamAdminUserId(), { userId: '' });
+    assert.deepEqual(await ensureTeamAdminGrant({ force: true }), { skipped: true, reason: 'unset' });
+    // 走真实入口：定时器触发也不会因为环境变量去授权
+    await websiteApi.main({ Type: 'Timer', TriggerName: 'analytics-rollup-5m', Time: new Date().toISOString() }).catch(() => {});
+    assert.deepEqual(userRoles.get(TEAM), ['user']);
+    assert.deepEqual(auditLog, []);
+    assert.ok(!calls.some((c) => /user_roles|grant_team_admin/.test(c.sql) || (c.params || []).includes(TEAM)));
+  } finally {
+    delete process.env.TEAM_ADMIN_USER_ID;
+  }
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+  assert.doesNotMatch(source, /env\.TEAM_ADMIN_USER_ID|env\[['"]TEAM_ADMIN_USER_ID['"]\]/);
 });

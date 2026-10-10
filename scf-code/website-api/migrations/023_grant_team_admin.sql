@@ -1,14 +1,14 @@
 -- 023：给团队管理员账号授 admin（2026-10-10）。
 --
 -- 和 website-api 里的 ensureTeamAdminGrant() 等价：website 函数每次 5 分钟统计定时器会顺带检查，
--- 读常量 / 环境变量 TEAM_ADMIN_USER_ID。数据库在 VPC 里，平时不用手动执行本文件；
+-- 只读代码常量 TEAM_ADMIN_USER_ID（不读环境变量）。数据库在 VPC 里，平时不用手动执行本文件；
 -- 只有在能直连库、又不想等定时器时才用。
 --
 -- 用法：把下一行的空字符串改成团队账号的用户 ID 再执行。保持空字符串 = 什么也不做。
 -- 幂等：已经是 admin 不写；只追加 admin，不删已有角色；用户不存在不写。
 -- 审计：真正改了角色才在 admin_audit_log 记一行（operator_uid=system:023，via=migration）。
 -- 只授一次：已经有这个 ID 的 grant_team_admin 成功记录就跳过（避免把后台手动撤掉的 admin 加回来）。
--- 回滚：在后台把这个账号的 admin 角色去掉（并清空 TEAM_ADMIN_USER_ID）。
+-- 回滚：在后台把这个账号的 admin 角色去掉（并把常量改回空字符串）。
 SET @team_admin_user_id = '';
 
 SET @team_admin_target = CONCAT('uid=', @team_admin_user_id, ';role=admin');

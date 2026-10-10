@@ -4003,22 +4003,24 @@ exports._revokeRtForTest = { parseRevokeRtInput, revokeRtAuditTarget, REVOKE_RT_
 
 // ── 023：给团队管理员账号授 admin（2026-10-10，Chief 批准思路，等账号建好再填 ID）──────────
 // 团队用一个专门的 Demox 账号调用管理员接口（例如 revoke_oauth_refresh_token），不再借用 phosa 的账号。
-// 账号注册好以后，把它的用户 ID 填进 TEAM_ADMIN_USER_ID（下面的常量，或 website 函数的同名环境变量，环境变量优先）。
+// 账号注册好以后，把它的用户 ID 填进下面的常量 TEAM_ADMIN_USER_ID，改代码、走评审再发布。
+// 不读环境变量（云架构 2026-10-10 要求：改函数环境变量的权限不能变成授 admin 的权限）。
 // - 没填：什么也不做（no-op）。
 // - 幂等：已经是 admin 就不写；只追加 admin，不删任何已有角色。
 // - 只授一次：admin_audit_log 里已经有这个 ID 的 grant_team_admin 成功记录就不再授，
-//   所以之后有人在后台手动撤掉它的 admin，这里不会偷偷加回来（要彻底撤销：先清空 TEAM_ADMIN_USER_ID 再撤角色）。
+//   所以之后有人在后台手动撤掉它的 admin，这里不会偷偷加回来（要彻底撤销：先把常量改回空字符串再撤角色）。
 // - 有审计：改 user_roles 和写 admin_audit_log 在同一个事务里（operator_uid=system:023，auth_method=system）。
 // - 用户不存在 / ID 格式不对：不写，只打一行警告（不含 ID 以外的信息）。
 // 由 5 分钟统计定时器顺带调用，每个实例每小时最多查一次；SQL 等价版本见 migrations/023_grant_team_admin.sql。
-const TEAM_ADMIN_USER_ID = ''; // 占位：账号建好后填用户 ID，或者设置环境变量 TEAM_ADMIN_USER_ID
+const TEAM_ADMIN_USER_ID = ''; // 占位：账号建好后填用户 ID（只认这里，环境变量无效）
 const TEAM_ADMIN_AUDIT_ACTION = 'grant_team_admin';
 const TEAM_ADMIN_OPERATOR = 'system:023';
 const TEAM_ADMIN_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let teamAdminLastCheckAt = 0;
 
-function configuredTeamAdminUserId(env = process.env) {
-  const raw = String(env.TEAM_ADMIN_USER_ID || TEAM_ADMIN_USER_ID || '').trim();
+// 只读代码常量，故意不读环境变量：能改函数环境变量的人（例如 demox-ops）不应能借此给任意账号授 admin。
+function configuredTeamAdminUserId(constant = TEAM_ADMIN_USER_ID) {
+  const raw = String(constant || '').trim();
   if (!raw) return { userId: '' };
   if (!REVOKE_RT_USER_ID_PATTERN.test(raw)) return { userId: '', invalid: true };
   return { userId: raw };
@@ -4032,8 +4034,8 @@ function parseRoleList(value) {
   return Array.isArray(list) ? list.map((r) => String(r || '').trim().toLowerCase()).filter(Boolean) : [];
 }
 
-async function ensureTeamAdminGrant({ now = Date.now(), force = false, env = process.env } = {}) {
-  const { userId, invalid } = configuredTeamAdminUserId(env);
+async function ensureTeamAdminGrant({ now = Date.now(), force = false, constant = TEAM_ADMIN_USER_ID } = {}) {
+  const { userId, invalid } = configuredTeamAdminUserId(constant);
   if (invalid) {
     console.warn('TEAM_ADMIN_USER_ID 格式不对，已跳过团队管理员授权');
     return { skipped: true, reason: 'invalid' };
