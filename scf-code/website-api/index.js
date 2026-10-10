@@ -95,6 +95,7 @@ const path = require('path');
 // 数据文件不存在时 getGeoip() 返回 null，调用方回落为 UNKNOWN（与原来加载失败时相同）。
 const fs = require('fs');
 const net = require('net');
+const tls = require('tls');
 let geoip = null;
 let geoipLoadAttempted = false;
 
@@ -235,6 +236,7 @@ function getGeoip() {
   return geoip;
 }
 const dnsPromises = require('dns').promises;
+const psl = require('psl');
 const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
@@ -1106,9 +1108,51 @@ function isValidCustomRouteLabel(label) {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
 }
 
+// 用公共后缀表区分根域名和子域名（example.com.cn 是根域名，shop.example.com.cn 是子域名）。
+function customDomainParts(hostname) {
+  const host = normalizeDomainValue(hostname);
+  const parsed = host ? psl.parse(host) : null;
+  if (parsed && !parsed.error && parsed.domain) {
+    return { host, registrable: parsed.domain, sub: parsed.subdomain || '' };
+  }
+  const labels = host.split('.');
+  return { host, registrable: labels.slice(-2).join('.'), sub: labels.slice(0, -2).join('.') };
+}
+
+// DNS 服务商里填的「主机记录」：a.b.example.com → a.b，根域名 → @
 function customDomainCnameHost(hostname) {
-  const host = String(hostname || '');
-  return host.includes('.') ? host.slice(0, host.indexOf('.')) : host;
+  return customDomainParts(hostname).sub || '@';
+}
+
+async function defaultLookupCustomDomainNameservers(domain) {
+  try {
+    const records = await Promise.race([
+      dnsPromises.resolveNs(domain),
+      new Promise((resolve) => setTimeout(() => resolve([]), 3000))
+    ]);
+    return Array.isArray(records) ? records.map((item) => normalizeDomainValue(item)).filter(Boolean) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * 告诉用户该加哪条记录。用户不用选：
+ * - 子域名 → CNAME 到入口
+ * - 根域名、DNS 在 Cloudflare → 也给 CNAME（Cloudflare 会在根域名上拍平）
+ * - 其他根域名 → A 记录到网关 IP（根域名一般不能写 CNAME）
+ */
+async function customDomainRecordInstruction(hostname) {
+  const { sub, registrable } = customDomainParts(hostname);
+  if (sub) {
+    return { apex: false, recordType: 'CNAME', recordName: sub, recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: null };
+  }
+  const nameservers = await lookupCustomDomainNameservers(registrable).catch(() => []);
+  const onCloudflare = nameservers.some((ns) => ns.endsWith('.ns.cloudflare.com'));
+  if (onCloudflare || !CUSTOM_DOMAIN_GATEWAY_IPS.size) {
+    return { apex: true, recordType: 'CNAME', recordName: '@', recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: onCloudflare ? 'cloudflare' : null };
+  }
+  return { apex: true, recordType: 'A', recordName: '@', recordValue: [...CUSTOM_DOMAIN_GATEWAY_IPS][0], dnsProvider: null };
 }
 
 function customDomainValidationError(hostname) {
@@ -1156,6 +1200,64 @@ function cnamePointsAtOfficialSite(chain) {
       && value !== CUSTOM_DOMAIN_CNAME_TARGET
       && (value === defaultDomain || value.endsWith(`.${defaultDomain}`));
   });
+}
+
+// Cloudflare 代理（橙色云）会把 CNAME 拍平成自己的 IP，公网只看得到 A 记录。
+// 列表来自 https://www.cloudflare.com/ips-v4 （只用于给出准确提示，不参与放行）。
+const CLOUDFLARE_IPV4_RANGES = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+  '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+  '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'
+].map((cidr) => {
+  const [base, bits] = cidr.split('/');
+  const mask = Number(bits) === 0 ? 0 : (~0 << (32 - Number(bits))) >>> 0;
+  return { base: ipv4ToInt(base) & mask, mask };
+});
+
+function ipv4ToInt(ip) {
+  const parts = String(ip || '').split('.').map((item) => Number(item));
+  if (parts.length !== 4 || parts.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function isCloudflareIpv4(ip) {
+  const value = ipv4ToInt(ip);
+  if (value === null) return false;
+  return CLOUDFLARE_IPV4_RANGES.some((range) => ((value & range.mask) >>> 0) === range.base);
+}
+
+async function defaultLookupCustomDomainHostAddresses(hostname) {
+  try {
+    const records = await dnsPromises.resolve4(hostname);
+    return Array.isArray(records) ? records.map((item) => String(item || '').trim()).filter(Boolean) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * 第一步「解析」：返回是否已经指到 Demox 入口，以及没指到时的具体原因。
+ * reason: cname | gateway_ip | official_target | cloudflare_proxy | other_cname | other_ip | no_record
+ */
+async function inspectCustomDomainDns(hostname) {
+  const lookup = await lookupCustomDomainCname(hostname);
+  if (lookup.matched) return { matched: true, via: 'cname', reason: 'cname', chain: lookup.chain, addresses: [] };
+  if (cnamePointsAtOfficialSite(lookup.chain)) {
+    return { matched: false, reason: 'official_target', chain: lookup.chain, addresses: [] };
+  }
+  const addresses = await lookupCustomDomainHostAddresses(hostname);
+  // 根域名没法写 CNAME，或 DNS 服务商把 CNAME 拍平了：只要 A 记录正好是网关 IP，也算指对了。
+  if (!lookup.chain.length && addresses.length && CUSTOM_DOMAIN_GATEWAY_IPS.size
+    && addresses.every((ip) => CUSTOM_DOMAIN_GATEWAY_IPS.has(ip))) {
+    return { matched: true, via: 'a', reason: 'gateway_ip', chain: [], addresses };
+  }
+  if (addresses.length && addresses.some((ip) => isCloudflareIpv4(ip))) {
+    return { matched: false, reason: 'cloudflare_proxy', chain: lookup.chain, addresses };
+  }
+  if (lookup.chain.length) return { matched: false, reason: 'other_cname', chain: lookup.chain, addresses };
+  if (addresses.length) return { matched: false, reason: 'other_ip', chain: [], addresses };
+  return { matched: false, reason: 'no_record', chain: [], addresses: [] };
 }
 
 async function defaultLookupCustomDomainGatewayAddresses() {
@@ -1250,12 +1352,85 @@ function defaultTriggerCustomDomainProvision(hostname) {
   });
 }
 
+
+// ---- ICP 备案检测 ----
+// 网关在大陆（腾讯云）。未备案域名打到网关时，腾讯云会：
+//   80 端口：302 跳到 dnspod.qcloud.com/static/webblock.html
+//   443 端口：收到 ClientHello 后直接断开
+// 直接拿网关 IP + Host/SNI 探测，不依赖用户 DNS，加域名时就能判断。
+// 只有看到明确的拦截信号才判定为未备案，其他情况一律当作「不确定 / 已备案」，避免误伤。
+const ICP_WEBBLOCK_RE = /dnspod\.qcloud\.com\/static\/webblock|webblock\.html/i;
+
+function defaultProbeCustomDomainIcpHttp(hostname, gatewayIp) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      method: 'GET',
+      host: gatewayIp,
+      port: 80,
+      path: '/.well-known/acme-challenge/demox-icp-probe',
+      timeout: 5000,
+      headers: { Host: hostname, 'User-Agent': 'Demox-ICP-Probe' }
+    }, (res) => {
+      res.resume();
+      resolve({ ok: true, status: res.statusCode || 0, location: String(res.headers.location || ''), server: String(res.headers.server || '') });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); });
+    req.on('error', (error) => resolve({ ok: false, reason: error.code || error.message || 'error' }));
+    req.end();
+  });
+}
+
+function defaultProbeCustomDomainIcpTls(servername, gatewayIp) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; socket.destroy(); resolve(value); } };
+    const socket = tls.connect({ host: gatewayIp, port: 443, servername, rejectUnauthorized: false, timeout: 5000 });
+    socket.once('secureConnect', () => done({ handshake: true }));
+    socket.once('timeout', () => done({ handshake: false, reason: 'timeout' }));
+    socket.once('error', (error) => done({ handshake: false, reason: error.code || error.message || 'error' }));
+    socket.once('close', () => done({ handshake: false, reason: 'closed' }));
+  });
+}
+
+let probeCustomDomainIcpHttp = defaultProbeCustomDomainIcpHttp;
+let probeCustomDomainIcpTls = defaultProbeCustomDomainIcpTls;
+
+/** 返回 { status: 'filed' | 'unfiled' | 'unknown', signal } */
+async function checkCustomDomainIcp(hostname) {
+  const gatewayIp = [...CUSTOM_DOMAIN_GATEWAY_IPS][0];
+  if (!gatewayIp || String(process.env.CUSTOM_DOMAIN_ICP_CHECK || 'on') === 'off') return { status: 'unknown', signal: 'disabled' };
+  const httpProbe = await probeCustomDomainIcpHttp(hostname, gatewayIp).catch(() => ({ ok: false }));
+  if (httpProbe.ok) {
+    if (httpProbe.status >= 300 && httpProbe.status < 400 && ICP_WEBBLOCK_RE.test(httpProbe.location)) {
+      return { status: 'unfiled', signal: 'http_webblock' };
+    }
+    // 拿到了网关自己的响应（nginx），说明没被拦
+    return { status: 'filed', signal: `http_${httpProbe.status}` };
+  }
+  // 80 端口没结果时看 443：本域名 SNI 被断开、对照 SNI 能握手，才算被拦
+  const [mine, control] = await Promise.all([
+    probeCustomDomainIcpTls(hostname, gatewayIp).catch(() => ({ handshake: false })),
+    probeCustomDomainIcpTls(CUSTOM_DOMAIN_CNAME_TARGET, gatewayIp).catch(() => ({ handshake: false }))
+  ]);
+  if (mine.handshake) return { status: 'filed', signal: 'tls_ok' };
+  if (control.handshake && ['ECONNRESET', 'closed', 'EPIPE'].includes(mine.reason)) {
+    return { status: 'unfiled', signal: 'tls_reset' };
+  }
+  return { status: 'unknown', signal: `http_${httpProbe.reason || 'fail'}/tls_${mine.reason || 'fail'}` };
+}
+
 let lookupCustomDomainGatewayAddresses = defaultLookupCustomDomainGatewayAddresses;
+let lookupCustomDomainHostAddresses = defaultLookupCustomDomainHostAddresses;
+let lookupCustomDomainNameservers = defaultLookupCustomDomainNameservers;
 let probeCustomDomainHttps = defaultProbeCustomDomainHttps;
 let triggerCustomDomainProvision = defaultTriggerCustomDomainProvision;
 
 function setCustomDomainRuntime(hooks = {}) {
   lookupCustomDomainGatewayAddresses = hooks.lookupGatewayAddresses || defaultLookupCustomDomainGatewayAddresses;
+  lookupCustomDomainHostAddresses = hooks.lookupHostAddresses || defaultLookupCustomDomainHostAddresses;
+  lookupCustomDomainNameservers = hooks.lookupNameservers || defaultLookupCustomDomainNameservers;
+  probeCustomDomainIcpHttp = hooks.probeIcpHttp || defaultProbeCustomDomainIcpHttp;
+  probeCustomDomainIcpTls = hooks.probeIcpTls || defaultProbeCustomDomainIcpTls;
   probeCustomDomainHttps = hooks.probeHttps || defaultProbeCustomDomainHttps;
   triggerCustomDomainProvision = hooks.provision || defaultTriggerCustomDomainProvision;
 }
@@ -1274,20 +1449,39 @@ async function assertCustomDomainGateway() {
   return { ok: true, addresses: matched };
 }
 
-function customDomainPendingMessage({ matched, chain, gateway, live }) {
-  if (!matched) {
-    if (cnamePointsAtOfficialSite(chain)) {
-      return 'CNAME 不能指向 xxx.demox.site，请改成 customers.demox.site';
+function customDomainPendingMessage({ dns, gateway, live, hostname, instruction }) {
+  const host = CUSTOM_DOMAIN_CNAME_TARGET;
+  const recordName = (instruction && instruction.recordName) || customDomainCnameHost(hostname);
+  const useA = instruction && instruction.recordType === 'A';
+  const want = useA ? `A 记录 ${recordName} 指向 ${instruction.recordValue}` : `CNAME ${recordName} 指向 ${host}`;
+  if (!dns || !dns.matched) {
+    switch (dns && dns.reason) {
+      case 'official_target':
+        return `CNAME 不能指向 xxx.demox.site，请改成 ${host}`;
+      case 'cloudflare_proxy':
+        return `开着 Cloudflare 代理，查不到 CNAME。到 Cloudflare 把这条记录的橙色云点成灰色（仅 DNS）：类型 CNAME，名称 ${recordName}，内容 ${host}`;
+      case 'other_cname':
+        return `CNAME 指向了 ${dns.chain[dns.chain.length - 1]}，请改成 ${want}`;
+      case 'other_ip':
+        return `解析到了 ${dns.addresses.slice(0, 2).join('、')}，不是 Demox。请改成 ${want}`;
+      default:
+        return `还查不到记录。请确认 ${want}，新记录一般 1–10 分钟生效`;
     }
-    return '还没有解析到 customers.demox.site';
   }
   if (gateway && gateway.ok === false) {
-    return gateway.message || '平台入口 customers.demox.site 未指向网关，域名还不能生效';
+    return gateway.message || `平台入口 ${host} 未指向网关，域名还不能生效`;
   }
   if (live && live.ok === false) {
-    return '解析已指向入口，正在签发 HTTPS 证书，请一两分钟后再点检测';
+    return '解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS';
   }
-  return '还没有解析到 customers.demox.site';
+  return `还查不到记录。请确认 ${want}`;
+}
+
+function customDomainCheckStep({ dns, gateway, live }) {
+  if (!dns || !dns.matched) return 'dns';
+  if (gateway && gateway.ok === false) return 'gateway';
+  if (!live || !live.ok) return 'cert';
+  return 'active';
 }
 
 function getSupportedOfficialBinding(row) {
@@ -4640,7 +4834,7 @@ function formatCustomDomainForClient(row, routes = [], extra = {}) {
       : CUSTOM_DOMAIN_STATUS_PENDING,
     cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
     cnameHost,
-    wildcardHost: cnameHost ? `*.${cnameHost}` : '*',
+    wildcardHost: cnameHost && cnameHost !== '@' ? `*.${cnameHost}` : '*',
     url: hostname ? `https://${hostname}/` : '',
     defaultWebsiteId: defaultRoute?.websiteId || null,
     defaultWebsiteName: defaultRoute?.websiteName || '',
@@ -4691,20 +4885,40 @@ async function loadFormattedCustomDomain(projectId, domainId, hostname, extra = 
 }
 
 async function refreshCustomDomainStatus(row, routes = []) {
-  const lookup = await lookupCustomDomainCname(row.hostname);
+  const [dns, instruction, icp] = await Promise.all([
+    inspectCustomDomainDns(row.hostname),
+    customDomainRecordInstruction(row.hostname),
+    checkCustomDomainIcp(row.hostname)
+  ]);
+  // 未备案：新域名签不出证书（80 端口被拦），直接给结论。
+  // 已经生效的域名（证书是以前签的）不降级，免得把正在用的站点标成不可用；只回传 icpStatus 供提醒续期风险。
+  if (icp.status === 'unfiled' && row.status !== CUSTOM_DOMAIN_STATUS_ACTIVE) {
+    return formatCustomDomainForClient(row, routes, {
+      ...instruction,
+      cnameChain: dns.chain,
+      dnsReason: dns.reason,
+      icpStatus: 'unfiled',
+      icpSignal: icp.signal,
+      liveOk: false,
+      gatewayOk: false,
+      checkStep: 'icp',
+      checkedAt: new Date().toISOString(),
+      pendingMessage: '这个域名还没备案，大陆服务器接不进来。请先完成 ICP 备案，备案通过后再点检测'
+    });
+  }
   let gateway = { ok: false, reason: 'unchecked' };
   let live = { ok: false, reason: 'unchecked' };
-  if (lookup.matched) {
+  if (dns.matched) {
     gateway = await assertCustomDomainGateway();
     if (gateway.ok) {
       await triggerCustomDomainProvision(row.hostname).catch(() => ({ ok: false }));
       live = await probeCustomDomainHttps(row.hostname);
     }
   }
-  const nextStatus = lookup.matched && gateway.ok && live.ok
+  const nextStatus = dns.matched && gateway.ok && live.ok
     ? CUSTOM_DOMAIN_STATUS_ACTIVE
     : CUSTOM_DOMAIN_STATUS_PENDING;
-  if (nextStatus !== row.status || (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) || (!lookup.matched && row.verified_at)) {
+  if (nextStatus !== row.status || (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) || (!dns.matched && row.verified_at)) {
     await query(
       `UPDATE custom_domains
        SET status = ?, verified_at = CASE WHEN ? = '${CUSTOM_DOMAIN_STATUS_ACTIVE}' THEN COALESCE(verified_at, NOW()) ELSE NULL END, updated_at = NOW()
@@ -4716,12 +4930,18 @@ async function refreshCustomDomainStatus(row, routes = []) {
     if (nextStatus !== CUSTOM_DOMAIN_STATUS_ACTIVE) row.verified_at = null;
   }
   return formatCustomDomainForClient(row, routes, {
-    cnameChain: lookup.chain,
+    ...instruction,
+    cnameChain: dns.chain,
+    dnsVia: dns.matched ? dns.via : null,
+    dnsReason: dns.reason,
     liveOk: !!live.ok,
     gatewayOk: !!gateway.ok,
+    checkStep: customDomainCheckStep({ dns, gateway, live }),
+    icpStatus: icp.status,
+    checkedAt: new Date().toISOString(),
     pendingMessage: nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE
       ? ''
-      : customDomainPendingMessage({ matched: lookup.matched, chain: lookup.chain, gateway, live })
+      : customDomainPendingMessage({ dns, gateway, live, hostname: row.hostname, instruction })
   });
 }
 
@@ -4775,7 +4995,11 @@ async function handleListProjectCustomDomains(event) {
     );
     const domains = [];
     for (const row of rows) {
-      domains.push(formatCustomDomainForClient(row, await loadCustomDomainRoutes(row.id)));
+      const [routes, instruction] = await Promise.all([
+        loadCustomDomainRoutes(row.id),
+        customDomainRecordInstruction(row.hostname)
+      ]);
+      domains.push(formatCustomDomainForClient(row, routes, instruction));
     }
     return ok({
       success: true,
@@ -4817,7 +5041,7 @@ async function handleAddProjectCustomDomain(event) {
       return ok({ success: false, code: 'DUPLICATE', message: '该域名或其上下级已被其他项目占用' });
     }
     if (owned) {
-      const domain = await loadFormattedCustomDomain(projectId, owned.id);
+      const domain = await loadFormattedCustomDomain(projectId, owned.id, null, await customDomainRecordInstruction(owned.hostname));
       return ok({ success: true, domain, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET, message: '该域名已绑定到此项目' });
     }
 
@@ -4834,14 +5058,27 @@ async function handleAddProjectCustomDomain(event) {
       [projectId, hostname, CUSTOM_DOMAIN_STATUS_PENDING, String(userId)]
     );
     await upsertCustomDomainRoute(insert.insertId, '', siteAccess.site.id);
-    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { cnameChain: lookup.chain });
+    const [instruction, icp] = await Promise.all([
+      customDomainRecordInstruction(hostname),
+      checkCustomDomainIcp(hostname)
+    ]);
+    const unfiled = icp.status === 'unfiled';
+    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, {
+      ...instruction,
+      cnameChain: lookup.chain,
+      icpStatus: icp.status,
+      checkStep: unfiled ? 'icp' : 'dns',
+      ...(unfiled ? { checkedAt: new Date().toISOString(), pendingMessage: '这个域名还没备案，大陆服务器接不进来。请先完成 ICP 备案，备案通过后再点检测' } : {})
+    });
     return ok({
       success: true,
       domain,
       cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
       message: lookup.matched
         ? '域名已绑定到项目。请点检测，确认 HTTPS 可访问后再完成'
-        : '域名已绑定到项目。请把 CNAME 指到 customers.demox.site'
+        : (instruction.recordType === 'A'
+          ? `域名已绑定到项目。请把 A 记录 @ 指到 ${instruction.recordValue}`
+          : '域名已绑定到项目。请把 CNAME 指到 customers.demox.site')
     });
   } catch (error) {
     if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
@@ -9806,3 +10043,4 @@ exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
+exports.checkCustomDomainIcp = checkCustomDomainIcp;

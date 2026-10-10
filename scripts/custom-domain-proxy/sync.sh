@@ -11,6 +11,7 @@ NGINX_DIR="${NGINX_DIR:-/etc/nginx/conf.d}"
 WEBROOT="${WEBROOT:-/var/www/demox-acme}"
 ORIGIN_SUFFIX="${ORIGIN_SUFFIX:-demox.site}"
 EMAIL="${ACME_EMAIL:-admin@demox.site}"
+GATEWAY_IPS="${GATEWAY_IPS:-119.91.123.2}"
 PREFIX=demox-custom
 CHANGED=0
 FILTER_HOST=""
@@ -157,7 +158,14 @@ points_at_gateway() {
     [[ "$hop" == "customers.demox.site" ]] && return 0
     current="$hop"
   done
-  return 1
+  # Apex domains / flattened CNAMEs: accept when every A record is the gateway itself.
+  local addrs
+  addrs="$(dig +short A "$host" | grep -E '^[0-9.]+$' | sort -u)"
+  [[ -z "$addrs" ]] && return 1
+  while read -r ip; do
+    [[ " ${GATEWAY_IPS} " == *" ${ip} "* ]] || return 1
+  done <<<"$addrs"
+  return 0
 }
 
 wanted=()
@@ -181,7 +189,7 @@ while IFS=$'\t' read -r host website_id; do
         --non-interactive --agree-tos -m "$EMAIL" --keep-until-expiring \
         || echo "cert pending for $host"
     else
-      echo "skip cert for $host: CNAME is not customers.demox.site"
+      echo "skip cert for $host: DNS does not reach customers.demox.site (CNAME or gateway A record)"
     fi
   fi
 
