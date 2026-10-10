@@ -561,7 +561,13 @@ function normalizeInvocationRequest(event = {}) {
     };
   }
   const headers = {};
-  for (const [key, value] of Object.entries(event.headers || {})) headers[String(key).toLowerCase()] = String(value);
+  for (const [key, value] of Object.entries(event.headers || {})) {
+    const name = String(key).toLowerCase();
+    // x-scf-* 一律不转给用户函数：事件入口（API 网关/自定义域名）下客户端自带的 x-scf-remote-addr 等会原样到达，
+    // 平台的 X-Scf-Secret-* 是运行角色临时密钥。Web 入口已在 web-server.js 去掉，这里对所有入口兜底。
+    if (name.startsWith('x-scf-')) continue;
+    headers[name] = String(value);
+  }
   const method = String(event.httpMethod || event.requestContext?.http?.method || 'GET').toUpperCase();
   const query = { ...(event.queryStringParameters || event.queryString || event.query || {}) };
   let rawBody = event.body;
