@@ -1137,22 +1137,30 @@ async function defaultLookupCustomDomainNameservers(domain) {
 }
 
 /**
- * 告诉用户该加哪条记录。用户不用选：
- * - 子域名 → CNAME 到入口
- * - 根域名、DNS 在 Cloudflare → 也给 CNAME（Cloudflare 会在根域名上拍平）
- * - 其他根域名 → A 记录到网关 IP（根域名一般不能写 CNAME）
+ * 告诉用户该加哪条记录。用户不用选，一律 CNAME 到入口：
+ * - 子域名 → CNAME <子域名部分> → 入口
+ * - 根域名 → CNAME @ → 入口（Cloudflare、DNSPod 等都支持根域名 CNAME / 拍平）
+ * - 根域名再附一条备用：DNS 服务商不支持根域名 CNAME 时，改用 A 记录 @ → 网关 IP。
+ *   检测两种都认，已经用 A 记录接入的域名照常生效。
  */
 async function customDomainRecordInstruction(hostname) {
   const { sub, registrable } = customDomainParts(hostname);
   if (sub) {
-    return { apex: false, recordType: 'CNAME', recordName: sub, recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: null };
+    return { apex: false, recordType: 'CNAME', recordName: sub, recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: null, fallbackRecordType: null, fallbackRecordValue: null };
   }
   const nameservers = await lookupCustomDomainNameservers(registrable).catch(() => []);
   const onCloudflare = nameservers.some((ns) => ns.endsWith('.ns.cloudflare.com'));
-  if (onCloudflare || !CUSTOM_DOMAIN_GATEWAY_IPS.size) {
-    return { apex: true, recordType: 'CNAME', recordName: '@', recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: onCloudflare ? 'cloudflare' : null };
-  }
-  return { apex: true, recordType: 'A', recordName: '@', recordValue: [...CUSTOM_DOMAIN_GATEWAY_IPS][0], dnsProvider: null };
+  const gatewayIp = [...CUSTOM_DOMAIN_GATEWAY_IPS][0] || null;
+  const fallback = !onCloudflare && gatewayIp;
+  return {
+    apex: true,
+    recordType: 'CNAME',
+    recordName: '@',
+    recordValue: CUSTOM_DOMAIN_CNAME_TARGET,
+    dnsProvider: onCloudflare ? 'cloudflare' : null,
+    fallbackRecordType: fallback ? 'A' : null,
+    fallbackRecordValue: fallback ? gatewayIp : null
+  };
 }
 
 function customDomainValidationError(hostname) {
@@ -1452,8 +1460,7 @@ async function assertCustomDomainGateway() {
 function customDomainPendingMessage({ dns, gateway, live, hostname, instruction }) {
   const host = CUSTOM_DOMAIN_CNAME_TARGET;
   const recordName = (instruction && instruction.recordName) || customDomainCnameHost(hostname);
-  const useA = instruction && instruction.recordType === 'A';
-  const want = useA ? `A 记录 ${recordName} 指向 ${instruction.recordValue}` : `CNAME ${recordName} 指向 ${host}`;
+  const want = `CNAME ${recordName} 指向 ${host}`;
   if (!dns || !dns.matched) {
     switch (dns && dns.reason) {
       case 'official_target':
@@ -1465,14 +1472,14 @@ function customDomainPendingMessage({ dns, gateway, live, hostname, instruction 
       case 'other_ip':
         return `解析到了 ${dns.addresses.slice(0, 2).join('、')}，不是 Demox。请改成 ${want}`;
       default:
-        return `还查不到记录。请确认 ${want}，新记录一般 1–10 分钟生效`;
+        return `还查不到记录。请确认 ${want}，新记录一般 1–10 分钟生效。`;
     }
   }
   if (gateway && gateway.ok === false) {
     return gateway.message || `平台入口 ${host} 未指向网关，域名还不能生效`;
   }
   if (live && live.ok === false) {
-    return '解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS';
+    return '解析已通，正在签发证书。会自动检测，不用点，也不用改 DNS。';
   }
   return `还查不到记录。请确认 ${want}`;
 }
@@ -5308,9 +5315,7 @@ async function handleAddProjectCustomDomain(event) {
       cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET,
       message: lookup.matched
         ? '域名已绑定到项目。请点检测，确认 HTTPS 可访问后再完成'
-        : (instruction.recordType === 'A'
-          ? `域名已绑定到项目。请把 A 记录 @ 指到 ${instruction.recordValue}`
-          : '域名已绑定到项目。请把 CNAME 指到 customers.demox.site')
+        : `域名已绑定到项目。请把 CNAME ${instruction.recordName} 指到 ${CUSTOM_DOMAIN_CNAME_TARGET}`
     });
   } catch (error) {
     if (error && (error.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error.message || ''))) {
