@@ -29,6 +29,17 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * DEMOX_COS_ACCELERATE：只影响 CI 上传部署包走的 COS 域名（默认关）。
+ * 空 / false / 0 / off / no = 关；true / 1 / on / yes = 开；其它值直接报错，免得写错了静默不生效。
+ */
+function parseCosAccelerate(value) {
+  const v = String(value == null ? '' : value).trim().toLowerCase();
+  if (['', 'false', '0', 'off', 'no'].includes(v)) return false;
+  if (['true', '1', 'on', 'yes'].includes(v)) return true;
+  throw new Error(`DEMOX_COS_ACCELERATE 取值不合法：${value}（只接受 true / false）`);
+}
+
 const CONFIG = Object.freeze({
   functionName: 'demox-function-api',
   runtimeFunctionName: 'demox-user-nodejs',
@@ -43,6 +54,9 @@ const CONFIG = Object.freeze({
   // 部署包 COS 桶：默认仍是成都老桶；workflow 用 inputs.cos_bucket / vars.DEMOX_COS_BUCKET 覆盖（同理 region）。
   cosBucket: process.env.DEMOX_COS_BUCKET || 'demox-analytics-raw-1307257815',
   cosRegion: process.env.DEMOX_COS_REGION || 'ap-chengdu',
+  // 上传是否走 COS 全球加速域名（<bucket>.cos.accelerate.myqcloud.com）。只影响上传；
+  // UpdateFunctionCode 里的 CosBucketRegion 仍是上面的地域（SCF 从同地域内网拉包）。取值在 cli() 里校验。
+  cosAccelerateRaw: process.env.DEMOX_COS_ACCELERATE || '',
   cosPrefix: 'scf-deploy/ci/',
   publicBaseUrl: 'https://api.demox.site',
   oidcProviderId: 'github-actions',
@@ -164,6 +178,22 @@ function validateCosTarget(bucket = CONFIG.cosBucket, region = CONFIG.cosRegion)
   if (!/^[a-z0-9][a-z0-9-]{0,48}-1307257815$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（只接受本账号 APPID 1307257815 的桶：<name>-1307257815）`);
   if (!/^ap-[a-z]+(?:-[a-z]+)*$/.test(String(region))) throw new Error(`COS 地域不合法：${region}`);
   return { bucket, region };
+}
+
+/** 上传用的 COS 域名（只用于日志；实际域名由 SDK 按 UseAccelerate 拼）。不含任何密钥。 */
+function cosUploadEndpoint({ bucket = CONFIG.cosBucket, region = CONFIG.cosRegion, accelerate = false } = {}) {
+  return accelerate ? `${bucket}.cos.accelerate.myqcloud.com` : `${bucket}.cos.${region}.myqcloud.com`;
+}
+
+/**
+ * cos-nodejs-sdk-v5 客户端参数。关闭加速时与原来完全一致；开启时只多一个 UseAccelerate: true
+ * （SDK 2.15.x / 3.0.x 都支持：请求地域被替换成 accelerate，域名变成 <bucket>.cos.accelerate.myqcloud.com）。
+ */
+function cosClientOptions(cred, { accelerate = false } = {}) {
+  // 单个请求（一片 5 MB）2 分钟超时。
+  const options = { SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: 120000 };
+  if (accelerate) options.UseAccelerate = true;
+  return options;
 }
 
 function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
@@ -512,7 +542,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   return { plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
 }
 
-async function createClients(env = process.env) {
+async function createClients(env = process.env, { accelerate = false } = {}) {
   const cred = env.TENCENTCLOUD_ROLE_ARN ? await credentialsFromOidc(env) : credentialsFromEnv(env);
   if (cred.expiration) console.log(`已通过 OIDC 扮演 ${env.TENCENTCLOUD_ROLE_ARN}（临时密钥到期 ${cred.expiration}）`);
   const tencentcloud = require('tencentcloud-sdk-nodejs');
@@ -523,8 +553,7 @@ async function createClients(env = process.env) {
   });
   let COS;
   try { COS = require('cos-nodejs-sdk-v5'); } catch { COS = require(path.join(__dirname, '../../scf-code/function-api/node_modules/cos-nodejs-sdk-v5')); }
-  // 单个请求（一片 8 MB）2 分钟超时。
-  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: 120000 });
+  const cos = new COS(cosClientOptions(cred, { accelerate }));
   return { scf, cos };
 }
 
@@ -536,10 +565,13 @@ function argValue(argv, name) {
 async function cli(argv = process.argv.slice(2)) {
   const command = argv[0];
   validateCosTarget();
+  const accelerate = parseCosAccelerate(CONFIG.cosAccelerateRaw);
   console.log(`COS 部署桶：${CONFIG.cosBucket}（${CONFIG.cosRegion}）`);
+  console.log(`COS 上传端点：${cosUploadEndpoint({ accelerate })}（${accelerate ? '全球加速，DEMOX_COS_ACCELERATE=true' : '地域直连'}）；函数拉包仍用 ${CONFIG.cosRegion}`);
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
-  const deployer = createDeployer({ ...(await createClients()), summary, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
+  if (accelerate) summary(`- COS 上传走全球加速：\`${cosUploadEndpoint({ accelerate })}\``);
+  const deployer = createDeployer({ ...(await createClients(process.env, { accelerate })), summary, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
   if (command === 'plan') {
     const result = await deployer.plan();
     if (!result.ok) process.exitCode = 1;
@@ -583,4 +615,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
