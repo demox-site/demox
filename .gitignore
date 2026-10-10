@@ -46,6 +46,7 @@ scripts/local-server.cjs
 scripts/quick-deploy.cjs
 scripts/scf-cli.cjs
 scripts/test-*.cjs
+!scripts/test-jwt.cjs
 scripts/validate-scf-packages.cjs
 
 .trae
