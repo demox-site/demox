@@ -525,9 +525,9 @@ test('Node.js functions run outside the router process and can require jsonwebto
   assert.deepEqual(JSON.parse(invoked.body), { site: 'site-a', leaked: null, tokenOk: true });
 });
 
-test('published platform function source runs for system prefixes', async () => {
-  const { handler, repository, bundleStore } = makeApp();
-  const created = JSON.parse((await handler(event('/functions', 'POST', {
+async function publishPlatformAuth() {
+  const app = makeApp();
+  const created = JSON.parse((await app.handler(event('/functions', 'POST', {
     websiteId: 'EPX2UU43',
     name: 'Auth',
     slug: 'auth',
@@ -541,22 +541,60 @@ test('published platform function source runs for system prefixes', async () => 
       body: JSON.stringify({ from: 'published', path: event.path })
     };
   };`;
-  await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
-  await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
-  const platform = createPlatformHandler({
+  await app.handler(event(`/functions/${created.functionId}/versions`, 'POST', { source }));
+  await app.handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+  return createPlatformHandler({
     userHandler: createFunctionHttpHandler({
-      repository,
-      bundleStore,
+      repository: app.repository,
+      bundleStore: app.bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
       publicBaseUrl: 'https://functions.test'
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });
-  const response = await platform(event('/auth/me', 'GET', {}));
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(JSON.parse(response.body), { from: 'published', path: '/auth/me' });
-  const fallback = await platform(event('/website/list', 'POST', {}));
-  assert.equal(fallback.statusCode, 418);
+}
+
+test('platform site functions run in process by default, never in the shared user runtime', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  try {
+    const platform = await publishPlatformAuth();
+    const response = await platform(event('/auth/me', 'GET', {}));
+    assert.equal(response.statusCode, 418);
+    assert.equal(response.body, 'system');
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
+});
+
+test('platform site does not receive runtime-role temp credentials by default', () => {
+  const { mergeLiveCredentials } = require('./platform-site.js');
+  const processEnv = {
+    DEMOX_PLATFORM_WEBSITE_ID: 'EPX2UU43',
+    TENCENTCLOUD_SECRETID: 'id',
+    TENCENTCLOUD_SECRETKEY: 'key',
+    TENCENTCLOUD_SESSIONTOKEN: 'token'
+  };
+  assert.deepEqual(mergeLiveCredentials({ A: '1' }, 'EPX2UU43', processEnv), { A: '1' });
+  const legacy = mergeLiveCredentials({ A: '1' }, 'EPX2UU43', { ...processEnv, FUNCTIONS_PLATFORM_SITE_MODE: 'user-runtime' });
+  assert.equal(legacy.TENCENTCLOUD_SECRETID, 'id');
+});
+
+test('published platform function source runs for system prefixes (FUNCTIONS_PLATFORM_SITE_MODE=user-runtime rollback)', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  process.env.FUNCTIONS_PLATFORM_SITE_MODE = 'user-runtime';
+  try {
+    const platform = await publishPlatformAuth();
+    const response = await platform(event('/auth/me', 'GET', {}));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), { from: 'published', path: '/auth/me' });
+    const fallback = await platform(event('/website/list', 'POST', {}));
+    assert.equal(fallback.statusCode, 418);
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
 });
 
 test('platform seed replaces wrapper source with the real backend', async () => {
@@ -691,4 +729,45 @@ test('env GET/PUT is owner-only when the website owner is known', async () => {
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();
+});
+
+test('platform site functions with non-manifest timers/routes fall back in process and never reach runtime.execute', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  try {
+    const executed = [];
+    const runtime = { async execute(opts) { executed.push(opts); return { status: 200, headers: {}, body: 'runtime' }; } };
+    const { handler, repository, bundleStore } = makeApp({ runtime });
+    const create = async (websiteId, extra) => {
+      const created = JSON.parse((await handler(event('/functions', 'POST', { websiteId, runtime: 'nodejs', ...extra }))).body).function;
+      await handler(event(`/functions/${created.functionId}/versions`, 'POST', { source: 'module.exports = async () => ({ status: 200, body: "src" });' }));
+      await handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+      return created;
+    };
+    const platformFn = await create('EPX2UU43', { name: 'PlatHook', slug: 'plat-hook', routes: ['/plat-hook'], triggers: ['timer'], timerName: 'plat-cron' });
+    await create('site-a', { name: 'UserHook', slug: 'user-hook', routes: ['/user-hook'] });
+    const platform = createPlatformHandler({
+      userHandler: createFunctionHttpHandler({ repository, bundleStore, runtime, authenticate: () => ({ userId: 'user-1' }), publicBaseUrl: 'https://functions.test' }),
+      systemHandler: async (request) => ({ statusCode: 418, body: request.TriggerName || 'system' })
+    });
+
+    const timer = await platform({ Type: 'Timer', TriggerName: 'plat-cron' });
+    assert.equal(timer.statusCode, 418);
+    assert.equal(timer.body, 'plat-cron');
+    const certRenew = await platform({ Type: 'Timer', TriggerName: 'monthly-renew' });
+    assert.equal(certRenew.statusCode, 418);
+    const route = await platform(event('/plat-hook', 'POST', {}));
+    assert.notEqual(route.statusCode, 500);
+    assert.notEqual(route.body, 'runtime');
+    const direct = await handler(event(`/functions/${platformFn.functionId}/invoke`, 'POST', {}));
+    assert.equal(direct.statusCode, 404);
+    assert.equal(executed.length, 0);
+
+    const userRoute = await platform(event('/site-a/production/user-hook', 'POST', {}));
+    assert.equal(userRoute.statusCode, 200);
+    assert.equal(executed.length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
 });

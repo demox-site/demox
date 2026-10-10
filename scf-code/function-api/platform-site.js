@@ -115,7 +115,18 @@ function platformSiteEnvFromProcess(env = process.env) {
   return output;
 }
 
+/**
+ * 平台站点（auth / website / mcp / cert-renew）默认不再交给 demox-user-nodejs 跑，
+ * 改由本函数进程内的系统路由执行（用本函数自己的运行角色）。这样平台密钥和运行角色
+ * 临时密钥都不会出现在和用户代码共用的 user-nodejs 实例里。
+ * 回滚：环境变量 FUNCTIONS_PLATFORM_SITE_MODE=user-runtime（恢复旧行为，含临时密钥合并）。
+ */
+function platformSiteInProcess(processEnv = process.env) {
+  return String(processEnv.FUNCTIONS_PLATFORM_SITE_MODE || '').trim().toLowerCase() !== 'user-runtime';
+}
+
 function mergeLiveCredentials(env = {}, websiteId, processEnv = process.env) {
+  if (platformSiteInProcess(processEnv)) return env;
   if (String(websiteId || '') !== platformWebsiteId(processEnv)) return env;
   const output = { ...env };
   for (const key of LIVE_CREDENTIAL_KEYS) {
@@ -212,5 +223,6 @@ module.exports = {
   platformFunctionSpecs,
   platformSiteEnvFromProcess,
   mergeLiveCredentials,
+  platformSiteInProcess,
   seedPlatformSiteFunctions
 };
