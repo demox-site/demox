@@ -30,7 +30,9 @@
     "test:admin-bi": "node --test scripts/check-bi-palette.test.mjs && node scf-code/website-api/admin-bi.test.cjs && node scf-code/website-api/index.test.cjs && node scf-code/mcp-api/index.test.cjs",
     "test:log-redaction": "node --test scripts/check-log-redaction.test.mjs scf-code/function-api/log-redaction.test.cjs",
     "test:jwt": "node --test scf-code/website-api/shared/jwt.test.cjs scf-code/mcp-api/shared/jwt.test.cjs scf-deploy-packages/auth-api/shared/jwt.test.cjs",
-    "test:function-api-ci": "node --test scripts/ci/scf-function-api.test.cjs"
+    "test:function-api-ci": "node --test scripts/ci/scf-function-api.test.cjs",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "scan:secrets": "gitleaks git --redact --no-banner -c .gitleaks.toml . && gitleaks dir --redact --no-banner -c .gitleaks.toml ."
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

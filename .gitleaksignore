@@ -1,0 +1,5 @@
+# gitleaks 已知误报（按指纹精确放行，不放行整条提交）。都在历史里，不改写历史。
+# 1b1c972: admin-audit 测试里一个三段式占位字符串（不是 token），现已改成运行时生成。
+1b1c9728796a01b8d01c513f7a319654be96feaf:scf-code/website-api/admin-audit.test.cjs:jwt-shaped:178
+# 318516d: 已删除的 mcp-server 文档里的 curl 示例，值是 YOUR_ACCESS_TOKEN 占位符。
+318516d870b720950592e32d0d2f97dddc2e51f4:mcp-server/DEPLOY_MCP_API.md:curl-auth-header:56

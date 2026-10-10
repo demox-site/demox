@@ -56,6 +56,7 @@ test('the leak guard itself catches a raw token or email (so a passing suite mea
   fake.log('ok line');
   assert.equal(guard.assertNoLeaks(), 1);
   fake.warn('login', 'person@example.com');
-  fake.error('{"access_token":"eyJhbGciOiJIUzI1NiJ9.eyJ1IjoxfQ.c2lnbmF0dXJl"}');
+  const { signTestJwt } = require('./test-jwt.cjs');
+  fake.error(JSON.stringify({ access_token: signTestJwt({ u: 1 }) }));
   assert.throws(() => guard.assertNoLeaks(), /2 条日志/);
 });

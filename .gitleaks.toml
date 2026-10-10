@@ -1,0 +1,18 @@
+# Secret scan config (gitleaks). CI 和本地 pre-commit 都用这一份，发现即失败。
+title = "demox gitleaks config"
+
+[extend]
+useDefault = true
+
+# 默认规则只抓“像真的” JWT；这里连测试用的假 JWT（eyJ… 三段）也一起拦。
+# 测试里需要 JWT 时，用 scripts/test-jwt.cjs 在运行时随机密钥签发。
+[[rules]]
+id = "jwt-shaped"
+description = "JWT-shaped string (including fake/test tokens)"
+regex = '''\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.'''
+keywords = ["eyj"]
+
+# 只放过历史提交 f78c530（已确认是测试假 token，GitGuardian 已按误报结案；不改写历史）。
+[[allowlists]]
+description = "historical fake test JWTs, confirmed false positive"
+commits = ["f78c5300c30d3f360bd83868e94339072db2c3df"]

@@ -4,12 +4,13 @@ const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard
 const { EventEmitter } = require('node:events');
 const https = require('node:https');
 
+const { randomTestSecret } = require('../../scripts/test-jwt.cjs');
 Object.assign(process.env, {
   MYSQL_HOST: '127.0.0.1',
   MYSQL_USER: 'test',
   MYSQL_PASSWORD: 'test',
   MYSQL_DATABASE: 'test',
-  JWT_SECRET: 'test-secret-that-is-long-enough-for-unit-tests'
+  JWT_SECRET: randomTestSecret()
 });
 delete process.env.FEISHU_APP_ID;
 delete process.env.FEISHU_APP_SECRET;
