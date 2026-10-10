@@ -59,7 +59,8 @@ function multipartCos(script = {}) {
   const allowed = {
     multipartInit: (p, cb) => { calls.push(['init', p.Key]); script.init === 'denied' ? cb({ code: 'AccessDenied', message: 'Access Denied.' }) : cb(null, { UploadId: 'u1' }); },
     multipartUpload: (p, cb) => {
-      const step = (script.parts || [])[partCalls++] || 'ok';
+      const per = script.byPart && script.byPart[p.PartNumber];
+      const step = per ? (per.shift() || 'ok') : ((script.parts || [])[partCalls++] || 'ok');
       calls.push(['part', p.PartNumber, p.Body.length]);
       if (step === 'ok') cb(null, { ETag: `"e${p.PartNumber}"` });
       else if (step === 'fail') cb({ code: 'RequestTimeout', message: 'socket hang up' });
@@ -248,6 +249,20 @@ test('upload: a failed part is retried and the upload completes', async () => {
   assert.ok(cos.calls.some((c) => c[0] === 'complete'));
 });
 
+test('upload: a second attempt resumes the same UploadId and only re-sends missing parts', async () => {
+  const s = fakeScf();
+  // 片 2 前 8 次都失败 → 第 1 次失败（其它片已传好）；第 2 次只补片 2
+  const cos = multipartCos({ byPart: { 2: Array(8).fill('fail') } });
+  const lines = [];
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: (l) => lines.push(l), wait: async () => {} });
+  await d.uploadZip(bigZip(20), 'scf-deploy/ci/x.zip');
+  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
+  assert.deepEqual(cos.calls.find((c) => c[0] === 'complete'), ['complete', '1,2,3,4']);
+  assert.ok(lines.some((l) => l.includes('续传：已有')), 'second attempt logs resume');
+  assert.ok(!cos.calls.some((c) => c[0] === 'abort'));
+  assert.equal(cos.calls.filter((c) => c[0] === 'part' && c[1] !== 2).length, 3, 'parts 1,3,4 sent once only');
+});
+
 test('upload: a stalled part times out on its own and is retried', async () => {
   const s = fakeScf();
   const cos = multipartCos({ parts: ['hang', 'ok', 'ok', 'ok', 'ok'] });
@@ -271,15 +286,16 @@ test('upload: Access Denied fails fast (no retry), aborts, no function writes', 
 
 test('upload: parts failing every time → 3 whole attempts then a loud error, no function writes', async () => {
   const s = fakeScf();
-  const cos = multipartCos({ parts: Array(20).fill('fail') });
+  const cos = multipartCos({ parts: Array(40).fill('fail') });
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*未做任何函数修改/);
-  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 3);
-  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 12, '4 tries per part × 3 attempts');
+  assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1, 'one UploadId reused across attempts');
+  assert.equal(cos.calls.filter((c) => c[0] === 'part').length, 24, '8 tries per part × 3 attempts');
+  assert.ok(cos.calls.some((c) => c[0] === 'abort'), 'final failure aborts the multipart upload');
   assert.ok(NO_WRITES(s));
 });
 
-test('upload: a hung part hits the 10-minute cap, aborts, no function writes', async () => {
+test('upload: a hung part hits the 15-minute cap, aborts, no function writes', async () => {
   const s = fakeScf();
   const cos = multipartCos({ parts: Array(20).fill('hang') });
   let clock = 0;
@@ -291,8 +307,8 @@ test('upload: a hung part hits the 10-minute cap, aborts, no function writes', a
     setTimer: (fn, ms) => { timeouts.push(ms); setImmediate(() => { clock += ms; fn(); }); return ms; },
     clearTimer: () => {}
   });
-  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*10 分钟/);
-  assert.equal(timeouts[0], 10 * 60 * 1000);
+  await assert.rejects(d.deploy({ zipPath: zip(), sha: 'abc' }), /上传 COS 失败.*15 分钟/);
+  assert.equal(timeouts[0], 15 * 60 * 1000);
   assert.equal(cos.calls.filter((c) => c[0] === 'init').length, 1);
   assert.ok(cos.calls.some((c) => c[0] === 'abort'));
   assert.ok(NO_WRITES(s));

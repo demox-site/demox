@@ -143,18 +143,18 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-// COS 上传：分片（5 MB，3 片并发，每片 90 秒超时、最多 4 次）+ 整次最多 3 次 + 总 10 分钟。
+// COS 上传：分片（5 MB，3 片并发，每片 30 秒超时、最多 8 次；整次重试沿用同一个 UploadId，只补缺的片）+ 整次最多 3 次 + 总 15 分钟。
 // 只用 InitiateMultipartUpload / UploadPart / CompleteMultipartUpload / AbortMultipartUpload（云架构 2026-10-10 11:14 为
 // demox-ci-deploy 在 scf-deploy/ci/* 上加的权限）；不用 SDK 的 sliceUploadFile，它会先调桶级 ListMultipartUploads（没有权限）。
 // 历史：run 38017096251 单流 putObject 挂 18 分钟；run 38018842590 单次 PutObject 三次都超时（westus3 → ap-chengdu）。
 const UPLOAD = Object.freeze({
   partSize: 5 * 1024 * 1024,
   concurrency: 3,
-  partAttempts: 4,
-  partTimeoutMs: 90 * 1000,
+  partAttempts: 8,
+  partTimeoutMs: 30 * 1000,
   attempts: 3,
   retryGapMs: 10000,
-  totalTimeoutMs: 10 * 60 * 1000
+  totalTimeoutMs: 15 * 60 * 1000
 });
 
 function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
@@ -269,13 +269,15 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     if (!cos) throw new Error('缺少 COS 客户端');
     const size = fs.statSync(zipPath).size;
     const deadline = now() + upload.totalTimeoutMs;
+    const state = { uploadId: null, parts: [] }; // 跨次续传：同一个 UploadId，已传好的片不重传
     let lastError;
     for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
       const remaining = deadline - now();
       if (remaining <= 0) break;
-      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB）`);
+      const have = state.parts.filter(Boolean).length;
+      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，${Math.ceil(size / upload.partSize)} 片 × ${upload.partSize / 1048576} MB${have ? `，续传：已有 ${have} 片` : ''}）`);
       try {
-        await withTimeout(multipartOnce(zipPath, key, size), remaining);
+        await withTimeout(multipartOnce(zipPath, key, size, state), remaining);
         log('上传 COS 完成');
         return;
       } catch (error) {
@@ -285,6 +287,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
         if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
       }
     }
+    if (state.uploadId) cosCall('multipartAbort', { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key, UploadId: state.uploadId }).catch(() => {});
     const minutes = Math.round(upload.totalTimeoutMs / 60000);
     throw new Error(`上传 COS 失败（${upload.attempts} 次内或 ${minutes} 分钟内未完成），未做任何函数修改：${lastError ? lastError.message : '超时'}`);
   }
@@ -298,7 +301,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     });
   }
 
-  // 单片超时用真实定时器（与总超时分开）：卡住的分片 90 秒后重试，不会把 10 分钟全部耗在一片上。
+  // 单片超时用真实定时器（与总超时分开）：卡住的分片 30 秒后重试，不会把 15 分钟全部耗在一片上。
   function partWithTimeout(promise, partNumber) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -307,38 +310,46 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
-  function multipartOnce(zipPath, key, size) {
+  function multipartOnce(zipPath, key, size, state) {
     const base = { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key };
-    let uploadId = null;
-    let aborted = false;
+    let stopped = false;
+    // 只在总超时时调用：停掉本次并 Abort 整个分片任务
     const abort = () => {
-      aborted = true;
-      if (uploadId) cosCall('multipartAbort', { ...base, UploadId: uploadId }).catch(() => {});
+      stopped = true;
+      if (state.uploadId) cosCall('multipartAbort', { ...base, UploadId: state.uploadId }).catch(() => {});
+      state.uploadId = null;
     };
     const promise = (async () => {
-      const init = await cosCall('multipartInit', base);
-      uploadId = init.UploadId;
-      if (!uploadId) throw new Error('InitiateMultipartUpload 没有返回 UploadId');
-      if (aborted) { abort(); throw new Error('已取消'); }
+      if (!state.uploadId) {
+        const init = await cosCall('multipartInit', base);
+        if (!init.UploadId) throw new Error('InitiateMultipartUpload 没有返回 UploadId');
+        state.uploadId = init.UploadId;
+        state.parts = [];
+      }
+      const uploadId = state.uploadId;
       const count = Math.max(1, Math.ceil(size / upload.partSize));
-      const parts = new Array(count);
-      let next = 0;
+      const todo = [];
+      for (let i = 0; i < count; i += 1) if (!state.parts[i]) todo.push(i);
       let lastPct = -1;
-      let doneCount = 0;
+      const report = () => {
+        const pct = Math.floor((state.parts.filter(Boolean).length / count) * 5) * 20;
+        if (pct > lastPct) { lastPct = pct; log(`上传进度 ${pct}%`); }
+      };
+      let failure = null;
       const fd = fs.openSync(zipPath, 'r');
       try {
         const worker = async () => {
-          while (!aborted && next < count) {
-            const index = next++;
+          while (!stopped && !failure && todo.length) {
+            const index = todo.shift();
             const start = index * upload.partSize;
             const length = Math.min(upload.partSize, size - start);
             const body = Buffer.alloc(length);
             fs.readSync(fd, body, 0, length, start);
             let partError;
-            for (let tryNo = 1; tryNo <= upload.partAttempts && !aborted; tryNo += 1) {
+            for (let tryNo = 1; tryNo <= upload.partAttempts && !stopped; tryNo += 1) {
               try {
                 const res = await partWithTimeout(cosCall('multipartUpload', { ...base, UploadId: uploadId, PartNumber: index + 1, Body: body, ContentLength: length }), index + 1);
-                parts[index] = { PartNumber: index + 1, ETag: res.ETag };
+                state.parts[index] = { PartNumber: index + 1, ETag: res.ETag };
                 partError = null;
                 break;
               } catch (error) {
@@ -346,20 +357,18 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
                 if (isDenied(error)) break;
               }
             }
-            if (partError) throw partError;
-            doneCount += 1;
-            const pct = Math.floor((doneCount / count) * 5) * 20;
-            if (pct > lastPct) { lastPct = pct; log(`上传进度 ${pct}%`); }
+            if (partError) { failure = partError; break; }
+            report();
           }
         };
         await Promise.all(Array.from({ length: Math.min(upload.concurrency, count) }, worker));
       } finally {
         fs.closeSync(fd);
       }
-      if (aborted) throw new Error('已取消');
-      await cosCall('multipartComplete', { ...base, UploadId: uploadId, Parts: parts });
+      if (failure) throw failure;
+      if (stopped) throw new Error('已取消');
+      await cosCall('multipartComplete', { ...base, UploadId: uploadId, Parts: state.parts.slice(0, count) });
     })();
-    promise.catch(() => abort());
     return { promise, abort };
   }
 
