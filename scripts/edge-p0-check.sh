@@ -12,12 +12,14 @@
 #   SITE_URLS="https://coverage.demox.site/ https://uv0fkz31.demox.site/"   # 至少一个真实公开站点
 #   UNBOUND_URL=https://your-demo.demox.site/                               # 未绑定 host，期望 404
 #   FN_URL=https://uv0fkz31.demox.site/api/cookies                          # 探针函数（只回显 cookie 名），可留空跳过
+#   POST_URLS=https://uv0fkz31.demox.site/                                  # 页面 POST 也要 200（探针站），可留空跳过
 #   SKIP_WWW=1                                                              # 预发（只绑测试 host）时跳过 www / 未绑定 host
 set -u
 WWW_URL=${WWW_URL:-https://www.demox.site/}
 SITE_URLS=${SITE_URLS:-"https://coverage.demox.site/ https://uv0fkz31.demox.site/"}
 UNBOUND_URL=${UNBOUND_URL:-https://your-demo.demox.site/}
 FN_URL=${FN_URL-https://uv0fkz31.demox.site/api/cookies}
+POST_URLS=${POST_URLS-https://uv0fkz31.demox.site/}
 SKIP_WWW=${SKIP_WWW:-0}
 FAKE='demox_access=p0-fake-not-a-token; p0_probe=1'
 fail=0
@@ -49,6 +51,9 @@ for variant in nocookie cookie; do
   fi
   for s in $SITE_URLS; do
     req GET "$s" "$c"; check "$tag GET site $s" 200 '站点未发布|暂时无法访问|需要重新验证'
+  done
+  for s in $POST_URLS; do
+    req POST "$s" "$c"; check "$tag POST site $s" 200 '站点未发布|暂时无法访问|需要重新验证'
   done
   if [ -n "$FN_URL" ]; then
     for m in GET POST; do
