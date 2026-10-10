@@ -86,6 +86,9 @@ jobs:
         run: |
           node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
           node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
+          # Web 函数（demox-api-web）用同一个包启动，必须带可执行的 scf_bootstrap；缺了就别发。
+          unzip -Z .artifacts/unified-scf/demox-unified-scf.zip | grep -E '^-rwx.* scf_bootstrap$' \
+            || { echo "::error::统一包缺少可执行的 scf_bootstrap"; exit 1; }
 
       - name: ${{ env.ACTION }}
         env:
