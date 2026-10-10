@@ -75,7 +75,7 @@ test('forwards every chunked deploy action without dropping fields', async () =>
     const upstream = mockUpstream();
     const result = await api.main(deployEvent(payload));
     assert.equal(result.statusCode, 200);
-    assert.equal(upstream.options().path, '/upload');
+    assert.equal(upstream.options().path, '/website/upload');
     // mcp-api 只额外加 deploySource: 'mcp'（website-api 用它统计部署渠道）
     assert.deepEqual(upstream.body(), { ...payload, deploySource: 'mcp' });
     mock.restoreAll();
@@ -128,8 +128,45 @@ test('prefers in-process backend invoker over HTTP', async () => {
   assert.equal(result.statusCode, 201);
   assert.deepEqual(JSON.parse(result.body), { inProcess: true });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://website.example.test/upload');
+  assert.equal(calls[0].url, 'https://website.example.test/website/upload');
   assert.deepEqual(calls[0].data, { ...payload, deploySource: 'mcp' });
+});
+
+test('normalizes WEBSITE_API_URL so MCP never targets system-mcp routes', () => {
+  const { normalizeWebsiteApiUrl } = api.__private;
+  assert.equal(normalizeWebsiteApiUrl('https://api.demox.site'), 'https://api.demox.site/website');
+  assert.equal(normalizeWebsiteApiUrl('https://api.demox.site/'), 'https://api.demox.site/website');
+  assert.equal(normalizeWebsiteApiUrl('https://api.demox.site///'), 'https://api.demox.site/website');
+  assert.equal(normalizeWebsiteApiUrl('https://api.demox.site/website'), 'https://api.demox.site/website');
+  assert.equal(normalizeWebsiteApiUrl('https://api.demox.site/website/'), 'https://api.demox.site/website');
+  assert.equal(normalizeWebsiteApiUrl(' https://x.tencentscf.com/release '), 'https://x.tencentscf.com/release/website');
+});
+
+test('reads WEBSITE_API_URL at point of use for upload / list / delete', async () => {
+  const previous = process.env.WEBSITE_API_URL;
+  const calls = [];
+  api.setBackendInvoker(async (url, data) => {
+    calls.push({ url, data });
+    return { statusCode: 200, body: '{"success":true}' };
+  });
+  const auth = { Authorization: `Bearer ${sign({ userId: 'user-1' })}` };
+  try {
+    for (const [value, expected] of [
+      ['https://api.demox.site', 'https://api.demox.site/website'],
+      ['https://api.demox.site/', 'https://api.demox.site/website'],
+      ['https://api.demox.site/website', 'https://api.demox.site/website']
+    ]) {
+      process.env.WEBSITE_API_URL = value;
+      calls.length = 0;
+      await api.main(deployEvent({ action: 'abort_deploy_upload', uploadId: 'u1' }));
+      await api.main({ httpMethod: 'POST', path: '/websites', headers: auth, body: JSON.stringify({ action: 'list' }) });
+      await api.main({ httpMethod: 'POST', path: '/delete', headers: auth, body: JSON.stringify({ action: 'delete', websiteId: 'UWR3PJ2L' }) });
+      assert.deepEqual(calls.map((c) => c.url), [`${expected}/upload`, `${expected}/list`, `${expected}/delete`], value);
+      assert.deepEqual(calls[2].data, { action: 'delete', websiteId: 'UWR3PJ2L' });
+    }
+  } finally {
+    process.env.WEBSITE_API_URL = previous;
+  }
 });
 
 test('mcp request logs never carry the bearer token or email (v13)', async () => {
