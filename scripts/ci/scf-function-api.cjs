@@ -143,11 +143,11 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-// COS 上传：分片 + 重试 + 总超时（2026-10-10 run 38017096251 单流 putObject 55 MB 挂住 18 分钟）。
+// COS 上传：单次 PutObject + 每次 4 分钟超时 + 最多 3 次 + 总 10 分钟。
+// 不用分片上传：CI 角色只允许 PutObject/GetObject/HeadObject（分片需要 InitiateMultipartUpload 等，run 38018593079 Access Denied）。
 const UPLOAD = Object.freeze({
-  chunkSize: 8 * 1024 * 1024,
-  asyncLimit: 3,
   attempts: 3,
+  attemptTimeoutMs: 4 * 60 * 1000,
   retryGapMs: 10000,
   totalTimeoutMs: 10 * 60 * 1000
 });
@@ -252,27 +252,27 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   }
 
   /**
-   * 分片上传到 COS：8 MB 一片、3 片并发；整次上传失败最多重试 UPLOAD.attempts 次；
-   * 总时长超过 UPLOAD.totalTimeoutMs 直接报错（取消上传任务），不再像单流 putObject 那样无限挂住。
-   * 单片请求超时 / 重试由 COS 客户端的 Timeout、ChunkRetryTimes 负责（见 createClients）。
+   * 上传到 COS：单次 PutObject（CI 角色只允许这个），每次最多 attemptTimeoutMs，失败重试，
+   * 总时长超过 totalTimeoutMs 直接报错；上传在任何 SCF 写操作之前，失败时函数和别名都不动。
+   * 2026-10-10 run 38017096251：无超时的 putObject 挂了 18 分钟。
    */
   async function uploadZip(zipPath, key) {
     if (!cos) throw new Error('缺少 COS 客户端');
-    if (typeof cos.sliceUploadFile !== 'function') throw new Error('COS 客户端不支持分片上传（sliceUploadFile）');
     const size = fs.statSync(zipPath).size;
     const deadline = now() + upload.totalTimeoutMs;
     let lastError;
     for (let attempt = 1; attempt <= upload.attempts; attempt += 1) {
       const remaining = deadline - now();
       if (remaining <= 0) break;
-      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB，分片 ${upload.chunkSize / 1048576} MB）`);
+      log(`上传 COS 第 ${attempt}/${upload.attempts} 次（${(size / 1048576).toFixed(1)} MB）`);
       try {
-        await sliceUploadOnce(zipPath, key, remaining);
+        await putOnce(zipPath, key, Math.min(upload.attemptTimeoutMs, remaining));
         log('上传 COS 完成');
         return;
       } catch (error) {
         lastError = error;
         log(`::warning::上传 COS 第 ${attempt} 次失败：${error.message}`);
+        if (/AccessDenied|Access Denied/i.test(String(error.message))) break; // 权限问题重试无用
         if (attempt < upload.attempts && deadline - now() > upload.retryGapMs) await wait(upload.retryGapMs);
       }
     }
@@ -280,29 +280,17 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     throw new Error(`上传 COS 失败（${upload.attempts} 次内或 ${minutes} 分钟内未完成），未做任何函数修改：${lastError ? lastError.message : '超时'}`);
   }
 
-  function sliceUploadOnce(zipPath, key, timeoutMs) {
+  function putOnce(zipPath, key, timeoutMs) {
     return new Promise((resolve, reject) => {
-      let taskId = null;
       let settled = false;
-      let lastPct = -1;
+      const body = fs.createReadStream(zipPath);
       const finish = (fn, value) => { if (settled) return; settled = true; clearTimer(timer); fn(value); };
       const timer = setTimer(() => {
-        if (taskId && typeof cos.cancelTask === 'function') { try { cos.cancelTask(taskId); } catch { /* ignore */ } }
+        try { body.destroy(); } catch { /* ignore */ }
         finish(reject, new Error(`超时 ${Math.round(timeoutMs / 1000)}s`));
       }, timeoutMs);
-      cos.sliceUploadFile({
-        Bucket: CONFIG.cosBucket,
-        Region: CONFIG.cosRegion,
-        Key: key,
-        FilePath: zipPath,
-        ChunkSize: upload.chunkSize,
-        AsyncLimit: upload.asyncLimit,
-        onTaskReady: (id) => { taskId = id; },
-        onProgress: (info) => {
-          const pct = Math.floor(((info && info.percent) || 0) * 100 / 20) * 20;
-          if (pct > lastPct) { lastPct = pct; log(`上传进度 ${pct}%`); }
-        }
-      }, (error, data) => (error ? finish(reject, new Error(error.message || error.code || String(error))) : finish(resolve, data)));
+      cos.putObject({ Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key, Body: body, ContentLength: fs.statSync(zipPath).size },
+        (error, data) => (error ? finish(reject, new Error(error.message || error.code || String(error))) : finish(resolve, data)));
     });
   }
 
@@ -411,8 +399,8 @@ async function createClients(env = process.env) {
   });
   let COS;
   try { COS = require('cos-nodejs-sdk-v5'); } catch { COS = require(path.join(__dirname, '../../scf-code/function-api/node_modules/cos-nodejs-sdk-v5')); }
-  // 单个请求 2 分钟超时；每片失败自动重试 3 次。
-  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: 120000, ChunkRetryTimes: 3 });
+  // 单个请求 4 分钟超时（与 UPLOAD.attemptTimeoutMs 一致）。
+  const cos = new COS({ SecretId: cred.secretId, SecretKey: cred.secretKey, ...(cred.token ? { SecurityToken: cred.token } : {}), Timeout: UPLOAD.attemptTimeoutMs });
   return { scf, cos };
 }
 
