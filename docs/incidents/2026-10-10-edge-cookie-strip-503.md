@@ -27,3 +27,8 @@ Node 单测用的是 Node 的 Request/fetch，没有这个限制，所以全部�
 ## 上线前必须
 1. 预发：单独的测试边缘函数只绑一个测试 host，GET/POST × 带和不带 cookie 全部通过，才能动 `ef-1281msyw`。
 2. 上线后 `npm run p0:edge`，必须包含探针站 `UV0FKZ31`（`https://uv0fkz31.demox.site/` 和 `/api/cookies`），带 cookie 那一遍全部 PASS。
+
+## 第二次：17:52–17:53（500284c，#50）→ 带 cookie 的用户站点 400
+- 17:52:28 ef-1281msyw → 500284c（RequestId 45f92712-40e2-46f3-8809-7b33f4cb802a）。p0:edge 第 1 轮：带 cookie 时 www 200、函数 200 且看不到 demox_access，但 coverage / uv0fkz31 的 GET 和 POST 都是 **400**（`origin=ok`，也就是源站回的 400）。17:53:23 回滚到 680e783（RequestId 6ca4128c-e9ab-488f-88e1-a11aed4db522）。
+- 根因（源站 curl 已复现）：普通 init 原样复制了入站头，包括 `Host: <用户站点>`。用户站点源站是 `site-3.demox.site` → CNAME `demox-sites-1490780430.cos-website.ap-guangzhou.myqcloud.com`，COS 按 Host 找桶；`Host: uv0fkz31.demox.site` / `coverage.demox.site` → **400 UserCnameInvalid**，`Host: site-3.demox.site` → 200。`Content-Length: 0`、`Connection`、`Keep-Alive`、`TE`、`Upgrade` 单独加上都还是 200。
+- 修复：普通 init 去掉 host 和逐跳头（host、content-length、connection、keep-alive、proxy-connection、transfer-encoding、te、trailer、upgrade、proxy-authorization、proxy-authenticate），由 fetch 按目标 URL 自己填。测试模型改成「入站 Request 当 init 时 EdgeOne 改写 Host；普通 init 的头原样发出」，并断言：任何上游 fetch 都不带入站 Host；带和不带 demox_access 发到源站的头完全一样，只差 Cookie。
