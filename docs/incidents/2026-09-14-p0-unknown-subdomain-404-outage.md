@@ -47,6 +47,7 @@
    - `https://www.demox.site/` → **200**，正文是主站，不是「页面不存在 / 站点未发布」
    - 至少一个真实用户站点（如 `https://coverage.demox.site/`）→ **200**
    - 目标未绑定 host（如 `https://your-demo.demox.site/`）才看 404
+   - 上面每一项都要带和不带 `demox_access` cookie 各跑一遍：`npm run p0:edge`（2026-10-10 补充，见 [2026-10-10-edge-cookie-strip-503.md](2026-10-10-edge-cookie-strip-503.md)）
 5. 核对失败立刻 `ModifyFunction` 回上一份 Content，不要继续改。
 
 回滚命令见 `scf-code/deploy-edge-functions.sh`。
