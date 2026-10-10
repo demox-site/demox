@@ -167,3 +167,23 @@ test('rate limiter keys on the derived IP: forged X-Scf-Remote-Addr / leftmost X
   const other = eventFromRequest({ method: 'GET', url: '/api/rate', headers: { 'x-forwarded-for': '203.0.113.99' }, socket: {} }, Buffer.alloc(0));
   await service.invoke({ functionId: fn.functionId, event: other });
 });
+
+test('Event entry without sourceIp keys the rate limit on the RIGHTMOST XFF (forged leftmost cannot bypass)', async () => {
+  const { normalizeInvocationRequest, FunctionService } = require('./service.js');
+  const { rightmostForwardedFor } = require('./client-ip.js');
+  assert.equal(rightmostForwardedFor(' 1.1.1.1 , 203.0.113.50 '), '203.0.113.50');
+  assert.equal(rightmostForwardedFor(''), '');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'X-Forwarded-For': '1.2.3.4, 203.0.113.50' } }).clientKey, '203.0.113.50');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {}, requestContext: { sourceIp: '198.51.100.1' } }).clientKey, '198.51.100.1', 'gateway sourceIp still wins');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {} }).clientKey, 'anonymous');
+  const { InMemoryBundleStore } = require('./bundle-store.js');
+  const { InMemoryFunctionRepository } = require('./repository.js');
+  const runtime = { async execute() { return { status: 200, headers: {}, body: 'ok' }; } };
+  const service = new FunctionService({ repository: new InMemoryFunctionRepository(), bundleStore: new InMemoryBundleStore(), runtime });
+  const fn = await service.createFunction({ ownerId: 'owner', websiteId: 'site-a', name: 'RateEv', slug: 'rate-ev', limits: { maxInvocationsPerMinute: 1 } });
+  await service.createVersion({ ownerId: 'owner', functionId: fn.functionId, source: 'module.exports = () => "ok"' });
+  await service.publishVersion({ ownerId: 'owner', functionId: fn.functionId, version: 1 });
+  const ev = (forged) => ({ httpMethod: 'GET', headers: { 'x-forwarded-for': `${forged}, 203.0.113.50` } });
+  await service.invoke({ functionId: fn.functionId, event: ev('1.1.1.1') });
+  await assert.rejects(service.invoke({ functionId: fn.functionId, event: ev('2.2.2.2') }), (error) => error.code === 'RATE_LIMITED');
+});

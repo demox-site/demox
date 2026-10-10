@@ -16,6 +16,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const { rightmostForwardedFor } = require('./client-ip.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 
@@ -34,9 +35,7 @@ function firstHeader(value) {
  * 4. 都没有才用 socket 地址（和以前一样）。
  */
 function clientIpFrom(headers, socket) {
-  const xff = String((headers || {})['x-forwarded-for'] || '').split(',').map((v) => v.trim()).filter(Boolean);
-  if (xff.length) return xff[xff.length - 1];
-  return (socket && socket.remoteAddress) || '';
+  return rightmostForwardedFor((headers || {})['x-forwarded-for']) || (socket && socket.remoteAddress) || '';
 }
 
 /**
