@@ -169,6 +169,12 @@ export type ProjectCustomDomain = {
   verifiedAt?: string | null;
   createdAt?: string | null;
   cnameChain?: string[];
+  /** 最近一次检测停在哪一步：dns 解析 / gateway 平台入口 / cert 证书 / active 已可访问 */
+  checkStep?: "dns" | "gateway" | "cert" | "active";
+  dnsReason?: string;
+  dnsVia?: "cname" | "a" | null;
+  pendingMessage?: string;
+  checkedAt?: string;
 };
 
 // 认证API

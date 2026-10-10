@@ -91,6 +91,7 @@ function ownerAccessQueries(sql) {
 test.beforeEach(() => {
   setCustomDomainRuntime({
     lookupGatewayAddresses: async () => ['119.91.123.2'],
+    lookupHostAddresses: async () => [],
     probeHttps: async () => ({ ok: true, status: 200 }),
     provision: async () => ({ ok: true })
   });
@@ -1521,6 +1522,7 @@ test('project custom domain stays pending until HTTPS actually serves the site',
   };
   setCustomDomainRuntime({
     lookupGatewayAddresses: async () => ['119.91.123.2'],
+    lookupHostAddresses: async () => [],
     probeHttps: async () => ({ ok: false, reason: 'teapot', status: 418 }),
     provision: async () => ({ ok: true })
   });
@@ -1539,10 +1541,82 @@ test('project custom domain stays pending until HTTPS actually serves the site',
     }, 'project-owner')).body);
     assert.equal(body.success, true, JSON.stringify(body));
     assert.equal(body.domain.status, 'pending');
-    assert.match(body.message, /签发 HTTPS/);
+    assert.match(body.message, /签发证书/);
+    assert.equal(body.domain.checkStep, 'cert');
   } finally {
     dns.promises.resolveCname = originalResolveCname;
   }
+});
+
+
+function verifyFixture(hostname) {
+  return async (sql) => {
+    const shared = customDomainFixtureQueries(sql);
+    if (shared) return shared;
+    if (sql.includes('SELECT * FROM custom_domains WHERE') && sql.includes('id = ?')) {
+      return [{ ...projectDomainRow, hostname, status: 'pending' }];
+    }
+    if (sql.includes('FROM custom_domain_routes r')) return [];
+    if (sql.includes('UPDATE custom_domains') && sql.includes('SET status = ?')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+}
+
+async function verifyWith({ hostname, cname = {}, addresses = [], probe = { ok: true, status: 200 } }) {
+  dns.promises.resolveCname = async (name) => {
+    if (cname[name]) return [cname[name]];
+    throw Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+  };
+  setCustomDomainRuntime({
+    lookupGatewayAddresses: async () => ['119.91.123.2'],
+    lookupHostAddresses: async () => addresses,
+    probeHttps: async () => probe,
+    provision: async () => ({ ok: true })
+  });
+  queryImpl = verifyFixture(hostname);
+  try {
+    return JSON.parse((await request('verify_project_custom_domain', { projectId: 42, domainId: 17 }, 'project-owner')).body);
+  } finally {
+    dns.promises.resolveCname = originalResolveCname;
+  }
+}
+
+test('custom domain verify names Cloudflare proxy as the DNS blocker', async () => {
+  const body = await verifyWith({ hostname: 'zgyy.example.cn', addresses: ['172.67.215.249', '104.21.91.111'] });
+  assert.equal(body.success, true, JSON.stringify(body));
+  assert.equal(body.domain.status, 'pending');
+  assert.equal(body.domain.checkStep, 'dns');
+  assert.equal(body.domain.dnsReason, 'cloudflare_proxy');
+  assert.match(body.message, /Cloudflare/);
+  assert.match(body.message, /橙色云点成灰色（仅 DNS）/);
+  assert.match(body.message, /名称 zgyy，内容 customers\.demox\.site/);
+});
+
+test('custom domain verify accepts an A record that points at the gateway (apex / flattened CNAME)', async () => {
+  const body = await verifyWith({ hostname: 'example.cn', addresses: ['119.91.123.2'] });
+  assert.equal(body.domain.status, 'active', JSON.stringify(body));
+  assert.equal(body.domain.dnsVia, 'a');
+  assert.equal(body.domain.checkStep, 'active');
+});
+
+test('custom domain verify points out a wrong A record', async () => {
+  const body = await verifyWith({ hostname: 'www.example.cn', addresses: ['1.2.3.4'] });
+  assert.equal(body.domain.checkStep, 'dns');
+  assert.equal(body.domain.dnsReason, 'other_ip');
+  assert.match(body.message, /1\.2\.3\.4/);
+});
+
+test('custom domain verify points out a CNAME to some other host', async () => {
+  const body = await verifyWith({ hostname: 'www.example.cn', cname: { 'www.example.cn': 'example.github.io.' } });
+  assert.equal(body.domain.dnsReason, 'other_cname');
+  assert.match(body.message, /example\.github\.io/);
+});
+
+test('custom domain verify with no record says how long DNS usually takes', async () => {
+  const body = await verifyWith({ hostname: 'www.example.cn' });
+  assert.equal(body.domain.checkStep, 'dns');
+  assert.equal(body.domain.dnsReason, 'no_record');
+  assert.match(body.message, /1–10 分钟/);
 });
 
 

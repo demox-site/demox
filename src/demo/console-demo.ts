@@ -171,7 +171,8 @@ function websiteAction(action: string, body: Record<string, unknown>): unknown {
     case "bucket_stats": return bucketStats();
     case "list_site_reports": return { success: true, data: body.status === "all" ? reports : reports.filter((r) => r.status === (body.status || "open")) };
     case "list_project_members": return { success: true, members: [{ userId: "demo-admin", email: "admin@example.com", role: "owner" }] };
-    case "list_project_custom_domains": return { success: true, domains: [] };
+    case "list_project_custom_domains": return { success: true, cnameTarget: "customers.demox.site", canManage: true, domains: demoDomains };
+    case "verify_project_custom_domain": return verifyDemoDomain(String(body.domainId || ""));
     case "get_product_funnel": return { code: 0, data: { days: 14, totals: {}, daily: [] } };
     case "track_product_event": return { code: 0, data: { tracked: false } };
     case "list_admin_audit": return { success: true, items: [], nextBeforeId: null };
@@ -179,6 +180,34 @@ function websiteAction(action: string, body: Record<string, unknown>): unknown {
       // 演示里不执行任何写操作
       return { success: false, code: 403, message: "Sample-data preview: writes are disabled" };
   }
+}
+
+// 自定义域名三种状态：已生效 / 卡在解析（Cloudflare 代理）/ 卡在证书（第 3 次检测后变成已生效）
+const demoDomainBase = (id: string, hostname: string, status: "pending" | "active") => ({
+  id, hostname, status, cnameTarget: "customers.demox.site", cnameHost: hostname.split(".")[0],
+  url: `https://${hostname}/`, defaultWebsiteId: "DEMO0001", defaultWebsiteName: "Launch page",
+  routes: [{ label: "", host: hostname, websiteId: "DEMO0001", websiteName: "Launch page", isDefault: true }],
+  verifiedAt: status === "active" ? iso(3) : null, createdAt: iso(status === "active" ? 5 : 0)
+});
+const demoDomains = [
+  demoDomainBase("d-cf", "www.example.cn", "pending"),
+  demoDomainBase("d-cert", "shop.example.org", "pending"),
+  demoDomainBase("d-live", "docs.example.com", "active")
+];
+const demoChecks: Record<string, number> = {};
+function verifyDemoDomain(id: string) {
+  const base = demoDomains.find((d) => d.id === id) || demoDomains[0];
+  demoChecks[base.id] = (demoChecks[base.id] || 0) + 1;
+  const checkedAt = new Date().toISOString();
+  if (base.id === "d-cf") {
+    const message = "开着 Cloudflare 代理，查不到 CNAME。到 Cloudflare 把这条记录的橙色云点成灰色（仅 DNS）：类型 CNAME，名称 www，内容 customers.demox.site";
+    return { success: true, message, domain: { ...base, checkStep: "dns", dnsReason: "cloudflare_proxy", pendingMessage: message, checkedAt } };
+  }
+  if (base.id === "d-cert" && demoChecks[base.id] < 3) {
+    const message = "解析已通，正在签发证书，通常 2–5 分钟，稍后再点检测";
+    return { success: true, message, domain: { ...base, checkStep: "cert", dnsVia: "cname", pendingMessage: message, checkedAt } };
+  }
+  return { success: true, message: "自定义域名已可访问", domain: { ...base, status: "active", checkStep: "active", dnsVia: "cname", pendingMessage: "", checkedAt, verifiedAt: checkedAt } };
 }
 
 export function installConsoleDemo(apiOrigin: string) {

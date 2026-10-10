@@ -1158,6 +1158,64 @@ function cnamePointsAtOfficialSite(chain) {
   });
 }
 
+// Cloudflare 代理（橙色云）会把 CNAME 拍平成自己的 IP，公网只看得到 A 记录。
+// 列表来自 https://www.cloudflare.com/ips-v4 （只用于给出准确提示，不参与放行）。
+const CLOUDFLARE_IPV4_RANGES = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+  '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+  '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'
+].map((cidr) => {
+  const [base, bits] = cidr.split('/');
+  const mask = Number(bits) === 0 ? 0 : (~0 << (32 - Number(bits))) >>> 0;
+  return { base: ipv4ToInt(base) & mask, mask };
+});
+
+function ipv4ToInt(ip) {
+  const parts = String(ip || '').split('.').map((item) => Number(item));
+  if (parts.length !== 4 || parts.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function isCloudflareIpv4(ip) {
+  const value = ipv4ToInt(ip);
+  if (value === null) return false;
+  return CLOUDFLARE_IPV4_RANGES.some((range) => ((value & range.mask) >>> 0) === range.base);
+}
+
+async function defaultLookupCustomDomainHostAddresses(hostname) {
+  try {
+    const records = await dnsPromises.resolve4(hostname);
+    return Array.isArray(records) ? records.map((item) => String(item || '').trim()).filter(Boolean) : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * 第一步「解析」：返回是否已经指到 Demox 入口，以及没指到时的具体原因。
+ * reason: cname | gateway_ip | official_target | cloudflare_proxy | other_cname | other_ip | no_record
+ */
+async function inspectCustomDomainDns(hostname) {
+  const lookup = await lookupCustomDomainCname(hostname);
+  if (lookup.matched) return { matched: true, via: 'cname', reason: 'cname', chain: lookup.chain, addresses: [] };
+  if (cnamePointsAtOfficialSite(lookup.chain)) {
+    return { matched: false, reason: 'official_target', chain: lookup.chain, addresses: [] };
+  }
+  const addresses = await lookupCustomDomainHostAddresses(hostname);
+  // 根域名没法写 CNAME，或 DNS 服务商把 CNAME 拍平了：只要 A 记录正好是网关 IP，也算指对了。
+  if (!lookup.chain.length && addresses.length && CUSTOM_DOMAIN_GATEWAY_IPS.size
+    && addresses.every((ip) => CUSTOM_DOMAIN_GATEWAY_IPS.has(ip))) {
+    return { matched: true, via: 'a', reason: 'gateway_ip', chain: [], addresses };
+  }
+  if (addresses.length && addresses.some((ip) => isCloudflareIpv4(ip))) {
+    return { matched: false, reason: 'cloudflare_proxy', chain: lookup.chain, addresses };
+  }
+  if (lookup.chain.length) return { matched: false, reason: 'other_cname', chain: lookup.chain, addresses };
+  if (addresses.length) return { matched: false, reason: 'other_ip', chain: [], addresses };
+  return { matched: false, reason: 'no_record', chain: [], addresses: [] };
+}
+
 async function defaultLookupCustomDomainGatewayAddresses() {
   try {
     const records = await dnsPromises.resolve4(CUSTOM_DOMAIN_CNAME_TARGET);
@@ -1251,11 +1309,13 @@ function defaultTriggerCustomDomainProvision(hostname) {
 }
 
 let lookupCustomDomainGatewayAddresses = defaultLookupCustomDomainGatewayAddresses;
+let lookupCustomDomainHostAddresses = defaultLookupCustomDomainHostAddresses;
 let probeCustomDomainHttps = defaultProbeCustomDomainHttps;
 let triggerCustomDomainProvision = defaultTriggerCustomDomainProvision;
 
 function setCustomDomainRuntime(hooks = {}) {
   lookupCustomDomainGatewayAddresses = hooks.lookupGatewayAddresses || defaultLookupCustomDomainGatewayAddresses;
+  lookupCustomDomainHostAddresses = hooks.lookupHostAddresses || defaultLookupCustomDomainHostAddresses;
   probeCustomDomainHttps = hooks.probeHttps || defaultProbeCustomDomainHttps;
   triggerCustomDomainProvision = hooks.provision || defaultTriggerCustomDomainProvision;
 }
@@ -1274,20 +1334,37 @@ async function assertCustomDomainGateway() {
   return { ok: true, addresses: matched };
 }
 
-function customDomainPendingMessage({ matched, chain, gateway, live }) {
-  if (!matched) {
-    if (cnamePointsAtOfficialSite(chain)) {
-      return 'CNAME 不能指向 xxx.demox.site，请改成 customers.demox.site';
+function customDomainPendingMessage({ dns, gateway, live, hostname }) {
+  const host = CUSTOM_DOMAIN_CNAME_TARGET;
+  const recordName = customDomainCnameHost(hostname);
+  if (!dns || !dns.matched) {
+    switch (dns && dns.reason) {
+      case 'official_target':
+        return `CNAME 不能指向 xxx.demox.site，请改成 ${host}`;
+      case 'cloudflare_proxy':
+        return `开着 Cloudflare 代理，查不到 CNAME。到 Cloudflare 把这条记录的橙色云点成灰色（仅 DNS）：类型 CNAME，名称 ${recordName || '@'}，内容 ${host}`;
+      case 'other_cname':
+        return `CNAME 指向了 ${dns.chain[dns.chain.length - 1]}，请改成 ${host}`;
+      case 'other_ip':
+        return `解析到了 ${dns.addresses.slice(0, 2).join('、')}，不是 Demox。请删掉这条 A 记录，改成 CNAME 指向 ${host}`;
+      default:
+        return `还查不到 CNAME。确认记录值是 ${host}，新记录一般 1–10 分钟生效`;
     }
-    return '还没有解析到 customers.demox.site';
   }
   if (gateway && gateway.ok === false) {
-    return gateway.message || '平台入口 customers.demox.site 未指向网关，域名还不能生效';
+    return gateway.message || `平台入口 ${host} 未指向网关，域名还不能生效`;
   }
   if (live && live.ok === false) {
-    return '解析已指向入口，正在签发 HTTPS 证书，请一两分钟后再点检测';
+    return '解析已通，正在签发证书，通常 2–5 分钟，稍后再点检测';
   }
-  return '还没有解析到 customers.demox.site';
+  return `还查不到 CNAME。确认记录值是 ${host}`;
+}
+
+function customDomainCheckStep({ dns, gateway, live }) {
+  if (!dns || !dns.matched) return 'dns';
+  if (gateway && gateway.ok === false) return 'gateway';
+  if (!live || !live.ok) return 'cert';
+  return 'active';
 }
 
 function getSupportedOfficialBinding(row) {
@@ -4691,20 +4768,20 @@ async function loadFormattedCustomDomain(projectId, domainId, hostname, extra = 
 }
 
 async function refreshCustomDomainStatus(row, routes = []) {
-  const lookup = await lookupCustomDomainCname(row.hostname);
+  const dns = await inspectCustomDomainDns(row.hostname);
   let gateway = { ok: false, reason: 'unchecked' };
   let live = { ok: false, reason: 'unchecked' };
-  if (lookup.matched) {
+  if (dns.matched) {
     gateway = await assertCustomDomainGateway();
     if (gateway.ok) {
       await triggerCustomDomainProvision(row.hostname).catch(() => ({ ok: false }));
       live = await probeCustomDomainHttps(row.hostname);
     }
   }
-  const nextStatus = lookup.matched && gateway.ok && live.ok
+  const nextStatus = dns.matched && gateway.ok && live.ok
     ? CUSTOM_DOMAIN_STATUS_ACTIVE
     : CUSTOM_DOMAIN_STATUS_PENDING;
-  if (nextStatus !== row.status || (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) || (!lookup.matched && row.verified_at)) {
+  if (nextStatus !== row.status || (nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE && !row.verified_at) || (!dns.matched && row.verified_at)) {
     await query(
       `UPDATE custom_domains
        SET status = ?, verified_at = CASE WHEN ? = '${CUSTOM_DOMAIN_STATUS_ACTIVE}' THEN COALESCE(verified_at, NOW()) ELSE NULL END, updated_at = NOW()
@@ -4716,12 +4793,16 @@ async function refreshCustomDomainStatus(row, routes = []) {
     if (nextStatus !== CUSTOM_DOMAIN_STATUS_ACTIVE) row.verified_at = null;
   }
   return formatCustomDomainForClient(row, routes, {
-    cnameChain: lookup.chain,
+    cnameChain: dns.chain,
+    dnsVia: dns.matched ? dns.via : null,
+    dnsReason: dns.reason,
     liveOk: !!live.ok,
     gatewayOk: !!gateway.ok,
+    checkStep: customDomainCheckStep({ dns, gateway, live }),
+    checkedAt: new Date().toISOString(),
     pendingMessage: nextStatus === CUSTOM_DOMAIN_STATUS_ACTIVE
       ? ''
-      : customDomainPendingMessage({ matched: lookup.matched, chain: lookup.chain, gateway, live })
+      : customDomainPendingMessage({ dns, gateway, live, hostname: row.hostname })
   });
 }
 
@@ -4834,7 +4915,7 @@ async function handleAddProjectCustomDomain(event) {
       [projectId, hostname, CUSTOM_DOMAIN_STATUS_PENDING, String(userId)]
     );
     await upsertCustomDomainRoute(insert.insertId, '', siteAccess.site.id);
-    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { cnameChain: lookup.chain });
+    const domain = await loadFormattedCustomDomain(projectId, insert.insertId, null, { cnameChain: lookup.chain, checkStep: 'dns' });
     return ok({
       success: true,
       domain,
