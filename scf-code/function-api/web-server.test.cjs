@@ -28,8 +28,9 @@ test('HTTP request becomes an API-gateway style event and the result is written 
   assert.equal(seen.headers.authorization, 'Bearer t');
   assert.equal(seen.body, '{"email":"a@b.co"}');
   assert.equal(seen.isBase64Encoded, false);
-  assert.equal(seen.requestContext.sourceIp, '1.2.3.4');
+  assert.equal(seen.requestContext.sourceIp, '10.0.0.1', 'rightmost XFF (leftmost is spoofable)');
   assert.equal(seen.requestId, 'rid-1');
+  assert.equal(seen.headers['x-scf-request-id'], undefined);
 });
 
 test('binary bodies round-trip via base64 both ways', async () => {
@@ -75,4 +76,28 @@ test('eventFromRequest handles empty bodies', () => {
   assert.equal(ev.body, '');
   assert.equal(ev.isBase64Encoded, false);
   assert.equal(ev.requestContext.sourceIp, '9.9.9.9');
+});
+
+test('client IP: x-scf-remote-addr wins over a spoofed X-Forwarded-For', () => {
+  const ev = eventFromRequest({ method: 'POST', url: '/auth/login', headers: { 'x-forwarded-for': '6.6.6.6, 1.1.1.1', 'x-scf-remote-addr': '203.0.113.7' }, socket: { remoteAddress: '127.0.0.1' } }, Buffer.alloc(0));
+  assert.equal(ev.requestContext.sourceIp, '203.0.113.7');
+  assert.equal(ev.headers['x-forwarded-for'], '6.6.6.6, 1.1.1.1', 'client XFF still visible to apps, but never used as the trusted IP');
+});
+
+test('platform X-Scf-* headers (runtime-role temp credentials) never reach the handler', async () => {
+  let seen;
+  await withServer(async (event) => { seen = event; return { statusCode: 200, body: '{}' }; }, async (base) => {
+    await fetch(`${base}/api/x`, { headers: { 'x-scf-secret-id': 'AKIDfake', 'x-scf-secret-key': 'fakekey', 'x-scf-session-token': 'faketoken', 'x-scf-remote-addr': '198.51.100.9', 'x-scf-request-id': 'rid-9', 'x-keep': 'yes' } });
+  });
+  assert.deepEqual(Object.keys(seen.headers).filter((k) => k.startsWith('x-scf-')), []);
+  assert.ok(!JSON.stringify(seen).includes('fakekey') && !JSON.stringify(seen).includes('faketoken') && !JSON.stringify(seen).includes('AKIDfake'));
+  assert.equal(seen.headers['x-keep'], 'yes');
+  assert.equal(seen.requestContext.sourceIp, '198.51.100.9');
+  assert.equal(seen.requestId, 'rid-9');
+});
+
+test('client IP falls back to the socket address when no proxy headers exist', () => {
+  const { clientIpFrom } = require('./web-server.js');
+  assert.equal(clientIpFrom({}, { remoteAddress: '9.9.9.9' }), '9.9.9.9');
+  assert.equal(clientIpFrom({ 'x-forwarded-for': ' 1.1.1.1 , 2.2.2.2 ' }, null), '2.2.2.2');
 });

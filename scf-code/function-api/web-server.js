@@ -23,6 +23,29 @@ function firstHeader(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+/**
+ * 客户端 IP：优先腾讯云注入的 x-scf-remote-addr（X-Scf-* 头客户端不能自定义，见 SCF Web 函数文档），
+ * 其次 X-Forwarded-For 最右边一个（离我们最近的代理追加的；最左边可被客户端伪造），最后才用 socket 地址。
+ */
+function clientIpFrom(headers, socket) {
+  const scf = String(headers['x-scf-remote-addr'] || '').trim();
+  if (scf) return scf;
+  const xff = String(headers['x-forwarded-for'] || '').split(',').map((v) => v.trim()).filter(Boolean);
+  if (xff.length) return xff[xff.length - 1];
+  return (socket && socket.remoteAddress) || '';
+}
+
+/**
+ * 去掉平台注入的 X-Scf-* 头：其中 X-Scf-Secret-Id / X-Scf-Secret-Key / X-Scf-Session-Token 是运行角色的临时密钥，
+ * 绝不能进入业务代码、用户函数转发或日志。
+ */
+function stripPlatformHeaders(headers) {
+  for (const key of Object.keys(headers)) if (key.startsWith('x-scf-')) delete headers[key];
+  return headers;
+}
+
+let headerNamesLogged = false;
+
 function isTextContentType(contentType) {
   const type = String(contentType || '').toLowerCase();
   return !type || type.startsWith('text/') || type.includes('json') || type.includes('x-www-form-urlencoded') || type.includes('xml') || type.includes('javascript');
@@ -37,7 +60,12 @@ function eventFromRequest(req, rawBody) {
   for (const [key, value] of url.searchParams) query[key] = value;
   const text = isTextContentType(headers['content-type']);
   const requestId = firstHeader(req.headers['x-scf-request-id']) || firstHeader(req.headers['x-request-id']) || crypto.randomBytes(8).toString('hex');
-  const sourceIp = String(headers['x-forwarded-for'] || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '';
+  const sourceIp = clientIpFrom(headers, req.socket);
+  if (!headerNamesLogged) {
+    headerNamesLogged = true; // 每个实例只记一次，只记名字不记值，用来核对平台实际传了哪些头
+    console.log(`web-server: request header names: ${Object.keys(headers).sort().join(',')}`);
+  }
+  stripPlatformHeaders(headers);
   return {
     httpMethod: String(req.method || 'GET').toUpperCase(),
     path: url.pathname,
@@ -115,4 +143,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createWebServer, eventFromRequest, writeResult };
+module.exports = { createWebServer, eventFromRequest, writeResult, clientIpFrom, stripPlatformHeaders };
