@@ -367,5 +367,8 @@ test('COS bucket/region come from env (default Chengdu) and are validated', () =
   const { validateCosTarget } = require('./scf-function-api.cjs');
   assert.doesNotThrow(() => validateCosTarget('demox-scf-deploy-1307257815', 'ap-guangzhou'));
   assert.throws(() => validateCosTarget('no-appid', 'ap-guangzhou'), /桶名不合法/);
+  assert.throws(() => validateCosTarget('demox-deploy-gz-1250000000', 'ap-guangzhou'), /1307257815/, 'other accounts\' buckets are rejected');
+  assert.throws(() => validateCosTarget('x-1307257815x', 'ap-guangzhou'), /桶名不合法/);
+  assert.doesNotThrow(() => validateCosTarget('demox-deploy-gz-1307257815', 'ap-guangzhou'));
   assert.throws(() => validateCosTarget('demox-x-1307257815', 'guangzhou'), /地域不合法/);
 });

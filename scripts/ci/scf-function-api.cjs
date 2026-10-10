@@ -161,7 +161,7 @@ const UPLOAD = Object.freeze({
 
 /** 桶名必须带 APPID 后缀，地域必须是 ap-xxx；不合法直接拒绝（防止 vars 写错把包传到别处）。 */
 function validateCosTarget(bucket = CONFIG.cosBucket, region = CONFIG.cosRegion) {
-  if (!/^[a-z0-9][a-z0-9-]{0,48}-\d{6,12}$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（需要 <name>-<appid>）`);
+  if (!/^[a-z0-9][a-z0-9-]{0,48}-1307257815$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（只接受本账号 APPID 1307257815 的桶：<name>-1307257815）`);
   if (!/^ap-[a-z]+(?:-[a-z]+)*$/.test(String(region))) throw new Error(`COS 地域不合法：${region}`);
   return { bucket, region };
 }
