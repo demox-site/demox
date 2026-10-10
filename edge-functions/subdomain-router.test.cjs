@@ -1201,20 +1201,12 @@ async function handleWithCookie(url, { cookie, resolve, method = 'GET', accept =
 const PUBLIC_SITE = { success: true, path: 'sites/demo/PUB1/dist', websiteId: 'PUB1', origin: 'sites.demox.site', visibility: 'public', hideWatermark: true };
 const PRIVATE_SITE = { success: true, path: 'sites/demo/PRV1/dist', websiteId: 'PRV1', origin: 'site-3.demox.site', visibility: 'private', hideWatermark: true };
 
-test('origin fetch for a user site never carries demox_access but keeps the user cookies', async () => {
+test('origin fetch for a user site forwards the incoming request unchanged, cookie included (pre-#49 behaviour)', async () => {
   const { response, calls } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'a=1; demox_access=ACCOUNT_TOKEN; b=2', resolve: PUBLIC_SITE });
   assert.equal(response.status, 200);
   const origin = calls.filter((c) => c.url.includes('sites.demox.site/'));
   assert.ok(origin.length >= 1);
-  for (const c of origin) assert.equal(c.cookie, 'a=1; b=2');
-  assert.equal(calls.some((c) => String(c.cookie || '').includes('ACCOUNT_TOKEN')), false);
-});
-
-test('origin fetch drops the Cookie header when demox_access was the only cookie', async () => {
-  const { calls } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE });
-  const origin = calls.filter((c) => c.url.includes('sites.demox.site/'));
-  assert.ok(origin.length >= 1);
-  for (const c of origin) assert.equal(c.cookie, null);
+  for (const c of origin) assert.equal(c.cookie, 'a=1; demox_access=ACCOUNT_TOKEN; b=2');
 });
 
 test('site function proxy (/api/*) never forwards demox_access to the user function', async () => {
@@ -1238,18 +1230,19 @@ test('site function proxy keeps POST bodies when stripping the cookie', async ()
   assert.equal(calls.find((c) => c.url.startsWith('https://api.test/PUB1/')).cookie, 'k=v');
 });
 
-test('unknown official subdomain passthrough strips demox_access', async () => {
-  const { calls } = await handleWithCookie('https://nobody-here.demox.site/x', { cookie: 'demox_access=ACCOUNT_TOKEN; z=9' });
+test('unknown official subdomain passthrough forwards the request unchanged (pre-#49) and still expires the cookie', async () => {
+  const { response, calls } = await handleWithCookie('https://nobody-here.demox.site/x', { cookie: 'demox_access=ACCOUNT_TOKEN; z=9' });
   const pass = calls.filter((c) => c.url.startsWith('https://nobody-here.demox.site/'));
   assert.equal(pass.length, 1);
-  assert.equal(pass[0].cookie, 'z=9');
+  assert.equal(pass[0].cookie, 'demox_access=ACCOUNT_TOKEN; z=9');
+  assert.match(response.headers.get('set-cookie') || '', /demox_access=; Max-Age=0/);
 });
 
 test('requests carrying the old cookie get both expiry variants back', async () => {
   const { response } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE });
   const set = response.headers.get('set-cookie') || '';
-  assert.match(set, /demox_access=; Max-Age=0; Path=\/; Domain=\.demox\.site; Secure; SameSite=Lax/);
-  assert.match(set, /demox_access=; Max-Age=0; Path=\/; Secure; SameSite=Lax/);
+  assert.match(set, /demox_access=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=\/; Domain=\.demox\.site; Secure; SameSite=Lax/);
+  assert.match(set, /demox_access=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=\/; Secure; SameSite=Lax/);
   assert.doesNotMatch(set, /ACCOUNT_TOKEN/);
 });
 
@@ -1359,8 +1352,12 @@ async function handleEdgeOneLike(url, { cookie, resolve, method = 'GET', accept 
 
 const WWW_SITE = { success: true, path: 'sites/owner/EPX2UU43/dist', websiteId: 'EPX2UU43', origin: 'sites.demox.site', visibility: 'public', hideWatermark: true };
 
+// 只有 /api/* 用户函数不能收到 demox_access；静态源站 / 透传按 #49 之前原样转发（2026-10-10 决定）。
 function assertNoAuthCookie(calls) {
-  for (const c of calls) assert.doesNotMatch(String(c.cookie || ''), /demox_access|ACCOUNT_TOKEN/, `leaked to ${c.url}`);
+  for (const c of calls) {
+    if (!c.url.startsWith('https://api.test/')) continue;
+    assert.doesNotMatch(String(c.cookie || ''), /demox_access|ACCOUNT_TOKEN/, `leaked to ${c.url}`);
+  }
 }
 
 for (const withCookie of [false, true]) {
@@ -1376,7 +1373,7 @@ for (const withCookie of [false, true]) {
     assert.match(r.response.headers.get('x-demox-route') || '', /origin=ok/);
     const origin = r.calls.filter((c) => c.url.includes('sites.demox.site/sites/demo/PUB1/'));
     assert.ok(origin.length >= 1);
-    for (const c of origin) assert.equal(c.cookie, 'a=1; b=2');
+    for (const c of origin) assert.equal(c.cookie, cookie);
     assertNoAuthCookie(r.calls);
   });
 
@@ -1420,22 +1417,26 @@ for (const withCookie of [false, true]) {
     }
   });
 
-  test(`EdgeOne-like: unknown subdomain passthrough ${label} does not throw and strips demox_access`, async () => {
+  test(`EdgeOne-like: unknown subdomain passthrough ${label} does not throw and forwards the request unchanged`, async () => {
     const r = await handleEdgeOneLike('https://nobody-here.demox.site/x', { cookie });
     assert.equal(r.thrown, null);
     assert.deepEqual(r.errors, []);
     const pass = r.calls.filter((c) => c.url.startsWith('https://nobody-here.demox.site/'));
     assert.equal(pass.length, 1);
-    assert.equal(pass[0].cookie, 'a=1; b=2');
+    assert.equal(pass[0].cookie, cookie);
   });
 }
 
-test('EdgeOne-like: requests without demox_access keep the pre-#49 fetch shape (original request object)', () => {
-  // 回源/透传在没有 demox_access 时必须原样传入站请求（线上已验证的路径），只有带 cookie 时才换普通 init。
-  assert.match(source, /function originFetchInit\(req\) \{\s*return hasAuthCookie\(req\.headers\) \? strippedFetchInit\(req\) : req;/);
-  assert.match(source, /if \(!hasAuthCookie\(req\.headers\)\) return fetch\(req\);/);
+test('static origin and passthrough fetches are byte-for-byte the pre-#49 calls (original request object)', () => {
+  // 三次发布失败都出在这条路径上（17:18 重建 Request、17:52 Host、18:04 POST）。这里必须和 #49 之前完全一样。
+  assert.match(source, /originFetch\(buildOriginUrl\(req, originPath, u\.search, originHost\), req\)/);
   assert.doesNotMatch(source, /new Request\(req\b/);
+  assert.doesNotMatch(source, /strippedFetchInit|originFetchInit|passThroughWithoutAuthCookie|withoutAuthCookie\(/);
+  const pre = require('node:child_process').execSync('git show 3050f5d^:edge-functions/subdomain-router.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  const fetchLines = (src) => src.split('\n').map((l) => l.trim()).filter((l) => /\bfetch\(/.test(l) && !l.startsWith('//'));
+  assert.deepEqual(fetchLines(source), fetchLines(pre));
 });
+
 
 // ── 2026-10-10 17:52–17:53 回归：带 cookie 的普通 init 把入站 Host 带去 COS 源站 → 400 ─────────────────
 const BROWSER_HEADERS = {
@@ -1479,7 +1480,7 @@ for (const withCookie of [false, true]) {
             assert.equal(c.wire[h], undefined, `${c.url} carried ${h}`);
           }
         }
-        assert.doesNotMatch(String(c.wire.cookie || ''), /demox_access|ACCOUNT_TOKEN/);
+        if (c.url.startsWith('https://api.test/')) assert.doesNotMatch(String(c.wire.cookie || ''), /demox_access|ACCOUNT_TOKEN/);
       }
     });
   }
@@ -1492,7 +1493,7 @@ for (const [name, url, resolve, method, needle] of [
   ['www GET', 'https://www.demox.site/', WWW_SITE, 'GET', 'sites.demox.site/sites/owner/EPX2UU43/'],
   ['unknown host passthrough', 'https://nobody-here.demox.site/x', undefined, 'GET', 'https://nobody-here.demox.site/x']
 ]) {
-  test(`EdgeOne wire: ${name} — origin request with and without demox_access is identical except Cookie`, async () => {
+  test(`EdgeOne wire: ${name} — origin request with and without demox_access is identical except Cookie (forwarded as-is)`, async () => {
     const host = new URL(url).host;
     const common = { resolve, method, body: method === 'POST' ? '{"x":1}' : undefined, headers: Object.assign({ Host: host, 'Content-Type': 'application/json' }, BROWSER_HEADERS) };
     const without = await handleEdgeOneLike(url, { ...common, cookie: 'a=1; b=2' });
@@ -1506,8 +1507,139 @@ for (const [name, url, resolve, method, needle] of [
       assert.equal(o2[i].body, o1[i].body);
       const a = { ...o1[i].wire }; const b = { ...o2[i].wire };
       assert.equal(a.cookie, 'a=1; b=2');
-      assert.equal(b.cookie, 'a=1; b=2');
+      assert.equal(b.cookie, 'a=1; demox_access=ACCOUNT_TOKEN; b=2'); // 静态源站：原样转发（#49 之前的行为）
+      delete a.cookie; delete b.cookie;
       assert.deepEqual(b, a);
     }
   });
 }
+
+// ── 2026-10-10 18:07 决定：静态路径原样转发 + 所有带 demox_access 的响应追加两条过期 Set-Cookie ─────────────
+function routerWith(fetchImpl) {
+  const ctx = vm.createContext({
+    URL, Request, Response, Headers, console,
+    env: { DEMOX_API_URL: 'https://api.test', DEMOX_HOME_URL: 'https://www.demox.site' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: fetchImpl
+  });
+  vm.runInContext(`${source}\nglobalThis.__h = { handle, withExpiredAuthCookie, expireAuthCookieHeaders };`, ctx);
+  return ctx.__h;
+}
+
+function siteFetch({ resolve = PUBLIC_SITE, origin, fn } = {}) {
+  return async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes('/resolve-subdomain')) {
+      return new Response(JSON.stringify(resolve || { success: false, message: 'not found' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.startsWith('https://api.test/')) {
+      return fn ? fn(url, init) : new Response('{"fn":true}', { status: 200, headers: { 'Content-Type': 'application/json', 'Set-Cookie': 'fn_sid=f1; Path=/' } });
+    }
+    return origin ? origin(url, init) : new Response('<!doctype html><html><body><main>Live site</main></body></html>', {
+      status: 200, headers: { 'Content-Type': 'text/html', 'Set-Cookie': 'origin_sid=o1; Path=/' }
+    });
+  };
+}
+
+function setCookies(resp) {
+  return typeof resp.headers.getSetCookie === 'function' ? resp.headers.getSetCookie() : [resp.headers.get('set-cookie')].filter(Boolean);
+}
+
+function assertExpiryPair(resp, label) {
+  const sc = setCookies(resp).filter((c) => c.startsWith('demox_access='));
+  const dom = sc.filter((c) => /Domain=\.demox\.site/.test(c));
+  const host = sc.filter((c) => !/Domain=/i.test(c));
+  assert.equal(dom.length, 1, `${label}: Domain=.demox.site expiry`);
+  assert.equal(host.length, 1, `${label}: host-only expiry`);
+  for (const c of sc) {
+    assert.match(c, /^demox_access=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=\//, label);
+    assert.doesNotMatch(c, /ACCOUNT_TOKEN/);
+  }
+}
+
+async function call(h, url, { cookie, method = 'GET', accept = 'text/html', body } = {}) {
+  const headers = { Accept: accept };
+  if (cookie) headers.Cookie = cookie;
+  const init = { method, headers };
+  if (body) { init.body = body; init.duplex = 'half'; headers['Content-Type'] = 'application/json'; }
+  return h.handle(new Request(url, init), { waitUntil: () => {}, passThroughOnException: () => {} });
+}
+
+const EXPIRY_CASES = [
+  ['public page GET', 'https://pub1.demox.site/', {}, 'GET', 'text/html', 200],
+  ['public page HEAD', 'https://pub1.demox.site/', {}, 'HEAD', 'text/html', 200],
+  ['public page POST', 'https://pub1.demox.site/', {}, 'POST', 'text/html', 200],
+  ['public page PUT', 'https://pub1.demox.site/', {}, 'PUT', 'text/html', 200],
+  ['public page OPTIONS', 'https://pub1.demox.site/', {}, 'OPTIONS', 'text/html', 200],
+  ['www GET', 'https://www.demox.site/', { resolve: WWW_SITE }, 'GET', 'text/html', 200],
+  ['function GET', 'https://pub1.demox.site/api/echo', {}, 'GET', 'application/json', 200],
+  ['function POST', 'https://pub1.demox.site/api/echo', {}, 'POST', 'application/json', 200],
+  ['unknown host passthrough', 'https://nobody-here.demox.site/x', { resolve: null }, 'GET', 'text/html', 200],
+  ['origin throws → 503', 'https://pub1.demox.site/', { origin: async () => { throw new Error('origin down'); } }, 'GET', 'text/html', 503],
+  ['private site re-verify', 'https://prv1.demox.site/', { resolve: PRIVATE_SITE }, 'GET', 'text/html', 503]
+];
+
+for (const [name, url, opts, method, accept, status] of EXPIRY_CASES) {
+  test(`expiry Set-Cookie: ${name} WITH demox_access gets both expiry cookies; without gets none`, async () => {
+    const h = routerWith(siteFetch(opts));
+    const body = method === 'POST' || method === 'PUT' ? '{"x":1}' : undefined;
+    const withC = await call(h, url, { cookie: 'a=1; demox_access=ACCOUNT_TOKEN', method, accept, body });
+    assert.equal(withC.status, status);
+    assertExpiryPair(withC, name);
+    const without = await call(routerWith(siteFetch(opts)), url, { cookie: 'a=1', method, accept, body });
+    assert.equal(without.status, status);
+    assert.equal(setCookies(without).filter((c) => c.startsWith('demox_access=')).length, 0);
+  });
+}
+
+test('expiry Set-Cookie: origin and function Set-Cookie headers are preserved (appended, not overwritten)', async () => {
+  const page = await call(routerWith(siteFetch()), 'https://pub1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN' });
+  assert.ok(setCookies(page).includes('origin_sid=o1; Path=/'), 'origin cookie kept');
+  assertExpiryPair(page, 'page');
+  const fn = await call(routerWith(siteFetch()), 'https://pub1.demox.site/api/echo', { cookie: 'demox_access=ACCOUNT_TOKEN', accept: 'application/json' });
+  assert.ok(setCookies(fn).includes('fn_sid=f1; Path=/'), 'function cookie kept');
+  assertExpiryPair(fn, 'function');
+});
+
+test('expiry Set-Cookie: origin response with immutable headers (set/append throw) → no 500, body and cookies intact', async () => {
+  const immutable = () => {
+    const r = new Response('<!doctype html><html><body><main>Frozen</main></body></html>', {
+      status: 200, headers: { 'Content-Type': 'text/html', 'Set-Cookie': 'origin_sid=o1; Path=/' }
+    });
+    const h = r.headers;
+    for (const m of ['set', 'append', 'delete']) {
+      Object.defineProperty(h, m, { value: () => { throw new TypeError('immutable headers'); } });
+    }
+    return r;
+  };
+  for (const url of ['https://pub1.demox.site/', 'https://nobody-here.demox.site/x', 'https://www.demox.site/']) {
+    const resolve = url.includes('nobody') ? null : (url.includes('www') ? WWW_SITE : { ...PUBLIC_SITE, hideWatermark: true });
+    const resp = await call(routerWith(siteFetch({ resolve, origin: async () => immutable() })), url, { cookie: 'demox_access=ACCOUNT_TOKEN' });
+    assert.equal(resp.status, 200, url);
+    assert.match(await resp.clone().text(), /Frozen/);
+    assertExpiryPair(resp, url);
+    assert.ok(setCookies(resp).includes('origin_sid=o1; Path=/'));
+  }
+});
+
+test('withExpiredAuthCookie uses the proven re-wrap form (status/statusText/new Headers), not new Response(body, resp)', () => {
+  const fnSrc = source.slice(source.indexOf('function withExpiredAuthCookie('), source.indexOf('function runtimeEnv('));
+  assert.match(fnSrc, /new Response\(resp\.body, \{ status: resp\.status, statusText: resp\.statusText, headers: new Headers\(resp\.headers\) \}\)/);
+  assert.doesNotMatch(fnSrc, /new Response\(resp\.body, resp\)/);
+});
+
+test('withExpiredAuthCookie: if re-wrapping the response throws, the original response is returned (never 500)', () => {
+  const h = routerWith(async () => { throw new Error('unused'); });
+  const weird = { status: 101, statusText: 'Switching Protocols', headers: new Headers(), body: null };
+  assert.equal(h.withExpiredAuthCookie(weird, 'demox.site'), weird);
+  const ok = new Response('x', { status: 200 });
+  const wrapped = h.withExpiredAuthCookie(ok, 'demox.site');
+  assert.notEqual(wrapped, ok);
+  assert.equal(setCookies(wrapped).length, 2);
+});
+
+test('expiry Set-Cookie: non-official custom host gets no Demox cookie headers', async () => {
+  const resp = await call(routerWith(siteFetch({ resolve: null })), 'https://example.org/', { cookie: 'demox_access=ACCOUNT_TOKEN' });
+  assert.equal(setCookies(resp).filter((c) => c.startsWith('demox_access=')).length, 0);
+});
