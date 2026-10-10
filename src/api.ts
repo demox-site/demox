@@ -25,44 +25,40 @@ const DEPLOY_API_PATH = "/deploy";
 // Token管理
 const TOKEN_KEY = "demox_token";
 const USER_KEY = "demox_user";
+// 账号令牌只放 localStorage。2026-10-10 起不再写 cookie：旧版本写在 Domain=.demox.site 上，
+// 任何 *.demox.site 用户站点的页面脚本和用户函数都能读到。这里只负责把旧 cookie 清掉。
 const AUTH_COOKIE_KEY = "demox_access";
-const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
-function getCookieDomainAttr(): string {
+function getCookieDomain(): string {
   if (typeof window === "undefined") return "";
   const host = window.location.hostname.toLowerCase();
-  const officialDomain = OFFICIAL_DOMAINS.find((domain) => host === domain || host.endsWith(`.${domain}`));
-  if (officialDomain) {
-    return `Domain=.${officialDomain}; `;
+  return OFFICIAL_DOMAINS.find((domain) => host === domain || host.endsWith(`.${domain}`)) || "";
+}
+
+/** 让浏览器把旧的 demox_access 过期：父域（Domain=.demox.site）和本 host（host-only）两种都清。 */
+export function clearLegacyAuthCookie() {
+  if (typeof document === "undefined") return;
+  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
+  const domain = getCookieDomain();
+  if (domain) {
+    document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/; Domain=.${domain}${secure}; SameSite=Lax`;
   }
-  return "";
+  document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/${secure}; SameSite=Lax`;
 }
 
-function setAuthCookie(token: string) {
-  if (typeof document === "undefined") return;
-  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "Secure; " : "";
-  document.cookie =
-    `${AUTH_COOKIE_KEY}=${encodeURIComponent(token)}; ` +
-    `Max-Age=${AUTH_COOKIE_MAX_AGE}; Path=/; ${getCookieDomainAttr()}SameSite=Lax; ${secure}`;
-}
-
-function clearAuthCookie() {
-  if (typeof document === "undefined") return;
-  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "Secure; " : "";
-  document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/; SameSite=Lax; ${secure}`;
-  document.cookie = `${AUTH_COOKIE_KEY}=; Max-Age=0; Path=/; ${getCookieDomainAttr()}SameSite=Lax; ${secure}`;
-}
+// 启动时清一次：已经登录过的浏览器里还留着旧 cookie。
+clearLegacyAuthCookie();
 
 export const tokenManager = {
   get: () => localStorage.getItem(TOKEN_KEY),
   set: (token: string) => {
     localStorage.setItem(TOKEN_KEY, token);
-    setAuthCookie(token);
+    clearLegacyAuthCookie();
   },
   remove: () => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    clearAuthCookie();
+    clearLegacyAuthCookie();
   }
 };
 

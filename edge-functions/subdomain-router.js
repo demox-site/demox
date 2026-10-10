@@ -66,6 +66,90 @@ var DEMOX_AUTH_COOKIE = 'demox_access';
 var DEMOX_SITE_AUTH_COMPLETE_PATH = '/.demox/auth-complete';
 var DEMOX_SITE_AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
+// 2026-10-10 账号令牌 cookie 止血（step 1）：
+// 旧前端把账号令牌写在 Domain=.demox.site 的 demox_access cookie 上，任何 *.demox.site 用户站点的
+// 页面 JS 和用户函数都能拿到。这里保证：
+//   1) 回源（sites.demox.site / site-*.demox.site / COS）和转发用户函数前，只删 Cookie 头里的 demox_access，
+//      用户自己的其它 cookie 原样保留；删完为空就去掉整个 Cookie 头。
+//   2) 官方域名下的请求带着旧 cookie 来，响应里顺手让浏览器把它过期掉（父域 + 本 host 两种）。
+//   3) 官方域名（*.demox.site）私有站点不再认 cookie 里的账号令牌，先显示「需要重新验证」。
+//      站点级短期票据是 step 2（单独 PR）。
+function isAuthCookiePair(part) {
+  const p = String(part || '').trim();
+  const eq = p.indexOf('=');
+  const name = (eq === -1 ? p : p.slice(0, eq)).trim();
+  return name === DEMOX_AUTH_COOKIE;
+}
+
+function stripAuthCookieValue(raw) {
+  return String(raw || '')
+    .split(';')
+    .map(function (part) { return part.trim(); })
+    .filter(function (part) { return part && !isAuthCookiePair(part); })
+    .join('; ');
+}
+
+function hasAuthCookie(headers) {
+  const raw = headers && headers.get ? (headers.get('cookie') || '') : '';
+  return raw ? raw.split(';').some(isAuthCookiePair) : false;
+}
+
+function withoutAuthCookieHeaders(source) {
+  const headers = new Headers(source);
+  const raw = headers.get('cookie');
+  if (raw === null) return headers;
+  const rest = stripAuthCookieValue(raw);
+  if (rest) {
+    headers.set('cookie', rest);
+  } else {
+    headers.delete('cookie');
+  }
+  return headers;
+}
+
+function withoutAuthCookie(req) {
+  if (!hasAuthCookie(req.headers)) return req;
+  const headers = withoutAuthCookieHeaders(req.headers);
+  try {
+    return new Request(req, { headers: headers });
+  } catch (e) {
+    return new Request(req, { headers: headers, duplex: 'half' });
+  }
+}
+
+function isOfficialDomain(domain) {
+  return OFFICIAL_DOMAINS.indexOf(String(domain || '').toLowerCase()) !== -1;
+}
+
+function officialDomainOfHost(host) {
+  const h = String(host || '').toLowerCase().replace(/\.+$/, '');
+  for (let i = 0; i < OFFICIAL_DOMAINS.length; i += 1) {
+    const d = OFFICIAL_DOMAINS[i];
+    if (h === d || h.endsWith('.' + d)) return d;
+  }
+  return '';
+}
+
+function expireAuthCookieHeaders(domain) {
+  return [
+    DEMOX_AUTH_COOKIE + '=; Max-Age=0; Path=/; Domain=.' + domain + '; Secure; SameSite=Lax',
+    DEMOX_AUTH_COOKIE + '=; Max-Age=0; Path=/; Secure; SameSite=Lax'
+  ];
+}
+
+function withExpiredAuthCookie(resp, domain) {
+  if (!resp || !domain) return resp;
+  let out;
+  try {
+    out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
+  } catch (e) {
+    return resp;
+  }
+  const values = expireAuthCookieHeaders(domain);
+  for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
+  return out;
+}
+
 function runtimeEnv(name) {
   try {
     if (typeof env !== 'undefined' && env && env[name]) {
@@ -104,7 +188,7 @@ function proxySiteFunction(req, websiteId, u) {
     });
   }
   const target = base + '/' + encodeURIComponent(siteId) + '/production' + u.pathname + u.search;
-  const headers = new Headers(req.headers);
+  const headers = withoutAuthCookieHeaders(req.headers);
   headers.delete('host');
   const init = {
     method: req.method,
@@ -374,7 +458,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
+  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), withoutAuthCookie(req));
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
@@ -1199,6 +1283,7 @@ async function completePrivateSiteLogin(req, label, domain) {
     });
   }
 
+  if (isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
   const access = await checkPrivateSiteAccessToken(token, label, domain, requestUrl.hostname);
   const location = next.pathname + next.search + next.hash;
   if (!access.allowed) {
@@ -1216,6 +1301,54 @@ async function completePrivateSiteLogin(req, label, domain) {
       '; Path=/; HttpOnly; Secure; SameSite=Lax';
   }
   return new Response(null, { status: 303, headers: headers });
+}
+
+function privateSiteReverifyResponse(req) {
+  if (!isDocumentRequest(req)) {
+    return new Response('Re-verification required', {
+      status: 401,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+  const host = escapeHtml(new URL(req.url).hostname);
+  const home = escapeHtml(demoxHomeUrl());
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>需要重新验证 - ${host}</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #18181b;
+      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    main { width: min(88vw, 420px); padding: 32px; border: 1px solid rgba(24,24,27,.1); border-radius: 20px; background: #fff; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 0; color: #52525b; }
+    code { color: #18181b; }
+    a { display: inline-block; margin-top: 20px; padding: 9px 16px; border-radius: 999px; background: #18181b; color: #fff; text-decoration: none; font-size: 14px; }
+    @media (prefers-color-scheme: dark) { body { background: #0d0d0d; color: #f5f5f5; } main { background: #18181b; border-color: rgba(255,255,255,.1); } p { color: #a1a1aa; } code { color: #f5f5f5; } a { background: #f5f5f5; color: #18181b; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>需要重新验证</h1>
+    <p><code>${host}</code> 是私有站点。为了账号安全，我们正在升级私有站点的验证方式，暂时无法打开，请稍后再试。</p>
+    <a href="${home}">返回 Demox</a>
+  </main>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Retry-After': '3600',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
 }
 
 function accessDeniedPage(req) {
@@ -1301,6 +1434,8 @@ function accessDeniedPage(req) {
 }
 
 async function checkPrivateSiteAccess(req, label, domain, host) {
+  // 官方域名下的 demox_access 是旧前端写在父域上的账号令牌，不再认。
+  if (isOfficialDomain(domain) && !host) return { allowed: false, loginRequired: true };
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
@@ -1620,14 +1755,21 @@ async function resolveSite(label, domain) {
 
 async function handle(req, event) {
   const ctx = { siteTraffic: false, resolveState: 'none' };
+  const staleCookieDomain = hasAuthCookie(req.headers) ? officialDomainOfHost(new URL(req.url).hostname) : '';
   try {
-    return await handleRequest(req, event, ctx);
+    const resp = await handleRequest(req, event, ctx);
+    return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
   } catch (e) {
     // 已确认是用户站点流量（非 www）时，任何意外异常都映射成 503，
     // 绝不让 passThroughOnException 回源到桶根返回「站点未发布」。
     if (ctx.siteTraffic) {
       try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
       return siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
+    }
+    // passThroughOnException 会把原始请求（含 demox_access）回源；带着它时改为自己去掉后再回源。
+    if (hasAuthCookie(req.headers)) {
+      const resp = await fetch(withoutAuthCookie(req));
+      return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
     }
     throw e;
   }
@@ -1655,7 +1797,7 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(withoutAuthCookie(req));
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -1722,6 +1864,7 @@ async function handleRequest(req, event, ctx) {
       return disabledSitePage();
     }
     if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
+      if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
       if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
         if (req.method !== 'POST') {
           return new Response('Method Not Allowed', {
@@ -1754,7 +1897,7 @@ async function handleRequest(req, event, ctx) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
-  return fetch(req);
+  return fetch(withoutAuthCookie(req));
 }
 
 // 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。
@@ -1765,6 +1908,7 @@ async function serveResolvedSite(req, event, u, rest, path, origin, parsedHost, 
     return disabledSitePage();
   }
   if (meta.visibility === VISIBILITY_PRIVATE) {
+    if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
     if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
       if (req.method !== 'POST') {
         return new Response('Method Not Allowed', {
