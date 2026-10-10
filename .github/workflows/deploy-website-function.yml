@@ -1,0 +1,144 @@
+name: Deploy website function (Demox EPX2UU43 / slug website)
+
+# 平台站点 EPX2UU43 上的 website 业务函数（scf-code/website-api/index.js）发布与回滚。
+# 只能手动触发（workflow_dispatch），只能在 master 上跑，job 在 environment website-function-production 里（需要 PhosAQy 批准）。
+# 流程：跑 website-api 单元测试 → 记下当前别名 → demox functions push（生成新版本，别名不动）
+#      → develop 指向新版本 → 公网冒烟（develop）→ production 指向新版本 → 公网冒烟（production，失败自动切回原版本）。
+# 回滚：action=rollback，version=目标版本号，直接把 production（和 develop）切过去，然后冒烟。
+# 注意：CLI 只推 index.js；node_modules 和 shared/ 在统一 SCF 包（function-api 发布）里，改了那些要走 deploy-function-api。
+#
+# 凭证：暂时用仓库级 secret DEMOX_TOKEN（站点所有者的令牌，www 发布也在用）。
+# 日志规则：绝不打印令牌，也不打印 CLI / API 的原始输出。CLI 输出全部写进 $RUNNER_TEMP 下的文件，
+#          只从里面提取版本号；冒烟只打印 HTTP 状态码和 success 字段。
+# TODO：团队有了自己的部署令牌后，存成 environment website-function-production 的 secret，并删除仓库级 DEMOX_TOKEN。
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy = 推送 master 上的 website-api 并切别名；rollback = 把别名切回指定版本"
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      version:
+        description: "rollback 的目标版本号（数字）"
+        required: false
+
+concurrency:
+  group: deploy-website-function
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  WEBSITE_ID: EPX2UU43
+  FN_SLUG: website
+  API_BASE: https://api.demox.site
+
+jobs:
+  website-function:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: website-function-production
+    timeout-minutes: 20
+    env:
+      ACTION: ${{ inputs.action }}
+      ROLLBACK_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Guard (master only)
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/master" ]; then echo "::error::只能在 master 上运行"; exit 1; fi
+          case "${ACTION}" in deploy|rollback) ;; *) echo "::error::未知 action"; exit 1 ;; esac
+          if [ "${ACTION}" = "rollback" ] && ! [[ "${ROLLBACK_VERSION}" =~ ^[0-9]+$ ]]; then
+            echo "::error::rollback 需要数字 version"; exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Unit tests (website-api)
+        if: env.ACTION == 'deploy'
+        run: |
+          set -euo pipefail
+          npm config set fetch-retries 5
+          npm ci --prefix scf-code/website-api --no-audit --no-fund
+          node --test scf-code/website-api/*.test.cjs scf-code/website-api/shared/*.test.cjs
+
+      - name: Install Demox CLI
+        run: npm install -g @demox-site/cli@1.1.6 --no-audit --no-fund > /dev/null
+
+      - name: Helpers
+        run: |
+          cat > "$RUNNER_TEMP/demox-helpers.sh" <<'SH'
+          # 所有 CLI 输出都进文件，从不打印。失败时只报命令名和退出码。
+          LOG="$RUNNER_TEMP/demox-cli.log"
+          quiet() { local name="$1"; shift; if "$@" > "$LOG" 2>&1; then return 0; else local rc=$?; echo "::error::${name} 失败（退出码 ${rc}，CLI 输出已隐藏）"; return "$rc"; fi; }
+          strip() { sed -e 's/\x1b\[[0-9;]*m//g' "$LOG"; }
+          # 从 functions list 的输出里取 slug=website 那一块的某个别名版本号
+          alias_version() { strip | awk -v slug="$FN_SLUG" -v a="$1" '
+            /Slug: /{cur=($2==slug)}
+            cur && /别名: /{n=split($0,p,/[ ,]+/); for(i=1;i<=n;i++){ if (index(p[i], a"->v")==1){ sub(a"->v","",p[i]); print p[i]; exit } } }'; }
+          set_alias() { quiet "alias set $1" demox functions alias set "$1" --id "$WEBSITE_ID" --slug "$FN_SLUG" --version "$2"; echo "$1 -> v$2"; }
+          # 公网冒烟：只打印状态码和 success
+          smoke() {
+            local url="$1" code ok
+            code=$(curl -sS -o "$RUNNER_TEMP/smoke.json" -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' \
+              -d '{"action":"resolve_subdomain","subdomain":"www"}' --max-time 20 || echo 000)
+            ok=$(node -e "try{const d=require(process.argv[1]);process.stdout.write(String(d.success===true&&d.websiteId===process.argv[2]))}catch{process.stdout.write('false')}" "$RUNNER_TEMP/smoke.json" "$WEBSITE_ID")
+            echo "smoke resolve_subdomain: HTTP ${code} success=${ok}"
+            [ "$code" = "200" ] && [ "$ok" = "true" ] || return 1
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' -d '{"action":"list"}' --max-time 20 || echo 000)
+            echo "smoke unauthenticated list: HTTP ${code} (expect 401)"
+            [ "$code" = "401" ]
+          }
+          SH
+
+      - name: ${{ env.ACTION }}
+        env:
+          DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEMOX_TOKEN:-}" ]; then echo "::error::缺少 DEMOX_TOKEN secret"; exit 1; fi
+          source "$RUNNER_TEMP/demox-helpers.sh"
+
+          quiet "functions list" demox functions list --id "$WEBSITE_ID"
+          PREV_PROD=$(alias_version production); PREV_DEV=$(alias_version develop)
+          [[ "$PREV_PROD" =~ ^[0-9]+$ ]] && [[ "$PREV_DEV" =~ ^[0-9]+$ ]] || { echo "::error::读不到当前别名"; exit 1; }
+          echo "before: production -> v${PREV_PROD}, develop -> v${PREV_DEV}"
+          echo "## website function ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- before: production v${PREV_PROD}, develop v${PREV_DEV}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ACTION" = "deploy" ]; then
+            quiet "functions push" demox functions push ./scf-code/website-api --id "$WEBSITE_ID" --slug "$FN_SLUG"
+            TARGET=$(strip | sed -n 's/.*版本: \([0-9][0-9]*\).*/\1/p' | tail -1)
+            [[ "$TARGET" =~ ^[0-9]+$ ]] || { echo "::error::读不到新版本号"; exit 1; }
+            echo "pushed: v${TARGET} (commit ${GITHUB_SHA::7})"
+            echo "- pushed v${TARGET} from ${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            TARGET="$ROLLBACK_VERSION"
+          fi
+
+          set_alias develop "$TARGET"
+          sleep 5
+          if ! smoke "${API_BASE}/${WEBSITE_ID}/develop/${FN_SLUG}"; then
+            echo "::error::develop 冒烟失败，production 未改动；develop 切回 v${PREV_DEV}"
+            set_alias develop "$PREV_DEV"
+            exit 1
+          fi
+
+          set_alias production "$TARGET"
+          sleep 5
+          if ! smoke "${API_BASE}/${WEBSITE_ID}/production/${FN_SLUG}" || ! smoke "${API_BASE}/${FN_SLUG}/resolve-subdomain"; then
+            echo "::error::production 冒烟失败，自动切回 v${PREV_PROD}"
+            set_alias production "$PREV_PROD"
+            set_alias develop "$PREV_DEV"
+            echo "- production smoke FAILED, rolled back to v${PREV_PROD}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- now: production v${TARGET}, develop v${TARGET}; rollback: action=rollback version=${PREV_PROD}" >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$LOG" "$RUNNER_TEMP/smoke.json"
