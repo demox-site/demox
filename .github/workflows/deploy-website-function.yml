@@ -77,13 +77,36 @@ jobs:
           cat > "$RUNNER_TEMP/demox-helpers.sh" <<'SH'
           # 所有 CLI 输出都进文件，从不打印。失败时只报命令名和退出码。
           LOG="$RUNNER_TEMP/demox-cli.log"
-          quiet() { local name="$1"; shift; if "$@" > "$LOG" 2>&1; then return 0; else local rc=$?; echo "::error::${name} 失败（退出码 ${rc}，CLI 输出已隐藏）"; return "$rc"; fi; }
+          # 失败时只报一个大类（不打印原文），方便判断是令牌问题还是别的。
+          category() { local t; t=$(sed -e 's/\x1b\[[0-9;]*m//g' "$LOG"); case "$t" in
+            *认证失败*|*401*|*未登录*|*过期*) echo "auth（令牌无效/过期）";;
+            *403*|*没有权限*|*无权*|*forbidden*|*Forbidden*) echo "forbidden（令牌不是站点所有者）";;
+            *413*|*过大*|*too\ large*) echo "too_large";;
+            *) echo "other";; esac; }
+          quiet() { local name="$1"; shift; if "$@" > "$LOG" 2>&1; then return 0; else local rc=$?; echo "::error::${name} 失败（退出码 ${rc}，类别 $(category)，CLI 输出已隐藏）"; return "$rc"; fi; }
           strip() { sed -e 's/\x1b\[[0-9;]*m//g' "$LOG"; }
           # 从 functions list 的输出里取 slug=website 那一块的某个别名版本号
           alias_version() { strip | awk -v slug="$FN_SLUG" -v a="$1" '
             /Slug: /{cur=($2==slug)}
             cur && /别名: /{n=split($0,p,/[ ,]+/); for(i=1;i<=n;i++){ if (index(p[i], a"->v")==1){ sub(a"->v","",p[i]); print p[i]; exit } } }'; }
-          set_alias() { quiet "alias set $1" demox functions alias set "$1" --id "$WEBSITE_ID" --slug "$FN_SLUG" --version "$2"; echo "$1 -> v$2"; }
+          # 注意：CLI 1.1.6 里「--version N」会被当成全局的「显示 CLI 版本」并以 0 退出，什么都不改；必须写成 --version=N。
+          # 改完再读一遍别名，确认真的指过去了。
+          set_alias() {
+            quiet "alias set $1" demox functions alias set "$1" --id "$WEBSITE_ID" --slug "$FN_SLUG" --version="$2"
+            quiet "functions list" demox functions list --id "$WEBSITE_ID"
+            local now; now=$(alias_version "$1")
+            if [ "$now" != "$2" ]; then echo "::error::$1 没有指到 v$2（现在 v${now:-?}）"; return 1; fi
+            echo "$1 -> v$2"
+          }
+          # develop 冒烟：公网 /EPX2UU43/develop/website 实际走的是 production，所以用 CLI invoke --alias develop。
+          # 只看 CLI 打印的 HTTP 状态行，不打印响应体。
+          smoke_develop() {
+            local code
+            quiet "invoke develop" demox functions invoke --id "$WEBSITE_ID" --slug "$FN_SLUG" --alias develop --body '{"action":"resolve_subdomain","subdomain":"www"}' || true
+            code=$(strip | sed -n 's/^HTTP \([0-9][0-9]*\).*/\1/p' | head -1)
+            echo "smoke develop (invoke) resolve_subdomain: HTTP ${code:-?}"
+            [ "$code" = "200" ]
+          }
           # 公网冒烟：只打印状态码和 success
           smoke() {
             local url="$1" code ok
@@ -125,7 +148,7 @@ jobs:
 
           set_alias develop "$TARGET"
           sleep 5
-          if ! smoke "${API_BASE}/${WEBSITE_ID}/develop/${FN_SLUG}"; then
+          if ! smoke_develop; then
             echo "::error::develop 冒烟失败，production 未改动；develop 切回 v${PREV_DEV}"
             set_alias develop "$PREV_DEV"
             exit 1
