@@ -13,6 +13,13 @@ ORIGIN_SUFFIX="${ORIGIN_SUFFIX:-demox.site}"
 EMAIL="${ACME_EMAIL:-admin@demox.site}"
 GATEWAY_IPS="${GATEWAY_IPS:-119.91.123.2}"
 PREFIX=demox-custom
+# Per-domain backoff for failed first-time issuance, so a domain that keeps failing
+# HTTP-01 (e.g. ICP-blocked on port 80) can't get the Let's Encrypt account paused.
+# Renewals are done by certbot's own timer (certbot-renew.timer) and are never backed off here.
+ACME_FAIL_DIR="${ACME_FAIL_DIR:-/var/lib/demox-customer-proxy/acme-fail}"
+# A user-triggered `--host` run may retry this soon after the last failure, even inside the backoff.
+ACME_MANUAL_MIN_SECS="${ACME_MANUAL_MIN_SECS:-900}"
+CERT_WARN_DAYS="${CERT_WARN_DAYS:-25}"
 CHANGED=0
 FILTER_HOST=""
 if [[ "${1:-}" == "--host" ]]; then
@@ -23,7 +30,7 @@ if [[ "${1:-}" == "--host" ]]; then
   fi
 fi
 
-mkdir -p "$WEBROOT" "$NGINX_DIR" /var/run
+mkdir -p "$WEBROOT" "$NGINX_DIR" /var/run "$ACME_FAIL_DIR"
 exec 9>/var/run/demox-customer-proxy.lock
 flock -w 120 9 || exit 0
 
@@ -149,6 +156,72 @@ if [[ -n "$FILTER_HOST" ]]; then
   SQL_EXTRA="AND cd.hostname = '${FILTER_HOST}'"
 fi
 
+# --- acme backoff: begin (sourced by sync-backoff.test.sh) ---
+# Backoff after N consecutive failures: 1h, 6h, 24h, 48h, 96h, then 7 days.
+acme_backoff_secs() {
+  case "$1" in
+    1) echo 3600 ;;
+    2) echo 21600 ;;
+    3) echo 86400 ;;
+    4) echo 172800 ;;
+    5) echo 345600 ;;
+    *) echo 604800 ;;
+  esac
+}
+
+# Prints "count last_epoch" (0 0 when the domain has no recorded failures).
+acme_fail_state() {
+  local f="$ACME_FAIL_DIR/$1" count=0 last=0
+  if [[ -f "$f" ]]; then
+    read -r count last <"$f" || true
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  fi
+  echo "$count $last"
+}
+
+# Returns 0 (and logs a skip line) when a new issuance attempt for $1 must wait.
+acme_in_backoff() {
+  local host="$1" count last now wait due
+  read -r count last < <(acme_fail_state "$host")
+  [[ "$count" -eq 0 ]] && return 1
+  now="$(date +%s)"
+  wait="$(acme_backoff_secs "$count")"
+  if [[ -n "$FILTER_HOST" && "$wait" -gt "$ACME_MANUAL_MIN_SECS" ]]; then
+    wait="$ACME_MANUAL_MIN_SECS"
+  fi
+  due=$((last + wait))
+  if [[ "$now" -lt "$due" ]]; then
+    echo "skip cert for $host: backoff after $count failed attempt(s), next try after $(date -d "@$due" '+%F %T %Z')"
+    return 0
+  fi
+  return 1
+}
+
+acme_record_failure() {
+  local host="$1" count last
+  read -r count last < <(acme_fail_state "$host")
+  count=$((count + 1))
+  printf '%s %s\n' "$count" "$(date +%s)" >"$ACME_FAIL_DIR/$host"
+  echo "cert pending for $host: attempt $count failed, backing off $(( $(acme_backoff_secs "$count") / 3600 ))h"
+}
+
+acme_clear_failures() {
+  rm -f "$ACME_FAIL_DIR/$1"
+}
+
+# Renewal is certbot-renew.timer's job; shout if a live cert is getting close to expiry anyway.
+warn_if_cert_expiring() {
+  local host="$1" cert="/etc/letsencrypt/live/$1/cert.pem" end
+  [[ -f "$cert" ]] || return 0
+  if ! openssl x509 -in "$cert" -noout -checkend $((CERT_WARN_DAYS * 86400)) >/dev/null 2>&1; then
+    end="$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)"
+    echo "WARNING: cert for $host expires $end (< ${CERT_WARN_DAYS} days) - renewal is failing, check certbot-renew.timer / port 80" >&2
+  fi
+}
+
+# --- acme backoff: end ---
+
 points_at_gateway() {
   local host="$1" hop current
   current="$host"
@@ -184,16 +257,23 @@ while IFS=$'\t' read -r host website_id; do
   fi
 
   if [[ ! -f "$live" ]]; then
-    if points_at_gateway "$host"; then
-      certbot certonly --webroot -w "$WEBROOT" -d "$host" \
-        --non-interactive --agree-tos -m "$EMAIL" --keep-until-expiring \
-        || echo "cert pending for $host"
+    if acme_in_backoff "$host"; then
+      :
+    elif points_at_gateway "$host"; then
+      if certbot certonly --webroot -w "$WEBROOT" -d "$host" \
+        --non-interactive --agree-tos -m "$EMAIL" --keep-until-expiring; then
+        acme_clear_failures "$host"
+      else
+        acme_record_failure "$host"
+      fi
     else
       echo "skip cert for $host: DNS does not reach customers.demox.site (CNAME or gateway A record)"
     fi
   fi
 
   if [[ -f "$live" ]]; then
+    acme_clear_failures "$host"
+    warn_if_cert_expiring "$host"
     if write_https "$host" "$origin"; then
       CHANGED=1
     fi
