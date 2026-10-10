@@ -143,7 +143,7 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   return { ok: errors.length === 0, errors, warnings, productionVersion: production ? production.FunctionVersion : null };
 }
 
-// COS 上传：分片（5 MB，3 片并发，每片 30 秒超时、最多 8 次；整次重试沿用同一个 UploadId，只补缺的片）+ 整次最多 3 次 + 总 15 分钟。
+// COS 上传：分片（5 MB，3 片并发，每片 60 秒超时、最多 8 次；整次重试沿用同一个 UploadId，只补缺的片）+ 整次最多 3 次 + 总 15 分钟。
 // 只用 InitiateMultipartUpload / UploadPart / CompleteMultipartUpload / AbortMultipartUpload（云架构 2026-10-10 11:14 为
 // demox-ci-deploy 在 scf-deploy/ci/* 上加的权限）；不用 SDK 的 sliceUploadFile，它会先调桶级 ListMultipartUploads（没有权限）。
 // 历史：run 38017096251 单流 putObject 挂 18 分钟；run 38018842590 单次 PutObject 三次都超时（westus3 → ap-chengdu）。
@@ -151,7 +151,7 @@ const UPLOAD = Object.freeze({
   partSize: 5 * 1024 * 1024,
   concurrency: 3,
   partAttempts: 8,
-  partTimeoutMs: 30 * 1000,
+  partTimeoutMs: 60 * 1000,
   attempts: 3,
   retryGapMs: 10000,
   totalTimeoutMs: 15 * 60 * 1000
@@ -301,7 +301,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     });
   }
 
-  // 单片超时用真实定时器（与总超时分开）：卡住的分片 30 秒后重试，不会把 15 分钟全部耗在一片上。
+  // 单片超时用真实定时器（与总超时分开）：卡住的分片 60 秒后重试，不会把 15 分钟全部耗在一片上。
   function partWithTimeout(promise, partNumber) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -526,7 +526,18 @@ async function cli(argv = process.argv.slice(2)) {
   throw new Error('用法: scf-function-api.cjs plan | stage --zip <zip> | deploy --zip <zip> [--with-runtime] | rollback --version <N>');
 }
 
+// 超时放弃的分片请求，底层 socket 之后还可能报 EPIPE/ECONNRESET；它已经被重试替代，不能让它把整个进程打死。
+const STRAY_SOCKET_ERRORS = new Set(['EPIPE', 'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ERR_STREAM_DESTROYED']);
+function isStraySocketError(error) {
+  return Boolean(error && STRAY_SOCKET_ERRORS.has(error.code));
+}
+
 if (require.main === module) {
+  process.on('uncaughtException', (error) => {
+    if (isStraySocketError(error)) { console.log(`::warning::忽略已放弃请求的 socket 错误：${error.code}`); return; }
+    console.error(`::error::${error && error.message}`);
+    process.exit(1);
+  });
   cli().catch((error) => {
     // 只打印消息，不打印 SDK 原始错误对象（可能带请求参数）。
     console.error(`::error::${error.message}`);
@@ -534,4 +545,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };

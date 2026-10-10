@@ -323,3 +323,10 @@ test('stage: uploads the package to COS and makes no SCF calls at all', async ()
   assert.equal(s.calls.length, 0, 'no SCF API calls');
   assert.ok(cos.calls.some((c) => c[0] === 'complete'));
 });
+
+test('stray socket errors from abandoned part requests are recognised (not fatal); others are', () => {
+  const { isStraySocketError } = require('./scf-function-api.cjs');
+  for (const code of ['EPIPE', 'ECONNRESET', 'ETIMEDOUT']) assert.ok(isStraySocketError(Object.assign(new Error('x'), { code })));
+  assert.ok(!isStraySocketError(new Error('AccessDenied')));
+  assert.ok(!isStraySocketError(Object.assign(new Error('x'), { code: 'ERR_ASSERTION' })));
+});
