@@ -14,6 +14,8 @@
 
 1. `node scripts/package-unified-scf.mjs --apply` 打统一包（约 55 MB，超过 SCF 内联 50 MB 上限，所以走 COS）。
 2. 上传到 `cos://demox-analytics-raw-1307257815/scf-deploy/ci/demox-unified-scf-<commit>-<sha>.zip`（ap-chengdu）。
+   - 桶 / 地域可用仓库变量 `DEMOX_COS_BUCKET` / `DEMOX_COS_REGION`（或手动触发的 `cos_bucket` / `cos_region`）改到其它桶。
+   - `DEMOX_COS_ACCELERATE=true`（或手动触发 `cos_accelerate=true`）时，上传改走 COS 全球加速域名 `<bucket>.cos.accelerate.myqcloud.com`（SDK 选项 `UseAccelerate: true`），用于美国 runner → 国内桶跨境上传超时。默认关；开之前桶必须先开启全球加速。只影响上传：对象 key、sha256、分片 / 看门狗 / 重试都不变，`UpdateFunctionCode` 仍用原地域的桶。
 3. `UpdateFunctionCode`：**只换代码**（Handler 固定 `index.main`）。不调用 `UpdateFunctionConfiguration`，不传环境变量、内存、超时、VPC。CI 也不调用 `GetFunction`（它会返回环境变量明文）：状态用 `ListVersionByFunction`，触发器用 `ListTriggers`。这两个接口在 CI 角色上都是显式 Deny，所以“环境变量不被读、不被改”由权限保证。
 4. `PublishVersion` → 新版本 N。
 5. 别名 `develop` 指向 N，经 develop 的公网 HTTPS 地址（仓库变量 `FUNCTION_API_DEVELOP_URL`）检查：`GET /health` 200、`GET /` 401、`OPTIONS /auth/login` 200/204（最多 4 轮，间隔 10 秒）。任一失败就把 develop 切回原版本并停，**production 不动**。不调用 `scf:Invoke`。

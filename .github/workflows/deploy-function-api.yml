@@ -42,6 +42,11 @@ on:
         description: "部署包 COS 地域（如 ap-guangzhou）；空 = vars.DEMOX_COS_REGION，再空 = ap-chengdu"
         required: false
         default: ""
+      cos_accelerate:
+        description: "上传部署包是否走 COS 全球加速域名（只影响上传，函数仍从原地域拉包）；auto = vars.DEMOX_COS_ACCELERATE，再空 = 关。开之前桶要先开启全球加速"
+        type: choice
+        options: [auto, "true", "false"]
+        default: auto
       with_runtime:
         description: "同时更新 demox-user-nodejs（无别名，直接替换 $LATEST，先发快照版本作回滚点）"
         type: boolean
@@ -107,6 +112,8 @@ jobs:
           ROLLBACK_VERSION: ${{ inputs.version }}
           DEMOX_COS_BUCKET: ${{ inputs.cos_bucket || vars.DEMOX_COS_BUCKET }}
           DEMOX_COS_REGION: ${{ inputs.cos_region || vars.DEMOX_COS_REGION }}
+          # 默认关；push 触发没有 inputs，走仓库变量。
+          DEMOX_COS_ACCELERATE: ${{ (inputs.cos_accelerate == 'true' || inputs.cos_accelerate == 'false') && inputs.cos_accelerate || vars.DEMOX_COS_ACCELERATE }}
           WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
         run: |
           set -euo pipefail

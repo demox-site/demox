@@ -372,3 +372,116 @@ test('COS bucket/region come from env (default Chengdu) and are validated', () =
   assert.doesNotThrow(() => validateCosTarget('demox-deploy-gz-1307257815', 'ap-guangzhou'));
   assert.throws(() => validateCosTarget('demox-x-1307257815', 'guangzhou'), /地域不合法/);
 });
+
+// ---- DEMOX_COS_ACCELERATE：只换上传域名，其它不变 ----
+const ROOT = path.join(__dirname, '..', '..');
+const GZ = { DEMOX_COS_BUCKET: 'demox-deploy-gz-1307257815', DEMOX_COS_REGION: 'ap-guangzhou' };
+
+test('DEMOX_COS_ACCELERATE: default off, only explicit true/false accepted', () => {
+  const { parseCosAccelerate } = require('./scf-function-api.cjs');
+  for (const v of [undefined, null, '', ' ', 'false', 'FALSE', '0', 'off', 'no']) assert.equal(parseCosAccelerate(v), false, String(v));
+  for (const v of ['true', 'TRUE', ' true ', '1', 'on', 'yes']) assert.equal(parseCosAccelerate(v), true, String(v));
+  for (const v of ['ture', 'auto', 'enabled']) assert.throws(() => parseCosAccelerate(v), /DEMOX_COS_ACCELERATE 取值不合法/);
+});
+
+test('cosClientOptions: off = unchanged client config; on = only adds UseAccelerate: true', () => {
+  const { cosClientOptions } = require('./scf-function-api.cjs');
+  const cred = { secretId: 'id', secretKey: 'key', token: 'tok' };
+  const before = { SecretId: 'id', SecretKey: 'key', SecurityToken: 'tok', Timeout: 120000 }; // 改动前 createClients 传的参数
+  assert.deepEqual(cosClientOptions(cred), before);
+  assert.deepEqual(cosClientOptions(cred, { accelerate: false }), before);
+  assert.deepEqual(cosClientOptions(cred, { accelerate: true }), { ...before, UseAccelerate: true });
+  assert.deepEqual(cosClientOptions({ secretId: 'id', secretKey: 'key' }), { SecretId: 'id', SecretKey: 'key', Timeout: 120000 });
+  assert.ok(!('Domain' in cosClientOptions(cred, { accelerate: true })), 'no custom Domain, SDK builds the accelerate host');
+});
+
+test('cosUploadEndpoint: regional vs accelerate host', () => {
+  const { cosUploadEndpoint } = require('./scf-function-api.cjs');
+  assert.equal(cosUploadEndpoint({ bucket: 'demox-deploy-gz-1307257815', region: 'ap-guangzhou' }), 'demox-deploy-gz-1307257815.cos.ap-guangzhou.myqcloud.com');
+  assert.equal(cosUploadEndpoint({ bucket: 'demox-deploy-gz-1307257815', region: 'ap-guangzhou', accelerate: true }), 'demox-deploy-gz-1307257815.cos.accelerate.myqcloud.com');
+});
+
+// 用真实 SDK（CI 实际加载的根目录 2.15.x，以及 function-api 的 3.0.x）验证分片接口打到哪个域名；网络请求在本地拦截，不出网。
+const sdkPaths = [path.join(ROOT, 'node_modules/cos-nodejs-sdk-v5'), path.join(ROOT, 'scf-code/function-api/node_modules/cos-nodejs-sdk-v5')]
+  .filter((p) => fs.existsSync(path.join(p, 'package.json')));
+for (const sdkPath of sdkPaths) {
+  const version = require(path.join(sdkPath, 'package.json')).version;
+  test(`real cos-nodejs-sdk-v5@${version}: UseAccelerate routes multipart calls to *.cos.accelerate.myqcloud.com`, async () => {
+    const http = require('http');
+    const https = require('https');
+    const COS = require(sdkPath);
+    const { cosClientOptions } = require('./scf-function-api.cjs');
+    const hosts = [];
+    const orig = { http: http.request, https: https.request };
+    const intercept = function (a, b) {
+      const o = a instanceof URL ? a : (typeof a === 'string' ? new URL(a) : a);
+      hosts.push(String(o.hostname || o.host).replace(/:\d+$/, ''));
+      const req = orig.http.call(http, { host: '127.0.0.1', port: 9, method: 'GET' }); // 本地拒绝连接，让 SDK 立刻收到网络错误
+      req.on('error', () => {});
+      process.nextTick(() => req.destroy(Object.assign(new Error('blocked by test'), { code: 'EBLOCKED' })));
+      return req;
+    };
+    http.request = intercept; https.request = intercept;
+    const call = (accelerate, name, params) => new Promise((resolve) => {
+      const cos = new COS(cosClientOptions({ secretId: 'test-id', secretKey: 'test-key' }, { accelerate }));
+      hosts.length = 0;
+      cos[name]({ Bucket: GZ.DEMOX_COS_BUCKET, Region: GZ.DEMOX_COS_REGION, Key: 'scf-deploy/ci/x.zip', ...params }, () => resolve([...hosts]));
+    });
+    try {
+      const off = await call(false, 'multipartInit', {});
+      assert.equal(off[0], 'demox-deploy-gz-1307257815.cos.ap-guangzhou.myqcloud.com');
+      const onInit = await call(true, 'multipartInit', {});
+      const onPart = await call(true, 'multipartUpload', { UploadId: 'u1', PartNumber: 1, Body: Buffer.from('x'), ContentLength: 1 });
+      for (const hostsSeen of [onInit, onPart]) {
+        assert.ok(hostsSeen.length >= 1);
+        assert.ok(hostsSeen.every((h) => h === 'demox-deploy-gz-1307257815.cos.accelerate.myqcloud.com'), hostsSeen.join(','));
+      }
+    } finally {
+      http.request = orig.http; https.request = orig.https;
+    }
+  });
+}
+
+test('accelerate toggle does not change CONFIG bucket/region, object key, sha256 or UpdateFunctionCode bucket/region', async () => {
+  // 加速只是 SDK 客户端选项；createDeployer 拿到的分片参数和 UpdateFunctionCode 仍用地域桶。
+  const { execFileSync } = require('node:child_process');
+  const script = `
+    const m = require('./scripts/ci/scf-function-api.cjs');
+    console.log(JSON.stringify({ bucket: m.CONFIG.cosBucket, region: m.CONFIG.cosRegion, raw: m.CONFIG.cosAccelerateRaw }));`;
+  const out = (env) => JSON.parse(execFileSync(process.execPath, ['-e', script], { cwd: ROOT, env: { PATH: process.env.PATH, ...GZ, ...env } }).toString());
+  assert.deepEqual(out({}), { bucket: GZ.DEMOX_COS_BUCKET, region: 'ap-guangzhou', raw: '' });
+  assert.deepEqual(out({ DEMOX_COS_ACCELERATE: 'true' }), { bucket: GZ.DEMOX_COS_BUCKET, region: 'ap-guangzhou', raw: 'true' });
+
+  const s = fakeScf();
+  const cos = multipartCos({});
+  const regionsSeen = [];
+  const spy = new Proxy(cos, { get: (t, name) => (typeof t[name] === 'function' ? (p, cb) => { regionsSeen.push(p.Region); return t[name](p, cb); } : t[name]) });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: spy, fetchImpl: okFetch, log: () => {}, wait: async () => {} });
+  const zip = bigZip(12);
+  const hash = require('crypto').createHash('sha256').update(fs.readFileSync(zip)).digest('hex');
+  await d.deploy({ zipPath: zip, sha: 'abcdef1234567890' });
+  const key = `scf-deploy/ci/demox-unified-scf-abcdef123456-${hash.slice(0, 12)}.zip`;
+  assert.ok(cos.calls.some((c) => c[0] === 'init' && c[1] === key));
+  assert.ok(regionsSeen.length && regionsSeen.every((r) => r === CONFIG.cosRegion));
+  const ufc = s.calls.filter((c) => c.name === 'UpdateFunctionCode');
+  assert.equal(ufc.length, 1);
+  assert.deepEqual({ b: ufc[0].params.CosBucketName, r: ufc[0].params.CosBucketRegion, k: ufc[0].params.CosObjectName }, { b: CONFIG.cosBucket.replace(/-\d+$/, ''), r: CONFIG.cosRegion, k: key });
+  assert.ok(!JSON.stringify(ufc[0].params).includes('accelerate'));
+});
+
+test('cli logs the upload endpoint (no secrets) and rejects bad DEMOX_COS_ACCELERATE before touching any client', () => {
+  const { spawnSync } = require('node:child_process');
+  const run = (env) => {
+    const r = spawnSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'plan'], { cwd: ROOT, env: { PATH: process.env.PATH, ...GZ, ...env } });
+    return `${r.stdout}${r.stderr}`;
+  };
+  const off = run({});
+  assert.match(off, /COS 上传端点：demox-deploy-gz-1307257815\.cos\.ap-guangzhou\.myqcloud\.com（地域直连）/);
+  assert.match(off, /缺少凭证/, 'reaches client creation (no creds in test) only after logging');
+  const on = run({ DEMOX_COS_ACCELERATE: 'true' });
+  assert.match(on, /COS 上传端点：demox-deploy-gz-1307257815\.cos\.accelerate\.myqcloud\.com（全球加速/);
+  assert.match(on, /函数拉包仍用 ap-guangzhou/);
+  const bad = run({ DEMOX_COS_ACCELERATE: 'ture' });
+  assert.match(bad, /DEMOX_COS_ACCELERATE 取值不合法/);
+  assert.doesNotMatch(bad, /缺少凭证|COS 上传端点/);
+});
