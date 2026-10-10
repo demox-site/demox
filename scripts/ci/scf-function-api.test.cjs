@@ -313,3 +313,13 @@ test('upload: a hung part hits the 15-minute cap, aborts, no function writes', a
   assert.ok(cos.calls.some((c) => c[0] === 'abort'));
   assert.ok(NO_WRITES(s));
 });
+
+test('stage: uploads the package to COS and makes no SCF calls at all', async () => {
+  const s = fakeScf();
+  const cos = multipartCos({});
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: () => {}, wait: async () => {} });
+  const r = await d.stage({ zipPath: bigZip(12), sha: '892ca5dcbffe231365' });
+  assert.match(r.key, /^scf-deploy\/ci\/demox-unified-scf-892ca5dcbffe-[0-9a-f]{12}\.zip$/);
+  assert.equal(s.calls.length, 0, 'no SCF API calls');
+  assert.ok(cos.calls.some((c) => c[0] === 'complete'));
+});
