@@ -1119,3 +1119,163 @@ test('v1fallback: v1 is only consulted when there is no v2 entry at all, and nev
   assertUnavailable(await r.visit(ESSAY_URL));
 });
 
+
+// ── 2026-10-10 demox_access 账号令牌 cookie 止血（step 1）───────────────────────────
+{
+  const hooksContext = vm.createContext({ URL, Request, Response, Headers, console, addEventListener: () => {} });
+  vm.runInContext(`${source}\nglobalThis.__cookieHooks = { stripAuthCookieValue, withoutAuthCookieHeaders, hasAuthCookie };`, hooksContext);
+  const { stripAuthCookieValue, withoutAuthCookieHeaders } = hooksContext.__cookieHooks;
+
+  test('cookie strip: removes only demox_access and keeps the other cookies in order', () => {
+    assert.equal(stripAuthCookieValue('a=1; demox_access=tok; b=2'), 'a=1; b=2');
+    assert.equal(stripAuthCookieValue('demox_access=tok; theme=dark'), 'theme=dark');
+    assert.equal(stripAuthCookieValue('sid=x; demox_access=tok'), 'sid=x');
+  });
+
+  test('cookie strip: only demox_access leaves nothing and the Cookie header is dropped', () => {
+    assert.equal(stripAuthCookieValue('demox_access=tok'), '');
+    const h = withoutAuthCookieHeaders(new Headers({ cookie: 'demox_access=tok', accept: 'text/html' }));
+    assert.equal(h.get('cookie'), null);
+    assert.equal(h.get('accept'), 'text/html');
+  });
+
+  test('cookie strip: tolerates spacing variants and duplicate demox_access pairs', () => {
+    assert.equal(stripAuthCookieValue('a=1;demox_access=tok;b=2'), 'a=1; b=2');
+    assert.equal(stripAuthCookieValue('  demox_access = tok ;  a=1 ;; '), 'a=1');
+    assert.equal(stripAuthCookieValue('demox_access=1; a=1; demox_access=2'), 'a=1');
+    assert.equal(stripAuthCookieValue('demox_access'), '');
+  });
+
+  test('cookie strip: look-alike names and cookie-less requests are untouched', () => {
+    assert.equal(stripAuthCookieValue('demox_access2=x; xdemox_access=y; Demox_Access=z'), 'demox_access2=x; xdemox_access=y; Demox_Access=z');
+    assert.equal(stripAuthCookieValue(''), '');
+    const h = withoutAuthCookieHeaders(new Headers({ accept: 'text/html' }));
+    assert.equal(h.get('cookie'), null);
+    assert.equal(h.get('accept'), 'text/html');
+  });
+}
+
+function cookieOf(input, init) {
+  if (input && typeof input === 'object' && input.headers && typeof input.headers.get === 'function') {
+    return { url: input.url, cookie: input.headers.get('cookie') };
+  }
+  const h = init && init.headers ? new Headers(init.headers) : new Headers();
+  return { url: String(input), cookie: h.get('cookie') };
+}
+
+async function handleWithCookie(url, { cookie, resolve, method = 'GET', accept = 'text/html', body, headers = {} } = {}) {
+  const calls = [];
+  const routerContext = vm.createContext({
+    URL, Request, Response, Headers, console,
+    env: { DEMOX_API_URL: 'https://api.test', DEMOX_HOME_URL: 'https://www.demox.site' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input, init) => {
+      const c = cookieOf(input, init);
+      calls.push(c);
+      if (c.url.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify(resolve || { success: false, message: 'not found' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (c.url.includes('/check-site-access')) {
+        return new Response(JSON.stringify({ success: true, allowed: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (c.url.startsWith('https://api.test/')) {
+        return new Response('{"fn":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('<!doctype html><html><body><main>Live site</main></body></html>', {
+        status: 200, headers: { 'Content-Type': 'text/html' }
+      });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  const h = Object.assign({ Accept: accept }, headers);
+  if (cookie) h.Cookie = cookie;
+  const init = { method, headers: h };
+  if (body) init.body = body;
+  const response = await routerContext.__testHooks.handle(new Request(url, init), { waitUntil: () => {}, passThroughOnException: () => {} });
+  return { response, calls, text: await response.text() };
+}
+
+const PUBLIC_SITE = { success: true, path: 'sites/demo/PUB1/dist', websiteId: 'PUB1', origin: 'sites.demox.site', visibility: 'public', hideWatermark: true };
+const PRIVATE_SITE = { success: true, path: 'sites/demo/PRV1/dist', websiteId: 'PRV1', origin: 'site-3.demox.site', visibility: 'private', hideWatermark: true };
+
+test('origin fetch for a user site never carries demox_access but keeps the user cookies', async () => {
+  const { response, calls } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'a=1; demox_access=ACCOUNT_TOKEN; b=2', resolve: PUBLIC_SITE });
+  assert.equal(response.status, 200);
+  const origin = calls.filter((c) => c.url.includes('sites.demox.site/'));
+  assert.ok(origin.length >= 1);
+  for (const c of origin) assert.equal(c.cookie, 'a=1; b=2');
+  assert.equal(calls.some((c) => String(c.cookie || '').includes('ACCOUNT_TOKEN')), false);
+});
+
+test('origin fetch drops the Cookie header when demox_access was the only cookie', async () => {
+  const { calls } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE });
+  const origin = calls.filter((c) => c.url.includes('sites.demox.site/'));
+  assert.ok(origin.length >= 1);
+  for (const c of origin) assert.equal(c.cookie, null);
+});
+
+test('site function proxy (/api/*) never forwards demox_access to the user function', async () => {
+  const { response, calls } = await handleWithCookie('https://pub1.demox.site/api/echo', {
+    cookie: 'session=u1; demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE, accept: 'application/json'
+  });
+  assert.equal(response.status, 200);
+  const fn = calls.find((c) => c.url.startsWith('https://api.test/PUB1/production/api/echo'));
+  assert.ok(fn, 'function proxied');
+  assert.equal(fn.cookie, 'session=u1');
+  const only = await handleWithCookie('https://pub1.demox.site/api/echo', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE, accept: 'application/json' });
+  assert.equal(only.calls.find((c) => c.url.startsWith('https://api.test/PUB1/')).cookie, null);
+});
+
+test('site function proxy keeps POST bodies when stripping the cookie', async () => {
+  const { response, calls } = await handleWithCookie('https://pub1.demox.site/api/echo', {
+    cookie: 'demox_access=ACCOUNT_TOKEN; k=v', resolve: PUBLIC_SITE, method: 'POST', body: '{"x":1}', accept: 'application/json',
+    headers: { 'Content-Type': 'application/json' }
+  });
+  assert.equal(response.status, 200);
+  assert.equal(calls.find((c) => c.url.startsWith('https://api.test/PUB1/')).cookie, 'k=v');
+});
+
+test('unknown official subdomain passthrough strips demox_access', async () => {
+  const { calls } = await handleWithCookie('https://nobody-here.demox.site/x', { cookie: 'demox_access=ACCOUNT_TOKEN; z=9' });
+  const pass = calls.filter((c) => c.url.startsWith('https://nobody-here.demox.site/'));
+  assert.equal(pass.length, 1);
+  assert.equal(pass[0].cookie, 'z=9');
+});
+
+test('requests carrying the old cookie get both expiry variants back', async () => {
+  const { response } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PUBLIC_SITE });
+  const set = response.headers.get('set-cookie') || '';
+  assert.match(set, /demox_access=; Max-Age=0; Path=\/; Domain=\.demox\.site; Secure; SameSite=Lax/);
+  assert.match(set, /demox_access=; Max-Age=0; Path=\/; Secure; SameSite=Lax/);
+  assert.doesNotMatch(set, /ACCOUNT_TOKEN/);
+});
+
+test('requests without the old cookie get no Set-Cookie added', async () => {
+  const { response } = await handleWithCookie('https://pub1.demox.site/', { cookie: 'a=1', resolve: PUBLIC_SITE });
+  assert.equal(response.headers.get('set-cookie'), null);
+});
+
+test('private *.demox.site site ignores the account cookie and asks for re-verification', async () => {
+  const { response, calls, text } = await handleWithCookie('https://prv1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PRIVATE_SITE });
+  assert.equal(response.status, 503);
+  assert.match(text, /需要重新验证/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(calls.some((c) => c.url.includes('/check-site-access')), false);
+  assert.equal(calls.some((c) => c.url.includes('site-3.demox.site') || c.url.includes('/sites/demo/')), false);
+  const api = await handleWithCookie('https://prv1.demox.site/api/x', { resolve: PRIVATE_SITE, accept: 'application/json' });
+  assert.equal(api.response.status, 401);
+  assert.equal(api.calls.some((c) => c.url.startsWith('https://api.test/PRV1/')), false);
+});
+
+test('private *.demox.site auth-complete never sets a token cookie or redirects', async () => {
+  const { response } = await handleWithCookie('https://prv1.demox.site/.demox/auth-complete', {
+    resolve: PRIVATE_SITE, method: 'POST', body: 'token=ACCOUNT_TOKEN&next=https%3A%2F%2Fprv1.demox.site%2F',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://www.demox.site' }
+  });
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('location'), null);
+  assert.doesNotMatch(response.headers.get('set-cookie') || '', /ACCOUNT_TOKEN/);
+});
