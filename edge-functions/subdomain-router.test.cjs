@@ -1279,3 +1279,143 @@ test('private *.demox.site auth-complete never sets a token cookie or redirects'
   assert.equal(response.headers.get('location'), null);
   assert.doesNotMatch(response.headers.get('set-cookie') || '', /ACCOUNT_TOKEN/);
 });
+
+// ── 2026-10-10 #49 follow-up：模拟 EdgeOne 的 Request/fetch 语义 ─────────────────────────
+// 事故 17:18–17:23：带 demox_access 的请求在 EdgeOne 上公开站点 503、www 404。
+// 推测：EdgeOne 不支持 new Request(request, init)，也不接受「重建的 Request」作为 fetch 的 init。
+// 这里的 EdgeOne 模拟：Request(Request, …) 直接抛错；fetch(url, init) 的 init 若是 Request，
+// 只接受原始入站请求（#49 之前线上一直这么用）；fetch(Request, init) 抛错。
+// fetch(new Request(字符串URL, init)) 允许：/api/* 函数转发一直这么用，事故期间探针站带 cookie 调函数是正常的。
+const NativeRequest = Request;
+async function handleEdgeOneLike(url, { cookie, resolve, method = 'GET', accept = 'text/html', body, headers = {} } = {}) {
+  const calls = [];
+  const errors = [];
+  let incoming = null;
+  class EdgeOneRequest extends NativeRequest {
+    constructor(input, init) {
+      if (input instanceof NativeRequest) throw new TypeError('EdgeOne mock: Request(Request, init) not supported');
+      super(input, init);
+    }
+  }
+  const routerContext = vm.createContext({
+    URL, Request: EdgeOneRequest, Response, Headers, console,
+    env: { DEMOX_API_URL: 'https://api.test', DEMOX_HOME_URL: 'https://www.demox.site' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input, init) => {
+      if (input instanceof NativeRequest && init !== undefined) {
+        errors.push('fetch(Request, init)'); throw new TypeError('EdgeOne mock: fetch(Request, init)');
+      }
+      if (init instanceof NativeRequest && init !== incoming) {
+        errors.push('rebuilt Request as init'); throw new TypeError('EdgeOne mock: rebuilt Request as init');
+      }
+      const c = cookieOf(input, init);
+      c.method = (init && init.method) || (input && input.method) || 'GET';
+      const b = init && init.body !== undefined ? init.body : (input instanceof NativeRequest ? input.body : undefined);
+      c.body = b == null ? null : await new Response(b).text();
+      calls.push(c);
+      if (c.url.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify(resolve || { success: false, message: 'not found' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (c.url.includes('/check-site-access')) {
+        return new Response(JSON.stringify({ success: true, allowed: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (c.url.startsWith('https://api.test/')) {
+        return new Response('{"fn":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('<!doctype html><html><body><main>Live site</main></body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  const h = Object.assign({ Accept: accept }, headers);
+  if (cookie) h.Cookie = cookie;
+  const init = { method, headers: h };
+  if (body) { init.body = body; init.duplex = 'half'; }
+  incoming = new NativeRequest(url, init);
+  let thrown = null;
+  let response = null;
+  try {
+    response = await routerContext.__testHooks.handle(incoming, { waitUntil: () => {}, passThroughOnException: () => {} });
+  } catch (e) { thrown = e; }
+  return { response, calls, errors, thrown, text: response ? await response.text() : '' };
+}
+
+const WWW_SITE = { success: true, path: 'sites/owner/EPX2UU43/dist', websiteId: 'EPX2UU43', origin: 'sites.demox.site', visibility: 'public', hideWatermark: true };
+
+function assertNoAuthCookie(calls) {
+  for (const c of calls) assert.doesNotMatch(String(c.cookie || ''), /demox_access|ACCOUNT_TOKEN/, `leaked to ${c.url}`);
+}
+
+for (const withCookie of [false, true]) {
+  const label = withCookie ? 'WITH demox_access' : 'without demox_access';
+  const cookie = withCookie ? 'a=1; demox_access=ACCOUNT_TOKEN; b=2' : 'a=1; b=2';
+
+  test(`EdgeOne-like: public site GET ${label} routes normally (200, origin fetched)`, async () => {
+    const r = await handleEdgeOneLike('https://pub1.demox.site/', { cookie, resolve: PUBLIC_SITE });
+    assert.equal(r.thrown, null);
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.response.status, 200);
+    assert.match(r.text, /Live site/);
+    assert.match(r.response.headers.get('x-demox-route') || '', /origin=ok/);
+    const origin = r.calls.filter((c) => c.url.includes('sites.demox.site/sites/demo/PUB1/'));
+    assert.ok(origin.length >= 1);
+    for (const c of origin) assert.equal(c.cookie, 'a=1; b=2');
+    assertNoAuthCookie(r.calls);
+  });
+
+  test(`EdgeOne-like: www GET ${label} routes normally (200, not 404)`, async () => {
+    const r = await handleEdgeOneLike('https://www.demox.site/', { cookie, resolve: WWW_SITE });
+    assert.equal(r.thrown, null);
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.response.status, 200);
+    assert.match(r.text, /Live site/);
+    assertNoAuthCookie(r.calls);
+  });
+
+  test(`EdgeOne-like: public site POST ${label} keeps method and body`, async () => {
+    const r = await handleEdgeOneLike('https://pub1.demox.site/form', {
+      cookie, resolve: PUBLIC_SITE, method: 'POST', body: 'x=1', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    assert.equal(r.thrown, null);
+    assert.deepEqual(r.errors, []);
+    assert.notEqual(r.response.status, 503);
+    const origin = r.calls.find((c) => c.url.includes('sites.demox.site/sites/demo/PUB1/dist/form'));
+    assert.ok(origin, 'origin fetched');
+    assert.equal(origin.method, 'POST');
+    assert.equal(origin.body, 'x=1');
+    assertNoAuthCookie(r.calls);
+  });
+
+  test(`EdgeOne-like: site function GET/POST ${label} proxied without demox_access`, async () => {
+    for (const m of ['GET', 'POST']) {
+      const r = await handleEdgeOneLike('https://pub1.demox.site/api/echo', {
+        cookie, resolve: PUBLIC_SITE, method: m, accept: 'application/json',
+        body: m === 'POST' ? '{"x":1}' : undefined, headers: m === 'POST' ? { 'Content-Type': 'application/json' } : {}
+      });
+      assert.equal(r.thrown, null);
+      assert.deepEqual(r.errors, []);
+      assert.equal(r.response.status, 200);
+      const fn = r.calls.find((c) => c.url.startsWith('https://api.test/PUB1/production/api/echo'));
+      assert.ok(fn);
+      assert.equal(fn.cookie, 'a=1; b=2');
+      if (m === 'POST') assert.equal(fn.body, '{"x":1}');
+      assertNoAuthCookie(r.calls);
+    }
+  });
+
+  test(`EdgeOne-like: unknown subdomain passthrough ${label} does not throw and strips demox_access`, async () => {
+    const r = await handleEdgeOneLike('https://nobody-here.demox.site/x', { cookie });
+    assert.equal(r.thrown, null);
+    assert.deepEqual(r.errors, []);
+    const pass = r.calls.filter((c) => c.url.startsWith('https://nobody-here.demox.site/'));
+    assert.equal(pass.length, 1);
+    assert.equal(pass[0].cookie, 'a=1; b=2');
+  });
+}
+
+test('EdgeOne-like: requests without demox_access keep the pre-#49 fetch shape (original request object)', () => {
+  // 回源/透传在没有 demox_access 时必须原样传入站请求（线上已验证的路径），只有带 cookie 时才换普通 init。
+  assert.match(source, /function originFetchInit\(req\) \{\s*return hasAuthCookie\(req\.headers\) \? strippedFetchInit\(req\) : req;/);
+  assert.match(source, /if \(!hasAuthCookie\(req\.headers\)\) return fetch\(req\);/);
+  assert.doesNotMatch(source, /new Request\(req\b/);
+});

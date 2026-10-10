@@ -107,14 +107,33 @@ function withoutAuthCookieHeaders(source) {
   return headers;
 }
 
-function withoutAuthCookie(req) {
-  if (!hasAuthCookie(req.headers)) return req;
-  const headers = withoutAuthCookieHeaders(req.headers);
-  try {
-    return new Request(req, { headers: headers });
-  } catch (e) {
-    return new Request(req, { headers: headers, duplex: 'half' });
+// 带 demox_access 的请求转发时用「普通 init 对象」，不要用入站 Request 去构造新的 Request。
+// 2026-10-10 17:18–17:23 事故：#49 用重建的 Request 回源/透传，EdgeOne 上带这个 cookie 的请求
+// 公开站点全部 503（origin=error）、www 404；不带 cookie 的请求正常（Node 单测发现不了）。
+// 推测：EdgeOne 运行时不支持用 Request 构造 Request，或不接受重建的 Request 作为 fetch 的 init。
+// 不带 demox_access 的请求保持原样（fetch(url, req) / fetch(req)），这条路径在线上已验证过。
+function strippedFetchInit(req) {
+  const init = {
+    method: req.method,
+    headers: withoutAuthCookieHeaders(req.headers)
+  };
+  if (req.redirect) init.redirect = req.redirect;
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+    init.body = req.body;
+    init.duplex = 'half';
   }
+  return init;
+}
+
+// 回源用的 init：没有 demox_access 时仍传原始 req（与 #49 之前完全一致）。
+function originFetchInit(req) {
+  return hasAuthCookie(req.headers) ? strippedFetchInit(req) : req;
+}
+
+// 透传（同 URL 回源）：没有 demox_access 时仍 fetch(req)。
+function passThroughWithoutAuthCookie(req) {
+  if (!hasAuthCookie(req.headers)) return fetch(req);
+  return fetch(req.url, strippedFetchInit(req));
 }
 
 function isOfficialDomain(domain) {
@@ -458,7 +477,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), withoutAuthCookie(req));
+  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), originFetchInit(req));
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
@@ -1766,9 +1785,9 @@ async function handle(req, event) {
       try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
       return siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
     }
-    // passThroughOnException 会把原始请求（含 demox_access）回源；带着它时改为自己去掉后再回源。
+    // passThroughOnException 会把原始请求（含 demox_access）回源；带着它时改为自己去掉后再回源（普通 init，见 strippedFetchInit）。
     if (hasAuthCookie(req.headers)) {
-      const resp = await fetch(withoutAuthCookie(req));
+      const resp = await passThroughWithoutAuthCookie(req);
       return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
     }
     throw e;
@@ -1797,7 +1816,7 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(withoutAuthCookie(req));
+  if (!parsedHost && !(customResolved && customResolved.path)) return passThroughWithoutAuthCookie(req);
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -1897,7 +1916,7 @@ async function handleRequest(req, event, ctx) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
-  return fetch(withoutAuthCookie(req));
+  return passThroughWithoutAuthCookie(req);
 }
 
 // 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。
