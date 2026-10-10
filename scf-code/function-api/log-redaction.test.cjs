@@ -9,7 +9,10 @@ const { createScfNodeInvoker, createHttpNodeInvoker, NodeWorkerPool } = require(
 const { main: runtimeMain } = require('./runtime-nodejs-handler.js');
 const { findLeaks } = require('../../scripts/log-leak-guard.cjs');
 
-const JWT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLTEiLCJlbWFpbCI6ImFAYi5jbyJ9.c2lnbmF0dXJlLXNpZ25hdHVyZQ';
+const { signTestJwt } = require('../../scripts/test-jwt.cjs');
+
+// 运行时用随机密钥签出来的 JWT，源码里没有 token 字面量。
+const JWT = signTestJwt({ userId: 'user-1', email: 'a@b.co' });
 const REFRESH = 'Ab3'.repeat(21) + 'x';
 const EMAIL = 'someone.real+tag@example.com';
 

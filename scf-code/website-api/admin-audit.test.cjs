@@ -4,12 +4,13 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { randomTestSecret, signTestJwt } = require('../../scripts/test-jwt.cjs');
 Object.assign(process.env, {
   MYSQL_HOST: '127.0.0.1',
   MYSQL_USER: 'test',
   MYSQL_PASSWORD: 'test',
   MYSQL_DATABASE: 'test',
-  JWT_SECRET: 'website-api-test-secret-at-least-32-chars',
+  JWT_SECRET: randomTestSecret(),
   FEISHU_APP_ID: 'cli_test',
   FEISHU_APP_SECRET: 'secret_test'
 });
@@ -179,7 +180,7 @@ test('an audit write failure never breaks the admin response', async () => {
 
 test('targets never carry emails, tokens or secrets', () => {
   const target = audit.adminAuditTarget({ body: {
-    action: 'register_bucket', name: 'ops@demox.example', secretKey: 'S3CR3T', secretId: 'AKID', token: 'eyJ.x.y', id: 3
+    action: 'register_bucket', name: 'ops@demox.example', secretKey: 'S3CR3T', secretId: 'AKID', token: signTestJwt({ userId: 'u-1' }), id: 3
   } });
   assert.equal(target, 'id=3;name=[email]');
   assert.equal(audit.adminAuditTarget({ body: { userIds: ['a', 'b', 'c'] } }), 'userIds=3');

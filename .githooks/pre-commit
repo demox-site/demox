@@ -1,0 +1,9 @@
+#!/bin/sh
+# 提交前密钥扫描（gitleaks）。发现 token / 密钥（包括测试用的假 JWT）就拒绝提交。
+# 启用：git config core.hooksPath .githooks   （npm install 时 prepare 脚本会自动设置）
+set -e
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: 没装 gitleaks，提交被拦下。安装：brew install gitleaks 或 https://github.com/gitleaks/gitleaks/releases" >&2
+  exit 1
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner -c .gitleaks.toml .

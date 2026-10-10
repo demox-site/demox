@@ -6,7 +6,9 @@ const { afterEach, before, mock, test } = require('node:test');
 
 process.env.AUTH_API_URL = 'https://auth.example.test';
 process.env.WEBSITE_API_URL = 'https://website.example.test';
-process.env.JWT_SECRET = 'mcp-api-test-secret-at-least-32-characters';
+const { randomTestSecret, signTestJwt } = require('../../scripts/test-jwt.cjs');
+
+process.env.JWT_SECRET = randomTestSecret();
 
 let api;
 let sign;
@@ -134,7 +136,7 @@ test('mcp request logs never carry the bearer token or email (v13)', async () =>
   const before = logGuard.lines.length;
   const token = sign({ userId: 'u-mail', email: 'mcp.user@example.com' });
   await api.main({ httpMethod: 'POST', path: '/deploy', headers: { Authorization: `Bearer ${token}` }, body: 'not json {' }).catch(() => {});
-  await api.main({ httpMethod: 'POST', path: '/deploy', headers: { Authorization: 'Bearer eyJbad.eyJbad.sig-not-valid' }, body: '{}' }).catch(() => {});
+  await api.main({ httpMethod: 'POST', path: '/deploy', headers: { Authorization: `Bearer ${signTestJwt({ userId: 'u-bad' })}` }, body: '{}' }).catch(() => {});
   assert.ok(logGuard.lines.length > before);
 });
 

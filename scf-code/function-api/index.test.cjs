@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
+const { randomTestSecret } = require('../../scripts/test-jwt.cjs');
 const { createFunctionHttpHandler, createPlatformHandler, main: defaultMain } = require('./index.js');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
@@ -178,7 +179,7 @@ test('existing functions without aliases backfill production/develop to the curr
 });
 
 test('published function can call outbound HTTP using site env on /api/{slug}', async () => {
-  process.env.JWT_SECRET = process.env.JWT_SECRET || 'platform-secret-must-not-leak-for-tests-0123456789';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || randomTestSecret();
   const seen = [];
   const server = http.createServer((req, res) => {
     seen.push({ url: req.url, auth: req.headers.authorization });
@@ -388,7 +389,7 @@ test('functions belong to a website and keep slugs unique per site', async () =>
 test('unified MCP deploy dispatches to the website system function in process', async () => {
   process.env.AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.example.test';
   process.env.WEBSITE_API_URL = process.env.WEBSITE_API_URL || 'https://website.example.test';
-  process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-that-is-long-enough-for-proxy-tests';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || randomTestSecret();
   const { sign } = require('../mcp-api/shared/jwt.js');
   const calls = [];
   const handler = createPlatformHandler({
