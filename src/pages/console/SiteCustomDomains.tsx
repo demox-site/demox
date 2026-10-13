@@ -159,7 +159,6 @@ type CheckStep = NonNullable<ProjectCustomDomain["checkStep"]>;
 const STEP_ORDER: CheckStep[] = ["dns", "cert", "active"];
 const ICP_FILING_URL = "https://console.cloud.tencent.com/beian";
 // zinc/black/white 在亮色主题下会自动镜像（见 index.css），所以只写暗色一侧。
-const ZINC_SECONDARY = "bg-zinc-800 text-zinc-100 hover:bg-zinc-700";
 const ZINC_OUTLINE = "border-zinc-700 bg-transparent text-[var(--stitch-ink)] hover:bg-zinc-800";
 const OPAQUE_CARD = "bg-zinc-950";
 const AUTO_CHECK_MS = 30_000;
@@ -326,6 +325,8 @@ export default function SiteCustomDomains({
 
   // 弹窗关掉后也在后台继续检测：页面开着时，每分钟把本站未生效的域名静默测一次（最多 10 次）。
   const backgroundRounds = React.useRef(0);
+  // 弹窗关掉时还没通过的那个域名：后台检测拿到第一次结果后，再提示一次（通过 / 还不能访问）。
+  const notifyAfterClose = React.useRef<string | null>(null);
   const [backgroundTick, setBackgroundTick] = React.useState(0);
   const pendingIds = domains
     .filter((item) => belongsToSite(item, websiteId) && item.status !== "active" && item.checkStep !== "icp")
@@ -343,6 +344,10 @@ export default function SiteCustomDomains({
           if (res?.success && res.domain) {
             const next = res.domain as ProjectCustomDomain;
             setDomains((current) => current.map((item) => (item.id === next.id ? next : item)));
+            if (notifyAfterClose.current === next.id) {
+              notifyAfterClose.current = null;
+              toast({ title: next.status === "active" ? t.verified : t.verifyFailed, description: res.message || "" });
+            }
           }
         } catch {
           // 后台检测失败不打扰用户
@@ -351,9 +356,13 @@ export default function SiteCustomDomains({
       setBackgroundTick((value) => value + 1);
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [projectId, canManage, pendingIds, createOpen, backgroundTick]);
+  }, [projectId, canManage, pendingIds, createOpen, backgroundTick, toast, t.verified, t.verifyFailed]);
 
   const resetCreate = () => {
+    if (draftDomain && draftDomain.status !== "active" && draftDomain.checkStep !== "icp") {
+      notifyAfterClose.current = draftDomain.id;
+      backgroundRounds.current = 0;
+    }
     setCreateOpen(false);
     setCreateStep("form");
     setHostname("");
@@ -449,11 +458,9 @@ export default function SiteCustomDomains({
       setDraftDomain(res.domain);
       const passed = res.domain.status === "active";
       onChanged?.();
-      if (!silent || passed) {
-        toast({
-          title: passed ? t.verified : t.verifyFailed,
-          description: res.message || ""
-        });
+      // 弹窗开着时，没通过的结果只在弹窗里的进度卡显示，不弹「还不能访问」；通过了才提示。
+      if (passed) {
+        toast({ title: t.verified, description: res.message || "" });
       }
     } catch (error) {
       if (silent) return;
@@ -659,12 +666,12 @@ export default function SiteCustomDomains({
               </div>
               <CheckProgress domain={draftDomain} checking={busyKey === "verify-draft"} t={t} />
               {!guidePassed && draftDomain?.checkStep !== "icp" ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}
-              {/* 手机和电脑按钮顺序一致：检测（次要）在左，关闭 / 完成在右 */}
+              {/* 手机和电脑按钮顺序一致：检测（主按钮，墨色实心；通过后让位给「完成」）在左，关闭 / 完成在右 */}
               <DialogFooter className="flex-row justify-end gap-2 space-x-0 sm:space-x-0">
                 <Button
                   type="button"
-                  variant="secondary"
-                  className={ZINC_SECONDARY}
+                  variant={guidePassed ? "outline" : "default"}
+                  className={guidePassed ? ZINC_OUTLINE : "stitch-primary"}
                   disabled={busyKey === "verify-draft"}
                   onClick={() => void handleVerifyDraft()}
                 >
