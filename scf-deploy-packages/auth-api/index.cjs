@@ -205,6 +205,8 @@ exports.main = async (event, context) => {
       return await handleRefreshToken(event);
     } else if (path === '/oauth/authorize' || event.body?.action === 'oauth_authorize') {
       return await handleOAuthAuthorize(event);
+    } else if (path === '/oauth/client' || event.body?.action === 'oauth_client') {
+      return await handleOAuthClientInfo(event);
     } else if (path === '/oauth/token' || event.body?.action === 'oauth_token') {
       return await handleOAuthToken(event);
     } else {
@@ -2050,6 +2052,8 @@ const OFFICIAL_OAUTH_CLIENT = Object.freeze({
   redirectUris: Object.freeze(['http://localhost:39897/callback', 'http://localhost:*/callback']),
   scopes: Object.freeze(['website:deploy', 'website:list', 'website:delete', 'website:update'])
 });
+// identity：只证明「你是谁」（sub / email / email_verified），不能动网站。只给 oauth_clients 里显式列出它的客户端。
+const OAUTH_IDENTITY_SCOPE = 'identity';
 const OAUTH_ACCESS_TTL_SECONDS = 3600;
 const OAUTH_REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const OAUTH_CODE_TTL_MS = 10 * 60 * 1000;
@@ -2133,17 +2137,77 @@ async function resolveOAuthClient(clientId) {
     await ensureOfficialOAuthClient();
     return { id: OFFICIAL_OAUTH_CLIENT.id, public: true, redirectUris: [...OFFICIAL_OAUTH_CLIENT.redirectUris], scopes: [...OFFICIAL_OAUTH_CLIENT.scopes] };
   }
-  const rows = await query('SELECT id, client_secret, redirect_uris, scopes FROM oauth_clients WHERE id = ?', [clientId]);
+  if (typeof clientId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(clientId)) return null;
+  const rows = await query('SELECT id, client_secret, redirect_uris, scopes, client_name FROM oauth_clients WHERE id = ?', [clientId]);
   if (!rows.length) return null;
   const row = rows[0];
-  const redirectUris = Array.isArray(row.redirect_uris) ? row.redirect_uris : [];
-  const scopes = Array.isArray(row.scopes) ? row.scopes : [...OFFICIAL_OAUTH_CLIENT.scopes];
+  const redirectUris = readScopeList(row.redirect_uris);
+  const scopes = readScopeList(row.scopes);
   return {
     id: row.id,
+    name: typeof row.client_name === 'string' && row.client_name ? row.client_name : row.id,
     public: !row.client_secret,
     redirectUris,
-    scopes,
-    clientSecret: row.client_secret
+    // 数据库里没写 scope 的旧客户端沿用网站 scope；identity 从不作为默认值。
+    scopes: scopes.length ? scopes : [...OFFICIAL_OAUTH_CLIENT.scopes],
+    clientSecretHash: row.client_secret || ''
+  };
+}
+
+/**
+ * 私密客户端 secret 只存哈希：'sha256$' + hex(SHA-256(secret))。比较走 timingSafeEqual（定长摘要，常数时间）。
+ * 不是这个格式的旧值（明文）也先各自做摘要再比，同样常数时间；新客户端一律存哈希。
+ */
+function hashClientSecret(secret) {
+  return 'sha256$' + require('crypto').createHash('sha256').update(String(secret), 'utf8').digest('hex');
+}
+
+function clientSecretMatches(provided, stored) {
+  const crypto = require('crypto');
+  if (typeof provided !== 'string' || !provided || typeof stored !== 'string' || !stored) {
+    // 仍做一次比较，避免「没传 secret」比「传错」快很多
+    crypto.timingSafeEqual(Buffer.alloc(32), Buffer.alloc(32));
+    return false;
+  }
+  const m = /^sha256\$([0-9a-f]{64})$/.exec(stored);
+  const want = m ? Buffer.from(m[1], 'hex') : crypto.createHash('sha256').update(stored, 'utf8').digest();
+  const got = crypto.createHash('sha256').update(provided, 'utf8').digest();
+  return crypto.timingSafeEqual(got, want);
+}
+
+function isIdentityOnly(scopes) {
+  return Array.isArray(scopes) && scopes.length > 0 && scopes.every((scope) => scope === OAUTH_IDENTITY_SCOPE);
+}
+
+function isRealEmail(email) {
+  return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !/@users\.noreply\.demox\.site$/i.test(email);
+}
+
+/**
+ * 授权页用：按 client_id 查客户端名，并在服务端校验 redirect_uri / scope。只返回公开信息（不含 secret 哈希）。
+ */
+async function handleOAuthClientInfo(event) {
+  const body = (event.body && typeof event.body === 'object') ? event.body : {};
+  const qs = event.queryString || event.queryStringParameters || {};
+  const clientId = body.client_id || qs.client_id;
+  const redirectUri = body.redirect_uri || qs.redirect_uri;
+  const client = await resolveOAuthClient(clientId);
+  if (!client) return oauthError(404, 'invalid_client', '无效的客户端 ID');
+  if (!oauthRedirectAllowed(client.redirectUris, redirectUri)) {
+    return oauthError(400, 'invalid_redirect_uri', '无效的回调地址');
+  }
+  const scopes = parseOAuthScopes(body.scope ?? qs.scope, client.scopes);
+  if (!scopes) return oauthError(400, 'invalid_scope', 'OAuth scope 无效');
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({
+      success: true,
+      client_id: client.id,
+      client_name: client.id === OFFICIAL_OAUTH_CLIENT.id ? 'Demox MCP / CLI' : client.name,
+      official: client.id === OFFICIAL_OAUTH_CLIENT.id,
+      scopes
+    })
   };
 }
 
@@ -2194,8 +2258,28 @@ function readScopeList(value) {
 }
 
 async function issueOAuthTokens({ userId, clientId, scopes }) {
-  const users = await query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+  const users = await query('SELECT id, email, email_verified FROM users WHERE id = ? LIMIT 1', [userId]);
   if (!users.length) return oauthError(400, 'invalid_grant', '授权用户不存在');
+  if (isIdentityOnly(scopes)) {
+    // 只要身份：直接在 token 响应里给 {sub, email, email_verified}（代替单独的 userinfo 请求）。
+    // access_token 是不透明随机串、不是 Demox JWT，也不落库：拿它调不了任何 Demox 接口。没有 refresh token。
+    const email = users[0].email;
+    return {
+      statusCode: 200,
+      headers: { ...getCORSHeaders(), 'Cache-Control': 'no-store' },
+      body: JSON.stringify({
+        access_token: generateRandomString(64),
+        token_type: 'Bearer',
+        expires_in: 0,
+        scope: scopes.join(' '),
+        user: {
+          sub: String(users[0].id),
+          email: isRealEmail(email) ? String(email).toLowerCase() : null,
+          email_verified: isRealEmail(email) && (users[0].email_verified === true || users[0].email_verified === 1)
+        }
+      })
+    };
+  }
   const accessToken = sign({ userId, email: users[0].email, scopes }, `${OAUTH_ACCESS_TTL_SECONDS}s`);
   const refreshToken = generateRandomString(64);
   const refreshExpiresAt = new Date(Date.now() + OAUTH_REFRESH_TTL_SECONDS * 1000);
@@ -2245,11 +2329,9 @@ async function handleOAuthAuthorize(event) {
   if (!state || !/^[A-Za-z0-9._~-]{16,128}$/.test(state)) {
     return oauthError(400, 'invalid_state', 'OAuth state 格式无效');
   }
-  if (client.public && (codeChallengeMethod !== 'S256' || !isValidPkceChallenge(codeChallenge))) {
+  // PKCE（S256）对所有客户端都是必需的，私密客户端也一样。
+  if (codeChallengeMethod !== 'S256' || !isValidPkceChallenge(codeChallenge)) {
     return oauthError(400, 'invalid_request', '缺少有效的 OAuth PKCE 参数');
-  }
-  if (codeChallenge && (codeChallengeMethod !== 'S256' || !isValidPkceChallenge(codeChallenge))) {
-    return oauthError(400, 'invalid_request', 'OAuth PKCE 参数无效');
   }
 
   const code = generateRandomString(64);
@@ -2260,7 +2342,7 @@ async function handleOAuthAuthorize(event) {
     redirectUri,
     expiresAt: new Date(Date.now() + OAUTH_CODE_TTL_MS),
     scopes,
-    codeChallenge: codeChallenge || null
+    codeChallenge
   });
 
   const callback = new URL(redirectUri);
@@ -2287,11 +2369,12 @@ async function handleOAuthToken(event) {
   const clientId = body.client_id;
   const client = await resolveOAuthClient(clientId);
   if (!client) return oauthError(401, 'invalid_client', '无效的客户端 ID');
-  if (!client.public && body.client_secret !== client.clientSecret) {
+  if (!client.public && !clientSecretMatches(body.client_secret, client.clientSecretHash)) {
     return oauthError(401, 'invalid_client', '客户端验证失败');
   }
 
   if (grantType === 'refresh_token') {
+    if (isIdentityOnly(client.scopes)) return oauthError(400, 'unsupported_grant_type', '该客户端不支持刷新令牌');
     const refreshToken = body.refresh_token;
     if (!refreshToken) return oauthError(400, 'invalid_request', '缺少 refresh_token');
     const rows = await query(
@@ -2323,7 +2406,7 @@ async function handleOAuthToken(event) {
 
   const { code, redirect_uri: redirectUri, code_verifier: codeVerifier } = body;
   if (!code || !redirectUri) return oauthError(400, 'invalid_request', '缺少必要参数');
-  if (client.public && !isValidPkceVerifier(codeVerifier)) {
+  if (!isValidPkceVerifier(codeVerifier)) {
     return oauthError(400, 'invalid_request', '缺少有效的 OAuth PKCE 参数');
   }
 
@@ -2332,10 +2415,9 @@ async function handleOAuthToken(event) {
   if (!authCodes.length) return oauthError(400, 'invalid_grant', '授权码无效');
   const authCode = authCodes[0];
   if (new Date(authCode.expires_at) < new Date()) return oauthError(400, 'invalid_grant', '授权码已过期');
-  if (authCode.code_challenge) {
-    if (!isValidPkceVerifier(codeVerifier) || !safeStringEqual(authCode.code_challenge, createPkceChallenge(codeVerifier))) {
-      return oauthError(400, 'invalid_grant', 'PKCE 校验失败');
-    }
+  // 没有 code_challenge 的旧授权码一律拒绝（PKCE 必需）。
+  if (!authCode.code_challenge || !safeStringEqual(authCode.code_challenge, createPkceChallenge(codeVerifier))) {
+    return oauthError(400, 'invalid_grant', 'PKCE 校验失败');
   }
 
   return issueOAuthTokens({
@@ -2357,4 +2439,5 @@ function getCORSHeaders() {
     'Access-Control-Max-Age': '86400'
   };
 }
+exports._oauthForTest = { hashClientSecret, clientSecretMatches };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
