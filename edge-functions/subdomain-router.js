@@ -270,11 +270,13 @@ function isWwwSpaRoute(pathname) {
     normalized === '/console' || normalized === '/console/projects' ||
     normalized === '/console/deploy' || normalized === '/console/sites' ||
     normalized === '/console/usage' || normalized === '/console/tokens' ||
-    normalized === '/console/settings' || normalized === '/console/admin'
+    normalized === '/console/settings' || normalized === '/console/admin' ||
+    normalized === '/console/functions'
   ) return true;
   if (/^\/console\/admin\/[^/]+$/.test(normalized)) return true;
   if (/^\/console\/projects\/[^/]+\/(deploy|sites|members|settings)$/.test(normalized)) return true;
-  if (/^\/console\/projects\/[^/]+\/sites\/[^/]+\/analytics$/.test(normalized)) return true;
+  // 站点设置 / 站点分析 / 站点函数（App.tsx: projects/:projectId/sites/:websiteId[/analytics|/functions]）
+  if (/^\/console\/projects\/[A-Za-z0-9_-]+\/sites\/[A-Za-z0-9_-]+(\/(analytics|functions))?$/.test(normalized)) return true;
   return WWW_SPA_ROUTES.includes(normalized);
 }
 
