@@ -82,8 +82,21 @@ const { query, transaction } = require('./shared/db.cjs');
 const { sign, verify, authenticate, generateUserId, generateRandomString } = require('./shared/jwt.cjs');
 const { membershipSummary } = require('./shared/membership.cjs');
 const { createLoginThrottle, throttledMessage } = require('./shared/login-throttle.cjs');
+const { checkKeyValid, createFailOpenCounter } = require('./shared/fail-open-health.cjs');
 
 const loginThrottle = createLoginThrottle({ query: (...args) => query(...args) });
+const failOpen24h = createFailOpenCounter({ query: (...args) => query(...args) });
+
+/** GET /auth/health：公开只回 status；带对的 X-Demox-Check-Key 才多回 fail_open_24h。 */
+async function handleHealth(event) {
+  const body = { status: 'ok' };
+  if (checkKeyValid(event.headers)) body.fail_open_24h = await failOpen24h();
+  return {
+    statusCode: 200,
+    headers: { ...getCORSHeaders(), 'Cache-Control': 'no-store' },
+    body: JSON.stringify(body)
+  };
+}
 
 // 账号不存在 / 没设密码时也跑一次 bcrypt，和真账号耗时接近（cost 与注册时一致：10）。
 let dummyPasswordHash = null;
@@ -151,6 +164,10 @@ exports.main = async (event, context) => {
         headers: getCORSHeaders(),
         body: ''
       };
+    }
+
+    if (path === '/auth/health' && method === 'GET') {
+      return await handleHealth(event);
     }
 
     // 路由匹配

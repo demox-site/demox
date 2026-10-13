@@ -1007,3 +1007,28 @@ test('login: throttle table errors fail open (login still works, same 401 on wro
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();
 });
+
+test('GET /auth/health: no key -> only status, no fail_open field', async () => {
+  const key = require('crypto').randomBytes(16).toString('hex');
+  process.env.FAIL_OPEN_CHECK_KEY = key;
+  const prev = queryImpl;
+  let queried = 0;
+  queryImpl = async () => { queried++; return [{ n: 2 }]; };
+  try {
+    for (const headers of [{}, { 'X-Demox-Check-Key': 'wrong' }]) {
+      const r = await main({ path: '/auth/health', httpMethod: 'GET', headers });
+      assert.equal(r.statusCode, 200);
+      assert.deepEqual(JSON.parse(r.body), { status: 'ok' });
+      assert.doesNotMatch(r.body, /fail_open/);
+    }
+    assert.equal(queried, 0);
+    const ok = await main({ path: '/auth/health', httpMethod: 'GET', headers: { 'X-Demox-Check-Key': key } });
+    assert.deepEqual(JSON.parse(ok.body), { status: 'ok', fail_open_24h: 2 });
+    delete process.env.FAIL_OPEN_CHECK_KEY;
+    const unset = await main({ path: '/auth/health', httpMethod: 'GET', headers: { 'X-Demox-Check-Key': key } });
+    assert.deepEqual(JSON.parse(unset.body), { status: 'ok' });
+  } finally {
+    queryImpl = prev;
+    delete process.env.FAIL_OPEN_CHECK_KEY;
+  }
+});
