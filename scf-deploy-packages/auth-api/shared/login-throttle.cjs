@@ -48,6 +48,18 @@ function throttledMessage(ms) {
   return `登录尝试次数过多，请 ${waitText(ms)}后再试。`;
 }
 
+/** 限速表出错时放行（fail-open），但每次都记一行告警：只有标记、操作和错误码，不含邮箱、hash、SQL 或 token。 */
+function failOpenCode(error) {
+  const code = error && (error.code || error.name);
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(String(code || '')) ? String(code) : 'UNKNOWN';
+}
+
+function warnFailOpen(log, op, error) {
+  const line = `[login-throttle] FAIL_OPEN op=${op} code=${failOpenCode(error)}`;
+  if (log && typeof log.warn === 'function') log.warn(line);
+  else if (log && typeof log.error === 'function') log.error(line);
+}
+
 function createLoginThrottle({ query, now = () => Date.now(), log = console } = {}) {
   let ready = null;
   function ensureTable() {
@@ -84,7 +96,7 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console } = 
       const rows = await query('SELECT failures, locked_until FROM login_throttle WHERE email_hash = ?', [key]);
       return { allowed: true, failures: Number(rows?.[0]?.failures || 0), lockedUntil: Number(rows?.[0]?.locked_until || 0), at: t };
     } catch (error) {
-      log.error('登录限速表不可用，本次放行:', error && error.code ? error.code : error);
+      warnFailOpen(log, 'reserve', error);
       return { allowed: true, failures: 0, lockedUntil: 0, at: t, degraded: true };
     }
   }
@@ -94,7 +106,7 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console } = 
     try {
       await query('DELETE FROM login_throttle WHERE email_hash = ?', [emailKey(normalizedEmail)]);
     } catch (error) {
-      log.error('清除登录限速记录失败:', error && error.code ? error.code : error);
+      warnFailOpen(log, 'clear', error);
     }
   }
 

@@ -18,6 +18,26 @@ test('key is sha256 of the normalized email (no plaintext stored)', () => {
   assert.notEqual(lib.emailKey('a@b.co'), lib.emailKey('a@b.com'));
 });
 
+test('fail-open emits one warning per error with marker + code only (no email, hash, SQL)', async () => {
+  const lines = [];
+  const log = { warn: (...a) => lines.push(a.join(' ')), error: (...a) => lines.push('ERROR ' + a.join(' ')) };
+  const email = 'victim@example.com';
+  const err = Object.assign(new Error(`boom ${email} ${lib.emailKey(email)} SELECT * FROM login_throttle`), { code: 'ER_NO_SUCH_TABLE' });
+  const th = lib.createLoginThrottle({ query: async () => { throw err; }, log });
+  assert.equal((await th.reserve(email)).allowed, true);
+  await th.clear(email);
+  const weird = lib.createLoginThrottle({ query: async () => { throw Object.assign(new Error('x'), { code: `bad ${email}` }); }, log });
+  await weird.reserve(email);
+  assert.deepEqual(lines, [
+    '[login-throttle] FAIL_OPEN op=reserve code=ER_NO_SUCH_TABLE',
+    '[login-throttle] FAIL_OPEN op=clear code=ER_NO_SUCH_TABLE',
+    '[login-throttle] FAIL_OPEN op=reserve code=UNKNOWN'
+  ]);
+  for (const l of lines) {
+    assert.ok(!l.includes('victim') && !l.includes(lib.emailKey(email)) && !/select/i.test(l));
+  }
+});
+
 // 真实 SQL：设置 LOGIN_THROTTLE_TEST_MYSQL=mysql://user:pass@host:port/db 才跑（CI 默认跳过）。
 const url = process.env.LOGIN_THROTTLE_TEST_MYSQL;
 test('real SQL: progressive wait, refusal during wait, window reset, clear, and no extra attempts under concurrency', { skip: !url && 'LOGIN_THROTTLE_TEST_MYSQL not set' }, async () => {
@@ -27,7 +47,7 @@ test('real SQL: progressive wait, refusal during wait, window reset, clear, and 
   try {
     await query('DROP TABLE IF EXISTS login_throttle');
     let t = 1_760_000_000_000;
-    const th = lib.createLoginThrottle({ query, now: () => t, log: { error() {} } });
+    const th = lib.createLoginThrottle({ query, now: () => t, log: { error() {}, warn() {} } });
     const email = 'someone@example.com';
     const fail = async () => th.reserve(email); // 占名额 = 记一次失败（登录成功才 clear）
     for (let i = 1; i <= 4; i += 1) {
