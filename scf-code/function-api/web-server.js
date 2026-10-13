@@ -16,7 +16,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { clientIpFromForwardedFor } = require('./client-ip.js');
+const { clientIpFrom: resolveClientIp } = require('./client-ip.js');
 const { isClientError, typedErrorResponse } = require('./errors.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
@@ -26,15 +26,12 @@ function firstHeader(value) {
 }
 
 /**
- * 客户端 IP（只从已经去掉 x-scf-* 的头里取）：
- * 1. 不信任 x-scf-remote-addr：2026-10-10 实测客户端伪造的 X-Scf-Remote-Addr 会原样到达（函数 URL 和自定义域名都是）。
- * 2. 不信任 x-real-ip（实测是 SCF 网关地址 11.163.x.x，不是客户端）。
- * 3. X-Forwarded-For 从右往左跳过受信任代理网段（client-ip.js TRUSTED_PROXY_CIDRS），取第一个不受信任的地址；
- *    整条链都受信任时取最右边一个。
- * 4. 没有 XFF 才用 socket 地址（和以前一样）。
+ * 客户端 IP：见 client-ip.js clientIpFrom。
+ * 必须在 stripPlatformHeaders 之前读出 x-scf-remote-addr（或显式传入），strip 之后头里就没了。
+ * 永不信任 X-Real-IP。
  */
-function clientIpFrom(headers, socket) {
-  return clientIpFromForwardedFor((headers || {})['x-forwarded-for']) || (socket && socket.remoteAddress) || '';
+function clientIpFrom(headers, socket, remoteAddr) {
+  return resolveClientIp(headers, socket, remoteAddr);
 }
 
 /**
@@ -68,12 +65,13 @@ function eventFromRequest(req, rawBody) {
     headerNamesLogged = true; // 每个实例只记一次，只记名字不记值，用来核对平台实际传了哪些头
     console.log(`web-server: request header names: ${Object.keys(headers).sort().join(',')}`);
   }
-  // 唯一的例外：取平台请求 ID 做日志关联（只认 UUID 形状），之后立刻去掉全部 x-scf-*，再做任何其他处理。
+  // 例外：取平台请求 ID（只认 UUID）和 x-scf-remote-addr（IP 解析用），之后立刻去掉全部 x-scf-*。
   const scfRequestId = String(headers['x-scf-request-id'] || '').trim();
+  const scfRemoteAddr = headers['x-scf-remote-addr'];
   stripPlatformHeaders(headers);
   const text = isTextContentType(headers['content-type']);
   const requestId = (SCF_REQUEST_ID_PATTERN.test(scfRequestId) ? scfRequestId : '') || firstHeader(headers['x-request-id']) || crypto.randomBytes(8).toString('hex');
-  const sourceIp = clientIpFrom(headers, req.socket);
+  const sourceIp = clientIpFrom(headers, req.socket, scfRemoteAddr);
   return {
     httpMethod: String(req.method || 'GET').toUpperCase(),
     path: url.pathname,
