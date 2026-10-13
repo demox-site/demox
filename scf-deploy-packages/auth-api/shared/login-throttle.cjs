@@ -12,6 +12,9 @@
  * 并发：每次尝试先用一条带条件的 UPDATE「占一次名额」（WHERE locked_until <= now），
  * 达到阈值的那次在占名额时就写上 locked_until，所以并发请求不能在等待开始前多试几次。
  * 时间都用毫秒整数（BIGINT），不受数据库时区影响。
+ *
+ * fail-open：限速表出错时放行，并在旁表 login_throttle_fail_open 记一条（op / code / 时间），
+ * 不依赖日志（function-api 日志可能停写）。定时巡检看这张表有没有新行即可报警。
  */
 const crypto = require('crypto');
 
@@ -19,6 +22,8 @@ const THRESHOLD = 5;
 const BASE_DELAY_MS = 60 * 1000;
 const MAX_DELAY_MS = 15 * 60 * 1000;
 const WINDOW_MS = 15 * 60 * 1000;
+/** reserve 时约 1% 概率顺手清掉窗口外的旧行，避免随机邮箱把表撑大。 */
+const CLEANUP_PROBABILITY = 0.01;
 
 const CREATE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS login_throttle (
   email_hash CHAR(64) NOT NULL PRIMARY KEY,
@@ -26,6 +31,15 @@ const CREATE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS login_throttle (
   last_failed_at BIGINT NOT NULL DEFAULT 0,
   locked_until BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+
+const CREATE_FAIL_OPEN_TABLE_SQL = `CREATE TABLE IF NOT EXISTS login_throttle_fail_open (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  op VARCHAR(16) NOT NULL,
+  code VARCHAR(64) NOT NULL,
+  created_at_ms BIGINT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_created_at_ms (created_at_ms)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
 function emailKey(normalizedEmail) {
@@ -60,22 +74,56 @@ function warnFailOpen(log, op, error) {
   else if (log && typeof log.error === 'function') log.error(line);
 }
 
-function createLoginThrottle({ query, now = () => Date.now(), log = console } = {}) {
+function createLoginThrottle({ query, now = () => Date.now(), log = console, random = Math.random } = {}) {
   let ready = null;
   function ensureTable() {
-    if (!ready) ready = query(CREATE_TABLE_SQL).catch((error) => { ready = null; throw error; });
+    if (!ready) {
+      ready = Promise.all([
+        query(CREATE_TABLE_SQL),
+        query(CREATE_FAIL_OPEN_TABLE_SQL)
+      ]).then(() => undefined).catch((error) => { ready = null; throw error; });
+    }
     return ready;
+  }
+
+  /** 旁表计数：不依赖日志。计数本身失败时只吞掉，不再递归 fail-open。 */
+  async function recordFailOpen(op, error) {
+    const code = failOpenCode(error);
+    warnFailOpen(log, op, error);
+    try {
+      await ensureTable();
+      await query(
+        'INSERT INTO login_throttle_fail_open (op, code, created_at_ms) VALUES (?, ?, ?)',
+        [op, code, now()]
+      );
+    } catch (_) {
+      // 旁表也挂了就只靠上面的 warn；不再抛，避免盖住主路径的放行。
+    }
+  }
+
+  /** 清掉窗口外旧行。列是毫秒 BIGINT，用参数比较，不用 NOW()-INTERVAL（会和 BIGINT 对不上）。 */
+  async function maybeCleanup(t) {
+    if (random() >= CLEANUP_PROBABILITY) return;
+    try {
+      await query(
+        'DELETE FROM login_throttle WHERE GREATEST(last_failed_at, locked_until) < ?',
+        [t - WINDOW_MS]
+      );
+    } catch (_) {
+      // 清理失败不影响登录路径
+    }
   }
 
   /**
    * 占一次尝试名额。返回 { allowed: true, failures, lockedUntil } 或 { allowed: false, retryAfterMs }。
-   * 数据库出错时放行（fail open）并记一条日志，避免限速表的问题把所有人都挡在门外。
+   * 数据库出错时放行（fail open）并记一条旁表计数，避免限速表的问题把所有人都挡在门外。
    */
   async function reserve(normalizedEmail) {
     const key = emailKey(normalizedEmail);
     const t = now();
     try {
       await ensureTable();
+      await maybeCleanup(t);
       await query('INSERT IGNORE INTO login_throttle (email_hash, failures, last_failed_at, locked_until) VALUES (?, 0, 0, 0)', [key]);
       // 注意 MySQL 单表 UPDATE 从左到右赋值、后面的表达式看到前面已改过的值：先算 locked_until（用旧的 failures），再改 failures。
       // f0 = 窗口过期（最后一次失败和等待结束都已过去 15 分钟）就当 0，否则沿用。
@@ -96,7 +144,7 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console } = 
       const rows = await query('SELECT failures, locked_until FROM login_throttle WHERE email_hash = ?', [key]);
       return { allowed: true, failures: Number(rows?.[0]?.failures || 0), lockedUntil: Number(rows?.[0]?.locked_until || 0), at: t };
     } catch (error) {
-      warnFailOpen(log, 'reserve', error);
+      await recordFailOpen('reserve', error);
       return { allowed: true, failures: 0, lockedUntil: 0, at: t, degraded: true };
     }
   }
@@ -106,11 +154,11 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console } = 
     try {
       await query('DELETE FROM login_throttle WHERE email_hash = ?', [emailKey(normalizedEmail)]);
     } catch (error) {
-      warnFailOpen(log, 'clear', error);
+      await recordFailOpen('clear', error);
     }
   }
 
-  return { reserve, clear, ensureTable };
+  return { reserve, clear, ensureTable, maybeCleanup, recordFailOpen };
 }
 
 module.exports = {
@@ -119,9 +167,12 @@ module.exports = {
   delayForFailures,
   throttledMessage,
   waitText,
+  failOpenCode,
   THRESHOLD,
   BASE_DELAY_MS,
   MAX_DELAY_MS,
   WINDOW_MS,
-  CREATE_TABLE_SQL
+  CLEANUP_PROBABILITY,
+  CREATE_TABLE_SQL,
+  CREATE_FAIL_OPEN_TABLE_SQL
 };
