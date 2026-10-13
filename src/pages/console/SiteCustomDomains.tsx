@@ -178,11 +178,9 @@ function formatClock(iso?: string) {
 
 function CheckProgress({
   domain,
-  checking,
   t
 }: {
   domain: ProjectCustomDomain | null;
-  checking: boolean;
   t: (typeof texts)["zh"] | (typeof texts)["en"];
 }) {
   const step = domain?.checkStep && domain.checkedAt ? domain.checkStep : null;
@@ -194,7 +192,7 @@ function CheckProgress({
     return (
       <div className={`space-y-1.5 rounded-xl border border-[var(--stitch-ink)] px-3 py-3 text-sm ${OPAQUE_CARD}`} role="status" data-testid="custom-domain-icp">
         <div className="flex items-start gap-1.5 font-medium text-[var(--stitch-ink)]">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--stitch-ink)]" />
           <span>{t.icpTitle}</span>
         </div>
         <p className="text-[var(--stitch-muted)]">{t.icpWhat}</p>
@@ -228,11 +226,9 @@ function CheckProgress({
                 {success ? (
                   <Check className="h-4 w-4 text-[hsl(var(--success))]" />
                 ) : done ? (
-                  <Check className="h-4 w-4" />
-                ) : isCurrent && checking ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Check className="h-4 w-4 text-[var(--stitch-ink)]" />
                 ) : isCurrent ? (
-                  <AlertCircle className="h-4 w-4" />
+                  <AlertCircle className="h-4 w-4 text-[var(--stitch-ink)]" />
                 ) : (
                   <span className="inline-flex h-4 w-4 items-center justify-center font-mono text-xs text-[var(--stitch-muted)]">{index + 1}</span>
                 )}
@@ -641,7 +637,7 @@ export default function SiteCustomDomains({
                       <code className="block whitespace-nowrap font-mono text-sm text-[var(--stitch-ink)]">{guideValue}</code>
                     </div>
                     <Button type="button" variant="ghost" size="icon" className="-mb-1.5 h-8 w-8 shrink-0" onClick={() => void handleCopy(guideValue, "create")}>
-                      {copied === "create" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                      {copied === "create" ? <Check className="h-4 w-4 text-[var(--stitch-ink)]" /> : <Copy className="h-4 w-4" />}
                     </Button>
                   </div>
                 </div>
@@ -664,7 +660,7 @@ export default function SiteCustomDomains({
                   </div>
                 ) : null}
               </div>
-              <CheckProgress domain={draftDomain} checking={busyKey === "verify-draft"} t={t} />
+              <CheckProgress domain={draftDomain} t={t} />
               {!guidePassed && draftDomain?.checkStep !== "icp" ? <p className="text-xs text-[var(--stitch-muted)]">{t.closeHint}</p> : null}
               {/* 手机和电脑按钮顺序一致：检测（主按钮，墨色实心；通过后让位给「完成」）在左，关闭 / 完成在右 */}
               <DialogFooter className="flex-row justify-end gap-2 space-x-0 sm:space-x-0">
