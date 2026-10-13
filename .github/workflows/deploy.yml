@@ -5,6 +5,20 @@ name: Deploy to Demox (self-hosted)
 on:
   push:
     branches: [master]
+    # 只有前端构建输入变化时才重新发布 www（EPX2UU43）。边缘函数、SCF、文档等改动不触发。
+    paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "tailwind.config.ts"
+      - "postcss.config.js"
+      - "tsconfig*.json"
+      - "components.json"
+      - "scripts/generate-seo-pages.mjs"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 concurrency:
