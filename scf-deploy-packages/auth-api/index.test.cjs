@@ -1032,3 +1032,164 @@ test('GET /auth/health: no key -> only status, no fail_open field', async () => 
     delete process.env.FAIL_OPEN_CHECK_KEY;
   }
 });
+
+// ---------- funx-console: confidential client, identity scope, hashed secret, PKCE required ----------
+
+const FUNX_REDIRECT = 'https://funx.site/console/auth/demox/callback';
+const FUNX_TEST_SECRET = crypto.randomBytes(32).toString('base64url'); // test-only, never the real secret
+const { _oauthForTest } = require('./index.cjs');
+
+function funxStore({ emailVerified = 1, email = 'person@example.com', storedSecret } = {}) {
+  const base = oauthStore();
+  const log = { refreshInserts: 0 };
+  const used = new Set();
+  return Object.assign(async (sql, params = []) => {
+    if (sql.includes('FROM oauth_clients WHERE id = ?')) {
+      if (params[0] !== 'funx-console') return [];
+      return [{
+        id: 'funx-console',
+        client_secret: storedSecret ?? _oauthForTest.hashClientSecret(FUNX_TEST_SECRET),
+        redirect_uris: JSON.stringify([FUNX_REDIRECT]),
+        scopes: JSON.stringify(['identity']),
+        client_name: 'Funx'
+      }];
+    }
+    if (sql.includes('FROM users WHERE id = ?')) return [{ id: params[0], email, email_verified: emailVerified }];
+    if (sql.includes('INSERT INTO oauth_refresh_tokens')) log.refreshInserts++;
+    if (sql.startsWith('DELETE FROM oauth_auth_codes')) { used.add(params[0]); return { affectedRows: 1 }; }
+    if (sql.includes('FROM oauth_auth_codes') && used.has(params[0])) return [];
+    return base(sql, params);
+  }, { log });
+}
+
+async function funxAuthorize(overrides = {}) {
+  const session = sign({ userId: 'user-9', email: 'person@example.com' }, '1h');
+  return main({
+    path: '/oauth/authorize',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${session}` },
+    body: { client_id: 'funx-console', redirect_uri: FUNX_REDIRECT, response_type: 'code', state: 'funx-state-0123456789', scope: 'identity', ...overrides }
+  });
+}
+
+function funxToken(body) {
+  return main({ path: '/oauth/token', httpMethod: 'POST', body: { grant_type: 'authorization_code', client_id: 'funx-console', redirect_uri: FUNX_REDIRECT, client_secret: FUNX_TEST_SECRET, ...body } });
+}
+
+test('client secret is stored as a sha256 hash and compared in constant time', () => {
+  const h = _oauthForTest.hashClientSecret('abc');
+  assert.match(h, /^sha256\$[0-9a-f]{64}$/);
+  assert.equal(_oauthForTest.clientSecretMatches('abc', h), true);
+  assert.equal(_oauthForTest.clientSecretMatches('abd', h), false);
+  assert.equal(_oauthForTest.clientSecretMatches('', h), false);
+  assert.equal(_oauthForTest.clientSecretMatches(undefined, h), false);
+  assert.equal(_oauthForTest.clientSecretMatches('abc', ''), false);
+  const src = require('node:fs').readFileSync(require.resolve('./index.cjs'), 'utf8');
+  assert.doesNotMatch(src, /client_secret !== client\./);
+  assert.match(src, /timingSafeEqual\(got, want\)/);
+});
+
+test('migration 005 stores only a hash and exactly one exact redirect URI for funx-console', () => {
+  const sql = require('node:fs').readFileSync(require('node:path').join(__dirname, 'migrations', '005_funx_console_client.sql'), 'utf8');
+  assert.match(sql, /'sha256\$[0-9a-f]{64}'/);
+  assert.match(sql, /'\["https:\/\/funx\.site\/console\/auth\/demox\/callback"\]'/);
+  assert.match(sql, /'\["identity"\]'/);
+  assert.doesNotMatch(sql.split('\n').filter((l) => !l.startsWith('--')).join('\n'), /\*/);
+  assert.doesNotMatch(sql, /fxdc_/);
+});
+
+test('funx-console identity login: code -> token returns {sub,email,email_verified}, no refresh, no Demox JWT', async () => {
+  const { verifier, challenge } = pkcePair();
+  const store = funxStore();
+  queryImpl = store;
+  const a = await funxAuthorize({ code_challenge: challenge, code_challenge_method: 'S256' });
+  assert.equal(a.statusCode, 200, a.body);
+  const { code, redirect_uri: cb } = JSON.parse(a.body);
+  assert.ok(cb.startsWith(FUNX_REDIRECT + '?'));
+  const t = await funxToken({ code, code_verifier: verifier });
+  assert.equal(t.statusCode, 200, t.body);
+  const body = JSON.parse(t.body);
+  assert.deepEqual(body.user, { sub: 'user-9', email: 'person@example.com', email_verified: true });
+  assert.equal(body.scope, 'identity');
+  assert.equal(body.refresh_token, undefined);
+  assert.equal(store.log.refreshInserts, 0);
+  assert.throws(() => verify(body.access_token)); // not a Demox JWT: useless against Demox APIs
+  // code is single use
+  const again = await funxToken({ code, code_verifier: verifier });
+  assert.equal(again.statusCode, 400);
+  assert.equal(JSON.parse(again.body).error, 'invalid_grant');
+});
+
+test('funx-console: unverified or synthetic email is reported as not verified', async () => {
+  for (const [email, ev, want] of [['person@example.com', 0, { email: 'person@example.com', email_verified: false }], ['feishu_abc@users.noreply.demox.site', 1, { email: null, email_verified: false }]]) {
+    const { verifier, challenge } = pkcePair();
+    queryImpl = funxStore({ email, emailVerified: ev });
+    const { code } = JSON.parse((await funxAuthorize({ code_challenge: challenge, code_challenge_method: 'S256' })).body);
+    const body = JSON.parse((await funxToken({ code, code_verifier: verifier })).body);
+    assert.deepEqual({ email: body.user.email, email_verified: body.user.email_verified }, want);
+  }
+});
+
+test('funx-console: PKCE is required even though the client is confidential', async () => {
+  queryImpl = funxStore();
+  const noPkce = await funxAuthorize();
+  assert.equal(noPkce.statusCode, 400);
+  assert.equal(JSON.parse(noPkce.body).error, 'invalid_request');
+  const plain = await funxAuthorize({ code_challenge: 'a'.repeat(43), code_challenge_method: 'plain' });
+  assert.equal(plain.statusCode, 400);
+
+  const { challenge } = pkcePair();
+  const { code } = JSON.parse((await funxAuthorize({ code_challenge: challenge, code_challenge_method: 'S256' })).body);
+  const missing = await funxToken({ code });
+  assert.equal(missing.statusCode, 400);
+  const wrong = await funxToken({ code, code_verifier: pkcePair().verifier });
+  assert.equal(wrong.statusCode, 400);
+  assert.equal(JSON.parse(wrong.body).error, 'invalid_grant');
+});
+
+test('funx-console: wrong/missing secret, wrong redirect, website scope and refresh are refused', async () => {
+  const { verifier, challenge } = pkcePair();
+  queryImpl = funxStore();
+  const ok = { code_challenge: challenge, code_challenge_method: 'S256' };
+  for (const redirect_uri of [FUNX_REDIRECT + '/', 'https://funx.site/console/auth/demox/callback?x=1', 'https://evil.example/console/auth/demox/callback', 'http://funx.site/console/auth/demox/callback']) {
+    const r = await funxAuthorize({ ...ok, redirect_uri });
+    assert.equal(r.statusCode, 400, redirect_uri);
+    assert.equal(JSON.parse(r.body).error, 'invalid_redirect_uri');
+  }
+  const scope = await funxAuthorize({ ...ok, scope: 'identity website:deploy' });
+  assert.equal(JSON.parse(scope.body).error, 'invalid_scope');
+
+  const { code } = JSON.parse((await funxAuthorize(ok)).body);
+  for (const client_secret of [undefined, '', 'x'.repeat(43), FUNX_TEST_SECRET + 'x']) {
+    const r = await funxToken({ code, code_verifier: verifier, client_secret });
+    assert.equal(r.statusCode, 401);
+    assert.equal(JSON.parse(r.body).error, 'invalid_client');
+  }
+  const refresh = await main({ path: '/oauth/token', httpMethod: 'POST', body: { grant_type: 'refresh_token', client_id: 'funx-console', client_secret: FUNX_TEST_SECRET, refresh_token: 'r'.repeat(64) } });
+  assert.equal(refresh.statusCode, 400);
+  assert.equal(JSON.parse(refresh.body).error, 'unsupported_grant_type');
+});
+
+test('MCP client cannot request the identity scope', async () => {
+  const { challenge } = pkcePair();
+  queryImpl = oauthStore();
+  const session = sign({ userId: 'user-1', email: 'user@example.com' }, '1h');
+  const r = await main({ path: '/oauth/authorize', httpMethod: 'POST', headers: { Authorization: `Bearer ${session}` }, body: { client_id: 'demox-mcp-client', redirect_uri: 'http://localhost:39897/callback', state: 'state-with-at-least-16', scope: 'identity', code_challenge: challenge, code_challenge_method: 'S256' } });
+  assert.equal(JSON.parse(r.body).error, 'invalid_scope');
+});
+
+test('/oauth/client returns the client name after server-side redirect and scope checks', async () => {
+  queryImpl = funxStore();
+  const r = await main({ path: '/oauth/client', httpMethod: 'POST', body: { client_id: 'funx-console', redirect_uri: FUNX_REDIRECT, scope: 'identity' } });
+  assert.equal(r.statusCode, 200, r.body);
+  const b = JSON.parse(r.body);
+  assert.deepEqual({ id: b.client_id, name: b.client_name, official: b.official, scopes: b.scopes }, { id: 'funx-console', name: 'Funx', official: false, scopes: ['identity'] });
+  assert.doesNotMatch(r.body, /sha256|secret/);
+  const bad = await main({ path: '/oauth/client', httpMethod: 'POST', body: { client_id: 'funx-console', redirect_uri: 'https://evil.example/' } });
+  assert.equal(bad.statusCode, 400);
+  const unknown = await main({ path: '/oauth/client', httpMethod: 'POST', body: { client_id: 'nope', redirect_uri: FUNX_REDIRECT } });
+  assert.equal(unknown.statusCode, 404);
+  queryImpl = oauthStore();
+  const mcp = await main({ path: '/oauth/client', httpMethod: 'POST', body: { client_id: 'demox-mcp-client', redirect_uri: 'http://localhost:39897/callback' } });
+  assert.equal(JSON.parse(mcp.body).official, true);
+});

@@ -31,6 +31,14 @@ export function MCPLogin() {
       if (!tokenManager.get() || !userManager.get()) {
         throw new Error("登录状态异常");
       }
+      // Third-party clients go back to the authorize page, which re-checks the client on the server
+      // and asks for consent. Only the official MCP/CLI client is completed here directly.
+      if (!parsed.request.official) {
+        const back = new URL("/mcp-authorize", window.location.origin);
+        back.search = new URLSearchParams(readOAuthSearchParams(window.location)).toString();
+        window.location.href = back.toString();
+        return;
+      }
       const callback = await completeMcpAuthorization(parsed.request, (payload) =>
         authApi.oauthAuthorize(payload)
       );
@@ -39,7 +47,7 @@ export function MCPLogin() {
         window.location.href = callback;
       }, 1500);
     } catch (error: any) {
-      if (parsed.ok) {
+      if (parsed.ok && parsed.request.official) {
         window.location.href = buildOAuthErrorCallback(
           parsed.request.redirectUri,
           "server_error",

@@ -544,6 +544,15 @@ export const authApi = {
     return request<{ valid: boolean; userId: string }>(AUTH_API_URL, "/auth/verify");
   },
 
+  // Public client info for the authorize page (name only, after server-side redirect/scope checks).
+  oauthClient: async (payload: { client_id: string; redirect_uri: string; scope?: string }) => {
+    return request<{ success: boolean; client_id: string; client_name: string; official: boolean; scopes: string[] }>(
+      AUTH_API_URL,
+      "/oauth/client",
+      { method: "POST", body: payload }
+    );
+  },
+
   oauthAuthorize: async (payload: {
     client_id: string;
     redirect_uri: string;

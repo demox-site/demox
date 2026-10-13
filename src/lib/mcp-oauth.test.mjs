@@ -5,6 +5,7 @@ import {
   buildMcpLoginUrl,
   buildOAuthErrorCallback,
   completeMcpAuthorization,
+  loadThirdPartyClient,
   parseMcpOAuthRequest,
   readOAuthSearchParams,
   redirectUriAllowed,
@@ -64,4 +65,46 @@ test("authorization completion only redirects with a code", async () => {
     buildOAuthErrorCallback(request.redirect_uri, "invalid_request", "缺少有效的 OAuth PKCE 参数", request.state),
     /error=invalid_request/
   );
+});
+
+
+// ---------- third-party clients (funx-console) ----------
+
+const funx = {
+  client_id: "funx-console",
+  redirect_uri: "https://funx.site/console/auth/demox/callback",
+  response_type: "code",
+  state: "funx-state-0123456789",
+  scope: "identity",
+  code_challenge: "b".repeat(43),
+  code_challenge_method: "S256"
+};
+
+test("third-party client parses without a hardcoded client id, but is never redirect-safe before the server check", () => {
+  const parsed = parseMcpOAuthRequest(new URLSearchParams(funx));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.request.official, false);
+  assert.equal(parsed.request.clientId, "funx-console");
+  assert.equal(parsed.request.scope, "identity");
+  const official = parseMcpOAuthRequest(params());
+  assert.equal(official.request.official, true);
+  const badState = parseMcpOAuthRequest(new URLSearchParams({ ...funx, state: "short" }));
+  assert.equal(badState.ok, false);
+  assert.equal(badState.redirectSafe, false);
+});
+
+test("third-party client still needs PKCE S256, https redirect and an explicit scope", () => {
+  for (const o of [{ code_challenge: "" }, { code_challenge_method: "plain" }, { redirect_uri: "http://funx.site/cb" }, { redirect_uri: "https://funx.site/cb#x" }, { scope: "" }, { client_id: "bad id!" }]) {
+    assert.equal(parseMcpOAuthRequest(new URLSearchParams({ ...funx, ...o })).ok, false, JSON.stringify(o));
+  }
+});
+
+test("loadThirdPartyClient returns the server's client name and rejects mismatches", async () => {
+  const { request: r } = parseMcpOAuthRequest(new URLSearchParams(funx));
+  let sent;
+  const info = await loadThirdPartyClient(r, async (p) => { sent = p; return { success: true, client_id: "funx-console", client_name: "Funx", scopes: ["identity"] }; });
+  assert.deepEqual(sent, { client_id: "funx-console", redirect_uri: funx.redirect_uri, scope: "identity" });
+  assert.equal(info.name, "Funx");
+  await assert.rejects(loadThirdPartyClient(r, async () => ({ success: true, client_id: "other", client_name: "X" })));
+  await assert.rejects(loadThirdPartyClient(r, async () => { throw new Error("400"); }));
 });
