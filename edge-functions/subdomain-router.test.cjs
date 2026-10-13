@@ -1119,3 +1119,47 @@ test('v1fallback: v1 is only consulted when there is no v2 entry at all, and nev
   assertUnavailable(await r.visit(ESSAY_URL));
 });
 
+
+test('www site settings / functions deep links get the SPA fallback', () => {
+  const ok = context.__testHooks.isWwwSpaRoute;
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1'), true);
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/'), true);
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/functions'), true);
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/analytics'), true);
+  assert.equal(ok('/console/functions'), true);
+  // 仍然 404
+  assert.equal(ok('/console/projects/PROJECT1'), false);
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/nope'), false);
+  assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/functions/x'), false);
+  assert.equal(ok('/nonexist'), false);
+  // ID 段只允许 [A-Za-z0-9_-]+
+  assert.equal(ok('/console/projects/../sites/x'), false);
+  assert.equal(ok('/console/projects/%2e%2e/sites/x'), false);
+  assert.equal(ok('/console/projects/P1/sites/%2E%2E/functions'), false);
+  assert.equal(ok('/console/projects/P.1/sites/SITE1'), false);
+  assert.equal(ok('/console/projects/P1/sites/SITE.1/functions'), false);
+  assert.equal(ok('/console/projects/P%201/sites/SITE1'), false);
+  assert.equal(ok('/console/projects/P1/sites/SITE%2F1'), false);
+  assert.equal(ok('/console/projects/proj_1-a/sites/Site-2_b/functions'), true);
+});
+
+// 漂移检查：App.tsx 里 /console 下的每条子路由（含 :param）都必须被 isWwwSpaRoute 放行，
+// 否则直接打开深链接会在 www 上 404。
+// 有意排除：index 路由（就是 /console 本身，已单独放行）；目前没有其他排除项，
+// 如需新增排除请写进 INTENTIONALLY_EXCLUDED 并说明原因。
+const INTENTIONALLY_EXCLUDED = new Set([]);
+test('every App.tsx /console route (including params) is matched by isWwwSpaRoute', () => {
+  const start = appSource.indexOf('<Route path="/console"');
+  assert.ok(start >= 0, 'console route block not found in App.tsx');
+  // console 的子路由都是自闭合 <Route ... />，第一个 </Route> 就是 /console 的闭合标签
+  const end = appSource.indexOf('</Route>', start);
+  assert.ok(end > start, 'console route block not closed');
+  const block = appSource.slice(start, end);
+  const children = [...block.matchAll(/path="([^"]+)"/g)].map((x) => x[1]).filter((p) => p !== '/console');
+  assert.ok(children.length >= 10, `expected console child routes, got ${children.length}`);
+  const missing = children
+    .filter((p) => !INTENTIONALLY_EXCLUDED.has(p))
+    .map((p) => '/console/' + p.replace(/:[A-Za-z]+/g, 'SAMPLE1'))
+    .filter((url) => !context.__testHooks.isWwwSpaRoute(url));
+  assert.deepEqual(missing, []);
+});
