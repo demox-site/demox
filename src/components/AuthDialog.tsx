@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { authApi } from "../api";
+import { authApi, loginThrottledUntil } from "../api";
+import { LoginThrottleNotice } from "@/components/LoginThrottleNotice";
 import { Github } from "lucide-react";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
@@ -119,6 +120,7 @@ export function AuthDialog({
   const { toast } = useToast();
   const { language } = useLanguage();
   const t = translations[language] || translations.zh;
+  const [throttleUntil, setThrottleUntil] = useState<number | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -223,11 +225,17 @@ export function AuthDialog({
       onLoginSuccess();
       onOpenChange(false);
     } catch (error: any) {
-      toast({
-        title: t.loginFailed,
-        description: error.message,
-        variant: "destructive"
-      });
+      const until = loginThrottledUntil(error);
+      if (until) {
+        // 限速不是出错：不弹红色 toast，在表单里用墨色提示要等多久。
+        setThrottleUntil(until);
+      } else {
+        toast({
+          title: t.loginFailed,
+          description: error.message,
+          variant: "destructive"
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -289,7 +297,10 @@ export function AuthDialog({
               type="email"
               placeholder="name@example.com"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setThrottleUntil(null);
+              }}
             />
           </div>
 
@@ -361,7 +372,11 @@ export function AuthDialog({
             </label>
           </div>
 
-          <Button type="submit" className="w-full" disabled={loading}>
+          {loginMode === "password" && throttleUntil ? (
+            <LoginThrottleNotice until={throttleUntil} lang={language === "en" ? "en" : "zh"} onDone={() => setThrottleUntil(null)} />
+          ) : null}
+
+          <Button type="submit" className="w-full" disabled={loading || (loginMode === "password" && !!throttleUntil)}>
             {loading ? t.processing : loginMode === "code" ? t.loginOrSignup : t.login}
           </Button>
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { authApi } from "../api";
+import { authApi, loginThrottledUntil } from "../api";
+import { LoginThrottleNotice } from "@/components/LoginThrottleNotice";
 import { Button, Input, Label, useToast, Checkbox } from "@/components/ui";
 
 interface EmailLoginFormProps {
@@ -16,6 +17,7 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
   const [countdown, setCountdown] = useState(0);
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [throttleUntil, setThrottleUntil] = useState<number | null>(null);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -93,6 +95,12 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
 
       onLoginSuccess();
     } catch (error: unknown) {
+      const until = loginThrottledUntil(error);
+      if (until) {
+        // 限速不是出错：不弹红色 toast，在表单里用墨色提示要等多久（CLI 的 /mcp-login 也走这里）。
+        setThrottleUntil(until);
+        return;
+      }
       console.error(error);
       const message = error instanceof Error ? error.message : "登录失败";
       toast({
@@ -114,7 +122,10 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
           type="email"
           placeholder="name@example.com"
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setThrottleUntil(null);
+          }}
         />
       </div>
       {!loginWithCode && (
@@ -184,7 +195,10 @@ export function EmailLoginForm({ onLoginSuccess }: EmailLoginFormProps) {
             </p>
           </div>
         </div>
-        <Button onClick={handleEmailAuth} disabled={loading} className="w-full">
+        {!loginWithCode && throttleUntil ? (
+          <LoginThrottleNotice until={throttleUntil} onDone={() => setThrottleUntil(null)} />
+        ) : null}
+        <Button onClick={handleEmailAuth} disabled={loading || (!loginWithCode && !!throttleUntil)} className="w-full">
           {loading ? "处理中..." : loginWithCode ? "登录 / 注册" : "登录"}
         </Button>
         <div className="text-center text-sm">

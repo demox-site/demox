@@ -2,7 +2,7 @@
   "name": "auth-api",
   "version": "1.0.0",
   "scripts": {
-    "test": "node --test index.test.cjs shared/jwt.test.cjs"
+    "test": "node --test index.test.cjs shared/jwt.test.cjs shared/login-throttle.test.cjs"
   },
   "dependencies": {
     "bcrypt": "*",

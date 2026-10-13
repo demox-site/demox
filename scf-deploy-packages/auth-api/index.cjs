@@ -81,6 +81,39 @@ const bcrypt = require('bcryptjs');
 const { query, transaction } = require('./shared/db.cjs');
 const { sign, verify, authenticate, generateUserId, generateRandomString } = require('./shared/jwt.cjs');
 const { membershipSummary } = require('./shared/membership.cjs');
+const { createLoginThrottle, throttledMessage } = require('./shared/login-throttle.cjs');
+
+const loginThrottle = createLoginThrottle({ query: (...args) => query(...args) });
+
+// 账号不存在 / 没设密码时也跑一次 bcrypt，和真账号耗时接近（cost 与注册时一致：10）。
+let dummyPasswordHash = null;
+function getDummyPasswordHash() {
+  if (!dummyPasswordHash) dummyPasswordHash = bcrypt.hashSync(`demox-dummy-${Date.now()}-${Math.random()}`, 10);
+  return dummyPasswordHash;
+}
+
+const LOGIN_FAILED_MESSAGE = '邮箱或密码错误';
+
+function loginFailedResponse() {
+  return {
+    statusCode: 401,
+    headers: getCORSHeaders(),
+    body: JSON.stringify({ error: LOGIN_FAILED_MESSAGE })
+  };
+}
+
+function loginThrottledResponse(retryAfterMs) {
+  const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return {
+    statusCode: 429,
+    headers: {
+      ...getCORSHeaders(),
+      'Retry-After': String(retryAfterSeconds),
+      'Access-Control-Expose-Headers': 'Retry-After'
+    },
+    body: JSON.stringify({ error: throttledMessage(retryAfterMs), code: 'LOGIN_THROTTLED', retryAfterSeconds })
+  };
+}
 
 /**
  * SCF云函数入口
@@ -281,36 +314,27 @@ async function handleLogin(event) {
     };
   }
 
-  // 查询用户
+  // 按账号（规范化邮箱）限速；邮箱存不存在都一样计数。等待期间连正确密码也不验。
+  const slot = await loginThrottle.reserve(cleanEmail);
+  if (!slot.allowed) {
+    await bcrypt.compare(String(password), getDummyPasswordHash());
+    return loginThrottledResponse(slot.retryAfterMs);
+  }
+
+  // 查询用户。不存在、没设密码、密码错，三种情况返回完全一样的 401，并且都跑一次 bcrypt。
   const users = await query('SELECT id, email, password_hash, nickname FROM users WHERE email = ?', [cleanEmail]);
-  if (users.length === 0) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '邮箱或密码错误' })
-    };
-  }
-
   const user = users[0];
+  const usable = !!user && hasPasswordHash(user.password_hash);
+  const valid = await bcrypt.compare(String(password), usable ? user.password_hash : getDummyPasswordHash());
+
+  if (!usable || !valid) {
+    // 这次失败正好触发了等待（占名额时已写上 locked_until）：直接告诉要等多久。
+    if (slot.lockedUntil > slot.at) return loginThrottledResponse(slot.lockedUntil - slot.at);
+    return loginFailedResponse();
+  }
+
+  await loginThrottle.clear(cleanEmail);
   const nickname = await ensureUserNickname(user);
-
-  if (!hasPasswordHash(user.password_hash)) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '该账号未设置密码，请使用验证码登录' })
-    };
-  }
-
-  // 验证密码
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) {
-    return {
-      statusCode: 401,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({ error: '邮箱或密码错误' })
-    };
-  }
 
   // 生成token
   const token = sign({ userId: user.id, email: user.email });

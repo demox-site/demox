@@ -869,20 +869,138 @@ test('change-password still requires the current password when one exists', asyn
   assert.equal(updates.length, 1);
 });
 
-test('password login tells code-only accounts to use a verification code', async () => {
-  queryImpl = async (sql) => {
-    if (sql.includes('FROM users WHERE email')) {
-      return [{ id: 'code-user', email: 'code@example.com', password_hash: '', nickname: 'Code' }];
+// ── 密码登录失败限速（按账号）──────────────────────────────────────────────
+const throttleLib = require('./shared/login-throttle.cjs');
+
+/** login_throttle 表的内存模型（只认 login-throttle.cjs 发的几条 SQL；真实 SQL 由 login-throttle.test.cjs 在 MySQL 上验证）。 */
+function throttleStore() {
+  const rows = new Map();
+  return {
+    rows,
+    handle(sql, params) {
+      if (/CREATE TABLE IF NOT EXISTS login_throttle/.test(sql)) return {};
+      if (/INSERT IGNORE INTO login_throttle/.test(sql)) {
+        if (!rows.has(params[0])) rows.set(params[0], { failures: 0, last_failed_at: 0, locked_until: 0 });
+        return { affectedRows: 1 };
+      }
+      if (/UPDATE login_throttle/.test(sql)) {
+        const t = params[1]; const key = params[12]; const r = rows.get(key);
+        if (!r || r.locked_until > t) return { affectedRows: 0 };
+        const f0 = Math.max(r.last_failed_at, r.locked_until) + throttleLib.WINDOW_MS <= t ? 0 : r.failures;
+        const n = f0 + 1;
+        if (n >= throttleLib.THRESHOLD) r.locked_until = t + throttleLib.delayForFailures(n);
+        r.failures = n; r.last_failed_at = t;
+        return { affectedRows: 1 };
+      }
+      if (/^SELECT .*FROM login_throttle WHERE email_hash/.test(sql)) { const r = rows.get(params[0]); return r ? [{ ...r }] : []; }
+      if (/DELETE FROM login_throttle/.test(sql)) { rows.delete(params[0]); return { affectedRows: 1 }; }
+      return undefined;
     }
+  };
+}
+
+function loginDb({ users = {} } = {}) {
+  const store = throttleStore();
+  queryImpl = async (sql, params = []) => {
+    const t = store.handle(sql, params);
+    if (t !== undefined) return t;
+    if (sql.includes('FROM users WHERE email')) return users[params[0]] ? [users[params[0]]] : [];
+    if (sql.includes('nickname')) return { affectedRows: 1 };
     throw new Error(`Unexpected query: ${sql}`);
   };
+  return store;
+}
 
-  const response = await request('/auth/login', {
-    email: 'code@example.com',
-    password: 'whatever1'
-  });
-  assert.equal(response.statusCode, 401);
-  assert.match(JSON.parse(response.body).error, /未设置密码/);
+const realHash = bcrypt.hashSync('right-passw0rd', 10);
+const realUser = { id: 'u-real', email: 'real@example.com', password_hash: realHash, nickname: 'Real' };
+const codeOnlyUser = { id: 'u-code', email: 'code@example.com', password_hash: '', nickname: 'Code' };
+
+test('login: nonexistent email, code-only account and wrong password get the identical 401', async () => {
+  loginDb({ users: { 'real@example.com': realUser, 'code@example.com': codeOnlyUser } });
+  const a = await request('/auth/login', { email: 'nobody@example.com', password: 'whatever1' });
+  const b = await request('/auth/login', { email: 'code@example.com', password: 'whatever1' });
+  const c = await request('/auth/login', { email: 'real@example.com', password: 'wrong-passw0rd' });
+  for (const r of [a, b, c]) {
+    assert.equal(r.statusCode, 401);
+    assert.equal(r.body, JSON.stringify({ error: '邮箱或密码错误' }));
+    assert.equal(r.headers['Retry-After'], undefined);
+  }
+});
+
+test('login: nonexistent and existing emails take similar time (both run bcrypt)', async () => {
+  loginDb({ users: { 'real@example.com': realUser } });
+  const time = async (email) => { const s = process.hrtime.bigint(); await request('/auth/login', { email, password: 'wrong-passw0rd' }); return Number(process.hrtime.bigint() - s) / 1e6; };
+  await time('warmup@example.com');
+  const missing = await time('nobody2@example.com');
+  const existing = await time('real@example.com');
+  assert.ok(missing > existing * 0.5 && missing < existing * 2, `missing ${missing}ms vs existing ${existing}ms`);
+});
+
+test('login: 5th failure starts a 1-minute wait (429 + Retry-After), even the right password is refused during it', async () => {
+  const store = loginDb({ users: { 'real@example.com': realUser } });
+  for (let i = 1; i <= 4; i += 1) {
+    const r = await request('/auth/login', { email: 'Real@Example.com ', password: `wrong-${i}` });
+    assert.equal(r.statusCode, 401, `attempt ${i}`);
+  }
+  const fifth = await request('/auth/login', { email: 'real@example.com', password: 'wrong-5' });
+  assert.equal(fifth.statusCode, 429);
+  assert.equal(fifth.headers['Retry-After'], '60');
+  assert.match(fifth.headers['Access-Control-Expose-Headers'], /Retry-After/);
+  const body = JSON.parse(fifth.body);
+  assert.equal(body.code, 'LOGIN_THROTTLED');
+  assert.equal(body.retryAfterSeconds, 60);
+  assert.equal(body.error, '登录尝试次数过多，请 1 分钟后再试。');
+
+  const right = await request('/auth/login', { email: 'real@example.com', password: 'right-passw0rd' });
+  assert.equal(right.statusCode, 429);
+  assert.equal(JSON.parse(right.body).code, 'LOGIN_THROTTLED');
+  assert.equal(JSON.parse(right.body).token, undefined);
+
+  // 等待结束（把 locked_until 拨回过去）→ 正确密码能登，并清零
+  const [key] = [...store.rows.keys()];
+  assert.equal(key, throttleLib.emailKey('real@example.com'));
+  store.rows.get(key).locked_until = Date.now() - 1;
+  const after = await request('/auth/login', { email: 'real@example.com', password: 'right-passw0rd' });
+  assert.equal(after.statusCode, 200, after.body);
+  assert.ok(JSON.parse(after.body).token);
+  assert.equal(store.rows.size, 0);
+});
+
+test('login: a nonexistent email is throttled exactly like a real one', async () => {
+  loginDb({ users: { 'real@example.com': realUser } });
+  const run = async (email) => {
+    const out = [];
+    for (let i = 1; i <= 6; i += 1) {
+      const r = await request('/auth/login', { email, password: `wrong-${i}` });
+      out.push([r.statusCode, r.body, r.headers['Retry-After'] || null]);
+    }
+    return out;
+  };
+  const real = await run('real@example.com');
+  const ghost = await run('ghost@example.com');
+  assert.deepEqual(real.map((x) => x[0]), [401, 401, 401, 401, 429, 429]);
+  assert.deepEqual(ghost, real);
+});
+
+test('login: success before the threshold resets the counter', async () => {
+  const store = loginDb({ users: { 'real@example.com': realUser } });
+  for (let i = 1; i <= 4; i += 1) await request('/auth/login', { email: 'real@example.com', password: `wrong-${i}` });
+  const ok = await request('/auth/login', { email: 'real@example.com', password: 'right-passw0rd' });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(store.rows.size, 0);
+  const again = await request('/auth/login', { email: 'real@example.com', password: 'wrong-again' });
+  assert.equal(again.statusCode, 401);
+});
+
+test('login: throttle table errors fail open (login still works, same 401 on wrong password)', async () => {
+  queryImpl = async (sql, params = []) => {
+    if (/login_throttle/.test(sql)) throw Object.assign(new Error('table missing'), { code: 'ER_NO_SUCH_TABLE' });
+    if (sql.includes('FROM users WHERE email')) return params[0] === 'real@example.com' ? [realUser] : [];
+    if (sql.includes('nickname')) return { affectedRows: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  assert.equal((await request('/auth/login', { email: 'real@example.com', password: 'wrong' })).statusCode, 401);
+  assert.equal((await request('/auth/login', { email: 'real@example.com', password: 'right-passw0rd' })).statusCode, 200);
 });
 
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
