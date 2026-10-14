@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, validateStagedKey, validateSha256 } = require('./scf-function-api.cjs');
+const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, validateStagedKey, validateSha256, releaseDeployDevelop, releasePromote } = require('./scf-function-api.cjs');
+const versions = require('./function-versions.cjs');
 
 // CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
 const FORBIDDEN = ['Invoke', 'GetFunction', 'UpdateFunctionConfiguration', 'UpdateFunction', 'CreateAlias', 'CreateFunction', 'DeleteFunction', 'DeleteAlias', 'CreateTrigger', 'DeleteTrigger', 'UpdateTrigger'];
@@ -13,17 +14,17 @@ const endpoints = (q) => ['/', '/*', '/auth/*'].map((p) => ({ Namespace: 'demox'
 const timers = (q) => [{ Type: 'timer', TriggerName: 'analytics-rollup-5m', Enable: 1, Qualifier: q }];
 
 const DEV = 'https://develop.example.com';
-function fakeScf({ qualifier = 'production', prodVersion = '3', publishStatus = 'Active', aliasNames = ['production', 'develop'] } = {}) {
+function fakeScf({ qualifier = 'production', prodVersion = '3', publishStatus = 'Active', aliasNames = ['production', 'develop'], descriptions = {}, aliasVersions = null } = {}) {
   const calls = [];
   let versions = Number(prodVersion);
-  const aliases = aliasNames.map((Name) => ({ Name, FunctionVersion: prodVersion }));
+  const aliases = aliasNames.map((Name) => ({ Name, FunctionVersion: (aliasVersions && aliasVersions[Name]) || prodVersion }));
   const api = new Proxy({}, { get: (_t, name) => async (params) => {
     calls.push({ name, params });
     if (FORBIDDEN.includes(name)) { const e = new Error(`UnauthorizedOperation ${name}`); e.code = 'UnauthorizedOperation'; throw e; }
     switch (name) {
       case 'ListVersionByFunction': {
-        const list = [{ Version: '$LATEST', Status: 'Active' }];
-        for (let v = versions; v >= 1; v -= 1) list.push({ Version: String(v), Status: v > Number(prodVersion) ? publishStatus : 'Active' });
+        const list = [{ Version: '$LATEST', Status: 'Active', Description: descriptions.$LATEST || '' }];
+        for (let v = versions; v >= 1; v -= 1) list.push({ Version: String(v), Status: v > Number(prodVersion) ? publishStatus : 'Active', Description: descriptions[String(v)] || '' });
         return { Versions: list };
       }
       case 'ListTriggers': return { Triggers: [...timers(qualifier), { Type: 'http', TriggerName: 'h', Qualifier: '$LATEST', Enable: 1 }] };
@@ -572,4 +573,90 @@ test('promote: public check failure switches production back', async () => {
   const bad = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: fakeFetch({ prodStatus: { '/health': 502 } }), log: quiet, wait: async () => {} });
   await assert.rejects(bad.promote({ version: '4' }), /切回 v3/);
   assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+});
+
+// ---- app/runtime 门禁：包住 deploy-develop / promote，不改它们原来的动作 ----
+const GIT = '38f44560bb01576a79a7d3c8b27858853ee4afb6';
+const LIVE_RUNTIME = {
+  entry: 'index.main',
+  memoryMB: 512,
+  timeoutSec: 300,
+  layers: [],
+  environmentNames: ['JWT_SECRET'],
+  triggers: ['http:api.demox.site']
+};
+function releaseManifest(appVersion = '0.2.0') {
+  return {
+    seed: false,
+    schemaVersion: 1,
+    excluded: [{ name: 'user-sites', track: 'user' }],
+    functions: [{
+      name: 'demox-function-api',
+      cloud: 'tencent-scf',
+      region: 'ap-guangzhou',
+      namespace: 'demox',
+      accountEnv: 'TENCENTCLOUD_ACCOUNT_UIN',
+      layer: 'platform',
+      releaseVia: 'deploy-develop',
+      appVersion,
+      runtimeVersion: '0.1.0',
+      codePaths: ['scf-code/function-api'],
+      runtimePaths: ['scripts/package-unified-scf.mjs'],
+      runtime: LIVE_RUNTIME
+    }]
+  };
+}
+function described(app, sha = PKG_SHA) {
+  return versions.formatDescription({ app, runtime: '0.1.0', git: GIT, sha256: sha, cfg: versions.configFingerprint(LIVE_RUNTIME) });
+}
+
+test('releaseDeployDevelop: live description without metadata does not write', async () => {
+  const s = fakeScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(
+    releaseDeployDevelop(d, { manifest: releaseManifest(), key: KEY, sha256: PKG_SHA, gitSha: GIT }),
+    /不会覆盖/
+  );
+  assert.equal(s.calls.filter((c) => WRITES.includes(c.name)).length, 0);
+});
+
+test('releaseDeployDevelop: higher app publishes develop only, with demox-release description', async () => {
+  const s = fakeScf({ descriptions: { '3': described('0.1.0', 'c'.repeat(64)) } });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const result = await releaseDeployDevelop(d, { manifest: releaseManifest('0.2.0'), key: KEY, sha256: PKG_SHA, gitSha: GIT });
+  assert.equal(result.version, '4');
+  const published = s.calls.find((c) => c.name === 'PublishVersion').params.Description;
+  assert.equal(published, described('0.2.0', PKG_SHA));
+  assert.doesNotMatch(published, /JWT_SECRET/);
+  assert.ok(s.calls.filter((c) => c.name === 'UpdateAlias').every((c) => c.params.Name === 'develop'));
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+});
+
+test('releasePromote: missing metadata does not switch production; success appends a release record', async () => {
+  const bare = fakeScf();
+  const bareDeployer = createDeployer({ developBaseUrl: DEV, scf: bare.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(releasePromote(bareDeployer, { version: '3', approver: 'phosa' }), /不会切换 production/);
+  assert.equal(bare.calls.filter((c) => c.name === 'UpdateAlias').length, 0);
+
+  const description = described('0.2.0');
+  const s = fakeScf({
+    prodVersion: '4',
+    aliasVersions: { develop: '4', production: '3' },
+    descriptions: { '4': description, '3': described('0.1.0', 'c'.repeat(64)) }
+  });
+  const logFile = path.join(os.tmpdir(), `releases-${process.pid}.jsonl`);
+  fs.rmSync(logFile, { force: true });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const result = await releasePromote(d, { version: '4', approver: 'phosa', at: '2026-10-14T11:00:00.000Z', releaseLog: logFile, log: quiet });
+  assert.equal(result.version, '4');
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '4');
+  const record = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+  assert.equal(record.app, '0.2.0');
+  assert.equal(record.runtime, '0.1.0');
+  assert.equal(record.commit, GIT);
+  assert.equal(record.sha256, PKG_SHA);
+  assert.equal(record.approver, 'phosa');
+  assert.equal(record.at, '2026-10-14T11:00:00.000Z');
+  assert.equal(record.version, '4');
+  fs.rmSync(logFile, { force: true });
 });

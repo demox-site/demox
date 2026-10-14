@@ -17,10 +17,14 @@
  *
  * 用法：
  *   node scripts/ci/scf-function-api.cjs plan                    只读：检查前置条件
- *   node scripts/ci/scf-function-api.cjs deploy --zip <zip> [--with-runtime]
+ *   node scripts/ci/scf-function-api.cjs runtime-plan            只根据 functions.json 重算配置指纹，不部署
+ *   node scripts/ci/scf-function-api.cjs deploy --zip <zip>      受 app 版本门禁；--with-runtime 直接拒绝
  *   node scripts/ci/scf-function-api.cjs deploy-develop --key scf-deploy/ci/<x>.zip --sha256 <hex>   只发 develop，不动 production
  *   node scripts/ci/scf-function-api.cjs promote --version <N>     production → N（N 必须是 develop 当前版本）
- *   node scripts/ci/scf-function-api.cjs rollback --version <N>
+ *   node scripts/ci/scf-function-api.cjs rollback --version <N>    只切别名（app），不改 runtime 配置
+ *
+ * deploy-develop / promote 仍是原来的发布动作。前面多一道门禁：清单还是占位版本，
+ * 或线上版本描述没有 demox-release 元数据时，停下来告警，不做任何写操作。
  * 凭证（优先级从高到低）：
  *   1. GitHub Actions OIDC：TENCENTCLOUD_ROLE_ARN + ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN（job 需 id-token: write
  *      且在 environment function-api-production 里），换取 1 小时临时密钥，只留在本进程内存里；
@@ -30,6 +34,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const versions = require('./function-versions.cjs');
 
 /**
  * DEMOX_COS_ACCELERATE：只影响 CI 上传部署包走的 COS 域名（默认关）。
@@ -473,7 +478,35 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { key, sha256: hash };
   }
 
-  async function deploy({ zipPath, sha = 'local', runId = '', withRuntime = false }) {
+  async function listVersions(name) {
+    const all = [];
+    for (let offset = 0, page = 0; page < 20; page += 1, offset += 50) {
+      const res = await scf.ListVersionByFunction({
+        FunctionName: name,
+        Namespace: CONFIG.namespace,
+        Order: 'DESC',
+        OrderBy: 'AddTime',
+        Limit: 50,
+        Offset: offset
+      });
+      const batch = res.Versions || [];
+      if (!batch.length) break;
+      if (offset > 0 && all.some((item) => String(item.Version) === String(batch[0].Version))) break;
+      all.push(...batch);
+      if (batch.length < 50) break;
+    }
+    return all;
+  }
+
+  async function readReleaseState() {
+    const [aliasList, listed] = await Promise.all([
+      scf.ListAliases({ ...base }),
+      listVersions(CONFIG.functionName)
+    ]);
+    return { aliases: aliasList.Aliases || [], versions: listed };
+  }
+
+  async function deploy({ zipPath, sha = 'local', runId = '', withRuntime = false, description = '' }) {
     const pre = await plan();
     if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
     const previous = pre.productionVersion;
@@ -487,7 +520,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await scf.UpdateFunctionCode({ ...base, Handler: CONFIG.handler, ...cosCode(key) });
     await waitActive(CONFIG.functionName);
 
-    const published = await scf.PublishVersion({ ...base, Description: `ci ${String(sha).slice(0, 12)} run ${runId}`.trim() });
+    const published = await scf.PublishVersion({ ...base, Description: description || `ci ${String(sha).slice(0, 12)} run ${runId}`.trim() });
     const version = String(published.FunctionVersion);
     await waitActive(CONFIG.functionName, version);
     log(`已发布 v${version}`);
@@ -581,7 +614,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
    * 只发到 develop：用 COS 上已有的包（sha256 校验通过）→ UpdateFunctionCode → PublishVersion → develop 指向新版本
    * → develop 健康检查。绝不改 production 别名；健康检查失败把 develop 切回原版本。
    */
-  async function deployDevelop({ key, sha256, sha = 'local', runId = '' }) {
+  async function deployDevelop({ key, sha256, sha = 'local', runId = '', description = '' }) {
     validateStagedKey(key);
     validateSha256(sha256);
     const pre = await plan();
@@ -589,7 +622,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await verifyStagedZip({ key, sha256 });
     await scf.UpdateFunctionCode({ ...base, Handler: CONFIG.handler, ...cosCode(key) });
     await waitActive(CONFIG.functionName);
-    const published = await scf.PublishVersion({ ...base, Description: `ci develop ${String(sha).slice(0, 12)} pkg ${sha256.slice(0, 12)} run ${runId}`.trim() });
+    const published = await scf.PublishVersion({ ...base, Description: description || `ci develop ${String(sha).slice(0, 12)} pkg ${sha256.slice(0, 12)} run ${runId}`.trim() });
     const version = String(published.FunctionVersion);
     await waitActive(CONFIG.functionName, version);
     log(`已发布 v${version}`);
@@ -626,7 +659,55 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous, version: v };
   }
 
-  return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
+  return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, readReleaseState, uploadZip };
+}
+
+async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, runId = '' }) {
+  const entry = versions.deployEntry(manifest);
+  versions.assertNotPlaceholder(entry);
+  const state = await deployer.readReleaseState();
+  const decision = versions.decideAppDeploy({
+    entry,
+    aliases: state.aliases,
+    versions: state.versions,
+    codeSha256: sha256,
+    gitSha
+  });
+  if (!decision.allow) {
+    const error = new Error(decision.message);
+    error.code = decision.reason;
+    throw error;
+  }
+  return deployer.deployDevelop({ key, sha256, sha: gitSha, runId, description: decision.description });
+}
+
+async function releasePromote(deployer, { version, approver, at = new Date().toISOString(), releaseLog = '', summary = () => {}, log = console.log }) {
+  if (!/^\d+$/.test(String(version || ''))) throw new Error('promote 需要 --version <数字>');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(String(approver || ''))) {
+    throw Object.assign(new Error('promote 需要批准人（RELEASE_APPROVER 或 GITHUB_ACTOR）。已停止，不会切换 production。'), { code: 'bad-approver' });
+  }
+  const state = await deployer.readReleaseState();
+  const meta = versions.parseLiveVersion(state.versions, version);
+  if (!meta) {
+    throw Object.assign(new Error(`v${version} 没有 demox-release 元数据。已停止并告警，不会覆盖，也不会切换 production。`), { code: 'missing-metadata' });
+  }
+  const result = await deployer.promote({ version });
+  const record = versions.buildReleaseRecord({
+    fn: CONFIG.functionName,
+    app: meta.app,
+    runtime: meta.runtime,
+    version: result.version,
+    commit: meta.git,
+    sha256: meta.sha256,
+    config: meta.cfg,
+    approver,
+    at
+  });
+  if (releaseLog) versions.appendReleaseRecord(releaseLog, record);
+  const line = `release-record ${JSON.stringify(record)}`;
+  summary(`- ${line}`);
+  log(line);
+  return { ...result, record };
 }
 
 async function createClients(env = process.env, { accelerate = false } = {}) {
@@ -651,6 +732,21 @@ function argValue(argv, name) {
 
 async function cli(argv = process.argv.slice(2)) {
   const command = argv[0];
+  if (command === 'runtime-plan') {
+    const manifest = versions.loadManifest();
+    for (const line of versions.runtimePlanLines(manifest)) console.log(line);
+    return;
+  }
+  if (argv.includes('--with-runtime')) {
+    throw new Error('runtime 不会在这里自动发布。需要云架构复核和 Chief 批准；本命令不会更新 demox-user-nodejs，也不会改内存、超时、层、环境变量或触发器。');
+  }
+  let manifest = null;
+  if (command === 'deploy' || command === 'deploy-develop' || command === 'promote') {
+    manifest = versions.loadManifest();
+    const check = versions.validateManifest(manifest, { checkPaths: true });
+    if (!check.ok) throw new Error(check.errors.join('\n'));
+  }
+  if (command === 'deploy' || command === 'deploy-develop') versions.assertNotPlaceholder(versions.deployEntry(manifest));
   validateCosTarget();
   const accelerate = parseCosAccelerate(CONFIG.cosAccelerateRaw);
   console.log(`COS 部署桶：${CONFIG.cosBucket}（${CONFIG.cosRegion}）`);
@@ -667,7 +763,18 @@ async function cli(argv = process.argv.slice(2)) {
   if (command === 'deploy') {
     const zipPath = argValue(argv, '--zip');
     if (!zipPath || !fs.existsSync(zipPath)) throw new Error('deploy 需要 --zip <统一包 zip>');
-    await deployer.deploy({ zipPath, sha: process.env.GITHUB_SHA || 'local', runId: process.env.GITHUB_RUN_ID || '', withRuntime: argv.includes('--with-runtime') });
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(zipPath)).digest('hex');
+    const gitSha = process.env.GITHUB_SHA || '';
+    const state = await deployer.readReleaseState();
+    const decision = versions.decideAppDeploy({
+      entry: versions.deployEntry(manifest),
+      aliases: state.aliases,
+      versions: state.versions,
+      codeSha256: sha256,
+      gitSha
+    });
+    if (!decision.allow) throw new Error(decision.message);
+    await deployer.deploy({ zipPath, sha: gitSha, runId: process.env.GITHUB_RUN_ID || '', withRuntime: false, description: decision.description });
     return;
   }
   if (command === 'stage') {
@@ -677,18 +784,29 @@ async function cli(argv = process.argv.slice(2)) {
     return;
   }
   if (command === 'deploy-develop') {
-    await deployer.deployDevelop({ key: argValue(argv, '--key'), sha256: argValue(argv, '--sha256'), sha: process.env.GITHUB_SHA || 'local', runId: process.env.GITHUB_RUN_ID || '' });
+    await releaseDeployDevelop(deployer, {
+      manifest,
+      key: argValue(argv, '--key'),
+      sha256: argValue(argv, '--sha256'),
+      gitSha: process.env.GITHUB_SHA || '',
+      runId: process.env.GITHUB_RUN_ID || ''
+    });
     return;
   }
   if (command === 'promote') {
-    await deployer.promote({ version: argValue(argv, '--version') });
+    await releasePromote(deployer, {
+      version: argValue(argv, '--version'),
+      approver: process.env.RELEASE_APPROVER || process.env.GITHUB_ACTOR || '',
+      releaseLog: process.env.RELEASE_LOG || '',
+      summary
+    });
     return;
   }
   if (command === 'rollback') {
     await deployer.rollback({ version: argValue(argv, '--version') });
     return;
   }
-  throw new Error('用法: scf-function-api.cjs plan | stage --zip <zip> | deploy --zip <zip> [--with-runtime] | deploy-develop --key <scf-deploy/ci/x.zip> --sha256 <hex> | promote --version <N> | rollback --version <N>');
+  throw new Error('用法: scf-function-api.cjs plan | runtime-plan | stage --zip <zip> | deploy --zip <zip> | deploy-develop --key <scf-deploy/ci/x.zip> --sha256 <hex> | promote --version <N> | rollback --version <N>');
 }
 
 // 超时放弃的分片请求，底层 socket 之后还可能报 EPIPE/ECONNRESET；它已经被重试替代，不能让它把整个进程打死。
@@ -710,4 +828,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };

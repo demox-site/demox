@@ -12,6 +12,8 @@ name: Deploy function-api (SCF demox-function-api)
 #      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
 #      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
 # 分两步发布：action=deploy-develop（cos_key + expected_sha256，只切 develop）→ 人工验证 → action=promote version=N（只切 production）。
+# app/runtime 门禁见 docs/function-versions.md：清单仍是占位版本，或线上版本描述没有 demox-release 时，deploy-develop 停下来告警，不覆盖。
+# --with-runtime 会被脚本拒绝。runtime 变更不在这里自动部署。回滚仍只切别名。
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 on:
   push:
@@ -101,6 +103,7 @@ jobs:
         if: env.ACTION == 'deploy' || env.ACTION == 'stage'
         run: |
           node --test scripts/ci/scf-function-api.test.cjs
+          node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
           npm test --prefix scf-code/function-api
 
       - name: Build unified package
@@ -126,6 +129,9 @@ jobs:
           # 默认关；push 触发没有 inputs，走仓库变量。
           DEMOX_COS_ACCELERATE: ${{ (inputs.cos_accelerate == 'true' || inputs.cos_accelerate == 'false') && inputs.cos_accelerate || vars.DEMOX_COS_ACCELERATE }}
           WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
+          # promote 成功后把一行发布记录追加到工作区的 jsonl，并写进 step summary。不 push。
+          RELEASE_APPROVER: ${{ github.actor }}
+          RELEASE_LOG: docs/function-releases.jsonl
         run: |
           set -euo pipefail
           echo "## function-api ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
