@@ -49,6 +49,16 @@ function decide(over = {}, liveOver = {}) {
   return v.decideAppDeploy({ entry: local, aliases: live.aliases, versions: live.versions, codeSha256: SHA_B, gitSha: GIT });
 }
 
+function asSeed(manifest) {
+  const seeded = structuredClone(manifest);
+  seeded.seed = true;
+  for (const fn of seeded.functions) {
+    fn.appVersion = '0.0.0-placeholder';
+    fn.runtimeVersion = '0.0.0-placeholder';
+  }
+  return seeded;
+}
+
 test('semver: placeholder is below a real release, and CI can tell greater from less', () => {
   assert.ok(v.compareSemver('0.0.0-placeholder', '0.0.0') < 0);
   assert.ok(v.compareSemver('0.0.0', '0.0.1') < 0);
@@ -129,14 +139,16 @@ test('develop ahead of production uses the higher app version', () => {
   assert.equal(decision.reason, 'downgrade');
 });
 
-test('real manifest is platform-only, seeded, and has no account ids', () => {
+test('real manifest is platform-only, bootstrapped, and has no account ids', () => {
   const raw = fs.readFileSync(path.join(ROOT, 'functions.json'), 'utf8');
   const manifest = JSON.parse(raw);
   const check = v.validateManifest(manifest, { checkPaths: true, root: ROOT });
   assert.equal(check.ok, true, check.errors.join('\n'));
-  assert.equal(manifest.seed, true);
+  assert.equal(Object.hasOwn(manifest, 'seed'), false);
+  assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
-  assert.ok(manifest.functions.every((fn) => v.isPlaceholderVersion(fn.appVersion) && v.isPlaceholderVersion(fn.runtimeVersion)));
+  assert.ok(manifest.functions.every((fn) => fn.appVersion === '0.1.0' && fn.runtimeVersion === '0.1.0'));
+  assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
   assert.equal(v.deployEntry(manifest).name, 'demox-function-api');
   assert.ok(manifest.functions.every((fn) => fn.accountEnv === 'TENCENTCLOUD_ACCOUNT_UIN'));
   assert.ok(manifest.excluded.some((item) => item.track === 'user'));
@@ -153,7 +165,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   const manifest = v.loadManifest();
   const introduced = v.evaluateChanges({
     baseManifest: null,
-    headManifest: manifest,
+    headManifest: asSeed(manifest),
     changedFiles: ['scripts/package-unified-scf.mjs', 'scf-code/website-api/index.js']
   });
   assert.equal(introduced.ok, true, introduced.errors.join('\n'));
@@ -174,7 +186,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.equal(testsOnly.ok, true, testsOnly.errors.join('\n'));
 
   const bumped = structuredClone(manifest);
-  bumped.functions[0].appVersion = '0.0.1-placeholder';
+  bumped.functions[0].appVersion = '0.1.1';
   const afterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: bumped,
@@ -206,8 +218,8 @@ test('PR check: code without an app bump fails once the manifest exists on base'
 });
 
 test('seed placeholder may correct environment names without a runtime bump', () => {
-  const head = v.loadManifest();
-  const api = head.functions.find((fn) => fn.name === 'demox-function-api');
+  const live = v.loadManifest();
+  const api = live.functions.find((fn) => fn.name === 'demox-function-api');
   const added = [
     'DEMOX_PLATFORM_WEBSITE_ID',
     'DEMOX_SITE_WEBSITE_ID',
@@ -228,11 +240,21 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.equal(api.runtime.memoryMB, 512);
   assert.equal(api.runtime.timeoutSec, 300);
   assert.deepEqual(api.runtime.layers, []);
-  assert.equal(api.appVersion, '0.0.0-placeholder');
-  assert.equal(api.runtimeVersion, '0.0.0-placeholder');
-  assert.equal(head.seed, true);
+  assert.equal(api.appVersion, '0.1.0');
+  assert.equal(api.runtimeVersion, '0.1.0');
+  assert.equal(Object.hasOwn(live, 'seed'), false);
+  assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
+  assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').runtimeVersion, '0.1.0');
   for (const name of added) assert.equal(api.runtime.environmentNames.includes(name), true);
 
+  const bootstrap = v.evaluateChanges({
+    baseManifest: asSeed(live),
+    headManifest: live,
+    changedFiles: ['functions.json']
+  });
+  assert.equal(bootstrap.ok, true, bootstrap.errors.join('\n'));
+
+  const head = asSeed(live);
   const base = structuredClone(head);
   const baseApi = base.functions.find((fn) => fn.name === 'demox-function-api');
   baseApi.runtime.environmentNames = baseApi.runtime.environmentNames.filter((name) => !added.includes(name));
@@ -287,28 +309,20 @@ test('release log records versions, commit, sha256, approver, and time', () => {
   assert.throws(() => v.buildReleaseRecord({ ...record, fn: 'demox-function-api', approver: '' }), /批准人/);
 });
 
-test('runtime-plan prints fingerprints and placeholder deploy-develop stops before credentials', () => {
+test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.0\.0-placeholder/);
+  assert.match(plan, /demox-function-api app=0\.1\.0 runtime=0\.1\.0/);
+  assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);
   assert.doesNotMatch(plan, /缺少凭证|AssumeRole/);
 
-  let output = '';
-  try {
-    execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'deploy-develop', '--key', 'scf-deploy/ci/a.zip', '--sha256', SHA_A], {
-      cwd: ROOT,
-      encoding: 'utf8',
-      env: { PATH: process.env.PATH }
-    });
-    assert.fail('expected non-zero exit');
-  } catch (error) {
-    output = `${error.stdout || ''}\n${error.stderr || ''}`;
-    assert.notEqual(error.status, 0);
-  }
-  assert.match(output, /占位版本/);
-  assert.match(output, /不会发布/);
-  assert.doesNotMatch(output, /缺少凭证|AssumeRole|UpdateFunction/);
+  const entry = v.deployEntry(v.loadManifest());
+  assert.doesNotThrow(() => v.assertNotPlaceholder(entry));
+  assert.throws(
+    () => v.assertNotPlaceholder({ ...entry, appVersion: '0.0.0-placeholder', runtimeVersion: '0.0.0-placeholder' }),
+    /占位版本/
+  );
 
   let runtimeOut = '';
   try {
