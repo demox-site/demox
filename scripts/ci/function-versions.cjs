@@ -9,8 +9,9 @@
  * - user：用户在自己站点上发布的函数。清单里不能出现。
  *
  * 线上状态只认别名 develop / production 指向的版本描述（demox-release 一行）。
- * 描述里没有这行元数据时，调用方必须停下来告警，不能覆盖。
- * 这里不调用云 API。
+ * 两个别名指向的版本都没有这行时，允许一次 bootstrap：只把元数据写入新版本描述。
+ * 只有一边有元数据，或这次之后再缺元数据，调用方必须停下来告警，不能覆盖。
+ * 这里不调用云 API，也不改环境变量、入口、内存、超时、层或触发器。
  */
 
 const crypto = require('crypto');
@@ -318,6 +319,64 @@ function versionRow(versions, version) {
   return (versions || []).find((item) => String(item.Version) === String(version)) || null;
 }
 
+function pointedRelease(aliases, versions, aliasNames) {
+  return aliasNames.map((name) => {
+    const alias = aliases.find((item) => item.Name === name);
+    const row = versionRow(versions, alias.FunctionVersion);
+    return {
+      alias: name,
+      version: String(alias.FunctionVersion),
+      meta: row ? parseDescription(row.Description) : null
+    };
+  });
+}
+
+function bootstrapMetadata({ entry, codeSha256, gitSha, stop }) {
+  if (!entry || typeof entry !== 'object') {
+    return stop('no-entry', '清单里没有可发布的函数。已停止，不会发布。');
+  }
+  let placeholder = false;
+  try {
+    placeholder = isPlaceholderVersion(entry.appVersion) || isPlaceholderVersion(entry.runtimeVersion);
+  } catch (error) {
+    return stop(error.code || 'bad-semver', error.message);
+  }
+  if (placeholder) {
+    return stop('placeholder', '清单里的 app/runtime 仍是占位版本。bootstrap 只接受真实 semver。已停止，不会发布，也不会覆盖线上代码或配置。');
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(gitSha || ''))) {
+    return stop('bad-git', 'git sha 必须是 40 位小写十六进制，拒绝写入版本描述。');
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(codeSha256 || ''))) {
+    return stop('bad-sha', '代码 sha256 必须是 64 位小写十六进制。');
+  }
+  let localCfg;
+  try {
+    localCfg = configFingerprint(entry.runtime);
+  } catch (error) {
+    return stop(error.code || 'bad-runtime', error.message);
+  }
+  let description;
+  try {
+    description = formatDescription({
+      app: entry.appVersion,
+      runtime: entry.runtimeVersion,
+      git: gitSha,
+      sha256: codeSha256,
+      cfg: localCfg
+    });
+  } catch (error) {
+    return stop(error.code || 'bad-description', error.message);
+  }
+  return {
+    allow: true,
+    reason: 'bootstrap-metadata',
+    message: 'develop 与 production 指向的版本都没有 demox-release。允许做一次 bootstrap：同一代码包发布新版本，只把元数据写入版本描述。不改环境变量、入口、内存、超时、层或触发器，也不切换 production。',
+    description,
+    live: null
+  };
+}
+
 function decideAppDeploy({ entry, aliases, versions, codeSha256, gitSha, aliasNames = ['develop', 'production'] }) {
   const stop = (reason, message) => ({ allow: false, reason, message, description: null, live: null });
   for (const name of aliasNames) {
@@ -326,15 +385,15 @@ function decideAppDeploy({ entry, aliases, versions, codeSha256, gitSha, aliasNa
       return stop('missing-alias', `别名 ${name} 不存在或指向 $LATEST。已停止，不会创建别名，也不会发布。`);
     }
   }
-  const parsed = [];
-  for (const name of aliasNames) {
-    const alias = aliases.find((item) => item.Name === name);
-    const row = versionRow(versions, alias.FunctionVersion);
-    const meta = row && parseDescription(row.Description);
-    if (!meta) {
-      return stop('missing-metadata', `线上别名 ${name} 的版本描述没有 demox-release 元数据（app、runtime、git、sha256、cfg）。已停止并告警，不会覆盖线上代码或配置。`);
-    }
-    parsed.push({ alias: name, version: String(alias.FunctionVersion), meta });
+  const parsed = pointedRelease(aliases, versions, aliasNames);
+  const missing = parsed.filter((item) => !item.meta);
+  if (missing.length === parsed.length) {
+    return bootstrapMetadata({ entry, codeSha256, gitSha, stop });
+  }
+  if (missing.length) {
+    const lack = missing.map((item) => item.alias).join('、');
+    const have = parsed.filter((item) => item.meta).map((item) => item.alias).join('、');
+    return stop('missing-metadata', `线上别名 ${lack} 的版本描述没有 demox-release 元数据，而 ${have} 已有。已停止并告警，不会覆盖线上代码或配置。`);
   }
   const max = parsed.reduce((best, item) => (compareSemver(item.meta.app, best.meta.app) >= 0 ? item : best));
   const peers = parsed.filter((item) => compareSemver(item.meta.app, max.meta.app) === 0);

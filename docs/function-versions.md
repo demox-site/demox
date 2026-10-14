@@ -14,21 +14,35 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 和 `demox-user-nodejs` 的 `appVersion` / `runtimeVersion` 现在是 `0.1.0`。这是清单里的 bootstrap 版本，不是已经写进线上 SCF 的版本。线上 SCF 版本描述里还没有 `demox-release` 元数据。
+`demox-function-api` 和 `demox-user-nodejs` 的 `appVersion` / `runtimeVersion` 现在是 `0.1.0`。这是清单里的真实 semver。线上 SCF 的 `develop` / `production` 仍指向还没有 `demox-release` 的版本。
 
-在第一次经过批准的发布把元数据写进版本描述之前：
+`deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 
-- `deploy-develop` 和 `deploy` 看到占位版本就停，不会打云 API。
-- 清单已经是真实 semver 时，只要别名 `develop` / `production` 指向的版本描述里没有 `demox-release`，也会停下来告警，**不会覆盖**线上代码或配置。
-- 本变更不部署、不切别名、不改线上配置。
+`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。
 
-`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。元数据 bootstrap 把平台函数写成 `0.1.0`；线上描述仍按批准后的发布写入。
+## 第一次发布
+
+`develop` 和 `production` 都存在、都不指向 `$LATEST`，并且两个别名指向的版本描述都解析不出 `demox-release` 时，`deploy-develop` 允许做**一次** bootstrap（原因 `bootstrap-metadata`）。用同一份 COS 包走 `UpdateFunctionCode`，`PublishVersion` 时把 `demox-release` 写进新版本 Description，再把 develop 指过去。
+
+允许的条件：
+
+- 清单里的 app / runtime 是真实 semver，不是 placeholder。
+- git 是 40 位小写十六进制，代码 sha256 是 64 位小写十六进制。
+- 配置指纹能从清单入口算出来（入口、环境变量名、层、内存、超时、触发器）。算不出来就停。
+- 不调用 `UpdateFunctionConfiguration`，不改环境变量值、入口、内存、超时、层、触发器，也不改包内容。
+- 不切换 production。`action=deploy` 在两边都没有元数据时仍停，避免顺带切 production。production 只走原来的 `promote`。
+
+这一次之后，缺元数据重新变成硬停：
+
+- 只有一个别名有 `demox-release`、另一个没有：`missing-metadata`，停，不覆盖。
+- 两个别名都有元数据：回到原来的升级规则（本地 app 必须更高；相同版本但 sha256 不同则失败；配置指纹必须相同；runtime 不能在这里变）。
+- 目标版本描述里没有元数据时，`promote` 也不切 production。
 
 ## 发布怎么接 #67
 
 `.github/workflows/deploy-function-api.yml` 的 `deploy-develop`（`cos_key` + `expected_sha256`，只切 develop）和 `promote`（`version=N`，要过 `function-api-production`）还是原来的命令。门禁加在它们前面：
 
-1. 本地 app 必须高于线上 app。相等但代码 sha256 不同，失败。本地更低，失败（CI 不降级）。
+1. 两个别名都还没有 `demox-release` 时，只允许上面的一次 bootstrap。两边都有元数据之后：本地 app 必须高于线上 app。相等但代码 sha256 不同，失败。本地更低，失败（CI 不降级）。
 2. app 发布必须让配置指纹保持不变。runtime 版本或指纹变了，停在这里，不自动改内存、超时、层、环境变量或触发器。
 3. 通过之后才走原来的动作：校验 COS 包 sha256，`UpdateFunctionCode`，`PublishVersion`，develop 健康检查。production 不动。
 4. Chief 在 `function-api-production` 里批准后，`promote` 把 production 指到**同一个**版本，并追加一条发布记录。版本描述里没有元数据时，promote 也不切。

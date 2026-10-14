@@ -610,14 +610,34 @@ function described(app, sha = PKG_SHA) {
   return versions.formatDescription({ app, runtime: '0.1.0', git: GIT, sha256: sha, cfg: versions.configFingerprint(LIVE_RUNTIME) });
 }
 
-test('releaseDeployDevelop: live description without metadata does not write', async () => {
+test('releaseDeployDevelop: both aliases without metadata bootstrap develop only', async () => {
   const s = fakeScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const result = await releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: PKG_SHA, gitSha: GIT });
+  assert.equal(result.version, '4');
+  const published = s.calls.find((c) => c.name === 'PublishVersion').params.Description;
+  assert.equal(published, described('0.1.0', PKG_SHA));
+  const code = s.calls.find((c) => c.name === 'UpdateFunctionCode').params;
+  assert.equal(code.CosObjectName, KEY);
+  assert.equal(code.Environment, undefined);
+  assert.deepEqual(s.calls.map((c) => c.name).filter((name) => FORBIDDEN.includes(name)), []);
+  assert.ok(s.calls.filter((c) => c.name === 'UpdateAlias').every((c) => c.params.Name === 'develop'));
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+});
+
+test('releaseDeployDevelop: one alias missing metadata does not write', async () => {
+  const s = fakeScf({
+    prodVersion: '4',
+    aliasVersions: { develop: '4', production: '3' },
+    descriptions: { '4': described('0.1.0', 'c'.repeat(64)) }
+  });
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await assert.rejects(
     releaseDeployDevelop(d, { manifest: releaseManifest(), key: KEY, sha256: PKG_SHA, gitSha: GIT }),
     /不会覆盖/
   );
   assert.equal(s.calls.filter((c) => WRITES.includes(c.name)).length, 0);
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
 });
 
 test('releaseDeployDevelop: higher app publishes develop only, with demox-release description', async () => {

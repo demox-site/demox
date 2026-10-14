@@ -12,7 +12,7 @@ name: Deploy function-api (SCF demox-function-api)
 #      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
 #      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
 # 分两步发布：action=deploy-develop（cos_key + expected_sha256，只切 develop）→ 人工验证 → action=promote version=N（只切 production）。
-# app/runtime 门禁见 docs/function-versions.md：清单仍是占位版本，或线上版本描述没有 demox-release 时，deploy-develop 停下来告警，不覆盖。
+# app/runtime 门禁见 docs/function-versions.md：两边别名都没有 demox-release 时，deploy-develop 可以做一次 bootstrap（只写版本描述，不改配置，不切 production）。之后只要还有一边缺元数据，deploy-develop 就停。
 # 本 workflow 不更新 demox-user-nodejs，也没有 runtime 开关。回滚仍只切别名。
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 on:
