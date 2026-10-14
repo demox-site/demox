@@ -13,7 +13,7 @@ name: Deploy function-api (SCF demox-function-api)
 #      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
 # 分两步发布：action=deploy-develop（cos_key + expected_sha256，只切 develop）→ 人工验证 → action=promote version=N（只切 production）。
 # app/runtime 门禁见 docs/function-versions.md：清单仍是占位版本，或线上版本描述没有 demox-release 时，deploy-develop 停下来告警，不覆盖。
-# --with-runtime 会被脚本拒绝。runtime 变更不在这里自动部署。回滚仍只切别名。
+# 本 workflow 不更新 demox-user-nodejs，也没有 runtime 开关。回滚仍只切别名。
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 on:
   push:
@@ -58,10 +58,6 @@ on:
         type: choice
         options: [auto, "true", "false"]
         default: auto
-      with_runtime:
-        description: "同时更新 demox-user-nodejs（无别名，直接替换 $LATEST，先发快照版本作回滚点）"
-        type: boolean
-        default: false
 
 # 同一时间只跑一个，且不取消正在进行的发布（切一半被取消比排队更危险）。
 concurrency:
@@ -128,7 +124,6 @@ jobs:
           DEMOX_COS_REGION: ${{ inputs.cos_region || vars.DEMOX_COS_REGION }}
           # 默认关；push 触发没有 inputs，走仓库变量。
           DEMOX_COS_ACCELERATE: ${{ (inputs.cos_accelerate == 'true' || inputs.cos_accelerate == 'false') && inputs.cos_accelerate || vars.DEMOX_COS_ACCELERATE }}
-          WITH_RUNTIME: ${{ inputs.with_runtime && '--with-runtime' || '' }}
           # promote 成功后把一行发布记录追加到工作区的 jsonl，并写进 step summary。不 push。
           RELEASE_APPROVER: ${{ github.actor }}
           RELEASE_LOG: docs/function-releases.jsonl
@@ -138,7 +133,7 @@ jobs:
           case "$ACTION" in
             plan)     node scripts/ci/scf-function-api.cjs plan ;;
             stage)    node scripts/ci/scf-function-api.cjs stage --zip .artifacts/unified-scf/demox-unified-scf.zip ;;
-            deploy)   node scripts/ci/scf-function-api.cjs deploy --zip .artifacts/unified-scf/demox-unified-scf.zip $WITH_RUNTIME ;;
+            deploy)   node scripts/ci/scf-function-api.cjs deploy --zip .artifacts/unified-scf/demox-unified-scf.zip ;;
             # 只发 develop，不切 production；用 COS 上已有的包，先校验 sha256，不重新打包/上传。
             deploy-develop) node scripts/ci/scf-function-api.cjs deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256" ;;
             # 单独触发、同样要过 function-api-production 环境审批：production → develop 上已验证的版本。
