@@ -240,10 +240,17 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   });
   assert.equal(introduced.ok, true, introduced.errors.join('\n'));
 
+  const websiteOnly = v.evaluateChanges({
+    baseManifest: manifest,
+    headManifest: manifest,
+    changedFiles: ['scf-code/website-api/index.js', 'scf-code/website-api/shared/db.js']
+  });
+  assert.equal(websiteOnly.ok, true, websiteOnly.errors.join('\n'));
+
   const code = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: manifest,
-    changedFiles: ['scf-code/website-api/index.js']
+    changedFiles: ['scf-code/function-api/index.js']
   });
   assert.equal(code.ok, false);
   assert.match(code.errors.join('\n'), /demox-function-api 的代码变了/);
@@ -260,7 +267,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   const afterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: bumped,
-    changedFiles: ['scf-code/website-api/index.js']
+    changedFiles: ['scf-code/function-api/index.js']
   });
   assert.equal(afterBump.ok, true, afterBump.errors.join('\n'));
 

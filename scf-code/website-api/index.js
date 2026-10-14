@@ -10063,12 +10063,57 @@ function isWebsiteStoragePrefix(prefix) {
   return true;
 }
 
+// 浏览器静态资源里，内容哈希文件名在部署之间不可变。Vite/Rollup 默认
+// `name-[hash].ext`（hash 为 base64url，长度通常 >= 8，可含 `-`/`_`）；
+// webpack 常见 `name.[contenthash].ext` 或 `name.[contenthash].chunk.ext`。
+// 只把「像哈希」的片段留下：长度 >= 8，且含数字、大小写混合，或（作为独立片段时）为十六进制。
+// 纯英文文件名（old.js、page-dashboard.js）仍是可删的非哈希残留。
+const IMMUTABLE_HASHED_EXTENSIONS = new Set([
+  '.js', '.mjs', '.css',
+  '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico',
+  '.woff', '.woff2', '.ttf', '.otf', '.eot',
+  '.wasm'
+]);
+
+function looksLikeContentHash(token, allowBareHex) {
+  if (!/^[A-Za-z0-9_-]{8,}$/.test(token)) return false;
+  if (/^[0-9a-fA-F]+$/.test(token)) return allowBareHex || /[0-9]/.test(token);
+  return /[0-9]/.test(token) || (/[a-z]/.test(token) && /[A-Z]/.test(token));
+}
+
+function stemHasContentHash(stem) {
+  const value = String(stem || '');
+  if (!value) return false;
+  // 整个文件名就是哈希（例如 a1b2c3d4.js）。纯字母十六进制单词（feedback.js）不算。
+  if (!/[-.]/.test(value) && looksLikeContentHash(value, false)) return true;
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] !== '-' && value[i] !== '.') continue;
+    // 哈希自身可以再含 `-`，所以从每个分隔符取到末尾的后缀都试一次。
+    if (looksLikeContentHash(value.slice(i + 1), true)) return true;
+  }
+  // webpack: main.8f3a2b1c.chunk.js，哈希夹在两个点之间，后缀会带上 `.chunk`。
+  for (const part of value.split('.')) {
+    if (part !== value && looksLikeContentHash(part, true)) return true;
+  }
+  return false;
+}
+
+function isImmutableHashedAsset(key) {
+  const base = String(key || '').split(/[/\\]/).pop();
+  if (!base) return false;
+  const ext = path.extname(base).toLowerCase();
+  if (!IMMUTABLE_HASHED_EXTENSIONS.has(ext)) return false;
+  return stemHasContentHash(base.slice(0, -ext.length));
+}
+
 function staleObjectKeys(existingKeys, keepKeys, websitePrefix) {
   if (!isWebsiteStoragePrefix(websitePrefix)) return [];
   const keep = new Set(keepKeys);
   return (existingKeys || []).filter((key) => {
     const value = String(key || '');
-    return value.startsWith(websitePrefix) && !keep.has(value);
+    if (!value.startsWith(websitePrefix) || keep.has(value)) return false;
+    // 旧 chunk 留给仍缓存着上一版 HTML 的 CDN。删整个站点不走这里。
+    return !isImmutableHashedAsset(value);
   });
 }
 
@@ -10086,7 +10131,9 @@ async function pruneWebsiteStorage(provider, websitePrefix, keepKeys) {
 /**
  * 部署 ZIP 到指定桶（COS / S3 兼容，由 provider 抽象屏蔽差异）。
  * getCacheHeaders 返回的 Cache-Control 透传给 provider，由各适配器映射到自家字段。
- * 上传成功后清理同一站点前缀下不在本次 key 集合中的旧对象，避免 hashed 资源和改名目录残留。
+ * 上传成功后清理同一站点前缀下不在本次 key 集合中的旧对象（改名目录、无哈希的 html/图片等）。
+ * 文件名带内容哈希的不可变资源保留：边缘/CDN 常比源站 max-age=60 更久地缓存 index.html，
+ * 浏览器还会请求上一版 chunk。清理失败不影响部署成功。
  */
 async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix, opts = {}) {
   const provider = opts.provider || providerFor(bucketCfg);
