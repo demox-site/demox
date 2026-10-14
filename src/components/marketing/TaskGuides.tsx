@@ -115,7 +115,7 @@ export const TaskGuides: React.FC<{ lang: Lang }> = ({ lang }) => {
                     return (
                       <li key={id}>
                         <a
-                          href={`/${id}`}
+                          href={lang === "zh" ? `/zh/${id}` : `/${id}`}
                           onClick={() => track("intent_guide_click", { id, group: g.key })}
                           className="group/link flex items-center justify-between gap-3 py-2.5 text-sm text-[var(--stitch-ink)] rounded-md -mx-2 px-2 transition-colors hover:bg-[var(--stitch-blue-soft)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--stitch-ink)]"
                         >

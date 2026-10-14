@@ -58,3 +58,4 @@ scripts/scf-deploy*.cjs
 .env
 .env.*
 !.env.example
+dist-preview
