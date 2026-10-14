@@ -250,3 +250,22 @@ test("preview build is noindex but only in its own copy", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("prerendered header inlines the logo SVG with fixed size (no image request)", async () => {
+  const distDir = await mkdtemp(path.join(os.tmpdir(), "demox-seo-logo-"));
+  try {
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await generateSeoPages(distDir);
+    for (const rel of ["index.html", "zh/index.html", "zh/pricing/index.html"]) {
+      const html = await readFile(path.join(distDir, rel), "utf8").catch(() => readFile(path.join(distDir, rel.replace("/index.html", ".html")), "utf8"));
+      if (rel.endsWith("pricing/index.html")) {
+        assert.match(html, /<div class="pricing-limits"><table>/);
+        continue;
+      }
+      assert.match(html, /class="fallback-brand"[^>]*><svg class="fallback-logo" viewBox="0 0 1200 330" width="117" height="32"/, rel);
+      assert.doesNotMatch(html, /class="fallback-brand"[^>]*>Demox<\/a>/, rel);
+    }
+  } finally {
+    await rm(distDir, { recursive: true, force: true });
+  }
+});

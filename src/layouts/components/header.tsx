@@ -5,7 +5,7 @@ import { authApi, userManager } from "@/api";
 import { AuthDialog } from "@/components/AuthDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLanguage } from "@/hooks/use-language";
-import logo from "@/assets/logo.svg";
+import { BrandLogo } from "@/components/BrandLogo";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -133,20 +133,17 @@ export const MainHeader: React.FC = () => {
 
   return (
     <>
-      <nav className="border-b border-[var(--stitch-line)] bg-[var(--stitch-surface)]/80 backdrop-blur-xl sticky top-0 z-50">
+      <nav className="border-b border-[var(--stitch-line)] bg-[#ffffff] dark:bg-[#121212] md:bg-[var(--stitch-surface)] md:dark:bg-[var(--stitch-surface)] md:backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             {/* Logo Area */}
             <button
               type="button"
               onClick={() => navigate(lang === "zh" ? "/zh/" : "/index")}
-              className="flex items-center gap-2 group"
+              className="flex items-center gap-2 group text-[var(--stitch-ink)]"
+              aria-label={lang === "zh" ? "Demox 首页" : "Demox homepage"}
             >
-              <img
-                src={logo}
-                alt="Demox"
-                className="h-8 w-auto object-contain group-hover:scale-105 transition-transform duration-300 dark:invert"
-              />
+              <BrandLogo className="h-8 w-auto group-hover:scale-105 transition-transform duration-300" />
             </button>
 
             {/* Desktop Navigation */}
