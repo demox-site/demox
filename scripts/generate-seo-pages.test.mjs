@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { generateSeoPages, PUBLIC_PAGES, NOINDEX_ROUTES } from "./generate-seo-pages.mjs";
+import { generateSeoPages, PUBLIC_PAGES, ZH_PAGES, NOINDEX_ROUTES } from "./generate-seo-pages.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,22 +126,127 @@ test("generates indexable static shells and noindex auth shells", async () => {
   }
 });
 
-test("sitemap contains only generated public routes on the canonical host", async () => {
-  const sitemap = await readFile(path.join(projectRoot, "public", "sitemap.xml"), "utf8");
-  assert.doesNotMatch(sitemap, /ai-builder\.aigc\.sx\.cn/);
+test("sitemap is generated at build time with hreflang pairs", async () => {
+  const distDir = await mkdtemp(path.join(os.tmpdir(), "demox-seo-sitemap-"));
+  const prev = process.env.SEO_BUILD_DATE;
+  process.env.SEO_BUILD_DATE = "2031-02-03";
+  try {
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await generateSeoPages(distDir);
+    const sitemap = await readFile(path.join(distDir, "sitemap.xml"), "utf8");
+    assert.doesNotMatch(sitemap, /ai-builder\.aigc\.sx\.cn/);
+    const lastmods = [...sitemap.matchAll(/<lastmod>([^<]+)<\/lastmod>/g)].map((m) => m[1]);
+    assert.ok(lastmods.length > 0);
+    assert.ok(lastmods.every((d) => d === "2031-02-03"), "lastmod must be the build date");
+    const paths = [...sitemap.matchAll(/<loc>https:\/\/www\.demox\.site(\/[^<]*)<\/loc>/g)].map((match) => match[1]);
+    for (const p of ["/", "/zh/", "/pricing", "/zh/pricing", "/free-static-site-hosting", "/zh/free-static-site-hosting", "/content-scan", "/when-to-use-demox"]) {
+      assert.ok(paths.includes(p), `sitemap is missing ${p}`);
+    }
+    assert.equal(new Set(paths).size, paths.length, "no duplicate sitemap URLs");
+    for (const pathname of paths) {
+      const route = pathname.replace(/^\//, "").replace(/\/$/, "");
+      assert.ok(Object.hasOwn(PUBLIC_PAGES, route) || Object.hasOwn(ZH_PAGES, route), `Sitemap route is not generated: ${pathname}`);
+    }
+    assert.match(sitemap, /<loc>https:\/\/www\.demox\.site\/zh\/<\/loc>\s*<xhtml:link rel="alternate" hreflang="en" href="https:\/\/www\.demox\.site\/" \/>/);
+    assert.equal(paths.length, Object.keys(PUBLIC_PAGES).length - 1 + Object.keys(ZH_PAGES).length);
+  } finally {
+    if (prev === undefined) delete process.env.SEO_BUILD_DATE; else process.env.SEO_BUILD_DATE = prev;
+    await rm(distDir, { recursive: true, force: true });
+  }
+});
 
-  const paths = [...sitemap.matchAll(/<loc>https:\/\/www\.demox\.site(\/[^<]*)<\/loc>/g)].map((match) => match[1]);
-  assert.ok(paths.length > 0);
-  assert.ok(paths.includes("/ai-static-site-deployment"));
-  assert.ok(paths.includes("/when-to-use-demox"));
-  assert.ok(paths.includes("/deploy-troubleshooting"));
-  assert.ok(paths.includes("/how-demox-hosts-itself"));
-  assert.ok(paths.includes("/free-static-site-hosting"));
-  assert.ok(paths.includes("/mcp-website-deployment"));
-  assert.ok(paths.includes("/vercel-alternative-for-static-sites"));
-  assert.ok(paths.includes("/content-scan"));
-  for (const pathname of paths) {
-    const route = pathname.replace(/^\//, "").replace(/\/$/, "");
-    assert.ok(Object.hasOwn(PUBLIC_PAGES, route), `Sitemap route is not generated: ${pathname}`);
+test("/zh/ pages are prerendered Chinese with reciprocal hreflang", async () => {
+  const distDir = await mkdtemp(path.join(os.tmpdir(), "demox-seo-zh-"));
+  try {
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await generateSeoPages(distDir);
+    const zhHome = await readFile(path.join(distDir, "zh", "index.html"), "utf8");
+    assert.match(zhHome, /<html lang="zh-CN">/);
+    assert.match(zhHome, /<link data-seo="canonical" data-rh="true" rel="canonical" href="https:\/\/www\.demox\.site\/zh\/" \/>/);
+    assert.match(zhHome, /<h1>免费静态网站发布平台，<br>支持 CLI 和 MCP<\/h1>/);
+    assert.match(zhHome, /hreflang="zh-CN" href="https:\/\/www\.demox\.site\/zh\/"/);
+    assert.match(zhHome, /hreflang="en" href="https:\/\/www\.demox\.site\/"/);
+    assert.match(zhHome, /hreflang="x-default" href="https:\/\/www\.demox\.site\/"/);
+    assert.match(zhHome, /"@type":"HowTo"/);
+    const fallback = zhHome.match(/<main[^>]*data-crawlable-fallback[^>]*>[\s\S]*?<\/main>/)[0];
+    const cjk = fallback.match(/[\u4e00-\u9fff]/g) || [];
+    assert.ok(cjk.length >= 300, `expected 300+ Chinese characters on /zh/, got ${cjk.length}`);
+
+    const enHome = await readFile(path.join(distDir, "index.html"), "utf8");
+    assert.match(enHome, /<html lang="en">/);
+    assert.match(enHome, /hreflang="zh-CN" href="https:\/\/www\.demox\.site\/zh\/"/);
+    assert.match(enHome, /hreflang="en" href="https:\/\/www\.demox\.site\/"/);
+
+    for (const key of ["pricing", "free-static-site-hosting", "vercel-alternative-for-static-sites"]) {
+      const zh = await readFile(path.join(distDir, "zh", key, "index.html"), "utf8");
+      const en = await readFile(path.join(distDir, key, "index.html"), "utf8");
+      assert.match(zh, /<html lang="zh-CN">/);
+      assert.match(zh, new RegExp(`rel="canonical" href="https://www\\.demox\\.site/zh/${key}"`));
+      for (const html of [zh, en]) {
+        assert.match(html, new RegExp(`hreflang="en" href="https://www\\.demox\\.site/${key}"`));
+        assert.match(html, new RegExp(`hreflang="zh-CN" href="https://www\\.demox\\.site/zh/${key}"`));
+        assert.match(html, new RegExp(`hreflang="x-default" href="https://www\\.demox\\.site/${key}"`));
+      }
+    }
+    // 中文 only 页面没有英文对，不加 hreflang
+    const doc = await readFile(path.join(distDir, "doc", "index.html"), "utf8");
+    assert.doesNotMatch(doc, /hreflang=/);
+    assert.doesNotMatch(zhHome, /noindex/);
+  } finally {
+    await rm(distDir, { recursive: true, force: true });
+  }
+});
+
+test("pricing states prices and limits; llms-full and .md exist", async () => {
+  const distDir = await mkdtemp(path.join(os.tmpdir(), "demox-seo-pricing-"));
+  try {
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await generateSeoPages(distDir);
+    const pricing = await readFile(path.join(distDir, "pricing", "index.html"), "utf8");
+    assert.match(pricing, /\$0\/month/);
+    assert.match(pricing, /128 MB/);
+    assert.match(pricing, /"@type":"Offer"/);
+    const zhPricing = await readFile(path.join(distDir, "zh", "pricing", "index.html"), "utf8");
+    assert.match(zhPricing, /\$0\/月/);
+    const md = await readFile(path.join(distDir, "pricing.md"), "utf8");
+    assert.match(md, /\| Function memory \| 128 MB \| 512 MB \|/);
+    assert.match(await readFile(path.join(distDir, "zh", "index.md"), "utf8"), /# 免费静态网站发布平台，支持 CLI 和 MCP/);
+    assert.match(await readFile(path.join(distDir, "index.md"), "utf8"), /# Deploy AI-generated websites in seconds/);
+    const full = await readFile(path.join(distDir, "llms-full.txt"), "utf8");
+    assert.match(full, /URL: https:\/\/www\.demox\.site\/zh\/pricing/);
+    assert.match(full, /URL: https:\/\/www\.demox\.site\/doc/);
+    assert.doesNotMatch(full, /<\/?(main|div|section|p)\b/);
+    const guide = await readFile(path.join(distDir, "ai-static-site-deployment", "index.html"), "utf8");
+    assert.match(guide, /"@type":"HowTo"/);
+  } finally {
+    await rm(distDir, { recursive: true, force: true });
+  }
+});
+
+test("production robots.txt allows AI and CN crawlers and never disallows the whole site", async () => {
+  const robots = await readFile(path.join(projectRoot, "public", "robots.txt"), "utf8");
+  for (const bot of ["Google-Extended", "Bytespider", "Baiduspider", "GPTBot"]) assert.match(robots, new RegExp(`User-agent: ${bot}`));
+  assert.doesNotMatch(robots, /^Disallow:\s*\/\s*$/m, "production robots.txt must not block the whole site");
+  assert.doesNotMatch(await readFile(path.join(projectRoot, "index.html"), "utf8"), /noindex/);
+});
+
+test("preview build is noindex but only in its own copy", async () => {
+  const { makePreviewSite, PREVIEW_ROBOTS } = await import("./make-preview-site.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "demox-seo-preview-"));
+  try {
+    const distDir = path.join(root, "dist");
+    await mkdir(distDir);
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await writeFile(path.join(distDir, "robots.txt"), await readFile(path.join(projectRoot, "public", "robots.txt"), "utf8"));
+    await generateSeoPages(distDir);
+    await makePreviewSite(distDir, path.join(root, "dist-preview"));
+    assert.equal(await readFile(path.join(root, "dist-preview", "robots.txt"), "utf8"), PREVIEW_ROBOTS);
+    assert.match(await readFile(path.join(root, "dist-preview", "zh", "index.html"), "utf8"), /content="noindex, nofollow"/);
+    // 生产目录保持原样
+    assert.doesNotMatch(await readFile(path.join(distDir, "robots.txt"), "utf8"), /^Disallow:\s*\/\s*$/m);
+    assert.doesNotMatch(await readFile(path.join(distDir, "zh", "index.html"), "utf8"), /noindex/);
+    await assert.rejects(() => makePreviewSite(path.join(root, "dist-preview"), distDir), /Refusing/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

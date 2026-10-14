@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { isZhPath } from "@/content/zh-routes.mjs";
 
 export type Language = "zh" | "en";
 
@@ -18,6 +19,10 @@ export const LanguageProvider: React.FC<React.PropsWithChildren> = ({
   children,
 }) => {
   const [language, setLanguage] = useState<Language>(() => {
+    // 0. /zh/ 下的页面固定中文，首帧就是中文（静态 HTML 也是中文），不会先英后中闪一下
+    if (typeof window !== "undefined" && isZhPath(window.location.pathname)) {
+      return "zh";
+    }
     // 1. 尝试从 localStorage 获取
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved === "zh" || saved === "en") {

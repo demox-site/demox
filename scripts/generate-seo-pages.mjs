@@ -1,7 +1,9 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { INTENT_LANDINGS, intentPublicPages } from "../src/content/intent-landings.mjs";
+import { INTENT_LANDINGS, INTENT_UPDATED as INTENT_UPDATED_DATE, INTENT_PUBLISHED as INTENT_PUBLISHED_DATE, intentPublicPages } from "../src/content/intent-landings.mjs";
+import { ZH_PAIRED_ROUTES, enPathFor, zhPathFor } from "../src/content/zh-routes.mjs";
+import { htmlToMarkdown } from "./html-to-markdown.mjs";
 
 const SITE_URL = "https://www.demox.site";
 const INDEX_ROBOTS = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -120,6 +122,126 @@ const homeFallback = `
   ${crawlableFooter}
 </main>`;
 
+
+// 价格与限制：只写代码里真实存在的数值。
+// 价格：src/pages/memberPrice.tsx（三个套餐都是 $0/月）。
+// 云函数：scf-code/function-api/limits.js 的 NODE_DEFAULT_LIMITS / NODE_ABSOLUTE_LIMITS。
+// 上传：scf-code/website-api/shared/deploy-upload.js（每块 2 MB），src/pages/Docs.tsx（不受单请求 8 MB 限制）。
+// 上传文件大小、文件数和站点数按账号角色配额，存在数据库里，这里不写数字。
+const PRICING_ROWS = {
+  en: [
+    ["Price (all plans)", "$0/month", "$0/month"],
+    ["Function timeout", "30 s", "300 s"],
+    ["Function memory", "128 MB", "512 MB"],
+    ["Request / response body", "6 MB", "6 MB"],
+    ["Function code size", "1 MB", "2 MB"],
+    ["Invocations per minute", "60", "10,000"],
+    ["Uploads", "Chunked, 2 MB per chunk, no single-request 8 MB limit", "—"],
+  ],
+  zh: [
+    ["价格（全部套餐）", "$0/月", "$0/月"],
+    ["云函数超时", "30 秒", "300 秒"],
+    ["云函数内存", "128 MB", "512 MB"],
+    ["请求体 / 响应体", "6 MB", "6 MB"],
+    ["函数代码大小", "1 MB", "2 MB"],
+    ["每分钟调用次数", "60", "10,000"],
+    ["上传方式", "分块上传，每块 2 MB，不受单请求 8 MB 限制", "—"],
+  ],
+};
+
+const PRICING_OFFERS = [
+  { en: "Basic", zh: "基础版" },
+  { en: "Pro", zh: "专业版" },
+  { en: "Enterprise", zh: "尊贵土豪版" },
+];
+
+function pricingTable(lang) {
+  const head = lang === "zh" ? ["项目", "默认", "上限"] : ["Item", "Default", "Cap"];
+  const rows = PRICING_ROWS[lang].map((row) => `<tr><th scope="row">${row[0]}</th><td>${row[1]}</td><td>${row[2]}</td></tr>`).join("");
+  return `<table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+const pricingFallbackEn = `<main data-crawlable-fallback class="fallback-simple" lang="en"><h1>Demox is free</h1><p><strong>Direct answer:</strong> Basic, Pro, and Enterprise all cost $0/month. Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><h2>Prices and limits</h2>${pricingTable("en")}<p>The Node function limits are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>. <a href="/zh/pricing" hreflang="zh-CN" lang="zh-CN">中文</a></p></main>`;
+
+const pricingFallbackZh = `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>Demox 免费</h1><p><strong>直接答案：</strong>基础版、专业版、尊贵土豪版都是 $0/月，个人使用继续免费。上传 HTML、ZIP 或前端构建产物，拿到 HTTPS 链接。需要更多技术支持，欢迎联系 phosa@qq.com。</p><h2>价格与限制</h2>${pricingTable("zh")}<p>云函数限制取自代码里的默认值和上限；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。</p><p><a href="/zh/">用 Demox 发布</a> · <a href="/doc">CLI 和 MCP 文档</a> · <a href="/pricing" hreflang="en" lang="en">English</a></p></main>`;
+
+function pricingOffers(lang) {
+  return PRICING_OFFERS.map((offer) => ({
+    name: offer[lang],
+    price: "0",
+    priceCurrency: "USD",
+  }));
+}
+
+// ---- 中文版首页（/zh/）：文案全部来自现有中文 i18n：
+// 标题/描述：src/pages/index.tsx zh.hero；导航：src/layouts/components/header.tsx zh；
+// 「Demox 是什么？」：index.html 中文段落；步骤和 FAQ：intent-landings free-static-site-hosting.zh；
+// 页脚：src/layouts/components/footer.tsx zh。
+const FREE_HOSTING = INTENT_LANDINGS.find((page) => page.id === "free-static-site-hosting");
+
+const homeFallbackZh = `
+<main id="main" data-crawlable-fallback lang="zh-CN">
+  <a class="fallback-skip" href="#main">跳到正文</a>
+  <header class="fallback-header">
+    <a class="fallback-brand" href="/zh/" aria-label="Demox 首页">Demox</a>
+    <nav class="fallback-nav" aria-label="主要页面">
+      <a href="/" hreflang="en" lang="en">English</a>
+      <a href="/zh/pricing">价格</a>
+      <a href="/ai-static-site-deployment">指南</a>
+      <a href="/log">日志</a>
+      <a href="/doc">文档</a>
+    </nav>
+  </header>
+  <section id="demox-overview" class="fallback-hero" lang="zh-CN">
+    <div class="fallback-eyebrow"><span class="fallback-dot"></span>静态网站与 Node 云函数</div>
+    <h1>免费静态网站发布平台，<br>支持 CLI 和 MCP</h1>
+    <p class="fallback-summary">将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。</p>
+    <div class="fallback-actions">
+      <a class="fallback-action fallback-action-primary" href="/console/projects">立即上传</a>
+      <a class="fallback-action" href="/when-to-use-demox">判断是否适合</a>
+    </div>
+  </section>
+  <section class="fallback-details" aria-label="关于 Demox" lang="zh-CN">
+    <section>
+      <h2>Demox 是什么？</h2>
+      <p>Demox 把 HTML、静态构建目录、ZIP 或文档变成可分享的 HTTPS 站点，并把 Node handler 作为云函数挂到同一站点。它适合前端 Demo、AI 生成页面、客户评审、文档页，以及已改成 handler 的 Node 接口。Python、PHP、Java、Express listen，以及必须直连私密数据库或常驻进程的服务，仍需独立后端或先改造。</p>
+    </section>
+    <section>
+      <h2>怎样发布一个静态网站？</h2>
+      <ol>
+        ${FREE_HOSTING.zh.steps.map((step) => `<li>${step}</li>`).join("\n        ")}
+      </ol>
+    </section>
+    <section>
+      <h2>常见问题</h2>
+      ${FREE_HOSTING.zh.faqs.map((item) => `<h3>${item.q}</h3><p>${item.a}</p>`).join("\n      ")}
+    </section>
+    <section>
+      <h2>按任务找指南</h2>
+      <ul>
+        ${INTENT_LANDINGS.map((page) => `<li><a href="/zh/${page.id}">${page.zh.h1}</a></li>`).join("\n        ")}
+      </ul>
+    </section>
+  </section>
+  <footer class="fallback-footer" lang="zh-CN">
+    <p><a href="/privacy">隐私政策</a> · <a href="/terms">服务条款</a> · <a href="/how-demox-hosts-itself">第一方案例</a> · <a href="mailto:phosa@qq.com">联系邮箱：phosa@qq.com</a> · <a href="https://github.com/demox-site/demox">GitHub</a></p>
+  </footer>
+</main>`;
+
+function escapeHtmlText(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function renderIntentFallbackZh(page) {
+  const steps = page.zh.steps.map((step) => `<li>${escapeHtmlText(step)}</li>`).join("");
+  const faqs = page.zh.faqs.map((item) => `<h3>${escapeHtmlText(item.q)}</h3><p>${escapeHtmlText(item.a)}</p>`).join("");
+  const related = INTENT_LANDINGS.filter((item) => item.id !== page.id)
+    .slice(0, 6)
+    .map((item) => `<li><a href="/zh/${item.id}">${escapeHtmlText(item.zh.h1)}</a></li>`)
+    .join("");
+  return `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>${escapeHtmlText(page.zh.eyebrow)} · 更新于 ${INTENT_UPDATED_DATE} · Demox 团队</p><h1>${escapeHtmlText(page.zh.h1)}</h1><p><strong>直接答案：</strong>${escapeHtmlText(page.zh.answer)}</p><h2>按这个顺序做</h2><ol>${steps}</ol><h2>常见问题</h2>${faqs}<h2>相关页面</h2><ul>${related}<li><a href="/doc">CLI 和 MCP 文档</a></li><li><a href="/when-to-use-demox">什么时候该用 Demox</a></li></ul><p><a href="/console/projects">上传并发布</a> · <a href="/${page.id}" hreflang="en" lang="en">English</a></p></article></main>`;
+}
+
 export const PUBLIC_PAGES = {
   "": {
     title: "Free Static Website Hosting with CLI & MCP | Demox",
@@ -146,8 +268,9 @@ export const PUBLIC_PAGES = {
   },
   pricing: {
     title: "Demox Pricing - Free Static Site Hosting",
-    description: "Demox stays free for personal static site hosting. Need more technical support? Email phosa@qq.com.",
-    fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Demox is free</h1><p>Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>.</p></main>`,
+    description: "Demox stays free for personal static site hosting. Basic, Pro, and Enterprise are all $0/month. See function and upload limits. Need more technical support? Email phosa@qq.com.",
+    fallback: pricingFallbackEn,
+    offers: pricingOffers("en"),
   },
   doc: {
     title: "Demox Docs - Deploy with CLI or MCP",
@@ -166,6 +289,16 @@ export const PUBLIC_PAGES = {
       datePublished: "2026-08-18",
       dateModified: "2026-09-14",
       inLanguage: "zh-CN",
+    },
+    howTo: {
+      name: "发布一个 AI 生成网页，需要哪几步？",
+      description: "从单个 HTML、ZIP 或前端构建产物出发，发布静态网站并获得 HTTPS 链接。",
+      steps: [
+        "确认它是静态产物：浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。",
+        "找到站点入口：单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 index.html。",
+        "上传并拿到链接：在网页端上传，或通过 CLI、MCP、Agent Skill 发布。",
+        "用无痕窗口复查：检查首页、资源加载和页面跳转，排除本机缓存造成的假象。",
+      ],
     },
     fallback: `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><article><p>AI 静态网站发布指南 · 更新于 2026-09-14 · Demox 团队</p><h1>AI 生成网页后，怎样快速发布成静态网站？</h1><p><strong>直接答案：</strong>先确认 AI 产物是单个 HTML 文件，或根目录含 <code>index.html</code> 的静态目录/ZIP；再上传到 Demox，即可获得带 HTTPS 和 CDN 的公开链接。网页端适合手动上传，CLI 适合终端和 CI，MCP 适合能执行工具的 AI 助手。需要接口时，把 Node 后端改成 <code>handler(request, env)</code> 后走 <code>demox functions push</code>。</p><h2>三种发布方式，取决于你手里有什么</h2><h3>1. 只有一个 HTML 文件</h3><p>直接在 Demox 网页端选择 HTML 文件。它适合 AI 生成的单页、交互原型和可视化报告。若页面引用 CSS、图片或字体，请把资源放在同一个目录并使用相对路径。</p><h3>2. 已有 dist、build 或 ZIP</h3><p>先执行 React、Vue、Vite 等项目的生产构建，再上传构建目录或 ZIP。入口文件应位于上传目录或 ZIP 根目录，资源 base path 也要按静态托管方式配置。</p><h3>3. 正在和 AI 助手协作</h3><p>把 <a href="https://www.demox.site/doc">Demox 文档</a>发给能访问网页、读取本地文件并执行工具的 AI，要求它先检查静态产物，再通过 CLI、MCP 或 Agent Skill 发布。只会聊天的 AI 可以说明步骤，却不能代替你读取文件或执行上传。</p><h2>发布一个 AI 生成网页，需要哪几步？</h2><ol><li><strong>确认它是静态产物：</strong>浏览器只需 HTML、CSS、JavaScript 和图片就能打开，不依赖服务器运行时。</li><li><strong>找到站点入口：</strong>单文件直接使用 HTML；目录或 ZIP 的根目录需要包含 <code>index.html</code>。</li><li><strong>上传并拿到链接：</strong>在网页端上传，或通过 CLI、MCP、Agent Skill 发布。</li><li><strong>用无痕窗口复查：</strong>检查首页、资源加载和页面跳转，排除本机缓存造成的假象。</li></ol><h2>发布前检查清单</h2><ul><li><code>index.html</code> 位于上传目录或 ZIP 根目录。</li><li>资源路径没有指向本机磁盘。</li><li>前端路由和资源 base path 已按静态托管方式构建。</li><li>密钥、Token、数据库密码等敏感信息没有写进前端文件。</li></ul><h2>哪些项目适合 Demox？</h2><p>AI 生成的 HTML 单页、React/Vue/Vite 构建产物、产品演示、客户评审页，以及已改成 <code>handler(request, env)</code> 的 Node 接口，都适合发布。完整对照见 <a href="/when-to-use-demox">什么时候该用 Demox</a>。</p><h2>哪些项目不适合直接静态发布？</h2><p>Python、PHP、Java，Express <code>listen</code>，必须直连私密数据库或常驻进程，以及没有静态导出的服务端渲染应用，需要先改造或选择能运行该后端的平台。失败原文见 <a href="/deploy-troubleshooting">发布排错</a>。</p><h2>把文档链接直接发给 AI，真的能部署吗？</h2><p>可以，但前提是 AI 助手能访问网页、读取本地文件并执行工具。只具备聊天能力的 AI 可以说明步骤，却不能代替你读取文件或执行上传。可使用提示词：“阅读 https://www.demox.site/doc，把当前项目构建成静态产物并发布到 Demox；发布前不要上传密钥或后端配置。”</p><h2>常见问题</h2><h3>上传 HTML 后，为什么样式或图片丢了？</h3><p>通常是 HTML 引用了本机绝对路径，或遗漏了同目录下的 CSS、图片和字体。把相关资源一起放进目录，使用相对路径，再将整个目录打成 ZIP 上传。</p><h3>React 或 Vue 源码可以直接上传吗？</h3><p>通常不可以。先执行项目的生产构建命令，得到 dist 或 build 目录，再上传构建产物。</p><h3>静态网站能调用接口吗？</h3><p>可以调用允许浏览器跨域访问的公开 HTTPS API，也可以把 Node handler 发到同一站点后用 <code>fetch('/api/标识')</code>。不要把私密凭据放在前端代码中。</p><p><a href="/console/projects">上传并发布网页</a> · <a href="/doc">查看 Demox 完整文档</a></p></article></main>`,
   },
@@ -222,6 +355,50 @@ demox functions push ./scf-code/cert-renew --id EPX2UU43 --slug cert-renew</code
   ...intentPublicPages(),
 };
 
+
+/** /zh/ 下的中文版页面。key 是输出目录（相对 dist），pairKey 是对应英文页的 route。 */
+export const ZH_PAGES = Object.fromEntries(
+  ZH_PAIRED_ROUTES.map((pairKey) => {
+    const route = pairKey ? `zh/${pairKey}` : "zh";
+    if (pairKey === "") {
+      return [route, {
+        lang: "zh-CN",
+        pairKey,
+        canonicalPath: "/zh/",
+        title: "免费静态网站发布平台，支持 CLI 和 MCP | Demox",
+        description: "将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。支持网页、CLI 与 MCP。",
+        fallback: homeFallbackZh,
+        faq: FREE_HOSTING.zh.faqs.map((item) => ({ question: item.q, answer: item.a })),
+        howTo: {
+          name: "用 Demox 发布静态网站",
+          description: "上传 HTML 或构建目录，拿到带 HTTPS 和 CDN 的链接。",
+          steps: FREE_HOSTING.zh.steps,
+        },
+      }];
+    }
+    if (pairKey === "pricing") {
+      return [route, {
+        lang: "zh-CN",
+        pairKey,
+        title: "Demox 价格 - 免费静态网站托管",
+        description: "Demox 对个人使用保持免费，基础版、专业版、尊贵土豪版都是 $0/月。查看云函数和上传限制。需要更多技术支持，欢迎联系 phosa@qq.com。",
+        fallback: pricingFallbackZh,
+        offers: pricingOffers("zh"),
+      }];
+    }
+    const page = INTENT_LANDINGS.find((item) => item.id === pairKey);
+    return [route, {
+      lang: "zh-CN",
+      pairKey,
+      title: page.zh.title,
+      description: page.zh.description,
+      article: { datePublished: INTENT_PUBLISHED_DATE, dateModified: INTENT_UPDATED_DATE, inLanguage: "zh-CN" },
+      howTo: { name: page.zh.h1, description: page.zh.description, steps: page.zh.steps },
+      fallback: renderIntentFallbackZh(page),
+    }];
+  }),
+);
+
 export const NOINDEX_ROUTES = [
   "github-callback",
   "github-link",
@@ -276,7 +453,7 @@ function organizationSchema() {
   };
 }
 
-function schemaDocuments({ title, description, url, article, faq, howTo }) {
+function schemaDocuments({ title, description, url, article, faq, howTo, offers, lang }) {
   const graph = [
     {
       "@type": "WebSite",
@@ -304,7 +481,7 @@ function schemaDocuments({ title, description, url, article, faq, howTo }) {
       isPartOf: { "@id": `${SITE_URL}/#website` },
       about: { "@id": `${SITE_URL}/#software` },
       author: { "@id": `${SITE_URL}/#organization` },
-      inLanguage: ["en", "zh-CN"],
+      inLanguage: lang ? lang : ["en", "zh-CN"],
     },
   ];
 
@@ -343,6 +520,24 @@ function schemaDocuments({ title, description, url, article, faq, howTo }) {
     });
   }
 
+  if (offers?.length) {
+    documents.push({
+      "@context": "https://schema.org",
+      "@type": "Product",
+      "@id": `${url}#product`,
+      name: "Demox",
+      description,
+      brand: { "@id": `${SITE_URL}/#organization` },
+      offers: offers.map((offer) => ({
+        "@type": "Offer",
+        name: offer.name,
+        price: offer.price,
+        priceCurrency: offer.priceCurrency,
+        url,
+      })),
+    });
+  }
+
   if (howTo) {
     documents.push({
       "@context": "https://schema.org",
@@ -350,6 +545,7 @@ function schemaDocuments({ title, description, url, article, faq, howTo }) {
       "@id": `${url}#howto`,
       name: howTo.name,
       description: howTo.description,
+      ...(lang ? { inLanguage: lang } : {}),
       step: howTo.steps.map((text, index) => ({
         "@type": "HowToStep",
         position: index + 1,
@@ -379,7 +575,20 @@ export function renderSeoPage(baseHtml, route, config) {
   html = replaceRequired(html, /<title data-seo="title">[\s\S]*?<\/title>/, `<title data-seo="title">${title}</title>`, "title");
   html = replaceRequired(html, /<meta\s+data-seo="description"[^>]*>/, `<meta data-seo="description" data-rh="true" name="description" content="${attrDescription}" />`, "description");
   html = replaceRequired(html, /<meta\s+data-seo="robots"[^>]*>/, `<meta data-seo="robots" data-rh="true" name="robots" content="${shouldIndex ? INDEX_ROBOTS : NOINDEX_ROBOTS}" />`, "robots");
-  html = replaceRequired(html, /<link\s+data-seo="canonical"[^>]*>/, `<link data-seo="canonical" data-rh="true" rel="canonical" href="${url}" />`, "canonical");
+  const alternates = shouldIndex && config.pairKey !== undefined && config.pairKey !== null
+    ? [
+      `<link data-seo="hreflang" data-rh="true" rel="alternate" hreflang="en" href="${SITE_URL}${enPathFor(config.pairKey)}" />`,
+      `<link data-seo="hreflang" data-rh="true" rel="alternate" hreflang="zh-CN" href="${SITE_URL}${zhPathFor(config.pairKey)}" />`,
+      `<link data-seo="hreflang" data-rh="true" rel="alternate" hreflang="x-default" href="${SITE_URL}${enPathFor(config.pairKey)}" />`,
+    ]
+    : [];
+  if (shouldIndex && config.markdownPath) {
+    alternates.push(`<link data-seo="markdown" rel="alternate" type="text/markdown" href="${SITE_URL}${config.markdownPath}" />`);
+  }
+  html = replaceRequired(html, /<link\s+data-seo="canonical"[^>]*>/, [`<link data-seo="canonical" data-rh="true" rel="canonical" href="${url}" />`, ...alternates].join("\n    "), "canonical");
+  if (config.lang) {
+    html = replaceRequired(html, /<html lang="en">/, `<html lang="${config.lang}">`, "html lang");
+  }
   html = replaceRequired(html, /<meta\s+data-seo="og-title"[^>]*>/, `<meta data-seo="og-title" data-rh="true" property="og:title" content="${attrTitle}" />`, "Open Graph title");
   html = replaceRequired(html, /<meta\s+data-seo="og-description"[^>]*>/, `<meta data-seo="og-description" data-rh="true" property="og:description" content="${attrDescription}" />`, "Open Graph description");
   html = replaceRequired(html, /<meta\s+data-seo="og-url"[^>]*>/, `<meta data-seo="og-url" data-rh="true" property="og:url" content="${url}" />`, "Open Graph URL");
@@ -395,24 +604,98 @@ export function renderSeoPage(baseHtml, route, config) {
       article: config.article,
       faq: config.faq,
       howTo: config.howTo,
+      offers: config.offers,
+      lang: config.lang,
     }))
     : "";
   html = replaceRequired(html, /<script data-seo="schema" type="application\/ld\+json">[\s\S]*?<\/script>/, schema, "schema");
   return html;
 }
 
+function routeUrlPath(route, config) {
+  if (config.canonicalPath) return config.canonicalPath;
+  return route ? `/${route}` : "/";
+}
+
+function markdownPathFor(route) {
+  if (!route) return "/index.md";
+  if (route === "zh") return "/zh/index.md";
+  return `/${route}.md`;
+}
+
+/** 构建日期（UTC，YYYY-MM-DD）。可用 SEO_BUILD_DATE 覆盖，方便测试。 */
+export function buildDate() {
+  const forced = process.env.SEO_BUILD_DATE;
+  if (forced && /^\d{4}-\d{2}-\d{2}$/.test(forced)) return forced;
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** 所有要进 sitemap / llms-full / .md 的公开页面：英文 + /zh/。 */
+export function indexablePages() {
+  const pages = [];
+  for (const [route, config] of Object.entries(PUBLIC_PAGES)) {
+    if (route === "index") continue; // /index 只是 / 的别名
+    const pairKey = ZH_PAIRED_ROUTES.includes(route) ? route : undefined;
+    pages.push({ route, config: { ...config, pairKey, markdownPath: markdownPathFor(route) } });
+  }
+  for (const [route, config] of Object.entries(ZH_PAGES)) {
+    pages.push({ route, config: { ...config, markdownPath: markdownPathFor(route) } });
+  }
+  return pages;
+}
+
+export function renderSitemap(pages, lastmod) {
+  const xhtml = (pairKey) => pairKey === undefined || pairKey === null ? "" : [
+    `    <xhtml:link rel="alternate" hreflang="en" href="${SITE_URL}${enPathFor(pairKey)}" />`,
+    `    <xhtml:link rel="alternate" hreflang="zh-CN" href="${SITE_URL}${zhPathFor(pairKey)}" />`,
+    `    <xhtml:link rel="alternate" hreflang="x-default" href="${SITE_URL}${enPathFor(pairKey)}" />`,
+  ].join("\n") + "\n";
+  const entries = pages.map(({ route, config }) => {
+    const isHome = route === "" || route === "zh";
+    return `  <url>
+    <loc>${SITE_URL}${routeUrlPath(route, config)}</loc>
+${xhtml(config.pairKey)}    <lastmod>${lastmod}</lastmod>
+    <changefreq>${isHome ? "weekly" : "monthly"}</changefreq>
+    <priority>${isHome ? "1.0" : "0.8"}</priority>
+  </url>`;
+  });
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+${entries.join("\n")}
+</urlset>
+`;
+}
+
+function pageMarkdown(route, config) {
+  const url = `${SITE_URL}${routeUrlPath(route, config)}`;
+  const body = htmlToMarkdown(config.fallback, SITE_URL);
+  return `<!-- ${config.title} -->\nSource: ${url}\n\n${body}`;
+}
+
+export function renderLlmsFull(pages, lastmod) {
+  const head = `# Demox — full text for LLMs\n\n> Demox publishes static websites and Node.js functions. HTML, ZIP, frontend builds, and documents become HTTPS sites. Node backends export handler(request, env) and attach to the same site through web, CLI, MCP, or API workflows.\n\nGenerated ${lastmod} from the same prerendered pages that www.demox.site serves. Each page is also available as Markdown at the URL listed after "Markdown:". Chinese pages live under https://www.demox.site/zh/.\n`;
+  const sections = pages.map(({ route, config }) =>
+    `\n---\n\nURL: ${SITE_URL}${routeUrlPath(route, config)}\nMarkdown: ${SITE_URL}${config.markdownPath}\nTitle: ${config.title}\n\n${htmlToMarkdown(config.fallback, SITE_URL)}`);
+  return head + sections.join("");
+}
+
 export async function generateSeoPages(distDir) {
   const indexPath = path.join(distDir, "index.html");
   const baseHtml = await readFile(indexPath, "utf8");
-  const renderedHome = renderSeoPage(baseHtml, "", PUBLIC_PAGES[""]);
-  await writeFile(indexPath, renderedHome);
+  const pages = indexablePages();
+  const lastmod = buildDate();
 
-  for (const [route, config] of Object.entries(PUBLIC_PAGES)) {
-    if (!route) continue;
-    const routeDir = path.join(distDir, route);
+  for (const { route, config } of pages) {
+    const routeDir = route ? path.join(distDir, route) : distDir;
     await mkdir(routeDir, { recursive: true });
     await writeFile(path.join(routeDir, "index.html"), renderSeoPage(baseHtml, route, config));
+    const mdFile = path.join(distDir, config.markdownPath.replace(/^\//, ""));
+    await mkdir(path.dirname(mdFile), { recursive: true });
+    await writeFile(mdFile, pageMarkdown(route, config));
   }
+  // /index 与 / 相同（canonical 指向 /）
+  await mkdir(path.join(distDir, "index"), { recursive: true });
+  await writeFile(path.join(distDir, "index", "index.html"), renderSeoPage(baseHtml, "index", { ...PUBLIC_PAGES.index, pairKey: "" }));
 
   for (const route of NOINDEX_ROUTES) {
     const routeDir = path.join(distDir, route);
@@ -433,6 +716,9 @@ export async function generateSeoPages(distDir) {
     fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Page not found</h1><p>The requested Demox page could not be found. <a href="/">Return to the homepage</a>.</p></main>`,
   });
   await writeFile(path.join(distDir, "404.html"), notFound);
+
+  await writeFile(path.join(distDir, "sitemap.xml"), renderSitemap(pages, lastmod));
+  await writeFile(path.join(distDir, "llms-full.txt"), renderLlmsFull(pages, lastmod));
 }
 
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

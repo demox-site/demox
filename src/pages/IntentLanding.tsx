@@ -4,11 +4,12 @@ import { Seo } from "@/components/Seo";
 import { GeoArticle, GeoSectionHeading } from "@/components/GeoArticle";
 import { INTENT_LANDINGS, INTENT_PUBLISHED, INTENT_UPDATED } from "@/content/intent-landings.mjs";
 import { useLanguage } from "@/hooks/use-language";
+import { stripZhPrefix, isZhPath } from "@/content/zh-routes.mjs";
 
 export const IntentLanding: React.FC = () => {
   const { pathname } = useLocation();
   const { language } = useLanguage();
-  const id = pathname.replace(/\/+$/, "").replace(/^\//, "");
+  const id = stripZhPrefix(pathname).replace(/\/+$/, "").replace(/^\//, "");
   const page = INTENT_LANDINGS.find((item) => item.id === id);
   const isZh = language === "zh";
 
@@ -44,7 +45,7 @@ export const IntentLanding: React.FC = () => {
     <>
       <Seo title={isZh ? page.zh.title : page.title} description={isZh ? page.zh.description : page.description} />
       <GeoArticle
-        url={`https://www.demox.site/${page.id}`}
+        url={isZhPath(pathname) ? `https://www.demox.site/zh/${page.id}` : `https://www.demox.site/${page.id}`}
         published={INTENT_PUBLISHED}
         updated={INTENT_UPDATED}
         language={isZh ? "zh" : "en"}
@@ -96,7 +97,7 @@ export const IntentLanding: React.FC = () => {
           <ul className="mt-8 grid gap-3 md:grid-cols-2">
             {related.map((item) => (
               <li key={item.id}>
-                <a href={`/${item.id}`} className="block rounded-2xl border border-[var(--stitch-line)] p-5 text-sm font-bold leading-6">
+                <a href={isZh ? `/zh/${item.id}` : `/${item.id}`} className="block rounded-2xl border border-[var(--stitch-line)] p-5 text-sm font-bold leading-6">
                   {isZh ? item.zh.h1 : item.h1}
                 </a>
               </li>

@@ -115,7 +115,9 @@
       [data-crawlable-fallback] table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
       [data-crawlable-fallback] th, [data-crawlable-fallback] td { border: 1px solid rgba(17,17,17,.12); padding: 10px 12px; text-align: left; vertical-align: top; }
       [data-crawlable-fallback] th { background: #f4f4f5; }
-      @media (max-width: 640px) { [data-crawlable-fallback] .fallback-header { padding: 0 18px; } [data-crawlable-fallback] .fallback-nav { gap: 14px; } [data-crawlable-fallback] .fallback-hero { padding: 72px 20px 70px; } [data-crawlable-fallback] .fallback-hero h1 { font-size: 43px; } [data-crawlable-fallback] .fallback-summary { font-size: 18px; } [data-crawlable-fallback] .fallback-action { width: 100%; } [data-crawlable-fallback] .fallback-details { margin: 0 16px 48px; padding: 24px; } [data-crawlable-fallback].fallback-simple { margin: 24px 16px; padding: 24px; } }
+      /* 中文首屏标题：两行，断在逗号后，不出现单字掉行 */
+      [data-crawlable-fallback] .fallback-hero[lang="zh-CN"] h1 { max-width: 760px; font-size: clamp(30px, 4.6vw, 48px); line-height: 1.2; letter-spacing: -.02em; word-break: keep-all; }
+      @media (max-width: 640px) { [data-crawlable-fallback] .fallback-header { padding: 0 18px; } [data-crawlable-fallback] .fallback-nav { gap: 14px; } [data-crawlable-fallback] .fallback-hero { padding: 72px 20px 70px; } [data-crawlable-fallback] .fallback-hero h1 { font-size: 43px; } [data-crawlable-fallback] .fallback-hero[lang="zh-CN"] h1 { font-size: 28px; } [data-crawlable-fallback] .fallback-summary { font-size: 18px; } [data-crawlable-fallback] .fallback-action { width: 100%; } [data-crawlable-fallback] .fallback-details { margin: 0 16px 48px; padding: 24px; } [data-crawlable-fallback].fallback-simple { margin: 24px 16px; padding: 24px; } }
     </style>
     <script>
       // Apply the persisted/system theme before first paint to avoid a flash.

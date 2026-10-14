@@ -1,6 +1,8 @@
 # Demox
 > Demox publishes static websites and Node.js functions. HTML, ZIP, frontend builds, and documents become HTTPS sites. Node backends export handler(request, env) and attach to the same site through web, CLI, MCP, or API workflows.
 
+Full text of every public page: https://www.demox.site/llms-full.txt (each page is also served as Markdown, e.g. https://www.demox.site/pricing.md). Chinese pages: https://www.demox.site/zh/
+
 ## Primary pages
 - [Demox homepage](https://www.demox.site/): Product overview and web deployment entry point.
 - [When to use Demox](https://www.demox.site/when-to-use-demox): Fit table for static pages, Node handlers, Express, and separate backends.

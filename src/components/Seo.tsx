@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import { useLanguage } from "@/hooks/use-language";
 import { siteConfig } from "@/configs/env";
 import { INTENT_LANDINGS } from "@/content/intent-landings.mjs";
+import { ZH_PAIRED_ROUTES, pairedRouteKey, enPathFor, zhPathFor } from "@/content/zh-routes.mjs";
 
 interface SeoProps {
   title?: string;
@@ -26,7 +27,8 @@ const INDEXABLE_PATHS = new Set([
   ...INTENT_LANDINGS.map((page) => `/${page.id}`),
   "/terms",
   "/privacy",
-  "/log"
+  "/log",
+  ...ZH_PAIRED_ROUTES.map((key) => zhPathFor(key).replace(/\/+$/, ""))
 ]);
 
 export const Seo: React.FC<SeoProps> = ({
@@ -56,19 +58,30 @@ export const Seo: React.FC<SeoProps> = ({
   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
   const canonicalPath = normalizedPath === "/index" ? "/" : normalizedPath;
   const siteOrigin = siteConfig.url.replace(/\/+$/, "");
-  const canonicalUrl = `${siteOrigin}${canonicalPath === "/" ? "/" : canonicalPath}`;
+  const canonicalUrl = `${siteOrigin}${canonicalPath === "/" ? "/" : canonicalPath === "/zh" ? "/zh/" : canonicalPath}`;
   const shouldIndex = INDEXABLE_PATHS.has(normalizedPath);
+  const pairKey = pairedRouteKey(normalizedPath);
+  const alternates = pairKey === null
+    ? []
+    : [
+        { hrefLang: "en", href: `${siteOrigin}${enPathFor(pairKey)}` },
+        { hrefLang: "zh-CN", href: `${siteOrigin}${zhPathFor(pairKey)}` },
+        { hrefLang: "x-default", href: `${siteOrigin}${enPathFor(pairKey)}` },
+      ];
   const robots = shouldIndex
     ? "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
     : "noindex, nofollow";
 
   return (
     <Helmet>
-      <html lang={language} />
+      <html lang={isZh ? "zh-CN" : "en"} />
       <title>{siteTitle}</title>
       <meta name="description" content={siteDescription} />
       <meta name="robots" content={robots} />
       <link rel="canonical" href={canonicalUrl} />
+      {alternates.map((item) => (
+        <link key={item.hrefLang} rel="alternate" hrefLang={item.hrefLang} href={item.href} />
+      ))}
 
       <meta property="og:type" content="website" />
       <meta property="og:site_name" content={SITE_NAME} />

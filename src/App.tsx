@@ -23,6 +23,7 @@ import {
 import { HelmetProvider } from "react-helmet-async";
 import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
+import { ZH_PAIRED_ROUTES } from "./content/zh-routes.mjs";
 import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
 import {
@@ -140,6 +141,21 @@ const App: React.FC = () => {
                   />
 
                   <Route path="/index" element={<Navigate to="/" replace />} />
+
+                  {/* 中文版：/zh/ 下的成对页面，静态 HTML 由 scripts/generate-seo-pages.mjs 预渲染 */}
+                  {ZH_PAIRED_ROUTES.map((key) => {
+                    const item = key
+                      ? routers.find((router) => router.id === key)
+                      : routers.find((router) => router.isHome);
+                    if (!item) return null;
+                    return (
+                      <Route
+                        key={`zh-${key || "home"}`}
+                        path={key ? `/zh/${key}` : "/zh"}
+                        element={<PageWrapper id={item.id} Page={item.component} />}
+                      />
+                    );
+                  })}
 
                   {/* 控制台：共享侧栏布局的嵌套路由 */}
                   <Route path="/console" element={<ConsoleLayout />}>

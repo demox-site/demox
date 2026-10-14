@@ -16,8 +16,9 @@ const translations = {
   zh: {
     hero: {
       version: `v${siteConfig.version} 现已发布`,
-      title_start: "免费静态网站发布平台，支持 CLI 和 MCP",
-      title_end: "",
+      // 两行：375 宽下也只占两行，断在逗号后，不会单字掉行
+      title_start: "免费静态网站发布平台，",
+      title_end: "支持 CLI 和 MCP",
       desc: "将 AI 生成的 HTML、ZIP、React/Vue/Vite 构建产物一键发布为公网网站，无需 Git，无需服务器配置。",
       start_btn: "立即上传",
       examples_btn: "看真实示例",
@@ -108,7 +109,11 @@ const CloudHostLanding: React.FC = () => {
             }`}
           >
             {lang === "zh" ? (
-              t.hero.title_start
+              <span className="[word-break:keep-all]">
+                <span className="inline-block">{t.hero.title_start}</span>
+                <br />
+                <span className="inline-block">{t.hero.title_end}</span>
+              </span>
             ) : (
               <>
                 {t.hero.title_start}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { pairedRouteKey, enPathFor, zhPathFor } from "@/content/zh-routes.mjs";
 import { authApi, userManager } from "@/api";
 import { AuthDialog } from "@/components/AuthDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -14,7 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
-  Languages,
   User,
   LogOut,
   LayoutDashboard,
@@ -64,7 +64,17 @@ const maskEmail = (email: string) => {
 
 export const MainHeader: React.FC = () => {
   const navigate = useNavigate();
-  const { language: lang, toggleLanguage: toggleLang } = useLanguage();
+  const { language: lang, setLanguage } = useLanguage();
+  const { pathname } = useLocation();
+  const pairKey = pairedRouteKey(pathname);
+  const langHref =
+    pairKey === null ? pathname : lang === "zh" ? enPathFor(pairKey) : zhPathFor(pairKey);
+  const switchLanguage = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    setLanguage(lang === "zh" ? "en" : "zh");
+    if (langHref !== pathname) navigate(langHref);
+  };
+  const pricingPath = lang === "zh" ? "/zh/pricing" : "/pricing";
   const [user, setUser] = useState<any>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -129,7 +139,7 @@ export const MainHeader: React.FC = () => {
             {/* Logo Area */}
             <button
               type="button"
-              onClick={() => navigate("/index")}
+              onClick={() => navigate(lang === "zh" ? "/zh/" : "/index")}
               className="flex items-center gap-2 group"
             >
               <img
@@ -141,15 +151,16 @@ export const MainHeader: React.FC = () => {
 
             {/* Desktop Navigation */}
             <div className="hidden md:flex items-center gap-6">
-              {/* Language Switcher - Always visible */}
-              <button
-                type="button"
-                onClick={toggleLang}
-                className="text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--stitch-surface-strong)]/50"
+              {/* Language Switcher - text link, always visible */}
+              <a
+                href={langHref}
+                hrefLang={lang === "zh" ? "en" : "zh-CN"}
+                lang={lang === "zh" ? "en" : "zh-CN"}
+                onClick={switchLanguage}
+                className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
               >
-                <Languages size={16} />
-                <span className="text-xs font-mono uppercase">{lang}</span>
-              </button>
+                {lang === "zh" ? "English" : "中文"}
+              </a>
 
               {/* Theme Switcher - system / light / dark */}
               <ThemeToggle />
@@ -157,7 +168,7 @@ export const MainHeader: React.FC = () => {
               {/* Global navigation: Pricing & Log & MCP */}
               <button
                 type="button"
-                onClick={() => navigate("/pricing")}
+                onClick={() => navigate(pricingPath)}
                 className="text-sm text-[var(--stitch-muted)] hover:text-[var(--stitch-ink)] transition-colors"
               >
                 {t.pricing}
@@ -267,14 +278,15 @@ export const MainHeader: React.FC = () => {
                   <LayoutDashboard size={20} />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={toggleLang}
-                className="text-zinc-400 hover:text-zinc-100 flex items-center gap-1"
+              <a
+                href={langHref}
+                hrefLang={lang === "zh" ? "en" : "zh-CN"}
+                lang={lang === "zh" ? "en" : "zh-CN"}
+                onClick={switchLanguage}
+                className="text-sm text-zinc-400 hover:text-zinc-100"
               >
-                <Languages size={20} />
-                <span className="text-xs font-mono uppercase">{lang}</span>
-              </button>
+                {lang === "zh" ? "English" : "中文"}
+              </a>
               <ThemeToggle size={20} />
               <button
                 type="button"
@@ -294,7 +306,7 @@ export const MainHeader: React.FC = () => {
             <div className="px-4 py-4 space-y-4">
               <button
                 type="button"
-                onClick={() => navigate("/pricing")}
+                onClick={() => navigate(pricingPath)}
                 className="flex items-center gap-3 text-sm text-zinc-400 hover:text-zinc-100 w-full text-left p-2 rounded-md hover:bg-zinc-900"
               >
                 <CreditCard size={16} />

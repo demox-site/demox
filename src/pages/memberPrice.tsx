@@ -41,6 +41,18 @@ const pricingTexts = {
     shareTitle: "向朋友炫耀",
     shareDescription: "即使他们听不懂你在说什么",
     contactLine: "需要更多技术支持，欢迎联系我。",
+    limitsTitle: "价格与限制",
+    limitsNote: "三个套餐都是 $0/月。下面的 Node 云函数限制取自代码里的默认值和上限；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。",
+    limitsHead: ["项目", "默认", "上限"],
+    limitsRows: [
+      ["价格（全部套餐）", "$0/月", "$0/月"],
+      ["云函数超时", "30 秒", "300 秒"],
+      ["云函数内存", "128 MB", "512 MB"],
+      ["请求体 / 响应体", "6 MB", "6 MB"],
+      ["函数代码大小", "1 MB", "2 MB"],
+      ["每分钟调用次数", "60", "10,000"],
+      ["上传方式", "分块上传，每块 2 MB，不受单请求 8 MB 限制", "—"],
+    ],
     closingQuote: "“如果非要给我们钱，请把钱拿去买杯咖啡，边喝边写代码。”",
   },
   en: {
@@ -77,6 +89,18 @@ const pricingTexts = {
     shareTitle: "Show off to your friends",
     shareDescription: "Even if they have no idea what you're talking about",
     contactLine: "Need more technical support? Feel free to contact me.",
+    limitsTitle: "Prices and limits",
+    limitsNote: "All three plans cost $0/month. The Node function limits below are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.",
+    limitsHead: ["Item", "Default", "Cap"],
+    limitsRows: [
+      ["Price (all plans)", "$0/month", "$0/month"],
+      ["Function timeout", "30 s", "300 s"],
+      ["Function memory", "128 MB", "512 MB"],
+      ["Request / response body", "6 MB", "6 MB"],
+      ["Function code size", "1 MB", "2 MB"],
+      ["Invocations per minute", "60", "10,000"],
+      ["Uploads", "Chunked, 2 MB per chunk, no single-request 8 MB limit", "—"],
+    ],
     closingQuote: "“If you insist on giving us money, buy yourself a coffee and write some code while you drink it.”",
   },
 } as const;
@@ -161,6 +185,31 @@ const MemberPrice = () => {
               </button>
             </div>
           </div>
+
+          <section className="max-w-3xl mx-auto mb-24" aria-labelledby="pricing-limits">
+            <h2 id="pricing-limits" className="text-2xl font-bold mb-4 text-center">{t.limitsTitle}</h2>
+            <p className="text-sm text-[var(--stitch-muted)] mb-6 text-center">{t.limitsNote}</p>
+            <div className="overflow-x-auto rounded-2xl border border-[var(--stitch-line)]">
+              <table className="w-full text-sm">
+                <thead className="bg-[var(--stitch-surface-strong)]">
+                  <tr>
+                    {t.limitsHead.map((head) => (
+                      <th key={head} scope="col" className="px-4 py-3 text-left font-semibold">{head}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.limitsRows.map((row) => (
+                    <tr key={row[0]} className="border-t border-[var(--stitch-line)]">
+                      <th scope="row" className="px-4 py-3 text-left font-normal">{row[0]}</th>
+                      <td className="px-4 py-3 text-[var(--stitch-muted)]">{row[1]}</td>
+                      <td className="px-4 py-3 text-[var(--stitch-muted)]">{row[2]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <div className="mb-24 rounded-[2rem] border border-[var(--stitch-ink)]/20 bg-[var(--stitch-blue-soft)] px-6 py-10 sm:px-10">
             <div className="mx-auto max-w-2xl text-center">

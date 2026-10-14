@@ -34,7 +34,8 @@
     "test:jwt": "node --test scf-code/website-api/shared/jwt.test.cjs scf-code/mcp-api/shared/jwt.test.cjs scf-deploy-packages/auth-api/shared/jwt.test.cjs",
     "test:function-api-ci": "node --test scripts/ci/scf-function-api.test.cjs",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "scan:secrets": "gitleaks git --redact --no-banner -c .gitleaks.toml . && gitleaks dir --redact --no-banner -c .gitleaks.toml ."
+    "scan:secrets": "gitleaks git --redact --no-banner -c .gitleaks.toml . && gitleaks dir --redact --no-banner -c .gitleaks.toml .",
+    "build:preview": "npm run build && node scripts/make-preview-site.mjs dist dist-preview"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
