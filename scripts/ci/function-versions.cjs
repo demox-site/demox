@@ -481,7 +481,7 @@ function appendReleaseRecord(file, record) {
 
 function gitShow(ref, file, cwd = repoRoot()) {
   try {
-    return execFileSync('git', ['show', `${ref}:${file}`], { cwd, encoding: 'utf8' });
+    return execFileSync('git', ['show', `${ref}:${file}`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch {
     return null;
   }
