@@ -2159,6 +2159,10 @@ async function dispatchWebsiteRequest(event, context) {
       report_site: handleReportSite,
       list_site_reports: handleListSiteReports,
       update_site_report: handleUpdateSiteReport,
+      list_gallery_cards: handleListGalleryCards,
+      admin_list_gallery_cards: handleAdminListGalleryCards,
+      save_gallery_card: handleSaveGalleryCard,
+      reorder_gallery_cards: handleReorderGalleryCards,
       get_site_stats: handleGetSiteStats,
       get_site_access_logs: handleGetSiteAccessLogs,
       rollup_site_analytics: handleRollupSiteAnalytics,
@@ -2294,6 +2298,14 @@ async function dispatchWebsiteRequest(event, context) {
       return await handleUpdateProjectMemberRole(event);
     } else if (pathUrl.includes('/remove-project-member')) {
       return await handleRemoveProjectMember(event);
+    } else if (pathUrl.includes('/reorder-gallery-cards')) {
+      return await handleReorderGalleryCards(event);
+    } else if (pathUrl.includes('/save-gallery-card')) {
+      return await handleSaveGalleryCard(event);
+    } else if (pathUrl.includes('/admin-list-gallery-cards')) {
+      return await handleAdminListGalleryCards(event);
+    } else if (pathUrl.includes('/list-gallery-cards')) {
+      return await handleListGalleryCards(event);
     } else if (pathUrl.includes('/list-all')) {
       return await handleListAllWebsites(event);
     } else if (pathUrl.includes('/list')) {
@@ -10293,6 +10305,256 @@ function getCacheHeaders(key) {
   return { 'Cache-Control': 'public, max-age=31536000, immutable' };
 }
 
+// ── 首页作品墙（迁移 019_add_gallery_cards.sql）──────────────────────────────
+// 公开 list_gallery_cards 只返回 enabled=1。管理端 list/save/reorder 走 requireAdmin。
+// url / image 必须是 https://*.demox.site（含子域）。表由 ensureGalleryCardsTable
+// CREATE TABLE IF NOT EXISTS 保证，生产不一定会跑包里的 SQL 文件。
+// title_en / caption_en 第一天就在，英文首页不会在远程卡片替换内置卡片时丢文案。
+const GALLERY_PREVIEWS = new Set(['image', 'coffee', 'www', 'preview']);
+const GALLERY_CARDS_DDL = `CREATE TABLE IF NOT EXISTS gallery_cards (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  title VARCHAR(200) NOT NULL,
+  title_en VARCHAR(200) NOT NULL DEFAULT '',
+  url VARCHAR(512) NOT NULL,
+  href VARCHAR(512) NOT NULL DEFAULT '',
+  preview VARCHAR(16) NOT NULL DEFAULT 'image',
+  image VARCHAR(512) NOT NULL DEFAULT '',
+  caption VARCHAR(500) NOT NULL DEFAULT '',
+  caption_en VARCHAR(500) NOT NULL DEFAULT '',
+  row_num TINYINT NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_gallery_row_order (row_num, sort_order),
+  INDEX idx_gallery_enabled (enabled, row_num, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='首页作品墙卡片'`;
+
+let galleryCardsTableReady = false;
+async function ensureGalleryCardsTable() {
+  if (galleryCardsTableReady) return;
+  await query(GALLERY_CARDS_DDL);
+  galleryCardsTableReady = true;
+}
+
+function isDemoxHttpsUrl(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!text || text.length > 512) return false;
+  let url;
+  try { url = new URL(text); } catch { return false; }
+  if (url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  if (url.port && url.port !== '443') return false;
+  const host = String(url.hostname || '').toLowerCase().replace(/\.$/, '');
+  const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+  if (host === 'demox.site') return true;
+  if (!host.endsWith('.demox.site')) return false;
+  const sub = host.slice(0, -'.demox.site'.length);
+  return new RegExp(`^${label}(?:\\.${label})*$`).test(sub);
+}
+
+function isGalleryHref(value) {
+  if (value == null || value === '') return true;
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!text || text.length > 512) return false;
+  if (text.startsWith('/') && !text.startsWith('//') && !text.includes('://') && !/[\s\\]/.test(text)) return true;
+  return isDemoxHttpsUrl(text);
+}
+
+function galleryPlain(value, max) {
+  const raw = String(value == null ? '' : value).replace(/\u0000/g, '').trim();
+  if (raw.length > max || /[<>]/.test(raw)) return { ok: false };
+  return { ok: true, value: raw };
+}
+
+function galleryCaption(value, max) {
+  const raw = String(value == null ? '' : value).replace(/\u0000/g, '').trim();
+  if (raw.length > max) return { ok: false };
+  const withoutCode = raw.replace(/<\/?code>/gi, '');
+  if (/[<>]/.test(withoutCode)) return { ok: false };
+  return { ok: true, value: raw };
+}
+
+function parseGalleryEnabled(value) {
+  if (value === true || value === 1 || value === '1' || value === 'true') return 1;
+  if (value === false || value === 0 || value === '0' || value === 'false') return 0;
+  return null;
+}
+
+function parseGalleryCardInput(body) {
+  const src = body && typeof body === 'object' ? body : {};
+  const id = String(src.id || '').trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id)) {
+    return { ok: false, code: 'INVALID_GALLERY_ID', message: '卡片 id 只能是小写字母、数字和连字符' };
+  }
+  const title = galleryPlain(src.title, 80);
+  if (!title.ok || !title.value) return { ok: false, code: 'INVALID_GALLERY_TITLE', message: '请填写标题' };
+  const titleEn = galleryPlain(src.titleEn != null ? src.titleEn : src.title_en, 80);
+  if (!titleEn.ok) return { ok: false, code: 'INVALID_GALLERY_TITLE', message: '英文标题过长或含有非法字符' };
+  const caption = galleryCaption(src.caption, 240);
+  if (!caption.ok) return { ok: false, code: 'INVALID_GALLERY_CAPTION', message: '说明过长，或含有不支持的标记' };
+  const captionEn = galleryCaption(src.captionEn != null ? src.captionEn : src.caption_en, 240);
+  if (!captionEn.ok) return { ok: false, code: 'INVALID_GALLERY_CAPTION', message: '英文说明过长，或含有不支持的标记' };
+  const preview = String(src.preview || '');
+  if (!GALLERY_PREVIEWS.has(preview)) return { ok: false, code: 'INVALID_GALLERY_PREVIEW', message: '预览类型无效' };
+  const url = String(src.url || '').trim();
+  if (!isDemoxHttpsUrl(url)) return { ok: false, code: 'INVALID_GALLERY_URL', message: 'url 必须是 https://*.demox.site' };
+  const href = src.href == null ? '' : String(src.href).trim();
+  if (!isGalleryHref(href)) return { ok: false, code: 'INVALID_GALLERY_HREF', message: 'href 只能是站内路径或 https://*.demox.site' };
+  const image = String(src.image || '').trim();
+  if (preview === 'image') {
+    if (!isDemoxHttpsUrl(image)) return { ok: false, code: 'INVALID_GALLERY_IMAGE', message: 'image 必须是 https://*.demox.site' };
+  } else if (image && !isDemoxHttpsUrl(image)) {
+    return { ok: false, code: 'INVALID_GALLERY_IMAGE', message: 'image 必须是 https://*.demox.site' };
+  }
+  const row = Number(src.row);
+  if (row !== 1 && row !== 2) return { ok: false, code: 'INVALID_GALLERY_ROW', message: 'row 只能是 1 或 2' };
+  let order = null;
+  if (src.order != null && src.order !== '') {
+    order = Number(src.order);
+    if (!Number.isInteger(order) || order < 0 || order > 10000) {
+      return { ok: false, code: 'INVALID_GALLERY_ORDER', message: '排序必须是 0 到 10000 的整数' };
+    }
+  }
+  const enabled = parseGalleryEnabled(src.enabled);
+  if (enabled == null) return { ok: false, code: 'INVALID_GALLERY_ENABLED', message: 'enabled 必须是布尔值' };
+  return {
+    ok: true,
+    card: {
+      id,
+      title: title.value,
+      title_en: titleEn.value,
+      url,
+      href,
+      preview,
+      image,
+      caption: caption.value,
+      caption_en: captionEn.value,
+      row_num: row,
+      sort_order: order,
+      enabled
+    }
+  };
+}
+
+function mapGalleryCard(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    titleEn: row.title_en || '',
+    url: row.url,
+    href: row.href || '',
+    preview: row.preview,
+    image: row.image || '',
+    caption: row.caption || '',
+    captionEn: row.caption_en || '',
+    row: Number(row.row_num) === 2 ? 2 : 1,
+    order: Number(row.sort_order) || 0,
+    enabled: Number(row.enabled) === 1
+  };
+}
+
+function galleryError(code, message) {
+  return { statusCode: 400, headers: getCORSHeaders(), body: JSON.stringify({ success: false, code, message }) };
+}
+
+const GALLERY_LIST_SQL = `SELECT id, title, title_en, url, href, preview, image, caption, caption_en, row_num, sort_order, enabled
+  FROM gallery_cards`;
+
+async function handleListGalleryCards() {
+  try {
+    await ensureGalleryCardsTable();
+    const rows = await query(`${GALLERY_LIST_SQL} WHERE enabled = 1 ORDER BY row_num ASC, sort_order ASC, id ASC`);
+    return ok({ success: true, data: rows.map(mapGalleryCard) });
+  } catch (error) {
+    console.error('列出作品墙失败:', error && (error.code || error.message));
+    return ok({ success: false, code: 'GALLERY_UNAVAILABLE', message: '作品墙暂不可用' });
+  }
+}
+
+async function handleAdminListGalleryCards(event) {
+  const admin = await requireAdmin(event);
+  if (admin.err) return admin.err;
+  try {
+    await ensureGalleryCardsTable();
+    const rows = await query(`${GALLERY_LIST_SQL} ORDER BY row_num ASC, sort_order ASC, id ASC`);
+    return ok({ success: true, data: rows.map(mapGalleryCard) });
+  } catch (error) {
+    console.error('列出作品墙失败:', error && (error.code || error.message));
+    return ok({ success: false, code: 'GALLERY_UNAVAILABLE', message: '作品墙暂不可用' });
+  }
+}
+
+async function handleSaveGalleryCard(event) {
+  const admin = await requireAdmin(event);
+  if (admin.err) return admin.err;
+  const parsed = parseGalleryCardInput(event.body || {});
+  if (!parsed.ok) return galleryError(parsed.code, parsed.message);
+  const card = parsed.card;
+  try {
+    await ensureGalleryCardsTable();
+    const existing = await query('SELECT id, sort_order FROM gallery_cards WHERE id = ? LIMIT 1', [card.id]);
+    let order = card.sort_order;
+    if (order == null) {
+      if (existing.length) order = Number(existing[0].sort_order) || 0;
+      else {
+        const maxRows = await query('SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM gallery_cards WHERE row_num = ?', [card.row_num]);
+        order = Number(maxRows[0] && maxRows[0].n) || 1;
+      }
+    }
+    if (existing.length) {
+      await query(
+        `UPDATE gallery_cards
+         SET title = ?, title_en = ?, url = ?, href = ?, preview = ?, image = ?, caption = ?, caption_en = ?,
+             row_num = ?, sort_order = ?, enabled = ?
+         WHERE id = ?`,
+        [card.title, card.title_en, card.url, card.href, card.preview, card.image, card.caption, card.caption_en, card.row_num, order, card.enabled, card.id]
+      );
+    } else {
+      await query(
+        `INSERT INTO gallery_cards
+         (id, title, title_en, url, href, preview, image, caption, caption_en, row_num, sort_order, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [card.id, card.title, card.title_en, card.url, card.href, card.preview, card.image, card.caption, card.caption_en, card.row_num, order, card.enabled]
+      );
+    }
+    return ok({ success: true, card: mapGalleryCard({ ...card, sort_order: order }) });
+  } catch (error) {
+    console.error('保存作品墙卡片失败:', error && (error.code || error.message));
+    return ok({ success: false, code: 'GALLERY_UNAVAILABLE', message: '作品墙暂不可用' });
+  }
+}
+
+async function handleReorderGalleryCards(event) {
+  const admin = await requireAdmin(event);
+  if (admin.err) return admin.err;
+  const body = event.body || {};
+  const row = Number(body.row);
+  if (row !== 1 && row !== 2) return galleryError('INVALID_GALLERY_ROW', 'row 只能是 1 或 2');
+  if (!Array.isArray(body.ids) || body.ids.length > 100) return galleryError('INVALID_GALLERY_ORDER', '排序列表无效');
+  const ids = body.ids.map((id) => String(id || '').trim());
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) {
+    return galleryError('INVALID_GALLERY_ORDER', '排序列表无效');
+  }
+  try {
+    await ensureGalleryCardsTable();
+    const existing = await query('SELECT id FROM gallery_cards WHERE row_num = ? ORDER BY sort_order ASC, id ASC', [row]);
+    const have = existing.map((item) => item.id);
+    if (have.length !== ids.length || ids.some((id) => !have.includes(id))) {
+      return galleryError('INVALID_GALLERY_ORDER', '排序必须包含这一行的全部卡片');
+    }
+    for (let i = 0; i < ids.length; i += 1) {
+      await query('UPDATE gallery_cards SET sort_order = ? WHERE id = ? AND row_num = ?', [i + 1, ids[i], row]);
+    }
+    return ok({ success: true });
+  } catch (error) {
+    console.error('排序作品墙失败:', error && (error.code || error.message));
+    return ok({ success: false, code: 'GALLERY_UNAVAILABLE', message: '作品墙暂不可用' });
+  }
+}
+
 /**
  * 获取 CORS 头
  */
@@ -10328,3 +10590,10 @@ exports._adminBiLibForTest = adminBiLib;
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;
+exports._galleryForTest = {
+  isDemoxHttpsUrl,
+  parseGalleryCardInput,
+  mapGalleryCard,
+  GALLERY_CARDS_DDL,
+  reset() { galleryCardsTableReady = false; }
+};

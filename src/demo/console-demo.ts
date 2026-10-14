@@ -31,6 +31,15 @@ const projects = [
   { id: "p-docs", numericId: "2", name: "Docs", slug: "docs", role: "owner", ownerUserId: "demo-admin", websitesCount: 1, archived: false }
 ];
 
+// Admin layout fixture only. The public list stays empty so a console-demo homepage
+// keeps the built-in wall instead of swapping in screenshots that are not hosted yet.
+const galleryCards = [
+  { id: "coffee", title: "Coffee.", titleEn: "Coffee.", url: "https://coffee.demox.site/", href: "", preview: "coffee", image: "", caption: "Cafe site", captionEn: "A cafe website built and published with Demox", row: 1, order: 1, enabled: true },
+  { id: "www", title: "Demox website", titleEn: "Demox website", url: "https://www.demox.site/", href: "/how-demox-hosts-itself", preview: "www", image: "", caption: "Our own site", captionEn: "Our own site", row: 1, order: 2, enabled: true },
+  { id: "preview", title: "Preview site", titleEn: "Preview site for this page", url: "https://preview.demox.site/", href: "", preview: "preview", image: "", caption: "Sign-off preview", captionEn: "Sign-off preview site", row: 2, order: 1, enabled: false },
+  { id: "docs", title: "CLI docs", titleEn: "CLI docs", url: "https://zhihe-cli-docs.demox.site/", href: "", preview: "image", image: "https://www.demox.site/gallery/docs.webp", caption: "User docs", captionEn: "User docs", row: 2, order: 2, enabled: true }
+];
+
 const websites = [
   { id: 1, website_id: "DEMO0001", name: "Launch page", file_name: "launch.zip", url: "https://demo0001.example.com/", project_id: "p-demo", projectKey: "p-demo", project_name: "Sample project", user_id: "demo-admin", visibility: "public", deployed_size: 2_400_000, created_at: iso(40), updated_at: iso(1) },
   { id: 2, website_id: "DEMO0002", name: "Event signup", file_name: "event.zip", url: "https://demo0002.example.com/", project_id: "p-demo", projectKey: "p-demo", project_name: "Sample project", user_id: "demo-admin", visibility: "public", deployed_size: 880_000, created_at: iso(20), updated_at: iso(3) },
@@ -170,6 +179,10 @@ function websiteAction(action: string, body: Record<string, unknown>): unknown {
     case "list_buckets": return { success: true, data: buckets };
     case "bucket_stats": return bucketStats();
     case "list_site_reports": return { success: true, data: body.status === "all" ? reports : reports.filter((r) => r.status === (body.status || "open")) };
+    case "admin_list_gallery_cards": return { success: true, data: galleryCards };
+    case "list_gallery_cards": return { success: true, data: [] };
+    case "save_gallery_card": return { success: true, card: body };
+    case "reorder_gallery_cards": return { success: true };
     case "list_project_members": return { success: true, members: [{ userId: "demo-admin", email: "admin@example.com", role: "owner" }] };
     case "list_project_custom_domains": return { success: true, cnameTarget: "customers.demox.site", canManage: true, domains: demoDomains };
     case "verify_project_custom_domain": return verifyDemoDomain(String(body.domainId || ""));

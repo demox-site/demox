@@ -1,10 +1,12 @@
 // @ts-nocheck — markup mirrors the approved demo 1:1; behaviour lives in engine-s3.ts
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { initS3 } from "./engine-s3";
 import "./demo-screens.css";
-import { cardsForRow, cardTitle, cardCaption, type GalleryCard } from "./gallery-cards";
+import { GALLERY_CARDS, cardsForRow, cardTitle, cardCaption, type GalleryCard } from "./gallery-cards";
 import { marketingStrings, type MarketingLang, type MarketingStrings } from "./marketing-translations";
 import { COFFEE_CSS, renderBody, coffeeBody } from "./coffee-page.mjs";
+import { fetchRemoteGallery } from "./gallery-remote.mjs";
+import config from "@/configs/env";
 
 /** Gallery mini-preview of coffee.demox.site — same shared page source */
 const coffeeMini = (lang: MarketingLang) =>
@@ -38,8 +40,10 @@ function renderCard(c: GalleryCard, t: S3, lang: MarketingLang) {
 }
 
 /** Screen 3 · 作品墙 drifting gallery + 示例 modal */
-const Markup = React.memo(function Markup({ t, lang }: { t: S3; lang: MarketingLang }) {
+const Markup = React.memo(function Markup({ t, lang, cards }: { t: S3; lang: MarketingLang; cards: GalleryCard[] }) {
   const card = (c: GalleryCard) => renderCard(c, t, lang);
+  const row1 = cardsForRow(1, cards);
+  const row2 = cardsForRow(2, cards);
   return (
     <div>
   <section className="s3" id="s3" aria-labelledby="s3-title">
@@ -54,11 +58,11 @@ const Markup = React.memo(function Markup({ t, lang }: { t: S3; lang: MarketingL
           <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9" /></svg></a>
       </div>
     </div>
-    <p className="sr-only">{t.srWallLead}{cardsForRow(1).concat(cardsForRow(2)).map((c) => cardTitle(c, lang) + t.srItemOpen + host(c.url) + t.srItemClose).join(t.srSep)}{t.srWallEnd}</p>
+    <p className="sr-only">{t.srWallLead}{row1.concat(row2).map((c) => cardTitle(c, lang) + t.srItemOpen + host(c.url) + t.srItemClose).join(t.srSep)}{t.srWallEnd}</p>
     <div className="s3-stage" id="s3stage">
       <div className="s3-wall">
-        <div className="s3-row"><div className="s3-track"><div className="s3-set">{cardsForRow(1).map(card)}</div></div></div>
-        <div className="s3-row rev"><div className="s3-track"><div className="s3-set">{cardsForRow(2).map(card)}</div></div></div>
+        <div className="s3-row"><div className="s3-track"><div className="s3-set">{row1.map(card)}</div></div></div>
+        <div className="s3-row rev"><div className="s3-track"><div className="s3-set">{row2.map(card)}</div></div></div>
       </div>
     </div>
     <div className="s3-note"><span className="ix-hint s3-hint" aria-hidden="true"><svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 7l-5 5 5 5" /><path d="M16 7l5 5-5 5" /><path d="M3 12h18" /></svg>{t.dragHint}</span></div>
@@ -78,7 +82,7 @@ const Markup = React.memo(function Markup({ t, lang }: { t: S3; lang: MarketingL
   );
 });
 
-const GalleryStageInner: React.FC<{ onUpload?: () => void; lang: MarketingLang }> = ({ onUpload, lang }) => {
+const GalleryStageInner: React.FC<{ onUpload?: () => void; lang: MarketingLang; cards: GalleryCard[] }> = ({ onUpload, lang, cards }) => {
   const up = useRef(onUpload);
   up.current = onUpload;
   const ref = useRef<HTMLDivElement>(null);
@@ -93,17 +97,41 @@ const GalleryStageInner: React.FC<{ onUpload?: () => void; lang: MarketingLang }
     };
     root.addEventListener("click", onClick);
     return () => { root.removeEventListener("click", onClick); stop(); };
-  }, [lang]);
+  }, [lang, cards]);
   return (
     <div ref={ref} className="dx-mk dx-s3">
-      <Markup t={marketingStrings(lang).s3} lang={lang} />
+      <Markup t={marketingStrings(lang).s3} lang={lang} cards={cards} />
     </div>
   );
 };
 
-/** Remounts per language (the drifting rows clone the card sets once at init). */
-export const GalleryStage: React.FC<{ onUpload?: () => void; lang?: MarketingLang }> = ({ onUpload, lang = "zh" }) => (
-  <GalleryStageInner key={lang} onUpload={onUpload} lang={lang} />
-);
+/** Remounts per language (the drifting rows clone the card sets once at init).
+ *  Built-in cards paint immediately. Remote cards replace them only after a
+ *  successful list that fills both rows; timeout or failure leaves the built-in wall. */
+export const GalleryStage: React.FC<{ onUpload?: () => void; lang?: MarketingLang }> = ({ onUpload, lang = "zh" }) => {
+  const [cards, setCards] = useState(GALLERY_CARDS);
+  useEffect(() => {
+    const ac = new AbortController();
+    let idleId = 0;
+    let timer = 0;
+    let cancelled = false;
+    const start = () => {
+      const endpoint = `${config.websiteApiUrl}/website/list-gallery-cards`;
+      fetchRemoteGallery({ endpoint, timeoutMs: 2000, signal: ac.signal }).then((remote) => {
+        if (!cancelled && remote) setCards(remote);
+      });
+    };
+    const ric = window.requestIdleCallback;
+    if (typeof ric === "function") idleId = ric(start, { timeout: 1200 });
+    else timer = window.setTimeout(start, 1);
+    return () => {
+      cancelled = true;
+      ac.abort();
+      if (idleId && typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(idleId);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+  return <GalleryStageInner key={lang} onUpload={onUpload} lang={lang} cards={cards} />;
+};
 
 export default GalleryStage;

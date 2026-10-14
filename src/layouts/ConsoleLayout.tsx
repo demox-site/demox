@@ -76,6 +76,7 @@ const navTexts = {
     adminRoleLimits: "角色列表",
     adminBuckets: "存储桶",
     adminReports: "站点举报",
+    adminGallery: "作品墙",
     currentProject: "当前项目",
     projectSelect: "切换项目",
     noProjects: "暂无项目",
@@ -107,6 +108,7 @@ const navTexts = {
     adminRoleLimits: "Roles",
     adminBuckets: "Storage Buckets",
     adminReports: "Site reports",
+    adminGallery: "Gallery",
     currentProject: "Current Project",
     projectSelect: "Switch project",
     noProjects: "No projects",
@@ -342,7 +344,8 @@ export const ConsoleLayout: React.FC = () => {
     { key: "roles", path: "/console/admin/roles", label: t.adminRoles },
     { key: "roleLimits", path: "/console/admin/roleLimits", label: t.adminRoleLimits },
     { key: "buckets", path: "/console/admin/buckets", label: t.adminBuckets },
-    { key: "reports", path: "/console/admin/reports", label: t.adminReports }
+    { key: "reports", path: "/console/admin/reports", label: t.adminReports },
+    { key: "gallery", path: "/console/admin/gallery", label: t.adminGallery }
   ];
 
   const isActive = (path: string) => {
