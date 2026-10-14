@@ -30,7 +30,9 @@ const cosKey = unified ? "scf-deploy/demox-unified-scf.zip" : "scf-deploy/demox-
 const vpcId = "vpc-bwtrj6fb";
 const subnetId = "subnet-nzrl3bbq";
 const role = "demox-runtime-role";
-const fallbackPublicBaseUrl = "https://1307257815-3imzoal5x9.ap-guangzhou.tencentscf.com";
+// $LATEST HTTP 触发器 3imzoal5x9（曾用 https://1307257815-3imzoal5x9.ap-guangzhou.tencentscf.com）
+// 将被 DeleteTrigger，不重建。fallback 只用公网主入口，不要再指向该 URL。
+const fallbackPublicBaseUrl = "https://api.demox.site";
 const sourceRoot = path.join(repoRoot, "scf-code/function-api");
 const zipPath = unified
   ? path.join(repoRoot, ".artifacts/unified-scf/demox-unified-scf.zip")
