@@ -16,7 +16,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { clientIpFrom: resolveClientIp } = require('./client-ip.js');
+const { clientIpFrom: resolveClientIp, clientIpInfo } = require('./client-ip.js');
 const { isClientError, typedErrorResponse } = require('./errors.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
@@ -71,7 +71,8 @@ function eventFromRequest(req, rawBody) {
   stripPlatformHeaders(headers);
   const text = isTextContentType(headers['content-type']);
   const requestId = (SCF_REQUEST_ID_PATTERN.test(scfRequestId) ? scfRequestId : '') || firstHeader(headers['x-request-id']) || crypto.randomBytes(8).toString('hex');
-  const sourceIp = clientIpFrom(headers, req.socket, scfRemoteAddr);
+  const ipInfo = clientIpInfo(headers, req.socket, scfRemoteAddr);
+  const sourceIp = ipInfo.primary;
   return {
     httpMethod: String(req.method || 'GET').toUpperCase(),
     path: url.pathname,
@@ -80,7 +81,7 @@ function eventFromRequest(req, rawBody) {
     queryString: query,
     body: rawBody.length ? (text ? rawBody.toString('utf8') : rawBody.toString('base64')) : '',
     isBase64Encoded: rawBody.length > 0 && !text,
-    requestContext: { requestId, sourceIp, path: url.pathname, httpMethod: String(req.method || 'GET').toUpperCase() },
+    requestContext: { requestId, sourceIp, rateKeys: ipInfo.keys, path: url.pathname, httpMethod: String(req.method || 'GET').toUpperCase() },
     requestId
   };
 }
