@@ -1454,6 +1454,45 @@ export const adminApi = {
   }
 };
 
+export type GalleryAdminCard = {
+  id: string;
+  title: string;
+  titleEn?: string;
+  url: string;
+  href?: string;
+  preview: "image" | "coffee" | "www" | "preview";
+  image?: string;
+  caption?: string;
+  captionEn?: string;
+  row: 1 | 2;
+  order?: number;
+  enabled: boolean;
+};
+
+export const galleryAdminApi = {
+  list: async () => {
+    return request<{ success: boolean; message?: string; code?: string; data?: GalleryAdminCard[] }>(
+      WEBSITE_API_URL,
+      "/website/admin-list-gallery-cards",
+      { method: "POST", body: { action: "admin_list_gallery_cards" } }
+    );
+  },
+  save: async (card: GalleryAdminCard) => {
+    return request<{ success: boolean; message?: string; code?: string; card?: GalleryAdminCard }>(
+      WEBSITE_API_URL,
+      "/website/save-gallery-card",
+      { method: "POST", body: { action: "save_gallery_card", ...card } }
+    );
+  },
+  reorder: async (row: 1 | 2, ids: string[]) => {
+    return request<{ success: boolean; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/reorder-gallery-cards",
+      { method: "POST", body: { action: "reorder_gallery_cards", row, ids } }
+    );
+  }
+};
+
 // 检查登录状态
 export function isLoggedIn(): boolean {
   return !!tokenManager.get();

@@ -34,6 +34,7 @@ import { FeishuIcon } from "@/components/FeishuIcon";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip as UiTooltip, TooltipContent as UiTooltipContent, TooltipTrigger as UiTooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { AlertCircle, AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Ban, Eye, FolderKanban, Github, Globe, HardDrive, Pencil, RefreshCw, Search, ShieldCheck, Trash2, UserPlus } from "lucide-react";
+import AdminGallery from "./admin/AdminGallery";
 
 // BI 概览单独分包：只有打开「数据概览」时才下载图表代码。
 const AdminBiOverview = React.lazy(() => import("./admin/bi/AdminBiOverview"));
@@ -152,11 +153,12 @@ const AdminDashboard: React.FC = () => {
   const [bucketDeleteTarget, setBucketDeleteTarget] = useState<BucketRow | null>(null);
   const [bucketDeleting, setBucketDeleting] = useState(false);
   const { section } = useParams<{ section?: string }>();
-  const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" | "reports" =
+  const activeTab: "dashboard" | "roles" | "roleLimits" | "buckets" | "reports" | "gallery" =
     section === "roles" ? "roles"
       : section === "roleLimits" ? "roleLimits"
         : section === "buckets" ? "buckets"
           : section === "reports" ? "reports"
+            : section === "gallery" ? "gallery"
           : "dashboard";
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1770,6 +1772,8 @@ const AdminDashboard: React.FC = () => {
                 </DialogContent>
               </Dialog>
               </div>
+            ) : activeTab === "gallery" ? (
+              <AdminGallery />
             ) : activeTab === "reports" ? (
               <div className="space-y-6">
                 <div className="flex flex-wrap items-end justify-between gap-4">
