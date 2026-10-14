@@ -42,6 +42,6 @@ push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AU
 3. 把 `api.demox.site` 所有 `FunctionName=demox-function-api` 的入口 `Qualifier` 从 `$LATEST` 改成 `production`（`GetCustomDomain` 取出 `EndpointsConfig`，只改 Qualifier，原样 `UpdateCustomDomain`，证书和协议保持不变）。
 4. 定时触发器 `analytics-rollup-5m`（`0 */5 * * * * *`）和 `monthly-renew`（`0 17 3 1 * * *`）改为绑定 `production`：在两次 5 分钟触发之间删除后用同名、同 cron、`Qualifier=production` 重建。
 5. 给别名 `develop` 一个公网 HTTPS 地址，写进仓库变量 `FUNCTION_API_DEVELOP_URL`（不能是 api.demox.site 本身）：例如建一个绑定 `Qualifier=develop` 的 HTTP 触发器（函数 URL），或单独的自定义域名把 `/*` 指向 develop。没配置时 `plan` 报错，脚本不做任何写操作。
-6. HTTP 触发器 `3imzoal5x9`（`$LATEST`）：api.demox.site 不走它；确认没有调用方后可以保留（脚本只给警告）或改到别名上。
+6. HTTP 触发器 `3imzoal5x9`（`$LATEST`，曾用 `https://1307257815-3imzoal5x9.ap-guangzhou.tencentscf.com`）是正在拆除的旁路：平台不能把 HTTP 触发器的 Qualifier 从 `$LATEST` 改走，因此只 `DeleteTrigger`，不重建、不改绑到别名。`https://api.demox.site` 与 production HTTP `3y2j2hgctz` 都不依赖它。已停用的 `scripts/deploy-function-api.mjs` 里 `fallbackPublicBaseUrl` 改为 `https://api.demox.site`。本步骤不执行删除。
 7. 不需要配腾讯云 secrets（OIDC，见上）。`demox-function-api`、`demox-user-nodejs` 必须带标签 `codename=demox`（已带）。
 8. 手动跑一次 `action=plan`（同样要在 environment 里批准），全绿后再 `action=deploy`。第一次 plan 也是 OIDC 正向验证：日志里应出现“已通过 OIDC 扮演 …demox-ci-deploy”。
