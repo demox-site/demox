@@ -45,7 +45,7 @@ const pricingTexts = {
     limitsNote: "三个套餐都是 $0/月。下面的 Node 云函数限制取自代码里的默认值和上限；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。",
     limitsHead: ["项目", "默认", "上限"],
     limitsRows: [
-      ["价格（基础版 / 专业版 / 尊贵土豪版）", "$0/月", "$0/月"],
+      ["价格（全部套餐）", "$0/月", "$0/月"],
       ["云函数超时", "30 秒", "300 秒"],
       ["云函数内存", "128 MB", "512 MB"],
       ["请求体 / 响应体", "6 MB", "6 MB"],
@@ -93,7 +93,7 @@ const pricingTexts = {
     limitsNote: "All three plans cost $0/month. The Node function limits below are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.",
     limitsHead: ["Item", "Default", "Cap"],
     limitsRows: [
-      ["Price (Basic / Pro / Enterprise)", "$0/month", "$0/month"],
+      ["Price (all plans)", "$0/month", "$0/month"],
       ["Function timeout", "30 s", "300 s"],
       ["Function memory", "128 MB", "512 MB"],
       ["Request / response body", "6 MB", "6 MB"],

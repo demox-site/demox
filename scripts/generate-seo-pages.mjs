@@ -130,7 +130,7 @@ const homeFallback = `
 // 上传文件大小、文件数和站点数按账号角色配额，存在数据库里，这里不写数字。
 const PRICING_ROWS = {
   en: [
-    ["Price (Basic / Pro / Enterprise)", "$0/month", "$0/month"],
+    ["Price (all plans)", "$0/month", "$0/month"],
     ["Function timeout", "30 s", "300 s"],
     ["Function memory", "128 MB", "512 MB"],
     ["Request / response body", "6 MB", "6 MB"],
@@ -139,7 +139,7 @@ const PRICING_ROWS = {
     ["Uploads", "Chunked, 2 MB per chunk, no single-request 8 MB limit", "—"],
   ],
   zh: [
-    ["价格（基础版 / 专业版 / 尊贵土豪版）", "$0/月", "$0/月"],
+    ["价格（全部套餐）", "$0/月", "$0/月"],
     ["云函数超时", "30 秒", "300 秒"],
     ["云函数内存", "128 MB", "512 MB"],
     ["请求体 / 响应体", "6 MB", "6 MB"],
