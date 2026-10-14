@@ -78,9 +78,10 @@ test('eventFromRequest handles empty bodies', () => {
   assert.equal(ev.requestContext.sourceIp, '9.9.9.9');
 });
 
-test('client IP: untrusted x-scf-remote-addr wins over XFF (custom-domain forge = worst case own bucket)', () => {
+test('client IP: XFF walk is the primary IP; untrusted x-scf-remote-addr is an extra rate key, never overrides XFF', () => {
   const ev = eventFromRequest({ method: 'POST', url: '/auth/login', headers: { 'x-forwarded-for': '6.6.6.6, 1.1.1.1', 'x-scf-remote-addr': '1.2.3.4' }, socket: { remoteAddress: '127.0.0.1' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '1.2.3.4', 'valid untrusted remote-addr used; XFF ignored');
+  assert.equal(ev.requestContext.sourceIp, '1.1.1.1', 'XFF walk is primary; a forged remote-addr must not pick the bucket');
+  assert.deepEqual(ev.requestContext.rateKeys, ['1.1.1.1', '1.2.3.4'], 'both sources are rate-limited');
   assert.equal(ev.headers['x-forwarded-for'], '6.6.6.6, 1.1.1.1', 'XFF still visible to apps');
   assert.deepEqual(Object.keys(ev.headers).filter((k) => k.startsWith('x-scf-')), [], 'x-scf-* stripped from event headers after IP read');
 });
@@ -163,7 +164,8 @@ test('Event entry without sourceIp keys the rate limit on the rightmost non-trus
   assert.equal(clientIpFromForwardedFor(''), '');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112' } }).clientKey, '140.248.50.98', 'no remote-addr: XFF walk');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60' } }).clientKey, '140.248.52.60', 'function URL: remote-addr alone (no anonymous)');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60', 'x-forwarded-for': '203.0.113.7' } }).clientKey, '140.248.52.60', 'untrusted remote ignores forged XFF');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60', 'x-forwarded-for': '203.0.113.7' } }).clientKey, '203.0.113.7', 'XFF primary');
+  assert.deepEqual(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60', 'x-forwarded-for': '203.0.113.7' } }).clientKeys, ['203.0.113.7', '140.248.52.60'], 'both keys limited: forging XFF alone cannot reset the remote-addr bucket');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '10.132.167.112', 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112' } }).clientKey, '140.248.50.98', 'trusted remote reads XFF');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'X-Forwarded-For': '1.2.3.4, 203.0.113.50' } }).clientKey, '203.0.113.50');
   assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {}, requestContext: { sourceIp: '198.51.100.1' } }).clientKey, '198.51.100.1', 'gateway sourceIp still wins');
@@ -192,11 +194,12 @@ test('trusted list is exactly the 云架构 15:25 list (code constant)', () => {
 
 test('real function-URL chain → real client (140.248.50.98)', () => {
   assert.equal(clientIpFromForwardedFor('1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112'), '140.248.50.98');
-  // trusted remote-addr → XFF walk; x-real-ip ignored; forged public remote would win instead (worst case)
+  // XFF walk is primary; x-real-ip ignored; a forged public remote-addr is only an extra rate key
   const ev = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112', 'x-real-ip': '11.163.17.81', 'x-scf-remote-addr': '10.132.167.112' }, socket: { remoteAddress: '10.0.0.9' } }, Buffer.alloc(0));
   assert.equal(ev.requestContext.sourceIp, '140.248.50.98');
   const forged = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112', 'x-scf-remote-addr': '3.3.3.3' }, socket: { remoteAddress: '10.0.0.9' } }, Buffer.alloc(0));
-  assert.equal(forged.requestContext.sourceIp, '3.3.3.3', 'untrusted remote-addr may be forged on custom domain; XFF not consulted');
+  assert.equal(forged.requestContext.sourceIp, '140.248.50.98', 'forged remote-addr on custom domain must not override the gateway XFF chain');
+  assert.deepEqual(forged.requestContext.rateKeys, ['140.248.50.98', '3.3.3.3']);
 });
 
 test('real api.demox.site domain chains → real client', () => {
