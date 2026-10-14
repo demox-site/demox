@@ -23,7 +23,7 @@
 | `demox-mcp-api` | `demox` | **回滚用**，不要再更新 | `scf-code/mcp-api/` | HTTP |
 | `demox-cert-renew` | `demox` | **回滚用**，不要再更新 | `scf-code/cert-renew/` | 定时器应关闭 |
 
-`demox-function-api` 绑定运行角色 `demox-runtime-role`，VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`，内存 512 MB，超时 300 秒。`demox-user-nodejs` 在同一 VPC，无平台密钥。完整环境变量名清单见 `scf-code/function-api/live-config.json`（不含值）。
+`demox-function-api` 绑定运行角色 `demox-runtime-role`，VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`，内存 512 MB，超时 300 秒。`demox-user-nodejs` 在同一 VPC，无平台密钥。`demox-function-api` 的环境变量名以 `functions.json` 的 `environmentNames` 为准（不含值）。`scf-code/function-api/live-config.json` 是 2026-08-31 的脱敏快照，里面的 21 个名字不是当前名单。
 
 ### 业务代码怎么发
 

@@ -391,6 +391,22 @@ function parseLiveVersion(versions, version) {
   return row ? parseDescription(row.Description) : null;
 }
 
+// seed 占位期间不能升到真实 semver。云架构要求在元数据写入之前先把环境变量名补全，
+// 所以只改 environmentNames、其余 runtime 字段不变时，允许版本保持 0.0.0-placeholder。
+function seedEnvironmentNameCorrection(baseFn, headFn, { runtimeFilesChanged, configChanged, runtimeCmp, appCmp }) {
+  if (!configChanged || runtimeFilesChanged || runtimeCmp !== 0 || appCmp !== 0) return false;
+  if (!isPlaceholderVersion(baseFn.appVersion) || !isPlaceholderVersion(baseFn.runtimeVersion)) return false;
+  if (!isPlaceholderVersion(headFn.appVersion) || !isPlaceholderVersion(headFn.runtimeVersion)) return false;
+  const baseCanon = canonicalRuntime(baseFn.runtime);
+  const headCanon = canonicalRuntime(headFn.runtime);
+  const baseNames = baseCanon.environmentNames;
+  const headNames = headCanon.environmentNames;
+  delete baseCanon.environmentNames;
+  delete headCanon.environmentNames;
+  return JSON.stringify(baseCanon) === JSON.stringify(headCanon)
+    && JSON.stringify(baseNames) !== JSON.stringify(headNames);
+}
+
 function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
   const errors = [];
   const warnings = [];
@@ -434,8 +450,17 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
     }
     const runtimeChanged = files.filter((file) => matchesPath(file, headFn.runtimePaths));
     if ((runtimeChanged.length || configChanged) && runtimeCmp <= 0) {
-      const why = runtimeChanged.length ? runtimeChanged.join(', ') : 'runtime 配置';
-      errors.push(`${baseFn.name} 的 runtime 文件或配置变了但 runtime 仍是 ${headFn.runtimeVersion}：${why}`);
+      if (seedEnvironmentNameCorrection(baseFn, headFn, {
+        runtimeFilesChanged: runtimeChanged.length > 0,
+        configChanged,
+        runtimeCmp,
+        appCmp
+      })) {
+        warnings.push(`${baseFn.name} 在 seed 占位期间只修正了 environmentNames，runtime 仍是 ${headFn.runtimeVersion}。真实版本留到元数据写入。`);
+      } else {
+        const why = runtimeChanged.length ? runtimeChanged.join(', ') : 'runtime 配置';
+        errors.push(`${baseFn.name} 的 runtime 文件或配置变了但 runtime 仍是 ${headFn.runtimeVersion}：${why}`);
+      }
     }
   }
   return { ok: errors.length === 0, errors, warnings };
