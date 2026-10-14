@@ -20,6 +20,8 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 `seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。
 
+`scf-code/website-api/**` 不要求给 `demox-function-api` 升 app。website 业务函数由 `.github/workflows/deploy-website-function.yml` 用 `demox functions push` 单独发布。统一包仍可能拷贝这份代码做共享依赖，但只改它不能把线上的 demox-release 元数据推高。`scf-code/function-api/**` 的代码变更仍要升 app。
+
 ## 第一次发布
 
 `develop` 和 `production` 都存在、都不指向 `$LATEST`，并且两个别名指向的版本描述都解析不出 `demox-release` 时，`deploy-develop` 允许做**一次** bootstrap（原因 `bootstrap-metadata`）。用同一份 COS 包走 `UpdateFunctionCode`，`PublishVersion` 时把 `demox-release` 写进新版本 Description，再把 develop 指过去。

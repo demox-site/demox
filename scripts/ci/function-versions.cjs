@@ -24,6 +24,12 @@ const PLACEHOLDER = 'placeholder';
 const BANNED_CODE_PREFIXES = ['src/', 'examples/', 'public/', 'edge-functions/'];
 const BANNED_ACCOUNT_IDS = ['100021031865', '1307257815'];
 const CODE_IGNORE = /\.test\.(?:c?js|mjs)$|\.md$/;
+// website 业务函数由 deploy-website-function.yml 用 demox functions push 单独发布。
+// 统一 SCF 包仍可能拷贝 scf-code/website-api 做共享依赖，但只改这里不能要求
+// demox-function-api 升 app，否则会和线上仍是 0.1.0 的 demox-release 元数据错开。
+const APP_BUMP_EXEMPT_PREFIXES = {
+  'demox-function-api': ['scf-code/website-api/']
+};
 
 function repoRoot() {
   return path.resolve(__dirname, '../..');
@@ -303,6 +309,12 @@ function isIgnoredCodeFile(file) {
   return CODE_IGNORE.test(String(file).split('/').pop());
 }
 
+function isExemptFromAppBump(functionName, file) {
+  const normalized = String(file || '').split('\\').join('/');
+  const prefixes = APP_BUMP_EXEMPT_PREFIXES[functionName] || [];
+  return prefixes.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix));
+}
+
 function runtimePlanLines(manifest) {
   const check = validateManifest(manifest);
   if (!check.ok) {
@@ -497,7 +509,7 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
     }
     if (appCmp < 0) errors.push(`${baseFn.name} 的 app 从 ${baseFn.appVersion} 降到 ${headFn.appVersion}`);
     if (runtimeCmp < 0) errors.push(`${baseFn.name} 的 runtime 从 ${baseFn.runtimeVersion} 降到 ${headFn.runtimeVersion}`);
-    const codeChanged = files.filter((file) => matchesPath(file, headFn.codePaths) && !isIgnoredCodeFile(file));
+    const codeChanged = files.filter((file) => matchesPath(file, headFn.codePaths) && !isIgnoredCodeFile(file) && !isExemptFromAppBump(headFn.name, file));
     if (codeChanged.length && appCmp <= 0) {
       errors.push(`${baseFn.name} 的代码变了但 app 仍是 ${headFn.appVersion}：${codeChanged.join(', ')}`);
     }
