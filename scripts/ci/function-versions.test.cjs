@@ -205,6 +205,67 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.match(handler.errors.join('\n'), /demox-user-nodejs 的代码变了/);
 });
 
+test('seed placeholder may correct environment names without a runtime bump', () => {
+  const head = v.loadManifest();
+  const api = head.functions.find((fn) => fn.name === 'demox-function-api');
+  const added = [
+    'DEMOX_PLATFORM_WEBSITE_ID',
+    'DEMOX_SITE_WEBSITE_ID',
+    'FUNCTIONS_COS_BUCKET',
+    'FUNCTIONS_COS_REGION',
+    'FUNCTIONS_NODE_RUNTIME',
+    'FUNCTIONS_NODE_RUNTIME_URL',
+    'FUNCTIONS_RUNTIME_NAMESPACE',
+    'FUNCTION_ENV',
+    'FUNCTION_PUBLIC_BASE_URL',
+    'RUNTIME_INVOKE_SECRET',
+    'FAIL_OPEN_CHECK_KEY'
+  ];
+  assert.equal(api.runtime.environmentNames.length, 32);
+  assert.deepEqual(api.runtime.environmentNames, [...api.runtime.environmentNames].sort());
+  assert.deepEqual(api.runtime.triggers, ['http:api.demox.site', 'timer:analytics-rollup-5m', 'timer:monthly-renew']);
+  assert.equal(api.runtime.entry, 'index.main');
+  assert.equal(api.runtime.memoryMB, 512);
+  assert.equal(api.runtime.timeoutSec, 300);
+  assert.deepEqual(api.runtime.layers, []);
+  assert.equal(api.appVersion, '0.0.0-placeholder');
+  assert.equal(api.runtimeVersion, '0.0.0-placeholder');
+  assert.equal(head.seed, true);
+  for (const name of added) assert.equal(api.runtime.environmentNames.includes(name), true);
+
+  const base = structuredClone(head);
+  const baseApi = base.functions.find((fn) => fn.name === 'demox-function-api');
+  baseApi.runtime.environmentNames = baseApi.runtime.environmentNames.filter((name) => !added.includes(name));
+  assert.equal(baseApi.runtime.environmentNames.length, 21);
+
+  const namesOnly = v.evaluateChanges({
+    baseManifest: base,
+    headManifest: head,
+    changedFiles: ['functions.json']
+  });
+  assert.equal(namesOnly.ok, true, namesOnly.errors.join('\n'));
+  assert.match(namesOnly.warnings.join('\n'), /environmentNames/);
+
+  const alsoMemory = structuredClone(head);
+  alsoMemory.functions.find((fn) => fn.name === 'demox-function-api').runtime.memoryMB = 1024;
+  const mixed = v.evaluateChanges({ baseManifest: base, headManifest: alsoMemory, changedFiles: [] });
+  assert.equal(mixed.ok, false);
+  assert.match(mixed.errors.join('\n'), /runtime/);
+
+  const released = structuredClone(base);
+  const releasedHead = structuredClone(head);
+  for (const manifest of [released, releasedHead]) {
+    manifest.seed = false;
+    for (const fn of manifest.functions) {
+      fn.appVersion = '0.1.0';
+      fn.runtimeVersion = '0.1.0';
+    }
+  }
+  const afterSeed = v.evaluateChanges({ baseManifest: released, headManifest: releasedHead, changedFiles: [] });
+  assert.equal(afterSeed.ok, false);
+  assert.match(afterSeed.errors.join('\n'), /runtime/);
+});
+
 test('release log records versions, commit, sha256, approver, and time', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-'));
   const file = path.join(dir, 'docs', 'function-releases.jsonl');
