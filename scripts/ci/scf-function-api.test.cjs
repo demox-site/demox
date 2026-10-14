@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD } = require('./scf-function-api.cjs');
+const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, validateStagedKey, validateSha256 } = require('./scf-function-api.cjs');
 
 // CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
 const FORBIDDEN = ['Invoke', 'GetFunction', 'UpdateFunctionConfiguration', 'UpdateFunction', 'CreateAlias', 'CreateFunction', 'DeleteFunction', 'DeleteAlias', 'CreateTrigger', 'DeleteTrigger', 'UpdateTrigger'];
@@ -484,4 +484,92 @@ test('cli logs the upload endpoint (no secrets) and rejects bad DEMOX_COS_ACCELE
   const bad = run({ DEMOX_COS_ACCELERATE: 'ture' });
   assert.match(bad, /DEMOX_COS_ACCELERATE 取值不合法/);
   assert.doesNotMatch(bad, /缺少凭证|COS 上传端点/);
+});
+
+// ---- deploy-develop（COS 已有包 + sha256）/ promote ----
+const crypto = require('crypto');
+const PKG = Buffer.from('unified-package-bytes');
+const PKG_SHA = crypto.createHash('sha256').update(PKG).digest('hex');
+const KEY = 'scf-deploy/ci/demox-unified-scf-2447b49e87ec-cf88974023f8.zip';
+function getCos(body = PKG) {
+  const calls = [];
+  return { calls, getObject: (p, cb) => { calls.push(['get', p.Key]); cb(null, { Body: body }); } };
+}
+const WRITES = ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'];
+
+test('validateStagedKey: only scf-deploy/ci/<name>.zip', () => {
+  assert.equal(validateStagedKey(KEY), KEY);
+  for (const bad of ['', 'scf-deploy/x.zip', 'other/scf-deploy/ci/a.zip', 'scf-deploy/ci/../secret.zip', 'scf-deploy/ci/a/../../b.zip',
+    'scf-deploy/ci/sub/a.zip', 'scf-deploy/ci/a.txt', 'scf-deploy/ci/.zip', 'scf-deploy/ci/a..zip', 'scf-deploy/ci/a%2f.zip',
+    'scf-deploy/ci/a\\b.zip', 'scf-deploy/ci/a b.zip', '/scf-deploy/ci/a.zip', 'scf-deploy/ci/', null, undefined]) {
+    assert.throws(() => validateStagedKey(bad), /部署包 key/, String(bad));
+  }
+});
+
+test('validateSha256: 64 lowercase hex only', () => {
+  assert.equal(validateSha256(PKG_SHA), PKG_SHA);
+  for (const bad of ['', 'abc', PKG_SHA.toUpperCase(), PKG_SHA + '0', PKG_SHA.slice(1) + 'g']) assert.throws(() => validateSha256(bad));
+});
+
+test('deploy-develop: sha256 mismatch → hard error before any SCF write', async () => {
+  const s = fakeScf();
+  const cos = getCos(Buffer.from('tampered'));
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(d.deployDevelop({ key: KEY, sha256: PKG_SHA }), /sha256 不一致/);
+  assert.equal(s.calls.filter((c) => WRITES.includes(c.name)).length, 0);
+  assert.deepEqual(s.aliases.map((a) => a.FunctionVersion), ['3', '3']);
+});
+
+test('deploy-develop: bad key rejected before any COS or SCF call', async () => {
+  const s = fakeScf();
+  const cos = getCos();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(d.deployDevelop({ key: 'scf-deploy/ci/../x.zip', sha256: PKG_SHA }), /部署包 key/);
+  assert.equal(cos.calls.length, 0);
+  assert.equal(s.calls.length, 0);
+});
+
+test('deploy-develop: uses the existing COS key (no upload), switches develop only, never production', async () => {
+  const s = fakeScf();
+  const cos = getCos();
+  const f = fakeFetch();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: f, log: quiet, wait: async () => {} });
+  const r = await d.deployDevelop({ key: KEY, sha256: PKG_SHA, sha: '2447b49e87ec' });
+  assert.equal(r.version, '4');
+  const code = s.calls.find((c) => c.name === 'UpdateFunctionCode').params;
+  assert.equal(code.CosObjectName, KEY);
+  const aliasCalls = s.calls.filter((c) => c.name === 'UpdateAlias');
+  assert.ok(aliasCalls.length >= 1 && aliasCalls.every((c) => c.params.Name === 'develop'));
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+  assert.equal(s.aliases.find((a) => a.Name === 'develop').FunctionVersion, '4');
+  assert.ok(f.urls.every((u) => !u.url.startsWith(CONFIG.publicBaseUrl)));
+});
+
+test('deploy-develop: failed develop health check reverts develop, production untouched', async () => {
+  const s = fakeScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: fakeFetch({ devStatus: { '/health': 500 } }), log: quiet, wait: async () => {} });
+  await assert.rejects(d.deployDevelop({ key: KEY, sha256: PKG_SHA }), /健康检查失败/);
+  assert.ok(s.calls.filter((c) => c.name === 'UpdateAlias').every((c) => c.params.Name === 'develop'));
+  assert.deepEqual(s.aliases.map((a) => a.FunctionVersion), ['3', '3']);
+});
+
+test('promote: refuses a version that is not on develop; switches production only when it is', async () => {
+  const s = fakeScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  await assert.rejects(d.promote({ version: '3' }), /develop 当前是 v4/);
+  await assert.rejects(d.promote({ version: 'x' }), /数字/);
+  const r = await d.promote({ version: '4' });
+  assert.deepEqual(r, { previous: '3', version: '4' });
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '4');
+  assert.equal(s.calls.filter((c) => c.name === 'UpdateFunctionCode').length, 1);
+});
+
+test('promote: public check failure switches production back', async () => {
+  const s = fakeScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await d.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  const bad = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: fakeFetch({ prodStatus: { '/health': 502 } }), log: quiet, wait: async () => {} });
+  await assert.rejects(bad.promote({ version: '4' }), /切回 v3/);
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
 });

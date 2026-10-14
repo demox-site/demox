@@ -18,6 +18,8 @@
  * 用法：
  *   node scripts/ci/scf-function-api.cjs plan                    只读：检查前置条件
  *   node scripts/ci/scf-function-api.cjs deploy --zip <zip> [--with-runtime]
+ *   node scripts/ci/scf-function-api.cjs deploy-develop --key scf-deploy/ci/<x>.zip --sha256 <hex>   只发 develop，不动 production
+ *   node scripts/ci/scf-function-api.cjs promote --version <N>     production → N（N 必须是 develop 当前版本）
  *   node scripts/ci/scf-function-api.cjs rollback --version <N>
  * 凭证（优先级从高到低）：
  *   1. GitHub Actions OIDC：TENCENTCLOUD_ROLE_ARN + ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN（job 需 id-token: write
@@ -178,6 +180,25 @@ function validateCosTarget(bucket = CONFIG.cosBucket, region = CONFIG.cosRegion)
   if (!/^[a-z0-9][a-z0-9-]{0,48}-1307257815$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（只接受本账号 APPID 1307257815 的桶：<name>-1307257815）`);
   if (!/^ap-[a-z]+(?:-[a-z]+)*$/.test(String(region))) throw new Error(`COS 地域不合法：${region}`);
   return { bucket, region };
+}
+
+/**
+ * deploy-develop 用的已有部署包 key：只接受 scf-deploy/ci/ 下一层的 .zip 文件名
+ * （不允许 ..、子目录、反斜杠、%、空白或其它前缀），防止输入把函数指到别的对象。
+ */
+function validateStagedKey(key) {
+  const k = String(key == null ? '' : key);
+  if (!k.startsWith(CONFIG.cosPrefix)) throw new Error(`部署包 key 必须在 ${CONFIG.cosPrefix} 下：${k}`);
+  const name = k.slice(CONFIG.cosPrefix.length);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.zip$/.test(name) || name.includes('..')) throw new Error(`部署包 key 不合法：${k}（只接受 ${CONFIG.cosPrefix}<文件名>.zip，不能有子目录或 ..）`);
+  return k;
+}
+
+/** 期望的 sha256：必须是 64 位小写十六进制。 */
+function validateSha256(value) {
+  const v = String(value == null ? '' : value);
+  if (!/^[0-9a-f]{64}$/.test(v)) throw new Error('expected sha256 必须是 64 位小写十六进制');
+  return v;
 }
 
 /** 上传用的 COS 域名（只用于日志；实际域名由 SDK 按 UseAccelerate 拼）。不含任何密钥。 */
@@ -539,7 +560,73 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous: current, version: String(version) };
   }
 
-  return { plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
+  /**
+   * 下载 COS 上已有的部署包（stage 产出），算 sha256 与期望值严格比对。
+   * 不一致直接报错；此时还没有任何 SCF 写操作。只用 getObject。
+   */
+  async function verifyStagedZip({ key, sha256 }) {
+    validateStagedKey(key);
+    validateSha256(sha256);
+    if (!cos) throw new Error('缺少 COS 客户端');
+    const data = await cosCall('getObject', { Bucket: CONFIG.cosBucket, Region: CONFIG.cosRegion, Key: key });
+    const body = data && data.Body;
+    if (!body || !body.length) throw new Error(`下载部署包失败或为空：${key}`);
+    const actual = crypto.createHash('sha256').update(body).digest('hex');
+    log(`部署包 ${key} sha256:${actual}（期望 ${sha256}）`);
+    if (actual !== sha256) throw new Error(`部署包 sha256 不一致：实际 ${actual}，期望 ${sha256}；未做任何函数修改`);
+    return { key, sha256: actual, size: body.length };
+  }
+
+  /**
+   * 只发到 develop：用 COS 上已有的包（sha256 校验通过）→ UpdateFunctionCode → PublishVersion → develop 指向新版本
+   * → develop 健康检查。绝不改 production 别名；健康检查失败把 develop 切回原版本。
+   */
+  async function deployDevelop({ key, sha256, sha = 'local', runId = '' }) {
+    validateStagedKey(key);
+    validateSha256(sha256);
+    const pre = await plan();
+    if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
+    await verifyStagedZip({ key, sha256 });
+    await scf.UpdateFunctionCode({ ...base, Handler: CONFIG.handler, ...cosCode(key) });
+    await waitActive(CONFIG.functionName);
+    const published = await scf.PublishVersion({ ...base, Description: `ci develop ${String(sha).slice(0, 12)} pkg ${sha256.slice(0, 12)} run ${runId}`.trim() });
+    const version = String(published.FunctionVersion);
+    await waitActive(CONFIG.functionName, version);
+    log(`已发布 v${version}`);
+    const developBefore = await aliasVersion(CONFIG.stagingAlias);
+    await pointAlias(CONFIG.stagingAlias, version);
+    const failures = await healthCheckDevelop(version);
+    if (failures.length) {
+      if (developBefore) await pointAlias(CONFIG.stagingAlias, developBefore);
+      throw new Error(`v${version} 健康检查失败（${failures.join(', ')}），develop 已切回 v${developBefore}，production 未动`);
+    }
+    log(`别名 ${CONFIG.stagingAlias}: v${developBefore} → v${version}；production 仍是 v${pre.productionVersion}（未改动）`);
+    summary(`- develop → **v${version}**（包 \`${key}\` sha256 ${sha256}）；production 仍是 v${pre.productionVersion}。上线：action=promote version=${version}`);
+    return { version, developBefore, production: pre.productionVersion };
+  }
+
+  /** 把 production 指向一个已发布、且 develop 当前正指向的版本（即已在 develop 验证过）。公网复查失败自动切回。 */
+  async function promote({ version }) {
+    if (!/^\d+$/.test(String(version || ''))) throw new Error('promote 需要 --version <数字>');
+    const v = String(version);
+    const pre = await plan();
+    if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
+    const previous = pre.productionVersion;
+    const dev = await aliasVersion(CONFIG.stagingAlias);
+    if (dev !== v) throw new Error(`develop 当前是 v${dev}，不是 v${v}；只能 promote 已在 develop 上验证的版本`);
+    if ((await versionStatus(CONFIG.functionName, v)) !== 'Active') throw new Error(`v${v} 不存在或不是 Active`);
+    if (previous === v) { log(`production 已是 v${v}，不用切`); return { previous, version: v }; }
+    await pointAlias(CONFIG.alias, v);
+    log(`别名 ${CONFIG.alias}: v${previous} → v${v}`);
+    if (!(await publicCheck())) {
+      await pointAlias(CONFIG.alias, previous);
+      throw new Error(`公网复查失败，已自动切回 v${previous}`);
+    }
+    summary(`- production：v${previous} → **v${v}**（回滚：action=rollback version=${previous}）`);
+    return { previous, version: v };
+  }
+
+  return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, uploadZip };
 }
 
 async function createClients(env = process.env, { accelerate = false } = {}) {
@@ -589,11 +676,19 @@ async function cli(argv = process.argv.slice(2)) {
     await deployer.stage({ zipPath, sha: process.env.GITHUB_SHA || 'local' });
     return;
   }
+  if (command === 'deploy-develop') {
+    await deployer.deployDevelop({ key: argValue(argv, '--key'), sha256: argValue(argv, '--sha256'), sha: process.env.GITHUB_SHA || 'local', runId: process.env.GITHUB_RUN_ID || '' });
+    return;
+  }
+  if (command === 'promote') {
+    await deployer.promote({ version: argValue(argv, '--version') });
+    return;
+  }
   if (command === 'rollback') {
     await deployer.rollback({ version: argValue(argv, '--version') });
     return;
   }
-  throw new Error('用法: scf-function-api.cjs plan | stage --zip <zip> | deploy --zip <zip> [--with-runtime] | rollback --version <N>');
+  throw new Error('用法: scf-function-api.cjs plan | stage --zip <zip> | deploy --zip <zip> [--with-runtime] | deploy-develop --key <scf-deploy/ci/x.zip> --sha256 <hex> | promote --version <N> | rollback --version <N>');
 }
 
 // 超时放弃的分片请求，底层 socket 之后还可能报 EPIPE/ECONNRESET；它已经被重试替代，不能让它把整个进程打死。
@@ -615,4 +710,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
+module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc };
