@@ -9,6 +9,14 @@
 - 根域名下面多一行灰色小字「根域名写不了 CNAME？」，默认收起，点开才显示备用：「如果 DNS 服务商不支持根域名写 CNAME，或根域名配了企业邮箱（MX 记录），改用 A 记录 @ → 网关 IP」（当前是 119.91.123.2）。根域名 CNAME 会和 MX 记录冲突，配了企业邮箱的要用 A 记录。DNS 在 Cloudflare（NS 是 `*.ns.cloudflare.com`）的根域名不显示这行，Cloudflare 会把根域名 CNAME 拍平。
 - 子域名不显示 A 记录。
 - 根域名和子域名用公共后缀表区分（website-api 用 `psl`），所以 `.com.cn`、`.co.uk` 这类后缀也能判断对。
+- 主机本身是公共后缀（`github.io`、`co.uk`、`blogspot.com`、`s3.amazonaws.com`）不能绑定。`psl.parse` 没有 registrable domain 时不再退回「最后两段」，避免把公共后缀当成根域名。
+
+## 私有站点登录 cookie
+
+- `*.demox.site` 上的私有站点暂时不认账号 cookie。边缘返回「需要重新验证」（页面 503，其它请求 401），不回源，不调 check-site-access。站点级短期票据另做。
+- 自定义域名上的私有站点仍走登录门。登录成功只写 **host-only** 的 `demox_access`（HttpOnly、Secure、SameSite=Lax），**不写 `Domain=`**。`www.example.co.uk` 的登录态不会带到 `example.co.uk` 或其它子域。
+- `check-site-access` 对自定义域返回 `cookieScope`：`host-only` 或 `refuse`。公共后缀是 `refuse`，边缘不写 cookie。边缘单文件带不了公共后缀表，所以这道拒绝在 website-api。
+- `/api/*` 转发用户函数前会去掉 `demox_access`。静态回源保持原来的 `fetch(req)`，不改头。
 - 检测分三步：解析 → 证书 → 可访问。解析这一步，CNAME 链能到 `customers.demox.site`，或者所有 A 记录都是网关 IP，都算通过。已经用 A 记录接入的老域名照常生效，不用改。
 - 公网 A 记录落在 Cloudflare 网段，说明开着橙色云。这时提示用户把这条记录的橙色云点成灰色（仅 DNS）。以后会支持保持代理接入，方案见 TXT-PLAN。
 

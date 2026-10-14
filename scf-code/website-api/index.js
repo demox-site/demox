@@ -237,6 +237,49 @@ function getGeoip() {
 }
 const dnsPromises = require('dns').promises;
 const psl = require('psl');
+
+// 自定义域登录 cookie 的范围。与 shared/cookie-domain-policy.cjs 逐字相同
+// （functions push 只上传入口，不能再 require 一份新的 shared 文件）。
+function cookieDomainScope(hostname) {
+  const host = String(hostname || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .split('?')[0]
+    .split('#')[0]
+    .replace(/:\d+$/, '')
+    .replace(/^\.+|\.+$/g, '');
+  if (!host || host.length > 253 || host.includes('..') || !host.includes('.')) {
+    return { mode: 'refuse', reason: 'invalid' };
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+    return { mode: 'refuse', reason: 'ip' };
+  }
+  if (host === 'demox.site' || host.endsWith('.demox.site')) {
+    return { mode: 'refuse', reason: 'official' };
+  }
+  const parsed = psl.parse(host);
+  if (!parsed || parsed.error || !parsed.domain) {
+    return { mode: 'refuse', reason: 'public-suffix' };
+  }
+  return { mode: 'host-only', host, registrable: parsed.domain };
+}
+
+function customDomainAuthCookieHeader(hostname, token, maxAge) {
+  const scope = cookieDomainScope(hostname);
+  if (scope.mode !== 'host-only') return '';
+  const value = String(token || '');
+  if (!value || value.length > 16384) return '';
+  const age = Number(maxAge);
+  if (!Number.isFinite(age) || age <= 0) return '';
+  const header = 'demox_access=' + encodeURIComponent(value) +
+    '; Max-Age=' + String(age) +
+    '; Path=/; HttpOnly; Secure; SameSite=Lax';
+  if (/domain\s*=/i.test(header)) return '';
+  return header;
+}
+
 const { query, transaction } = require('./shared/db.js');
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
@@ -1115,6 +1158,11 @@ function customDomainParts(hostname) {
   if (parsed && !parsed.error && parsed.domain) {
     return { host, registrable: parsed.domain, sub: parsed.subdomain || '' };
   }
+  // 公共后缀（co.uk、github.io）没有 registrable domain。不要退回「最后两段」，
+  // 否则会把公共后缀当成根域名，cookie Domain 也会跟着错。
+  if (host && parsed && !parsed.domain) {
+    return { host, registrable: '', sub: '' };
+  }
   const labels = host.split('.');
   return { host, registrable: labels.slice(-2).join('.'), sub: labels.slice(0, -2).join('.') };
 }
@@ -1145,6 +1193,17 @@ async function defaultLookupCustomDomainNameservers(domain) {
  */
 async function customDomainRecordInstruction(hostname) {
   const { sub, registrable } = customDomainParts(hostname);
+  if (!registrable) {
+    return {
+      apex: false,
+      recordType: null,
+      recordName: '',
+      recordValue: CUSTOM_DOMAIN_CNAME_TARGET,
+      dnsProvider: null,
+      fallbackRecordType: null,
+      fallbackRecordValue: null
+    };
+  }
   if (sub) {
     return { apex: false, recordType: 'CNAME', recordName: sub, recordValue: CUSTOM_DOMAIN_CNAME_TARGET, dnsProvider: null, fallbackRecordType: null, fallbackRecordValue: null };
   }
@@ -1170,6 +1229,10 @@ function customDomainValidationError(hostname) {
   }
   if (isOfficialOwnedHost(hostname)) {
     return { reason: 'official', message: '官方域名不能当作自定义域名绑定，请使用你自己的域名' };
+  }
+  const scope = cookieDomainScope(hostname);
+  if (scope.mode === 'refuse' && scope.reason === 'public-suffix') {
+    return { reason: 'public_suffix', message: '这个域名是公共后缀，不能绑定，也不能用来写登录 cookie' };
   }
   if (hostname === CUSTOM_DOMAIN_CNAME_TARGET) {
     return { reason: 'reserved', message: '不能绑定平台入口域名' };
@@ -7631,9 +7694,20 @@ async function handleCheckSiteAccess(event) {
   const suffix = normalizeOfficialDomain(domain);
   try {
     let site = null;
+    let customCookieScope = '';
     if (label && suffix) {
       site = await resolveSiteMetadataByLabel(label, suffix);
     } else if (body.host && !parseOfficialHost(body.host)) {
+      const scope = cookieDomainScope(body.host);
+      if (scope.mode !== 'host-only') {
+        return ok({
+          success: true,
+          allowed: false,
+          cookieScope: 'refuse',
+          reason: scope.reason === 'public-suffix' ? 'public_suffix' : (scope.reason || 'invalid_host')
+        });
+      }
+      customCookieScope = 'host-only';
       site = await resolveSiteMetadataByCustomHost(body.host);
     } else {
       if (!label) return ok({ success: false, allowed: false, message: 'Missing label' });
@@ -7662,20 +7736,21 @@ async function handleCheckSiteAccess(event) {
       });
     }
 
+    const scopeField = customCookieScope ? { cookieScope: customCookieScope } : {};
     if (String(user.userId) === String(site.user_id)) {
-      return ok({ success: true, allowed: true, visibility, role: 'owner' });
+      return ok({ success: true, allowed: true, visibility, role: 'owner', ...scopeField });
     }
 
     const isAdmin = await checkAdmin(user.userId);
     if (isAdmin) {
       markAdminAction(event, user.userId, 'override');
-      return ok({ success: true, allowed: true, visibility, role: 'platform_admin' });
+      return ok({ success: true, allowed: true, visibility, role: 'platform_admin', ...scopeField });
     }
 
     if (site.project_id) {
       const role = await getProjectRoleForUser(user.userId, site.project_id);
       if (role) {
-        return ok({ success: true, allowed: true, visibility, role });
+        return ok({ success: true, allowed: true, visibility, role, ...scopeField });
       }
     }
 
@@ -10590,6 +10665,7 @@ exports._adminBiLibForTest = adminBiLib;
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;
+exports._cookieDomainForTest = { cookieDomainScope, customDomainAuthCookieHeader };
 exports._galleryForTest = {
   isDemoxHttpsUrl,
   parseGalleryCardInput,

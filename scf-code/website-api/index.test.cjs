@@ -1328,6 +1328,14 @@ test('project custom domain belongs to the project and can route root plus a sub
     assert.equal(rejected.success, false, JSON.stringify(rejected));
     assert.equal(rejected.reason, 'official');
 
+    const publicSuffix = JSON.parse((await request('add_project_custom_domain', {
+      projectId: 42,
+      hostname: 'github.io',
+      websiteId: 'SITEOK01'
+    }, 'project-owner')).body);
+    assert.equal(publicSuffix.success, false, JSON.stringify(publicSuffix));
+    assert.equal(publicSuffix.reason, 'public_suffix');
+
     const added = JSON.parse((await request('add_project_custom_domain', {
       projectId: 42,
       hostname: 'https://Demox.Aigc.sx.cn/path',
