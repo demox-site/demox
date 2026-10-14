@@ -11,6 +11,7 @@ name: Deploy function-api (SCF demox-function-api)
 #      用 GitHub OIDC 扮演 CAM 角色 demox-ci-deploy（信任条件 sub=repo:demox-site/demox:environment:function-api-production），
 #      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
 #      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
+# 分两步发布：action=deploy-develop（cos_key + expected_sha256，只切 develop）→ 人工验证 → action=promote version=N（只切 production）。
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 on:
   push:
@@ -29,11 +30,19 @@ on:
       action:
         description: "plan = 只读检查；stage = 只打包并上传 COS（不改任何函数）；deploy = 发布当前分支；rollback = 把 production 切回指定版本"
         type: choice
-        options: [plan, stage, deploy, rollback]
+        options: [plan, stage, deploy, deploy-develop, promote, rollback]
         default: plan
       version:
-        description: "rollback 的目标版本号（数字）"
+        description: "rollback / promote 的目标版本号（数字）"
         required: false
+      cos_key:
+        description: "deploy-develop：COS 上已有部署包的 key（只接受 scf-deploy/ci/<文件名>.zip，一般是 stage 的输出）"
+        required: false
+        default: ""
+      expected_sha256:
+        description: "deploy-develop：部署包期望的 sha256（64 位小写十六进制）；下载后不一致就在改函数之前失败"
+        required: false
+        default: ""
       cos_bucket:
         description: "部署包 COS 桶（<name>-<appid>）；空 = vars.DEMOX_COS_BUCKET，再空 = 成都老桶"
         required: false
@@ -110,6 +119,8 @@ jobs:
           # 别名 develop 的公网 HTTPS 地址（一次性迁移时建好），健康检查只走它，不用 scf:Invoke。
           FUNCTION_API_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
           ROLLBACK_VERSION: ${{ inputs.version }}
+          STAGED_KEY: ${{ inputs.cos_key }}
+          STAGED_SHA256: ${{ inputs.expected_sha256 }}
           DEMOX_COS_BUCKET: ${{ inputs.cos_bucket || vars.DEMOX_COS_BUCKET }}
           DEMOX_COS_REGION: ${{ inputs.cos_region || vars.DEMOX_COS_REGION }}
           # 默认关；push 触发没有 inputs，走仓库变量。
@@ -122,6 +133,10 @@ jobs:
             plan)     node scripts/ci/scf-function-api.cjs plan ;;
             stage)    node scripts/ci/scf-function-api.cjs stage --zip .artifacts/unified-scf/demox-unified-scf.zip ;;
             deploy)   node scripts/ci/scf-function-api.cjs deploy --zip .artifacts/unified-scf/demox-unified-scf.zip $WITH_RUNTIME ;;
+            # 只发 develop，不切 production；用 COS 上已有的包，先校验 sha256，不重新打包/上传。
+            deploy-develop) node scripts/ci/scf-function-api.cjs deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256" ;;
+            # 单独触发、同样要过 function-api-production 环境审批：production → develop 上已验证的版本。
+            promote)  node scripts/ci/scf-function-api.cjs promote --version "$ROLLBACK_VERSION" ;;
             rollback) node scripts/ci/scf-function-api.cjs rollback --version "$ROLLBACK_VERSION" ;;
             *) echo "::error::未知 action: $ACTION"; exit 1 ;;
           esac
