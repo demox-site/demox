@@ -29,6 +29,10 @@ function normalizeIp(value) {
   return mapped ? mapped[1] : ip;
 }
 
+function isValidIp(value) {
+  return Boolean(net.isIP(normalizeIp(value)));
+}
+
 function isTrustedProxy(value) {
   const ip = normalizeIp(value);
   const family = net.isIP(ip);
@@ -49,4 +53,37 @@ function clientIpFromForwardedFor(value) {
   return normalizeIp(parts[parts.length - 1]);
 }
 
-module.exports = { TRUSTED_PROXY_CIDRS, clientIpFromForwardedFor, isTrustedProxy, normalizeIp };
+/**
+ * 解析客户端 IP（限流 / 审计用）：
+ *
+ * 1. 有效的 x-scf-remote-addr：
+ *    - 若该地址在 TRUSTED_PROXY_CIDRS 内 → 才读 XFF（右往左跳过受信任代理，取第一个不受信任的；
+ *      全受信任取最右）。XFF 空则退回 remote-addr。
+ *    - 若不在名单内 → 直接用 remote-addr，不读 XFF（对端不可信，XFF 可整条伪造）。
+ *      自定义域名上 remote-addr 可能被伪造（2026-10-13 Chief：按最坏情况写，不碰 production 探测）；
+ *      函数 URL 实测平台会覆盖伪造值。伪造时攻击者最多换自己的桶；账号限流（#54）是第一道防线。
+ * 2. 没有有效 remote-addr：退回 XFF 解析（兼容实测中 remote-addr 为空、只有 XFF 链的路径），再退 socket。
+ * 3. 永不信任 X-Real-IP（实测是 SCF 网关地址，且可伪造）。
+ *
+ * headers 应仍含 x-scf-remote-addr（在 strip 平台头之前读出，或单独传入 remoteAddr）。
+ */
+function clientIpFrom(headers, socket, remoteAddr) {
+  const h = headers || {};
+  const remote = normalizeIp(remoteAddr != null ? remoteAddr : h['x-scf-remote-addr']);
+  if (isValidIp(remote)) {
+    if (isTrustedProxy(remote)) {
+      return clientIpFromForwardedFor(h['x-forwarded-for']) || remote;
+    }
+    return remote;
+  }
+  return clientIpFromForwardedFor(h['x-forwarded-for']) || (socket && socket.remoteAddress) || '';
+}
+
+module.exports = {
+  TRUSTED_PROXY_CIDRS,
+  clientIpFromForwardedFor,
+  clientIpFrom,
+  isTrustedProxy,
+  isValidIp,
+  normalizeIp
+};

@@ -8,7 +8,7 @@ const { normalizeRuntime, defaultEntrypointFor, isAllowedEntrypoint } = require(
 const { isTimerEvent } = require('./function-events.js');
 const { routeMatches } = require('./system-router.js');
 const { mergeLiveCredentials, packageNameFor, platformSiteInProcess } = require('./platform-site.js');
-const { clientIpFromForwardedFor } = require('./client-ip.js');
+const { clientIpFrom } = require('./client-ip.js');
 const {
   badRequest,
   forbidden,
@@ -561,11 +561,16 @@ function normalizeInvocationRequest(event = {}) {
     };
   }
   const headers = {};
+  let scfRemoteAddr = '';
   for (const [key, value] of Object.entries(event.headers || {})) {
     const name = String(key).toLowerCase();
     // x-scf-* 一律不转给用户函数：事件入口（API 网关/自定义域名）下客户端自带的 x-scf-remote-addr 等会原样到达，
     // 平台的 X-Scf-Secret-* 是运行角色临时密钥。Web 入口已在 web-server.js 去掉，这里对所有入口兜底。
-    if (name.startsWith('x-scf-')) continue;
+    // remote-addr 单独留下做 clientKey（在 strip 之前读），不进入转给用户函数的 headers。
+    if (name.startsWith('x-scf-')) {
+      if (name === 'x-scf-remote-addr') scfRemoteAddr = String(value);
+      continue;
+    }
     headers[name] = String(value);
   }
   const method = String(event.httpMethod || event.requestContext?.http?.method || 'GET').toUpperCase();
@@ -584,8 +589,8 @@ function normalizeInvocationRequest(event = {}) {
   const host = headers.host || 'function.local';
   return {
     bodyBytes: bodyBuffer.length,
-    // 没有网关给的 sourceIp 时，从 XFF 右往左跳过受信任代理取客户端 IP（最左段可被客户端伪造，会绕过按 IP 的限流）。
-    clientKey: event.requestContext?.sourceIp || clientIpFromForwardedFor(headers['x-forwarded-for']) || 'anonymous',
+    // 没有网关 sourceIp 时：见 client-ip.js clientIpFrom（优先有效 x-scf-remote-addr；仅受信任对端才读 XFF）。
+    clientKey: event.requestContext?.sourceIp || clientIpFrom(headers, null, scfRemoteAddr) || 'anonymous',
     value: {
       method,
       url: `https://${host}${path}${queryString ? `?${queryString}` : ''}`,
