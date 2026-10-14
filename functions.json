@@ -72,6 +72,7 @@
           "DEMOX_SITE_WEBSITE_ID",
           "EDGEONE_ZONE_ID",
           "ENCRYPTION_KEY",
+          "FAIL_OPEN_CHECK_KEY",
           "FEISHU_APP_ID",
           "FEISHU_APP_SECRET",
           "FEISHU_REDIRECT_URI",

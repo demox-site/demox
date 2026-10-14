@@ -218,9 +218,10 @@ test('seed placeholder may correct environment names without a runtime bump', ()
     'FUNCTIONS_RUNTIME_NAMESPACE',
     'FUNCTION_ENV',
     'FUNCTION_PUBLIC_BASE_URL',
-    'RUNTIME_INVOKE_SECRET'
+    'RUNTIME_INVOKE_SECRET',
+    'FAIL_OPEN_CHECK_KEY'
   ];
-  assert.equal(api.runtime.environmentNames.length, 31);
+  assert.equal(api.runtime.environmentNames.length, 32);
   assert.deepEqual(api.runtime.environmentNames, [...api.runtime.environmentNames].sort());
   assert.deepEqual(api.runtime.triggers, ['http:api.demox.site', 'timer:analytics-rollup-5m', 'timer:monthly-renew']);
   assert.equal(api.runtime.entry, 'index.main');
