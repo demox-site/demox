@@ -191,19 +191,24 @@ const MemberPrice = () => {
             <p className="text-sm text-[var(--stitch-muted)] mb-6 text-center">{t.limitsNote}</p>
             <div className="overflow-x-auto rounded-2xl border border-[var(--stitch-line)]">
               <table className="w-full text-sm">
+                <colgroup>
+                  <col className="min-w-[7em] w-[7em] sm:w-auto" />
+                  <col className="w-[5.5em] sm:w-auto" />
+                  <col />
+                </colgroup>
                 <thead className="bg-[var(--stitch-surface-strong)]">
                   <tr>
                     {t.limitsHead.map((head) => (
-                      <th key={head} scope="col" className="px-4 py-3 text-left font-semibold">{head}</th>
+                      <th key={head} scope="col" className="px-3 sm:px-4 py-3 text-left font-semibold">{head}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {t.limitsRows.map((row) => (
                     <tr key={row[0]} className="border-t border-[var(--stitch-line)]">
-                      <th scope="row" className="px-4 py-3 text-left font-normal">{row[0]}</th>
-                      <td className="px-4 py-3 text-[var(--stitch-muted)]">{row[1]}</td>
-                      <td className="px-4 py-3 text-[var(--stitch-muted)]">{row[2]}</td>
+                      <th scope="row" className="min-w-[7em] px-3 sm:px-4 py-3 text-left font-normal">{row[0]}</th>
+                      <td className="w-[5.5em] px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[1]}</td>
+                      <td className="px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[2]}</td>
                     </tr>
                   ))}
                 </tbody>

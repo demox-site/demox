@@ -1,9 +1,15 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { INTENT_LANDINGS, INTENT_UPDATED as INTENT_UPDATED_DATE, INTENT_PUBLISHED as INTENT_PUBLISHED_DATE, intentPublicPages } from "../src/content/intent-landings.mjs";
 import { ZH_PAIRED_ROUTES, enPathFor, zhPathFor } from "../src/content/zh-routes.mjs";
 import { htmlToMarkdown } from "./html-to-markdown.mjs";
+
+// Inline the wordmark so the prerendered header shows the logo on first
+// paint without waiting for an <img> request or for React.
+const LOGO_PATH_D = readFileSync(new URL("../src/assets/logo.svg", import.meta.url), "utf8").match(/ d="([^"]+)"/)[1];
+export const BRAND_SVG = `<svg class="fallback-logo" viewBox="0 0 1200 330" width="117" height="32" fill="currentColor" role="img" aria-label="Demox" focusable="false"><path fill-rule="evenodd" d="${LOGO_PATH_D}"/></svg>`;
 
 const SITE_URL = "https://www.demox.site";
 const INDEX_ROBOTS = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -49,7 +55,7 @@ const homeFallback = `
 <main id="main" data-crawlable-fallback>
   <a class="fallback-skip" href="#main">Skip to main content</a>
   <header class="fallback-header">
-    <a class="fallback-brand" href="/" aria-label="Demox homepage">Demox</a>
+    <a class="fallback-brand" href="/" aria-label="Demox homepage">${BRAND_SVG}</a>
     <nav class="fallback-nav" aria-label="Main pages">
       <a href="/pricing">Pricing</a>
       <a href="/when-to-use-demox">When to use</a>
@@ -158,7 +164,7 @@ const PRICING_OFFERS = [
 function pricingTable(lang) {
   const head = lang === "zh" ? ["项目", "默认", "上限"] : ["Item", "Default", "Cap"];
   const rows = PRICING_ROWS[lang].map((row) => `<tr><th scope="row">${row[0]}</th><td>${row[1]}</td><td>${row[2]}</td></tr>`).join("");
-  return `<table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<div class="pricing-limits"><table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 const pricingFallbackEn = `<main data-crawlable-fallback class="fallback-simple" lang="en"><h1>Demox is free</h1><p><strong>Direct answer:</strong> Basic, Pro, and Enterprise all cost $0/month. Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><h2>Prices and limits</h2>${pricingTable("en")}<p>The Node function limits are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>. <a href="/zh/pricing" hreflang="zh-CN" lang="zh-CN">中文</a></p></main>`;
@@ -183,7 +189,7 @@ const homeFallbackZh = `
 <main id="main" data-crawlable-fallback lang="zh-CN">
   <a class="fallback-skip" href="#main">跳到正文</a>
   <header class="fallback-header">
-    <a class="fallback-brand" href="/zh/" aria-label="Demox 首页">Demox</a>
+    <a class="fallback-brand" href="/zh/" aria-label="Demox 首页">${BRAND_SVG}</a>
     <nav class="fallback-nav" aria-label="主要页面">
       <a href="/" hreflang="en" lang="en">English</a>
       <a href="/zh/pricing">价格</a>
