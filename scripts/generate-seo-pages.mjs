@@ -142,7 +142,7 @@ const PRICING_ROWS = {
     ["Request / response body", "6 MB", "6 MB"],
     ["Function code size", "1 MB", "2 MB"],
     ["Invocations per minute", "60", "10,000"],
-    ["Uploads", "Chunked, 2 MB per chunk, no single-request 8 MB limit", "—"],
+    ["Uploads", "Chunked, 2 MB per chunk", "—"],
   ],
   zh: [
     ["价格（全部套餐）", "$0/月", "$0/月"],
@@ -151,7 +151,7 @@ const PRICING_ROWS = {
     ["请求体 / 响应体", "6 MB", "6 MB"],
     ["函数代码大小", "1 MB", "2 MB"],
     ["每分钟调用次数", "60", "10,000"],
-    ["上传方式", "分块上传，每块 2 MB，不受单请求 8 MB 限制", "—"],
+    ["上传方式", "分块上传，每块 2 MB", "—"],
   ],
 };
 
@@ -167,9 +167,9 @@ function pricingTable(lang) {
   return `<div class="pricing-limits"><table><thead><tr>${head.map((h) => `<th scope="col">${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-const pricingFallbackEn = `<main data-crawlable-fallback class="fallback-simple" lang="en"><h1>Demox is free</h1><p><strong>Direct answer:</strong> Basic, Pro, and Enterprise all cost $0/month. Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><h2>Prices and limits</h2>${pricingTable("en")}<p>The Node function limits are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>. <a href="/zh/pricing" hreflang="zh-CN" lang="zh-CN">中文</a></p></main>`;
+const pricingFallbackEn = `<main data-crawlable-fallback class="fallback-simple" lang="en"><h1>Demox is free</h1><p><strong>Direct answer:</strong> Basic, Pro, and Enterprise all cost $0/month. Personal use stays free. Upload HTML, a ZIP, or a frontend build and get an HTTPS URL. Need more technical support? Email phosa@qq.com.</p><h2>Prices and limits</h2>${pricingTable("en")}<p>The Node function limits are the defaults and caps in the code. Uploads are chunked at 2 MB per chunk and are not limited by a single-request 8 MB cap. Upload size and file count follow your account role quota; check the Usage page in the console.</p><p><a href="/">Deploy with Demox</a> or read the <a href="/doc">CLI and MCP documentation</a>. <a href="/zh/pricing" hreflang="zh-CN" lang="zh-CN">中文</a></p></main>`;
 
-const pricingFallbackZh = `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>Demox 免费</h1><p><strong>直接答案：</strong>基础版、专业版、尊贵土豪版都是 $0/月，个人使用继续免费。上传 HTML、ZIP 或前端构建产物，拿到 HTTPS 链接。需要更多技术支持，欢迎联系 phosa@qq.com。</p><h2>价格与限制</h2>${pricingTable("zh")}<p>云函数限制取自代码里的默认值和上限；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。</p><p><a href="/zh/">用 Demox 发布</a> · <a href="/doc">CLI 和 MCP 文档</a> · <a href="/pricing" hreflang="en" lang="en">English</a></p></main>`;
+const pricingFallbackZh = `<main data-crawlable-fallback class="fallback-simple" lang="zh-CN"><h1>Demox 免费</h1><p><strong>直接答案：</strong>基础版、专业版、尊贵土豪版都是 $0/月，个人使用继续免费。上传 HTML、ZIP 或前端构建产物，拿到 HTTPS 链接。需要更多技术支持，欢迎联系 phosa@qq.com。</p><h2>价格与限制</h2>${pricingTable("zh")}<p>云函数限制取自代码里的默认值和上限。上传采用分块，每块 2 MB，不受单请求 8 MB 限制；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。</p><p><a href="/zh/">用 Demox 发布</a> · <a href="/doc">CLI 和 MCP 文档</a> · <a href="/pricing" hreflang="en" lang="en">English</a></p></main>`;
 
 function pricingOffers(lang) {
   return PRICING_OFFERS.map((offer) => ({

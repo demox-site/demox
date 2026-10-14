@@ -42,7 +42,7 @@ const pricingTexts = {
     shareDescription: "即使他们听不懂你在说什么",
     contactLine: "需要更多技术支持，欢迎联系我。",
     limitsTitle: "价格与限制",
-    limitsNote: "三个套餐都是 $0/月。下面的 Node 云函数限制取自代码里的默认值和上限；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。",
+    limitsNote: "三个套餐都是 $0/月。下面的 Node 云函数限制取自代码里的默认值和上限。上传采用分块，每块 2 MB，不受单请求 8 MB 限制；上传文件大小和文件数按账号角色配额，以控制台「用量」页为准。",
     limitsHead: ["项目", "默认", "上限"],
     limitsRows: [
       ["价格（全部套餐）", "$0/月", "$0/月"],
@@ -51,7 +51,7 @@ const pricingTexts = {
       ["请求体 / 响应体", "6 MB", "6 MB"],
       ["函数代码大小", "1 MB", "2 MB"],
       ["每分钟调用次数", "60", "10,000"],
-      ["上传方式", "分块上传，每块 2 MB，不受单请求 8 MB 限制", "—"],
+      ["上传方式", "分块上传，每块 2 MB", "—"],
     ],
     closingQuote: "“如果非要给我们钱，请把钱拿去买杯咖啡，边喝边写代码。”",
   },
@@ -90,7 +90,7 @@ const pricingTexts = {
     shareDescription: "Even if they have no idea what you're talking about",
     contactLine: "Need more technical support? Feel free to contact me.",
     limitsTitle: "Prices and limits",
-    limitsNote: "All three plans cost $0/month. The Node function limits below are the defaults and caps in the code. Upload size and file count follow your account role quota; check the Usage page in the console.",
+    limitsNote: "All three plans cost $0/month. The Node function limits below are the defaults and caps in the code. Uploads are chunked at 2 MB per chunk and are not limited by a single-request 8 MB cap. Upload size and file count follow your account role quota; check the Usage page in the console.",
     limitsHead: ["Item", "Default", "Cap"],
     limitsRows: [
       ["Price (all plans)", "$0/month", "$0/month"],
@@ -99,7 +99,7 @@ const pricingTexts = {
       ["Request / response body", "6 MB", "6 MB"],
       ["Function code size", "1 MB", "2 MB"],
       ["Invocations per minute", "60", "10,000"],
-      ["Uploads", "Chunked, 2 MB per chunk, no single-request 8 MB limit", "—"],
+      ["Uploads", "Chunked, 2 MB per chunk", "—"],
     ],
     closingQuote: "“If you insist on giving us money, buy yourself a coffee and write some code while you drink it.”",
   },
@@ -193,8 +193,8 @@ const MemberPrice = () => {
               <table className="w-full text-sm">
                 <colgroup>
                   <col className="min-w-[7em] w-[7em] sm:w-auto" />
-                  <col className="w-[5.5em] sm:w-auto" />
-                  <col />
+                  <col className="w-[6.5em] sm:w-auto" />
+                  <col className="w-[4.5em] sm:w-auto" />
                 </colgroup>
                 <thead className="bg-[var(--stitch-surface-strong)]">
                   <tr>
@@ -207,8 +207,8 @@ const MemberPrice = () => {
                   {t.limitsRows.map((row) => (
                     <tr key={row[0]} className="border-t border-[var(--stitch-line)]">
                       <th scope="row" className="min-w-[7em] px-3 sm:px-4 py-3 text-left font-normal">{row[0]}</th>
-                      <td className="w-[5.5em] px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[1]}</td>
-                      <td className="px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[2]}</td>
+                      <td className="w-[6.5em] px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[1]}</td>
+                      <td className="w-[4.5em] px-3 sm:px-4 py-3 text-[var(--stitch-muted)]">{row[2]}</td>
                     </tr>
                   ))}
                 </tbody>
