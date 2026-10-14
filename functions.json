@@ -1,7 +1,5 @@
 {
   "schemaVersion": 1,
-  "seed": true,
-  "seedNote": "appVersion 和 runtimeVersion 都是占位 semver（0.0.0-placeholder），不是线上版本。线上 SCF 版本描述里还没有 demox-release 元数据。在第一次经过批准的发布把元数据写进去之前，deploy-develop 只会停下来告警，不会覆盖。清单一旦出现在 base 分支上，再改代码就必须升对应版本。",
   "tracks": {
     "app": "平台函数的业务代码",
     "runtime": "腾讯云 SCF 基底：打包、层、内存、超时、入口、环境变量名、触发器。指纹里只有名字，没有变量值。",
@@ -43,8 +41,8 @@
       "accountEnv": "TENCENTCLOUD_ACCOUNT_UIN",
       "layer": "platform",
       "releaseVia": "deploy-develop",
-      "appVersion": "0.0.0-placeholder",
-      "runtimeVersion": "0.0.0-placeholder",
+      "appVersion": "0.1.0",
+      "runtimeVersion": "0.1.0",
       "codePaths": [
         "scf-code/function-api",
         "scf-code/website-api",
@@ -112,8 +110,8 @@
       "layer": "platform",
       "releaseVia": "none",
       "note": "平台 Node 运行时池，由路由器内网调用。不是用户在自己站点上发布的函数。本 CI 不发布它。",
-      "appVersion": "0.0.0-placeholder",
-      "runtimeVersion": "0.0.0-placeholder",
+      "appVersion": "0.1.0",
+      "runtimeVersion": "0.1.0",
       "codePaths": [
         "scf-code/function-api/runtime-nodejs.js",
         "scf-code/function-api/runtime-nodejs-handler.js",

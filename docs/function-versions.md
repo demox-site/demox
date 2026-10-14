@@ -14,15 +14,15 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`appVersion` / `runtimeVersion` 现在是 `0.0.0-placeholder`。这不是线上版本。线上 SCF 版本描述里还没有 `demox-release` 元数据。
+`demox-function-api` 和 `demox-user-nodejs` 的 `appVersion` / `runtimeVersion` 现在是 `0.1.0`。这是清单里的 bootstrap 版本，不是已经写进线上 SCF 的版本。线上 SCF 版本描述里还没有 `demox-release` 元数据。
 
 在第一次经过批准的发布把元数据写进版本描述之前：
 
 - `deploy-develop` 和 `deploy` 看到占位版本就停，不会打云 API。
-- 就算清单改成了真实 semver，只要别名 `develop` / `production` 指向的版本描述里没有 `demox-release`，也会停下来告警，**不会覆盖**线上代码或配置。
+- 清单已经是真实 semver 时，只要别名 `develop` / `production` 指向的版本描述里没有 `demox-release`，也会停下来告警，**不会覆盖**线上代码或配置。
 - 本变更不部署、不切别名、不改线上配置。
 
-`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`，真实 runtime 版本留到元数据写入。
+`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。元数据 bootstrap 把平台函数写成 `0.1.0`；线上描述仍按批准后的发布写入。
 
 ## 发布怎么接 #67
 
