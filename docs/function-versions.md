@@ -14,7 +14,7 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 和 `demox-user-nodejs` 的 `appVersion` / `runtimeVersion` 现在是 `0.1.0`。这是清单里的真实 semver。线上 SCF 的 `develop` / `production` 仍指向还没有 `demox-release` 的版本。
+`demox-function-api` 的 `appVersion` 是 `0.1.1`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`（app `0.1.0`）；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。
 
 `deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 
