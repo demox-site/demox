@@ -23,8 +23,11 @@
  *   node scripts/ci/scf-function-api.cjs promote --version <N>     production → N（N 必须是 develop 当前版本）
  *   node scripts/ci/scf-function-api.cjs rollback --version <N>    只切别名（app），不改 runtime 配置
  *
- * deploy-develop / promote 仍是原来的发布动作。前面多一道门禁：清单还是占位版本，
- * 或线上版本描述没有 demox-release 元数据时，停下来告警，不做任何写操作。
+ * deploy-develop / promote 仍是原来的发布动作。前面多一道门禁：清单是占位版本时停。
+ * develop 与 production 指向的版本都没有 demox-release 时，deploy-develop 可以做一次 bootstrap
+ * （只写版本描述，不调用 UpdateFunctionConfiguration，不切 production）。
+ * 只有一边有元数据，或这次之后再缺元数据，停下来告警，不做任何写操作。
+ * action=deploy 在两边都没有元数据时仍停，避免顺带切换 production。
  * 凭证（优先级从高到低）：
  *   1. GitHub Actions OIDC：TENCENTCLOUD_ROLE_ARN + ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN（job 需 id-token: write
  *      且在 environment function-api-production 里），换取 1 小时临时密钥，只留在本进程内存里；
@@ -774,6 +777,9 @@ async function cli(argv = process.argv.slice(2)) {
       gitSha
     });
     if (!decision.allow) throw new Error(decision.message);
+    if (decision.reason === 'bootstrap-metadata') {
+      throw Object.assign(new Error('第一次写入 demox-release 只能走 deploy-develop，不会切换 production。'), { code: 'bootstrap-develop-only' });
+    }
     await deployer.deploy({ zipPath, sha: gitSha, runId: process.env.GITHUB_RUN_ID || '', withRuntime: false, description: decision.description });
     return;
   }

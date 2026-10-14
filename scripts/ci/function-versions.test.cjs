@@ -103,18 +103,79 @@ test('app deploy: only a higher app with the same config fingerprint is allowed'
   assert.equal(decide({ runtime: runtime({ memoryMB: 1024 }) }).reason, 'config-drift');
 });
 
-test('missing live metadata or alias stops before any overwrite', () => {
-  const local = entry();
-  const missing = v.decideAppDeploy({
-    entry: local,
-    aliases: [{ Name: 'develop', FunctionVersion: '3' }, { Name: 'production', FunctionVersion: '3' }],
-    versions: [{ Version: '3', Description: 'baseline before CI' }],
+function bareAliases({ develop = '11', production = '11', developDescription = 'baseline before CI', productionDescription = developDescription } = {}) {
+  const versions = [{ Version: String(develop), Description: developDescription }];
+  if (String(production) !== String(develop)) versions.push({ Version: String(production), Description: productionDescription });
+  return {
+    aliases: [
+      { Name: 'develop', FunctionVersion: String(develop) },
+      { Name: 'production', FunctionVersion: String(production) }
+    ],
+    versions
+  };
+}
+
+test('bootstrap metadata only when both aliases lack demox-release', () => {
+  const local = entry({ appVersion: '0.1.0', runtimeVersion: '0.1.0' });
+  const both = bareAliases();
+  const ok = v.decideAppDeploy({ entry: local, aliases: both.aliases, versions: both.versions, codeSha256: SHA_B, gitSha: GIT });
+  assert.equal(ok.allow, true, ok.message);
+  assert.equal(ok.reason, 'bootstrap-metadata');
+  assert.equal(ok.live, null);
+  const cfg = v.configFingerprint(local.runtime);
+  assert.equal(ok.description, v.formatDescription({ app: '0.1.0', runtime: '0.1.0', git: GIT, sha256: SHA_B, cfg }));
+  assert.doesNotMatch(ok.description, /JWT_SECRET|MYSQL_PASSWORD/);
+
+  const splitVersions = bareAliases({ develop: '12', production: '11', developDescription: '', productionDescription: 'still no meta' });
+  const split = v.decideAppDeploy({ entry: local, aliases: splitVersions.aliases, versions: splitVersions.versions, codeSha256: SHA_B, gitSha: GIT });
+  assert.equal(split.reason, 'bootstrap-metadata');
+
+  const meta = v.formatDescription({ app: '0.1.0', runtime: '0.1.0', git: GIT, sha256: SHA_A, cfg });
+  const developOnly = bareAliases({ develop: '12', production: '11', developDescription: meta, productionDescription: 'baseline before CI' });
+  const drift = v.decideAppDeploy({ entry: local, aliases: developOnly.aliases, versions: developOnly.versions, codeSha256: SHA_B, gitSha: GIT });
+  assert.equal(drift.allow, false);
+  assert.equal(drift.reason, 'missing-metadata');
+  assert.match(drift.message, /已停止并告警/);
+  assert.match(drift.message, /不会覆盖/);
+
+  const productionOnly = bareAliases({ develop: '12', production: '11', developDescription: 'baseline before CI', productionDescription: meta });
+  const driftOther = v.decideAppDeploy({ entry: entry(), aliases: productionOnly.aliases, versions: productionOnly.versions, codeSha256: SHA_B, gitSha: GIT });
+  assert.equal(driftOther.reason, 'missing-metadata');
+  assert.equal(driftOther.description, null);
+
+  const present = decide();
+  assert.equal(present.allow, true, present.message);
+  assert.equal(present.reason, 'app-upgrade');
+  assert.match(present.description, /^demox-release app=0\.2\.0 runtime=0\.1\.0 /);
+
+  const placeholder = v.decideAppDeploy({
+    entry: entry({ appVersion: '0.0.0-placeholder' }),
+    aliases: both.aliases,
+    versions: both.versions,
     codeSha256: SHA_B,
     gitSha: GIT
   });
-  assert.equal(missing.reason, 'missing-metadata');
-  assert.match(missing.message, /已停止并告警/);
-  assert.match(missing.message, /不会覆盖/);
+  assert.equal(placeholder.allow, false);
+  assert.equal(placeholder.reason, 'placeholder');
+  assert.equal(placeholder.description, null);
+
+  const badGit = v.decideAppDeploy({ entry: local, aliases: both.aliases, versions: both.versions, codeSha256: SHA_B, gitSha: 'local' });
+  assert.equal(badGit.reason, 'bad-git');
+  const badSha = v.decideAppDeploy({ entry: local, aliases: both.aliases, versions: both.versions, codeSha256: 'abc', gitSha: GIT });
+  assert.equal(badSha.reason, 'bad-sha');
+  const badRuntime = v.decideAppDeploy({
+    entry: entry({ appVersion: '0.1.0', runtime: runtime({ memoryMB: 1 }) }),
+    aliases: both.aliases,
+    versions: both.versions,
+    codeSha256: SHA_B,
+    gitSha: GIT
+  });
+  assert.equal(badRuntime.reason, 'bad-runtime');
+  assert.equal(badRuntime.description, null);
+});
+
+test('missing alias or $LATEST stops before bootstrap', () => {
+  const local = entry();
   const noAlias = v.decideAppDeploy({
     entry: local,
     aliases: [{ Name: 'production', FunctionVersion: '3' }],
@@ -123,6 +184,15 @@ test('missing live metadata or alias stops before any overwrite', () => {
     gitSha: GIT
   });
   assert.equal(noAlias.reason, 'missing-alias');
+  const latest = v.decideAppDeploy({
+    entry: local,
+    aliases: [{ Name: 'develop', FunctionVersion: '$LATEST' }, { Name: 'production', FunctionVersion: '11' }],
+    versions: [{ Version: '11', Description: '' }],
+    codeSha256: SHA_B,
+    gitSha: GIT
+  });
+  assert.equal(latest.reason, 'missing-alias');
+  assert.equal(latest.description, null);
 });
 
 test('develop ahead of production uses the higher app version', () => {
