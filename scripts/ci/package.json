@@ -1,0 +1,8 @@
+{
+  "name": "demox-ci-zip",
+  "private": true,
+  "description": "PR 检查打 zip 用的 archiver。不参与统一 SCF 包的依赖。",
+  "dependencies": {
+    "archiver": "7.0.1"
+  }
+}

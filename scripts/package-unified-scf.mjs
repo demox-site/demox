@@ -5,6 +5,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LOCKFILE_INSTALL_ARGS, writeDeterministicZip } from "./ci/reproducible-zip.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Set(process.argv.slice(2));
@@ -30,17 +31,6 @@ async function listFiles(directory, relative = "") {
     if (ignoredFile(entry.name)) continue;
     const child = path.join(relative, entry.name);
     if (entry.isDirectory()) files.push(...await listFiles(directory, child));
-    else if (entry.isFile()) files.push(child);
-  }
-  return files;
-}
-
-async function listAllFiles(directory, relative = "") {
-  const entries = await readdir(path.join(directory, relative), { withFileTypes: true });
-  const files = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const child = path.join(relative, entry.name);
-    if (entry.isDirectory()) files.push(...await listAllFiles(directory, child));
     else if (entry.isFile()) files.push(child);
   }
   return files;
@@ -154,6 +144,21 @@ async function copySourcePackage(source, stageDir) {
   }
 }
 
+function assertLockMatches(packageJson, lock) {
+  const locked = lock.packages?.[""]?.dependencies || {};
+  const declared = packageJson.dependencies;
+  const errors = [];
+  for (const [name, version] of Object.entries(declared)) {
+    if (locked[name] !== version) errors.push(`${name}: 源码 lock 解析出 ${version}，统一包 lock 是 ${locked[name] || "缺失"}`);
+  }
+  for (const name of Object.keys(locked)) {
+    if (!(name in declared)) errors.push(`${name}: 统一包 lock 里有，源码 lock 没有`);
+  }
+  if (errors.length) {
+    throw new Error(`统一包 lock 与源码 lock 不一致，拒绝安装：${errors.join("；")}。更新 scripts/ci/unified-scf-package-lock.json（runtime 变更，要升 runtime 版本）。`);
+  }
+}
+
 async function installDependencies(stageDir, dependencies) {
   const packageJson = {
     name: "demox-unified-scf",
@@ -163,9 +168,13 @@ async function installDependencies(stageDir, dependencies) {
     dependencies: Object.fromEntries(dependencies.map((item) => [item.name, dependencySpec(item)]))
   };
   await writeFile(path.join(stageDir, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
+  const lockSrc = path.join(repoRoot, "scripts/ci/unified-scf-package-lock.json");
+  const lock = JSON.parse(await readFile(lockSrc, "utf8"));
+  assertLockMatches(packageJson, lock);
+  await copyFile(lockSrc, path.join(stageDir, "package-lock.json"));
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
-  await promisify(execFile)("npm", ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: stageDir, maxBuffer: 4 * 1024 * 1024 });
+  await promisify(execFile)("npm", LOCKFILE_INSTALL_ARGS, { cwd: stageDir, maxBuffer: 4 * 1024 * 1024 });
 }
 
 function dependencySpec(item) {
@@ -185,23 +194,7 @@ function compareVersions(left, right) {
 }
 
 async function writeZip(stageDir, zipPath) {
-  const archiver = (await import("archiver")).default;
-  const { createWriteStream } = await import("node:fs");
-  const archive = archiver("zip", { zlib: { level: 9 } });
-  const output = createWriteStream(zipPath);
-  const completion = new Promise((resolve, reject) => {
-    output.on("close", resolve);
-    output.on("error", reject);
-    archive.on("error", reject);
-  });
-  archive.pipe(output);
-  const files = await listAllFiles(stageDir);
-  for (const relative of files) {
-    const name = relative.split(path.sep).join("/");
-    archive.file(path.join(stageDir, relative), { name, date: new Date(0), ...(name === "scf_bootstrap" ? { mode: 0o755 } : {}) });
-  }
-  await archive.finalize();
-  await completion;
+  await writeDeterministicZip(stageDir, zipPath);
 }
 
 async function applyBundle(inventory) {

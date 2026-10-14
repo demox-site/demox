@@ -1,0 +1,45 @@
+name: Function versions
+
+# PR 检查，不发布。
+# 1. 清单里的平台函数：代码变了必须升 app，runtime 文件或配置变了必须升 runtime。
+# 2. #67 的 deploy-develop / promote 单测（scripts/ci/scf-function-api.test.cjs）。
+# 没有 environment，不读密钥，不切 SCF 别名。
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: function-versions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch base
+        run: git fetch origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install zip tool
+        run: npm ci --prefix scripts/ci --ignore-scripts --no-audit --no-fund
+
+      - name: App and runtime bumps
+        run: node scripts/ci/check-function-versions.cjs --base "origin/${{ github.base_ref }}"
+
+      - name: deploy-develop and promote unit tests
+        run: node --test scripts/ci/scf-function-api.test.cjs
+
+      - name: Version rules and reproducible zip
+        run: node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs

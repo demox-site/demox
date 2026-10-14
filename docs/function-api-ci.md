@@ -1,5 +1,7 @@
 # function-api 走 GitHub Actions 发布
 
+app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 元数据就停止、不覆盖」见 [function-versions.md](function-versions.md)。`deploy-develop` / `promote` 仍是下面这条流程，门禁加在写操作前面。本文件不授权发布。
+
 `demox-function-api`（统一 SCF 路由，ap-guangzhou，namespace `demox`）由 `.github/workflows/deploy-function-api.yml` 发布，脚本是 `scripts/ci/scf-function-api.cjs`。不再用 `scripts/deploy-function-api.mjs`，那个脚本依赖 phosa Mac 上的工具，而且会**覆盖函数环境变量**。
 
 ## 凭证：GitHub OIDC → CAM 角色（没有长期密钥）
