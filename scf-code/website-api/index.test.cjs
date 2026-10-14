@@ -1889,6 +1889,47 @@ test('staleObjectKeys only removes leftovers under the same website prefix', () 
   assert.deepEqual(staleObjectKeys(existing, keep, 'sites/'), []);
 });
 
+test('staleObjectKeys keeps content-hashed assets and still drops non-hashed leftovers', () => {
+  const prefix = 'sites/u1/SITE1/';
+  const keep = ['sites/u1/SITE1/dist/index.html'];
+  const keepNames = [
+    'dist/assets/index-DRfpVgvc.js',
+    'dist/assets/index-2JOqasvv.css',
+    'dist/assets/mammoth.browser-BbbDp1Io.mjs',
+    'dist/assets/main.a1b2c3d4.js',
+    'dist/assets/main.8f3a2b1c.chunk.js',
+    'dist/assets/index-ab-cd1234.js',
+    'dist/assets/logo-DiwrgTda.svg',
+    'dist/assets/font-Q1w2E3r4.woff2',
+    'dist/assets/codec-a1b2c3d4.wasm',
+    'dist/a1b2c3d4.js'
+  ];
+  const dropNames = [
+    'dist/assets/old.js',
+    'dist/assets/page-dashboard.js',
+    'dist/assets/chunk-polyfills.js',
+    'dist/assets/chunk-vendors.js',
+    'dist/legacy.js',
+    'dist/feedback.js',
+    'dist/about.html',
+    'oldzip/index.html',
+    'dist/favicon.ico',
+    'dist/logo.png',
+    'dist/assets/index-DRfpVgvc.js.map'
+  ];
+  const existing = [
+    ...keep,
+    ...keepNames.map((name) => prefix + name),
+    ...dropNames.map((name) => prefix + name),
+    'sites/u2/SITE1/dist/assets/index-DRfpVgvc.js',
+    'sites/u1/SITE1-evil/dist/assets/index-DRfpVgvc.js'
+  ];
+  assert.deepEqual(
+    staleObjectKeys(existing, keep, prefix).sort(),
+    dropNames.map((name) => prefix + name).sort()
+  );
+});
+
 // ---- deploy lock / overlapping deploys ----
 function createLockDb() {
   const rows = new Map();
@@ -1951,19 +1992,100 @@ test('two overlapping deploys to one site: second is rejected and no files from 
   const db = createLockDb();
   queryImpl = db.impl;
   const mem = memoryProvider();
-  const first = lockedDeploy(mem, ['index.html', 'assets/a.js'], 'sites/u1/SITEA001/dist');
+  const first = lockedDeploy(mem, ['index.html', 'assets/index-DRfpVgvc.js', 'legacy.js'], 'sites/u1/SITEA001/dist');
   await new Promise((r) => setImmediate(r));
   await assert.rejects(
-    lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'),
+    lockedDeploy(mem, ['index.html', 'assets/index-2JOqasvv.js'], 'sites/u1/SITEA001/dist'),
     (err) => err.code === 'DEPLOY_IN_PROGRESS'
   );
   mem.release();
-  assert.equal(await first, 2);
-  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/a.js', 'sites/u1/SITEA001/dist/index.html']);
+  assert.equal(await first, 3);
+  assert.deepEqual([...mem.store.keys()].sort(), [
+    'sites/u1/SITEA001/dist/assets/index-DRfpVgvc.js',
+    'sites/u1/SITEA001/dist/index.html',
+    'sites/u1/SITEA001/dist/legacy.js'
+  ]);
 
-  // 锁已释放，下一次串行部署可正常进行并 prune 旧 hash 资源
-  assert.equal(await lockedDeploy(mem, ['index.html', 'assets/b.js'], 'sites/u1/SITEA001/dist'), 2);
-  assert.deepEqual([...mem.store.keys()].sort(), ['sites/u1/SITEA001/dist/assets/b.js', 'sites/u1/SITEA001/dist/index.html']);
+  // 锁已释放。串行重部署覆盖同名文件，保留上一版内容哈希 chunk，并清掉非哈希残留。
+  assert.equal(await lockedDeploy(mem, ['index.html', 'assets/index-2JOqasvv.js'], 'sites/u1/SITEA001/dist'), 2);
+  assert.deepEqual([...mem.store.keys()].sort(), [
+    'sites/u1/SITEA001/dist/assets/index-2JOqasvv.js',
+    'sites/u1/SITEA001/dist/assets/index-DRfpVgvc.js',
+    'sites/u1/SITEA001/dist/index.html'
+  ]);
+});
+
+test('redeploy overwrites same-path files, keeps old hashed assets, and leaves other prefixes alone', async () => {
+  const mem = memoryProvider();
+  mem.release();
+  const prefix = 'sites/u1/SITEA001/dist';
+  const opts = { ownerId: 'u1', websiteId: 'SITEA001', provider: mem.provider };
+  mem.store.set('sites/u2/OTHER001/dist/index.html', Buffer.from('other-site'));
+  await websiteApi.deployZipToBucket({}, [
+    { entryName: 'index.html', isDirectory: false, getData: () => Buffer.from('old-html') },
+    { entryName: 'assets/index-DRfpVgvc.js', isDirectory: false, getData: () => Buffer.from('old-chunk') },
+    { entryName: 'assets/index-BbbDp1Io.css', isDirectory: false, getData: () => Buffer.from('old-css') },
+    { entryName: 'legacy.js', isDirectory: false, getData: () => Buffer.from('legacy') },
+    { entryName: 'about.html', isDirectory: false, getData: () => Buffer.from('about') }
+  ], prefix, opts);
+
+  const uploaded = await websiteApi.deployZipToBucket({}, [
+    { entryName: 'index.html', isDirectory: false, getData: () => Buffer.from('new-html') },
+    { entryName: 'assets/index-2JOqasvv.js', isDirectory: false, getData: () => Buffer.from('new-chunk') },
+    { entryName: 'assets/logo.png', isDirectory: false, getData: () => Buffer.from('logo') }
+  ], prefix, opts);
+
+  assert.equal(uploaded, 3);
+  assert.equal(mem.store.get('sites/u1/SITEA001/dist/index.html').toString(), 'new-html');
+  assert.equal(mem.store.get('sites/u1/SITEA001/dist/assets/index-DRfpVgvc.js').toString(), 'old-chunk');
+  assert.equal(mem.store.get('sites/u1/SITEA001/dist/assets/index-BbbDp1Io.css').toString(), 'old-css');
+  assert.equal(mem.store.get('sites/u1/SITEA001/dist/assets/index-2JOqasvv.js').toString(), 'new-chunk');
+  assert.equal(mem.store.get('sites/u2/OTHER001/dist/index.html').toString(), 'other-site');
+  assert.equal(mem.store.has('sites/u1/SITEA001/dist/legacy.js'), false);
+  assert.equal(mem.store.has('sites/u1/SITEA001/dist/about.html'), false);
+});
+
+test('deploy prune never deletes keys outside the website prefix', async () => {
+  const deleted = [];
+  const provider = {
+    put: async () => {},
+    list: async () => [
+      { key: 'sites/u1/SITEA001/dist/legacy.js' },
+      { key: 'sites/u1/SITEA001/dist/assets/index-DRfpVgvc.js' },
+      { key: 'sites/u2/OTHER001/dist/index.html' },
+      { key: 'sites/u1/SITEA001-evil/dist/index.html' }
+    ],
+    delete: async (key) => { deleted.push(key); }
+  };
+  const uploaded = await websiteApi.deployZipToBucket({}, zipEntries(['index.html']), 'sites/u1/SITEA001/dist', {
+    ownerId: 'u1', websiteId: 'SITEA001', provider
+  });
+  assert.equal(uploaded, 1);
+  assert.deepEqual(deleted, ['sites/u1/SITEA001/dist/legacy.js']);
+});
+
+test('deploy still succeeds when optional prune fails', async () => {
+  let puts = 0;
+  const listError = {
+    put: async () => { puts += 1; },
+    list: async () => { throw new Error('list unavailable'); },
+    delete: async () => { throw new Error('should not delete'); }
+  };
+  const afterList = await websiteApi.deployZipToBucket({}, zipEntries(['index.html', 'assets/index-DRfpVgvc.js']), 'sites/u1/SITEA001/dist', {
+    ownerId: 'u1', websiteId: 'SITEA001', provider: listError
+  });
+  assert.equal(afterList, 2);
+  assert.equal(puts, 2);
+
+  const deleteError = {
+    put: async () => {},
+    list: async () => [{ key: 'sites/u1/SITEA001/dist/legacy.js' }],
+    delete: async () => { throw new Error('delete failed'); }
+  };
+  const afterDelete = await websiteApi.deployZipToBucket({}, zipEntries(['index.html']), 'sites/u1/SITEA001/dist', {
+    ownerId: 'u1', websiteId: 'SITEA001', provider: deleteError
+  });
+  assert.equal(afterDelete, 1);
 });
 
 test('an expired deploy lock (crashed instance) can be taken over after TTL', async () => {
