@@ -7,11 +7,13 @@
  *   (demox.site 下 label 可匹配 websites.subdomain 或 LOWER(website_id))→ 回源 /{path}/{rest}
  * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
- * 源站路径（K2）：sites.demox.site 与 site-N.demox.site 上的 /sites/<uid>/<ID>/ 在回源前按站点 ID 裁决。
+ * 源站路径（K2）：sites.demox.site、site-N、sites-*、origin-* 在回源前按站点 ID 裁决。
+ * 其它 host 上，解码后以 /sites/ 开头的路径在两条透传之前也进入同一裁决，避免换 host 绕过。
  * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
  * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
- * 内部回源用 HMAC（环境变量 DEMOX_ORIGIN_GUARD_SECRET，仓库留空）。不用可伪造的普通头、UA 或 query。
- * 密钥未设置时不签发，调用点仍把入站请求原样交给回源。伪造头校验失败，守卫照常执行。
+ * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。缓存命中绕不过守卫，是因为函数先于节点缓存执行。
+ * 内部回源用 HMAC（DEMOX_ORIGIN_GUARD_SECRET_A / _B，仓库留空；签名槽由 DEMOX_ORIGIN_GUARD_KID 指定）。
+ * 不用可伪造的普通头、UA 或 query。密钥未设置或短于 32 字节时不签发，伪造头校验失败，守卫照常执行。
  *
  * 路由表用现有 MySQL，不用 KV(标准版 EdgeOne 边缘函数无法绑定 Pages KV,
  * 但支持 fetch 子请求)。
@@ -40,9 +42,9 @@ var RESOLVE_LEGACY_CACHE_PREFIX = 'https://resolve.demox.site/';
 var ORIGIN_TIMEOUT_MS = 8000;
 var ORIGIN_ATTEMPTS = 2;
 var SITE_UNAVAILABLE_RETRY_AFTER = 10; // 秒
-// 源站 host 守卫。K3 把 origin-3.demox.site 加进 ORIGIN_GUARD_HOSTS 即可，不必改判断函数。
+// 源站 host 守卫。sites.demox.site、site-N、sites-*（含桶 3 私有源站 sites-eclick）、origin-*。
 var ORIGIN_GUARD_HOSTS = ['sites.demox.site'];
-var ORIGIN_GUARD_HOST_RE = /^site-\d+\.demox\.site$/;
+var ORIGIN_GUARD_HOST_RE = /^(?:site-\d+|sites-[a-z0-9-]+|origin-[a-z0-9-]+)\.demox\.site$/;
 // by-ID 解析缓存。允许和封禁同一窗口：新封禁约 15s 内 403，解封约 15s 内 200。
 // 不允许把「允许」单独留 60s，那会挡住新封禁；也不把封禁裁决负缓存留得更长。
 // 子域名 / 自定义域的 RESOLVE_CACHE_TTL（60s）不参与这次裁决，所以保持不动。
@@ -53,10 +55,18 @@ var ORIGIN_RESOLVE_NEGATIVE_TTL = 15;
 var ORIGIN_RESOLVE_BUDGET_MS = 1500; // 整次 by-ID 查询的硬预算（含一次重试）
 var ORIGIN_RESOLVE_ATTEMPT_MS = 700;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
-// 内部回源令牌。密钥只读环境变量，仓库不放值，由云帆配置。未配置时不签发，外部伪造头一律当普通请求。
-var ORIGIN_GUARD_SECRET_ENV = 'DEMOX_ORIGIN_GUARD_SECRET';
+// 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL。
+// 节点上的缓存命中绕不过守卫，靠的是触发规则命中时函数先于节点缓存执行。
+var ORIGIN_OBJECT_MAX_AGE = 60;
+// 内部回源令牌 v1.<kid>.<exp>.<mac>。A/B 两个槽都参与校验；签名用 KID 点名的那个槽。
+// 短于 32 字节当作没配。仓库不放密钥值，由云帆用 Secret 配置。旧的单槽变量不再读取。
+var ORIGIN_GUARD_SECRET_SLOTS = { A: 'DEMOX_ORIGIN_GUARD_SECRET_A', B: 'DEMOX_ORIGIN_GUARD_SECRET_B' };
+var ORIGIN_GUARD_KID_ENV = 'DEMOX_ORIGIN_GUARD_KID';
+var ORIGIN_GUARD_MIN_SECRET_BYTES = 32;
 var ORIGIN_INTERNAL_TOKEN_HEADER = 'x-demox-origin-token';
 var ORIGIN_INTERNAL_TOKEN_TTL_MS = 20000;
+var ORIGIN_TOKEN_CLOCK_SKEW_MS = 5000;
+var ORIGIN_UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 // 不符合 /sites/<uid>/<ID>/ 的源站路径默认 403。www 的兜底路径本身就是
 // sites/1985655011013808129/EPX2UU43/dist，走正常 ID 裁决，不是例外。
 // robots.txt、favicon、health、/_/ 没有被边缘函数或 website-api 当成平台路径去拉，所以名单为空。
@@ -479,6 +489,11 @@ function isWwwRequest(u) {
 }
 
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
+  // 用户可控的 rest 在签名和回源之前再验一次。非法路径不签发、不回源。
+  if (originPathUnsafe(u && u.pathname) || originPathUnsafe(originPath)) {
+    if (meta) meta.originState = 'none';
+    return originPathRejectResponse();
+  }
   // www（主站）保持原路径：不加超时/重试，异常仍按原逻辑处理。
   if (isWwwRequest(u)) return rewriteOriginOnce(req, event, u, originPath, sitePath, originHost, meta, false);
   try {
@@ -490,18 +505,41 @@ async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, me
   }
 }
 
-function originGuardSecret() {
+function envString(name) {
   try {
-    if (typeof env !== 'undefined' && env && env[ORIGIN_GUARD_SECRET_ENV]) {
-      const value = String(env[ORIGIN_GUARD_SECRET_ENV]);
-      if (value) return value;
-    }
+    if (typeof env !== 'undefined' && env && env[name]) return String(env[name]);
   } catch (e) {}
   return '';
 }
 
-function originTokenMessage(exp, method, host, pathname, search) {
+function secretIsConfigured(value) {
+  const text = String(value || '');
+  if (!text) return false;
+  try {
+    if (typeof TextEncoder !== 'function') return false;
+    return new TextEncoder().encode(text).length >= ORIGIN_GUARD_MIN_SECRET_BYTES;
+  } catch (e) {
+    return false;
+  }
+}
+
+function originGuardSecret(slot) {
+  const name = ORIGIN_GUARD_SECRET_SLOTS[String(slot || '').toUpperCase()];
+  if (!name) return '';
+  const value = envString(name);
+  return secretIsConfigured(value) ? value : '';
+}
+
+function originGuardSigningSlot() {
+  const kid = envString(ORIGIN_GUARD_KID_ENV).trim().toUpperCase();
+  if (!originGuardSecret(kid)) return '';
+  return kid;
+}
+
+function originTokenMessage(exp, method, host, pathname, search, kid) {
   return [
+    'v1',
+    String(kid || ''),
     String(exp),
     String(method || 'GET').toUpperCase(),
     String(host || '').toLowerCase(),
@@ -532,38 +570,53 @@ function timingSafeEqual(left, right) {
   return diff === 0;
 }
 
+var originHmacKeys = Object.create(null);
+
 async function hmacSha256Hex(secret, message) {
   const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
+  let key = originHmacKeys[secret];
+  if (!key) {
+    key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    originHmacKeys[secret] = key;
+  }
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
   return bytesToHex(sig);
 }
 
-// 短时 HMAC。只在密钥已配置且运行时有 Web Crypto 时签发。外部请求无法伪造。
+// 短时 HMAC。只在 KID 点名的槽已配置（≥32 字节）且运行时有 Web Crypto 时签发。
 async function signOriginInternalToken(method, host, pathname, search) {
-  const secret = originGuardSecret();
+  const kid = originGuardSigningSlot();
+  const secret = kid ? originGuardSecret(kid) : '';
   if (!secret) return '';
   try {
     if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder !== 'function') return '';
     const exp = nowMs() + ORIGIN_INTERNAL_TOKEN_TTL_MS;
-    const mac = await hmacSha256Hex(secret, originTokenMessage(exp, method, host, pathname, search));
-    return String(exp) + '.' + mac;
+    const mac = await hmacSha256Hex(secret, originTokenMessage(exp, method, host, pathname, search, kid));
+    return 'v1.' + kid + '.' + String(exp) + '.' + mac;
   } catch (e) {
     return '';
   }
 }
 
-// 校验失败一律当外部请求。密钥为空时任何头都失败，避免未配置时被伪造头绕过。
+// 校验失败一律当外部请求。没有令牌头就不做 HMAC。两个槽按令牌里的 kid 取密钥。
+// 密钥为空或短于 32 字节时任何头都失败，守卫照常执行。
 async function verifyOriginInternalToken(req, host) {
-  const secret = originGuardSecret();
-  if (!secret) return false;
   const presented = String((req.headers && req.headers.get(ORIGIN_INTERNAL_TOKEN_HEADER)) || '');
+  if (!presented) return false;
+  const parts = presented.split('.');
+  if (parts.length !== 4 || parts[0] !== 'v1') return false;
+  const kid = parts[1];
+  const expRaw = parts[2];
+  const mac = parts[3];
+  const slot = String(kid || '').toUpperCase();
+  const secret = originGuardSecret(slot);
+  if (!secret) return false;
   let pathname = '';
   let search = '';
   let method = 'GET';
@@ -573,30 +626,31 @@ async function verifyOriginInternalToken(req, host) {
     search = u.search;
     method = req.method || 'GET';
   } catch (e) {}
-  const dot = presented.indexOf('.');
-  const expRaw = dot > 0 ? presented.slice(0, dot) : '0';
-  const mac = dot > 0 ? presented.slice(dot + 1) : '';
   const exp = /^\d{1,16}$/.test(expRaw) ? Number(expRaw) : 0;
   let expected = '';
   try {
     if (typeof crypto !== 'undefined' && crypto.subtle && typeof TextEncoder === 'function') {
-      expected = await hmacSha256Hex(secret, originTokenMessage(exp || 0, method, host, pathname, search));
+      expected = await hmacSha256Hex(secret, originTokenMessage(exp || 0, method, host, pathname, search, kid));
     }
   } catch (e) {
     expected = '';
   }
   const macOk = !!(expected && timingSafeEqual(expected, mac));
   const now = nowMs();
-  const fresh = exp > now && exp <= now + ORIGIN_INTERNAL_TOKEN_TTL_MS + 1000;
+  const skew = ORIGIN_TOKEN_CLOCK_SKEW_MS;
+  const fresh = exp + skew > now && exp <= now + ORIGIN_INTERNAL_TOKEN_TTL_MS + skew;
   return macOk && fresh;
 }
 
-// 令牌到达源站之前剥掉。没有令牌时原样返回，避免重建请求（Host → 400 UserCnameInvalid）。
+// 只删除令牌头，保留 Host。
+// 这里的 URL 已经是源站 host，Host 与 URL host 一致。EdgeOne 只写明了一种不再进入函数的子请求：
+// URL host 和 Host 头都跟客户端请求一致。删掉 Host 会离开这个条件，可能造成第二次进入。
+// 没有令牌时原样返回，避免无谓地重建请求。
+// 跨 host 回源（访客 Host → sites / site-N）仍在 attachOriginToken 里去掉 Host，否则 COS 会 400 UserCnameInvalid。
 function stripOriginInternalToken(req) {
   if (!req.headers || !req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) return req;
   const headers = new Headers(req.headers);
   headers.delete(ORIGIN_INTERNAL_TOKEN_HEADER);
-  headers.delete('host');
   const method = req.method || 'GET';
   const init = { method: method, headers: headers, redirect: 'manual' };
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) init.body = req.body;
@@ -607,10 +661,12 @@ function stripOriginInternalToken(req) {
 // www 不经过 fetchSiteOrigin，文档回源必须仍把入站 req 交给 originFetch。
 // 密钥为空时什么都不做。有密钥时只往原请求上追加令牌，不删除 Host，也不换一个新的 Request。
 async function stampWwwOriginRequest(req, url) {
-  if (!originGuardSecret()) return;
+  if (!originGuardSigningSlot()) return;
   if (!req || !req.headers || typeof req.headers.set !== 'function') return;
   let target;
   try { target = new URL(url); } catch (e) { return; }
+  // site-N 今天是 http。令牌不要出现在明文链路上。
+  if (target.protocol !== 'https:') return;
   const token = await signOriginInternalToken(req.method || 'GET', target.hostname, target.pathname, target.search);
   if (!token) return;
   try { req.headers.set(ORIGIN_INTERNAL_TOKEN_HEADER, token); } catch (e) {}
@@ -622,6 +678,8 @@ async function attachOriginToken(url, init) {
   if (init && typeof init === 'object' && init.method) method = init.method;
   let target;
   try { target = new URL(url); } catch (e) { return init; }
+  // 明文 http（site-N）不带令牌。跨 host 仍删除 Host，避免把访客 Host 带到 COS。
+  if (target.protocol !== 'https:') return init;
   const token = await signOriginInternalToken(method, target.hostname, target.pathname, target.search);
   if (!token) return init;
   const headers = new Headers((init && init.headers) || {});
@@ -636,8 +694,9 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  // www 的 SPA index 与 404.html 保持 #49 之前的调用形状，不附带令牌。
-  // EdgeOne 的 fetch() 子请求不会再次进入本函数；若将来重入，这两条路径会被当成普通源站请求裁决，而不是内部放行。
+  // www 的 SPA index 与 404.html 保持 #49 之前的调用形状，不附带令牌。这是跨 host 子请求。
+  // 跨 host 子请求会不会再次进入本函数尚未证实，待用线上 EdgeOne 日志实测（EdgeFunctionSubrequest / ParentRequestID）。
+  // 若重入，这两条按普通源站路径做 by-ID 裁决，不是内部放行。
   if (!hardened) await stampWwwOriginRequest(req, buildOriginUrl(req, originPath, u.search, originHost));
   const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
@@ -2010,10 +2069,11 @@ async function resolveSite(label, domain) {
 }
 
 function resolveSiteByIdCacheKey(websiteId, uid) {
-  return RESOLVE_CACHE_PREFIX + 'id/' + encodeURIComponent(websiteId) + '/' + encodeURIComponent(uid);
+  return RESOLVE_CACHE_PREFIX + 'id/' + encodeURIComponent(String(websiteId || '').toUpperCase()) + '/' + encodeURIComponent(uid);
 }
 
-// 公开 resolve 端点，不带新凭证。允许与封禁的物理 TTL 都是 15s，不用 10 分钟 stale。
+// 公开 resolve 端点，不带新凭证。允许与封禁的解析缓存 TTL 都是 15s，不用 10 分钟 stale。
+// 这是 by-ID 裁决缓存，不是回源对象的 Cache-Control（那个只给客户端，见 ORIGIN_OBJECT_MAX_AGE）。
 async function resolveSiteById(websiteId, uid) {
   // 允许结果不得超过封禁窗口，否则新封禁要等那条正缓存过期。
   const ttl = Math.min(ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_BAN_TTL);
@@ -2059,15 +2119,54 @@ function isOriginGuardHost(host) {
   return ORIGIN_GUARD_HOST_RE.test(h);
 }
 
+// 路径里出现这些，一律拒绝：不查库、不签名、不回源。
+// %2f %5c %2e %25 不区分大小写。反斜杠、连续斜杠、. / .. 段同样拒绝。
+function originPathUnsafe(pathname) {
+  const path = String(pathname || '');
+  if (/%(?:2f|5c|2e|25)/i.test(path)) return true;
+  if (path.indexOf('\\') !== -1) return true;
+  if (path.indexOf('//') !== -1) return true;
+  const segments = path.split('/');
+  for (let i = 0; i < segments.length; i += 1) {
+    if (segments[i] === '.' || segments[i] === '..') return true;
+  }
+  return false;
+}
+
+function originPathRejectResponse() {
+  return new Response('Bad Request', {
+    status: 400,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'x-demox-route': 'origin-path=reject'
+    }
+  });
+}
+
+// 解码一次后是否落到源站对象前缀。URL 解析器已经折掉的 %2e%2e 会变成真实的 /sites/ 路径。
+function pathnameTargetsOriginSites(pathname) {
+  const raw = String(pathname || '');
+  if (raw.startsWith('/sites/')) return true;
+  try {
+    const decoded = decodeURIComponent(raw);
+    return decoded.startsWith('/sites/');
+  } catch (e) {
+    return false;
+  }
+}
+
 // /sites/<uid>/<ID> 没有尾斜杠也算命中：裁决通过后 308 到带斜杠的地址，绝不原样放行。
+// 非法编码或 uid 不符合 ^[A-Za-z0-9_-]{1,64}$ 时返回 { reject: true }，调用方不得查库。
 function parseOriginSitePath(pathname) {
   const path = String(pathname || '');
+  if (originPathUnsafe(path)) return { reject: true };
   const matched = path.match(/^\/sites\/([^/]+)\/([A-Za-z0-9]+)(\/.*)?$/);
   if (!matched) return null;
   const uid = matched[1];
   const websiteId = matched[2];
-  if (!uid || uid.length > 128 || uid === '.' || uid === '..') return null;
-  if (!websiteId || websiteId.length > 64) return null;
+  if (!ORIGIN_UID_RE.test(uid)) return { reject: true };
+  if (!websiteId || websiteId.length > 64) return { reject: true };
   return { uid: uid, websiteId: websiteId, needsSlash: matched[3] == null };
 }
 
@@ -2083,6 +2182,18 @@ function originReturnedPathMatches(parsed, resolutionPath) {
   const prefix = 'sites/' + parsed.uid + '/' + parsed.websiteId;
   const got = String(resolutionPath || '').replace(/^\/+/, '');
   return got === prefix || got.indexOf(prefix + '/') === 0;
+}
+
+function originGuardDeniedPage() {
+  const html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="robots" content="noindex">' +
+    '<title>无法访问</title></head><body>' +
+    '<h1>无法访问</h1><p>This page is not available.</p></body></html>';
+  return new Response(html, {
+    status: 403,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+  });
 }
 
 function originGuardForbidden(route) {
@@ -2107,8 +2218,9 @@ function originGuardNotFound() {
   });
 }
 
-// 允许放行的对象也把 Cache-Control 压到封禁窗口（15s），避免缓存的 200 比封禁裁决活得更久。
-// 触发规则命中时函数先于节点缓存执行；这层头是触发规则被绕开时的上限，已有 HIT 仍要 purge。
+// 放行对象的 Cache-Control 用 ORIGIN_OBJECT_MAX_AGE。这个 max-age 只影响客户端，
+// 不改变 EdgeOne 节点缓存的 TTL。节点缓存命中绕不过守卫，是因为函数先于节点缓存执行。
+// 已经写进节点的 HIT 仍要在发布后 purge，这个头盖不住它们。
 function capOriginObjectCache(resp, route) {
   if (!resp) return resp;
   try {
@@ -2117,7 +2229,7 @@ function capOriginObjectCache(resp, route) {
       headers.set('Cache-Control', 'no-store');
       headers.delete('Expires');
     } else {
-      headers.set('Cache-Control', 'public, max-age=' + ORIGIN_RESOLVE_BAN_TTL);
+      headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: headers });
@@ -2126,20 +2238,34 @@ function capOriginObjectCache(resp, route) {
   }
 }
 
-// EdgeOne：命中 *.demox.site 触发规则时，顺序是「边缘函数 → 子请求访问缓存 → 回源」。
-// fetch() 子请求不再进入函数。所以客户端的缓存 HIT 不能跳过这里的裁决；
-// 函数自己的回源子请求也不会再走进 fail-closed。见 handleOriginGuard 的注释。
+// 命中 *.demox.site 触发规则时，函数先于节点缓存执行，所以客户端的缓存 HIT 不能跳过这里的裁决。
+// 这与对象上的 max-age 无关：max-age 只影响客户端，不改 EdgeOne 节点缓存 TTL。
+// 同 host 且 Host 头仍在的 fetch 落在文档已写明的「不再进入函数」里。
+// 跨 host 子请求会不会重入尚未证实，待用线上 EdgeOne 日志实测（EdgeFunctionSubrequest / ParentRequestID）。
 async function handleOriginGuard(req, event, ctx, u, host) {
   ctx.siteTraffic = true;
   ctx.resolveState = 'origin';
+  const method = String(req.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: {
+        Allow: 'GET, HEAD, OPTIONS',
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'x-demox-route': 'origin-guard=method'
+      }
+    });
+  }
   if (await verifyOriginInternalToken(req, host)) {
     const stripped = stripOriginInternalToken(req);
     return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');
   }
   const parsed = parseOriginSitePath(u.pathname);
+  if (parsed && parsed.reject) return originPathRejectResponse();
   if (!parsed) {
     if (isOriginAllowlisted(u.pathname)) {
-      return capOriginObjectCache(await fetch(req), 'origin-guard=allowlist');
+      return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
     }
     return originGuardForbidden('origin-guard=unparsed');
   }
@@ -2153,7 +2279,7 @@ async function handleOriginGuard(req, event, ctx, u, host) {
     return siteUnavailableResponse('origin-guard=error');
   }
   if (resolution.visibility === VISIBILITY_DISABLED || resolution.visibility === VISIBILITY_PRIVATE) {
-    return withRouteHeader(disabledSitePage(), 'origin-guard=blocked');
+    return withRouteHeader(originGuardDeniedPage(), 'origin-guard=blocked');
   }
   if (!resolution.path || !originReturnedPathMatches(parsed, resolution.path)) {
     return originGuardNotFound();
@@ -2185,6 +2311,9 @@ async function handleRequest(req, event, ctx) {
     });
   }
 
+  // 非法路径在任何查库、签名、回源之前拒绝。源站解析和子域名 rest 共用这一处。
+  if (originPathUnsafe(u.pathname)) return originPathRejectResponse();
+
   // 源站 host 在任何 fetch(req) 放行之前裁决。子域名和自定义域不进这里。
   if (isOriginGuardHost(host)) {
     return handleOriginGuard(req, event, ctx, u, host);
@@ -2199,11 +2328,19 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
+  // 未绑定自定义域：解码后以 /sites/ 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
+  if (!parsedHost && !(customResolved && customResolved.path) && pathnameTargetsOriginSites(u.pathname)) {
+    return handleOriginGuard(req, event, ctx, u, host);
+  }
   if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
   let rest = u.pathname.replace(/^\/+/, '');
+  // 路由器拼到源站前缀上的 rest。含 %2f / %5c / %2e / %25、反斜杠、// 或点段时不查库、不签名、不回源。
+  if (originPathUnsafe(u.pathname) || originPathUnsafe(rest) || originPathUnsafe('/' + rest)) {
+    return originPathRejectResponse();
+  }
 
   // 目录请求(根 / 或结尾 /)直接补 index.html，避免回源到「目录」让 COS 慢解析
   // index 文档(实测 www/ 比 www/index.html 慢 ~4s，且会触发回退二次 fetch)。
@@ -2299,6 +2436,8 @@ async function handleRequest(req, event, ctx) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
+  // 解码后以 /sites/ 开头的路径不能原样回源到桶 1，交给源站守卫。
+  if (pathnameTargetsOriginSites(u.pathname)) return handleOriginGuard(req, event, ctx, u, host);
   return fetch(req);
 }
 

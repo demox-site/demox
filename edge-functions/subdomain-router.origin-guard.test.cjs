@@ -6,6 +6,8 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'subdomain-router.js'), 'utf8');
 const TOKEN_HEADER = 'x-demox-origin-token';
+const SECRET_A = 'origin-guard-test-slot-a-placeholder';
+const SECRET_B = 'origin-guard-test-slot-b-placeholder';
 const PUBLIC_HTML = '<!doctype html><html><head><title>Keep</title><script src="/assets/app.js"></script></head><body><main>Public body</main></body></html>';
 const LETTERS_HTML = '<!doctype html><html><head><title>山间来信</title><link rel="stylesheet" href="/assets/essay.css"></head><body><main>山间来信</main></body></html>';
 const SPA_HTML = '<!doctype html><html><head><title>Coverage</title><script src="/assets/dashboard.js"></script></head><body><main>Dashboard</main></body></html>';
@@ -40,11 +42,20 @@ function headerBag(input, init) {
   return new Headers();
 }
 
-function makeGuard({ secret = '', resolver, origin = null, now = 1_000_000, budget = null } = {}) {
+function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null } = {}) {
   const calls = { resolve: [], origin: [] };
   const cache = fakeCache();
   let handle = null;
   const event = { waitUntil() {}, passThroughOnException() {} };
+  const slotA = secretA || secret;
+  const env = {
+    DEMOX_API_URL: 'https://api.test',
+    DEMOX_HOME_URL: 'https://www.demox.site'
+  };
+  if (slotA) env.DEMOX_ORIGIN_GUARD_SECRET_A = slotA;
+  if (secretB) env.DEMOX_ORIGIN_GUARD_SECRET_B = secretB;
+  if (kid) env.DEMOX_ORIGIN_GUARD_KID = kid;
+  else if (slotA || secretB) env.DEMOX_ORIGIN_GUARD_KID = 'A';
   const ctx = vm.createContext({
     URL,
     Request,
@@ -56,11 +67,7 @@ function makeGuard({ secret = '', resolver, origin = null, now = 1_000_000, budg
     clearTimeout,
     AbortController,
     console: { log() {}, warn() {}, error() {} },
-    env: {
-      DEMOX_API_URL: 'https://api.test',
-      DEMOX_HOME_URL: 'https://www.demox.site',
-      ...(secret ? { DEMOX_ORIGIN_GUARD_SECRET: secret } : {})
-    },
+    env,
     caches: { default: cache.cache },
     addEventListener() {},
     fetch: async (input, init) => {
@@ -89,7 +96,7 @@ function makeGuard({ secret = '', resolver, origin = null, now = 1_000_000, budg
   });
   vm.runInContext(
     `${source}\nglobalThis.__now = ${now};\nnowMs = function () { return globalThis.__now; };\n` +
-      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, ORIGIN_RESOLVE_BAN_TTL, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, RESOLVE_CACHE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS };',
+      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, originPathUnsafe, ORIGIN_RESOLVE_BAN_TTL, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, RESOLVE_CACHE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS, ORIGIN_TOKEN_CLOCK_SKEW_MS, ORIGIN_OBJECT_MAX_AGE, ORIGIN_GUARD_MIN_SECRET_BYTES };',
     ctx
   );
   if (budget) {
@@ -103,10 +110,15 @@ function makeGuard({ secret = '', resolver, origin = null, now = 1_000_000, budg
     const response = await handle(new Request(url, { headers: headers || { Accept: 'text/html' } }), event);
     return { response, html: await response.text() };
   };
+  const call = async (url, init) => {
+    const response = await handle(new Request(url, init || { headers: { Accept: 'text/html' } }), event);
+    return { response, html: await response.text() };
+  };
   return {
     calls,
     cache,
     visit,
+    call,
     ctx,
     advance: (ms) => { ctx.__now += ms; }
   };
@@ -139,18 +151,27 @@ test('origin ban and unban expire in 15s; non-ban host resolve stays at most 60s
   const probe = vm.createContext({
     URL, Request, Response, Headers, console, addEventListener() {}, fetch: async () => { throw new Error('no fetch'); }
   });
-  vm.runInContext(`${source}\nglobalThis.__c = { ban: ORIGIN_RESOLVE_BAN_TTL, found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, host: RESOLVE_CACHE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE };`, probe);
+  vm.runInContext(`${source}\nglobalThis.__c = { ban: ORIGIN_RESOLVE_BAN_TTL, found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, host: RESOLVE_CACHE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE, objectMaxAge: ORIGIN_OBJECT_MAX_AGE };`, probe);
   assert.equal(probe.__c.ban, 15);
+  assert.equal(probe.__c.found, 15);
   assert.ok(probe.__c.found <= probe.__c.ban);
   assert.ok(probe.__c.negative <= probe.__c.ban);
   assert.ok(probe.__c.host <= 60);
   assert.equal(probe.__c.host, 60);
+  assert.equal(probe.__c.objectMaxAge, 60);
   assert.equal(probe.__c.budget, 1500);
   assert.equal(probe.__c.allow.length, 0);
   assert.equal(probe.__c.hosts.includes('sites.demox.site'), true);
   assert.equal(probe.__c.re.test('site-3.demox.site'), true);
-  assert.equal(probe.__c.re.test('origin-3.demox.site'), false);
+  assert.equal(probe.__c.re.test('sites-eclick.demox.site'), true);
+  assert.equal(probe.__c.re.test('origin-3.demox.site'), true);
+  assert.equal(probe.__c.re.test('static.demox.site'), false);
+  assert.equal(probe.__c.re.test('cdn.demox.site'), false);
   assert.match(source, /staleIfError:\s*false/);
+  assert.match(source, /DEMOX_ORIGIN_GUARD_SECRET_A/);
+  assert.match(source, /DEMOX_ORIGIN_GUARD_SECRET_B/);
+  assert.match(source, /DEMOX_ORIGIN_GUARD_KID/);
+  assert.doesNotMatch(source, /DEMOX_ORIGIN_GUARD_SECRET_A['"]?\s*[:=]\s*['"][A-Za-z0-9+/]{16,}['"]/);
 });
 
 test('banned, private, and owner-mismatch origin paths are the same 403 and do not fetch origin', async () => {
@@ -169,8 +190,8 @@ test('banned, private, and owner-mismatch origin paths are the same 403 and do n
     pages.push(html);
     assert.equal(response.status, 403);
     assert.equal(response.headers.get('cache-control'), 'no-store');
-    assert.match(html, /此站点已被停用/);
-    assert.doesNotMatch(html, /需要重新验证|登录后查看|Public body/);
+    assert.match(html, /无法访问/);
+    assert.doesNotMatch(html, /此站点已被停用|举报|私有|需要重新验证|登录后查看|Public body/);
     assert.equal(r.calls.origin.length, before);
   }
   assert.equal(pages[0], pages[1]);
@@ -204,11 +225,12 @@ test('an allow:true verdict that still says private is not served', async () => 
   });
   const { response, html } = await r.visit('https://sites.demox.site/sites/owner-1/PRIV8/index.html');
   assert.equal(response.status, 403);
-  assert.match(html, /此站点已被停用/);
+  assert.match(html, /无法访问/);
+  assert.doesNotMatch(html, /此站点已被停用|私有/);
   assert.equal(r.calls.origin.length, 0);
 });
 
-test('a public origin path passes through with the same body and a 15s cache cap', async () => {
+test('a public origin path passes through with the same body and a client max-age of 60', async () => {
   const r = makeGuard({
     resolver: verdictResolver({ PUBLIC1: allow('PUBLIC1', 'owner-1') })
   });
@@ -216,7 +238,7 @@ test('a public origin path passes through with the same body and a 15s cache cap
   assert.equal(response.status, 200);
   assert.equal(html, PUBLIC_HTML);
   assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
-  assert.equal(response.headers.get('cache-control'), 'public, max-age=15');
+  assert.equal(response.headers.get('cache-control'), 'public, max-age=60');
   assert.equal(r.calls.resolve[0].websiteId, 'PUBLIC1');
   assert.equal(r.calls.resolve[0].uid, 'owner-1');
   assert.equal(r.calls.resolve[0].subdomain, undefined);
@@ -344,7 +366,8 @@ test('a ban is 403 within 15s, an unban is 200 within 15s, and expiry plus resol
   const beforeBan = r.calls.origin.length;
   const banned = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(banned.response.status, 403);
-  assert.match(banned.html, /此站点已被停用/);
+  assert.match(banned.html, /无法访问/);
+  assert.doesNotMatch(banned.html, /此站点已被停用/);
   assert.doesNotMatch(banned.html, /Public body/);
   assert.equal(r.calls.origin.length, beforeBan, 'a ban must not fetch the object');
   assert.equal(JSON.parse(r.cache.store.get(key).body).status, 'blocked');
@@ -435,9 +458,8 @@ test('subdomain and custom-domain traffic keep the old resolver, including stale
 });
 
 test('forged internal markers from an external request stay guarded', async () => {
-  const secret = 'test-origin-guard-secret';
   const r = makeGuard({
-    secret,
+    secret: SECRET_A,
     resolver: verdictResolver({
       BANNED1: { success: true, allow: false, reason: 'blocked' },
       PUBLIC1: allow('PUBLIC1', 'owner-1')
@@ -463,7 +485,7 @@ test('forged internal markers from an external request stay guarded', async () =
   assert.equal(wrongPath.response.status, 403);
   assert.equal(r.calls.origin.filter((info) => info.href.includes('BANNED1')).length, 0);
 
-  r.advance(r.ctx.__testHooks.ORIGIN_INTERNAL_TOKEN_TTL_MS + 1000);
+  r.advance(r.ctx.__testHooks.ORIGIN_INTERNAL_TOKEN_TTL_MS + r.ctx.__testHooks.ORIGIN_TOKEN_CLOCK_SKEW_MS + 1000);
   const expired = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', {
     Accept: 'text/html',
     'x-demox-origin-token': copied
@@ -474,10 +496,9 @@ test('forged internal markers from an external request stay guarded', async () =
 });
 
 test('a valid internal token skips the guard, and the origin hop does not carry the token', async () => {
-  const secret = 'test-origin-guard-secret';
   const seen = [];
   const r = makeGuard({
-    secret,
+    secret: SECRET_A,
     resolver: (payload, n, init, href) => {
       if (payload.websiteId) throw new Error('internal re-entry must not resolve by id');
       if (href.includes('/check-site-access')) return json({ success: true, allowed: true });
@@ -526,10 +547,9 @@ test('a valid internal token skips the guard, and the origin hop does not carry 
 });
 
 test('www document fetch carries a token only when the secret is set, and re-entry strips it', async () => {
-  const secret = 'test-origin-guard-secret';
   const seen = [];
   const r = makeGuard({
-    secret,
+    secret: SECRET_A,
     resolver: (payload) => {
       if (payload.websiteId) throw new Error('www re-entry must not resolve by id');
       return json({
@@ -687,4 +707,235 @@ test('first screen: three public shapes stay 200 via subdomain and the bucket-1 
   assert.equal(missing.response.status, 404);
   assert.match(missing.html, /Missing page/);
   assert.doesNotMatch(missing.html, /站点未发布|此站点已被停用/);
+});
+
+test('M1: banned /sites/ objects are not served from bypass hosts and do not fetch origin', async () => {
+  const r = makeGuard({
+    resolver: (payload) => {
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId) throw new Error('unexpected id ' + payload.websiteId);
+      return json({ success: false, message: 'not found' });
+    }
+  });
+  const path = '/sites/owner-1/BANNED1/dist/index.html';
+  const hosts = [
+    'https://static.demox.site',
+    'https://cdn.demox.site',
+    'https://randomxyz123.demox.site',
+    'https://sites-eclick.demox.site',
+    'https://origin-3.demox.site',
+    'https://not-bound.example'
+  ];
+  for (const host of hosts) {
+    const before = r.calls.origin.length;
+    const { response, html } = await r.visit(host + path);
+    assert.notEqual(response.status, 200, host);
+    assert.equal(r.calls.origin.length, before, host);
+    assert.doesNotMatch(html, /Public body/);
+  }
+  const encoded = await r.visit('https://static.demox.site/%73ites/owner-1/BANNED1/dist/index.html');
+  assert.notEqual(encoded.response.status, 200);
+  assert.equal(r.calls.origin.length, 0);
+  const root = await r.visit('https://sites-eclick.demox.site/');
+  assert.notEqual(root.response.status, 200);
+  assert.equal(r.calls.origin.length, 0);
+  const open = await r.visit('https://randomxyz123.demox.site/index.html');
+  assert.equal(open.response.status, 200);
+  assert.equal(r.calls.origin.length, 1, 'a non-/sites/ unknown host still passthroughs');
+});
+
+test('M2: ..%2F traversal and other unsafe paths are rejected before lookup, signing, or origin', async () => {
+  const r = makeGuard({
+    secret: SECRET_A,
+    resolver: () => { throw new Error('must not look up'); }
+  });
+  const unsafe = r.ctx.__testHooks.originPathUnsafe;
+  const parse = r.ctx.__testHooks.parseOriginSitePath;
+  assert.equal(unsafe('/sites/owner-1/PUBLIC1/dist/..%2F..%2F..%2Fowner-2/BANNED1/index.html'), true);
+  assert.equal(unsafe('/a/%2e%2e/b'), true);
+  assert.equal(unsafe('/a/%2E%2E/b'), true);
+  assert.equal(unsafe('/a/%5csecret'), true);
+  assert.equal(unsafe('/a/%25%2e%2e/b'), true);
+  assert.equal(unsafe('/a\\b'), true);
+  assert.equal(unsafe('/a//b'), true);
+  assert.equal(unsafe('/a/../b'), true);
+  assert.equal(unsafe('/a/./b'), true);
+  assert.equal(unsafe('/sites/owner-1/PUBLIC1/index.html'), false);
+  assert.equal(parse('/sites/owner-1/PUBLIC1/dist/..%2F..%2F..%2Fowner-2/BANNED1/index.html').reject, true);
+  assert.equal(parse('/sites/owner.1/PUBLIC1/index.html').reject, true);
+  assert.equal(parse('/sites/' + 'a'.repeat(65) + '/PUBLIC1/index.html').reject, true);
+  assert.equal(parse('/sites/owner_1-a/PUBLIC1/index.html').uid, 'owner_1-a');
+
+  const urls = [
+    'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/..%2F..%2F..%2Fowner-2/BANNED1/dist/index.html',
+    'https://pub1.demox.site/dist/..%2F..%2F..%2Fowner-2/BANNED1/dist/index.html',
+    'https://blog.example.com/assets/..%2fsecret',
+    'https://sites.demox.site/sites/owner-1/PUBLIC1/%2e%2e%2fsecret',
+    'https://sites.demox.site/sites/owner-1/PUBLIC1/%5Csecret',
+    'https://sites.demox.site/sites/owner-1/PUBLIC1/%25%2e%2e/secret',
+    'https://sites.demox.site/sites/owner-1/PUBLIC1//index.html',
+    'https://sites.demox.site/sites/owner.1/PUBLIC1/index.html',
+    'https://sites.demox.site/sites/' + 'a'.repeat(65) + '/PUBLIC1/index.html'
+  ];
+  for (const url of urls) {
+    const { response } = await r.visit(url);
+    assert.equal(response.status, 400, url);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+  assert.equal(r.calls.resolve.length, 0);
+  assert.equal(r.calls.origin.length, 0);
+});
+
+test('M4: guarded origin hosts allow GET, HEAD, and OPTIONS; other methods are 405 and do not fetch', async () => {
+  const r = makeGuard({
+    secret: SECRET_A,
+    resolver: (payload) => {
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+      throw new Error('unexpected lookup');
+    }
+  });
+  const banned = 'https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html';
+  const putToken = await r.ctx.__testHooks.signOriginInternalToken('PUT', 'sites.demox.site', '/sites/owner-1/BANNED1/dist/index.html', '');
+  assert.match(putToken, /^v1\.A\.\d+\.[0-9a-f]{64}$/);
+  for (const method of ['PUT', 'POST', 'DELETE', 'PATCH']) {
+    const { response } = await r.call(banned, {
+      method,
+      headers: { Accept: 'text/html', 'x-demox-origin-token': putToken }
+    });
+    assert.equal(response.status, 405, method);
+    assert.match(response.headers.get('allow') || '', /GET/);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+  assert.equal(r.calls.resolve.length, 0);
+  assert.equal(r.calls.origin.length, 0);
+  const head = await r.call(banned, { method: 'HEAD', headers: { Accept: 'text/html' } });
+  assert.equal(head.response.status, 403);
+  const options = await r.call('https://sites-eclick.demox.site/sites/owner-1/BANNED1/dist/index.html', { method: 'OPTIONS' });
+  assert.notEqual(options.response.status, 405);
+  assert.notEqual(options.response.status, 200);
+  assert.equal(r.calls.origin.length, 0);
+  const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
+  assert.equal(pub.response.status, 200);
+});
+
+test('M5: tokens are v1.kid.exp.mac, both slots verify, and a short secret stays unset', async () => {
+  assert.ok(new TextEncoder().encode(SECRET_A).length >= 32);
+  assert.ok(new TextEncoder().encode(SECRET_B).length >= 32);
+  const short = SECRET_A.slice(0, 31);
+  assert.equal(new TextEncoder().encode(short).length, 31);
+
+  const both = makeGuard({
+    secretA: SECRET_A,
+    secretB: SECRET_B,
+    kid: 'A',
+    resolver: (payload) => {
+      if (payload.websiteId === 'PUBLIC1') return json({ success: true, allow: false, reason: 'not_found' });
+      if (payload.websiteId) throw new Error('unexpected id ' + payload.websiteId);
+      return json({ success: false, message: 'not found' });
+    }
+  });
+  const path = '/sites/owner-1/PUBLIC1/dist/index.html';
+  const tokenA = await both.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  assert.match(tokenA, /^v1\.A\.\d+\.[0-9a-f]{64}$/);
+  both.ctx.env.DEMOX_ORIGIN_GUARD_KID = 'B';
+  const tokenB = await both.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  assert.match(tokenB, /^v1\.B\.\d+\.[0-9a-f]{64}$/);
+  both.ctx.env.DEMOX_ORIGIN_GUARD_KID = 'A';
+  for (const token of [tokenA, tokenB]) {
+    const { response } = await both.visit('https://sites.demox.site' + path, {
+      Accept: 'text/html',
+      'x-demox-origin-token': token
+    });
+    assert.equal(response.status, 200);
+  }
+  assert.equal(both.calls.resolve.length, 0);
+  assert.equal(both.calls.origin.every((info) => !info.token), true);
+
+  const tampered = tokenA.replace('v1.A.', 'v1.B.');
+  const swapped = await both.visit('https://sites.demox.site' + path, {
+    Accept: 'text/html',
+    'x-demox-origin-token': tampered
+  });
+  assert.equal(swapped.response.status, 404);
+  assert.ok(both.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'));
+
+  const kept = makeGuard({
+    secret: SECRET_A,
+    resolver: () => { throw new Error('internal hop must not resolve'); }
+  });
+  const direct = await kept.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  const hosted = await kept.call('https://sites.demox.site' + path, {
+    headers: { Host: 'sites.demox.site', Accept: 'text/html', 'x-demox-origin-token': direct }
+  });
+  assert.equal(hosted.response.status, 200);
+  assert.equal(kept.calls.origin.length, 1);
+  assert.equal(kept.calls.origin[0].token, '');
+  assert.equal(kept.calls.origin[0].hostHeader, 'sites.demox.site');
+  assert.equal(kept.calls.resolve.length, 0);
+
+  const within = makeGuard({
+    secret: SECRET_A,
+    resolver: (payload) => {
+      if (payload.websiteId) return json(allow('PUBLIC1', 'owner-1'));
+      throw new Error('no label');
+    }
+  });
+  const fresh = await within.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  within.advance(within.ctx.__testHooks.ORIGIN_INTERNAL_TOKEN_TTL_MS + 4000);
+  const skewed = await within.visit('https://sites.demox.site' + path, {
+    Accept: 'text/html',
+    'x-demox-origin-token': fresh
+  });
+  assert.equal(skewed.response.status, 200);
+  assert.equal(within.calls.resolve.length, 0, '4s past exp is inside the 5s skew');
+  within.advance(2000);
+  const expired = await within.visit('https://sites.demox.site' + path, {
+    Accept: 'text/html',
+    'x-demox-origin-token': fresh
+  });
+  assert.equal(expired.response.status, 200);
+  assert.ok(within.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'));
+
+  const unset = makeGuard({
+    secret: short,
+    resolver: (payload) => {
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId) throw new Error('unexpected id');
+      return json({
+        success: true,
+        path: 'sites/owner-1/PUB1/dist',
+        websiteId: 'PUB1',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      });
+    }
+  });
+  assert.equal(await unset.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, ''), '');
+  const home = await unset.visit('https://pub1.demox.site/');
+  assert.equal(home.response.status, 200);
+  assert.equal(unset.calls.origin.every((info) => !info.token), true);
+  const forged = await unset.visit('https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html', {
+    Accept: 'text/html',
+    'x-demox-origin-token': 'v1.A.9999999999999.' + 'ab'.repeat(32)
+  });
+  assert.equal(forged.response.status, 403);
+  assert.equal(unset.calls.origin.some((info) => info.href.includes('BANNED1')), false);
+
+  const httpOrigin = makeGuard({
+    secret: SECRET_A,
+    resolver: () => json({
+      success: true,
+      path: 'sites/owner-1/PUB1/dist',
+      websiteId: 'PUB1',
+      origin: 'site-3.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    })
+  });
+  const plain = await httpOrigin.visit('https://pub1.demox.site/');
+  assert.equal(plain.response.status, 200);
+  assert.ok(httpOrigin.calls.origin.some((info) => info.href.startsWith('http://site-3.demox.site/')));
+  assert.equal(httpOrigin.calls.origin.every((info) => !info.token), true);
 });

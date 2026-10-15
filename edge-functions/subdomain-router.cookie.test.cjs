@@ -340,7 +340,7 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
   }
   assert.deepEqual(extras, [
     "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
-    "return capOriginObjectCache(await fetch(req), 'origin-guard=allowlist');",
+    "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
     "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');"
   ]);
 });

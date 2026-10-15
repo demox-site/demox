@@ -154,13 +154,26 @@ def simulate_ban():
     found = _const("ORIGIN_RESOLVE_FOUND_TTL", text)
     negative = _const("ORIGIN_RESOLVE_NEGATIVE_TTL", text)
     host_ttl = _const("RESOLVE_CACHE_TTL", text)
+    object_max_age = _const("ORIGIN_OBJECT_MAX_AGE", text)
     budget = _const("ORIGIN_RESOLVE_BUDGET_MS", text)
     token_ttl = _const("ORIGIN_INTERNAL_TOKEN_TTL_MS", text)
     problems = []
     if ban != 15:
         problems.append(f"ban TTL {ban}s is not 15s")
+    if found != 15:
+        problems.append(f"allow TTL {found}s is not 15s; a ban must be visible by t=15s")
     if found > ban:
         problems.append(f"allow TTL {found}s outlives the {ban}s ban window")
+    # Object max-age is a client Cache-Control only. It is not the EdgeOne node-cache TTL
+    # and it is not the by-ID ban clock. Cache-hit safety is the function running first.
+    if object_max_age != 60:
+        problems.append(f"object client max-age {object_max_age}s is not the separate 60s constant")
+    if "max-age=' + ORIGIN_OBJECT_MAX_AGE" not in text:
+        problems.append("object Cache-Control is not using ORIGIN_OBJECT_MAX_AGE")
+    if "ORIGIN_RESOLVE_BAN_TTL" in text and "max-age=' + ORIGIN_RESOLVE_BAN_TTL" in text:
+        problems.append("object max-age is still tied to the ban TTL")
+    if "max-age=' + ORIGIN_RESOLVE_FOUND_TTL" in text:
+        problems.append("object max-age is still tied to the allow TTL")
     if negative > ban:
         problems.append(f"ban verdict TTL {negative}s outlives the {ban}s window")
     if host_ttl > 60:
@@ -231,7 +244,7 @@ def simulate_ban():
         problems.append("internal token TTL is not short")
     print(
         f"simulate-ban constants: ban={ban}s found={found}s negative={negative}s "
-        f"host={host_ttl}s budget={budget}ms token={token_ttl}ms"
+        f"host={host_ttl}s object-max-age={object_max_age}s budget={budget}ms token={token_ttl}ms"
     )
     print("SIMULATE OK" if not problems else "SIMULATE FAILED: " + "; ".join(problems))
     return 1 if problems else 0
