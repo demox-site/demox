@@ -226,7 +226,7 @@ test('origin ban and unban expire in 15s; non-ban host resolve stays at most 60s
   const probe = vm.createContext({
     URL, Request, Response, Headers, console, addEventListener() {}, fetch: async () => { throw new Error('no fetch'); }
   });
-  vm.runInContext(`${source}\nglobalThis.__c = { ban: ORIGIN_RESOLVE_BAN_TTL, found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, host: RESOLVE_CACHE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE, objectMaxAge: ORIGIN_OBJECT_MAX_AGE };`, probe);
+  vm.runInContext(`${source}\nglobalThis.__c = { ban: ORIGIN_RESOLVE_BAN_TTL, found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, host: RESOLVE_CACHE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, attempt: ORIGIN_RESOLVE_ATTEMPT_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE, objectMaxAge: ORIGIN_OBJECT_MAX_AGE };`, probe);
   assert.equal(probe.__c.ban, 15);
   assert.equal(probe.__c.found, 15);
   assert.ok(probe.__c.found <= probe.__c.ban);
@@ -234,7 +234,10 @@ test('origin ban and unban expire in 15s; non-ban host resolve stays at most 60s
   assert.ok(probe.__c.host <= 60);
   assert.equal(probe.__c.host, 60);
   assert.equal(probe.__c.objectMaxAge, 60);
-  assert.equal(probe.__c.budget, 1500);
+  assert.equal(probe.__c.budget, 6000);
+  assert.equal(probe.__c.attempt, 4000);
+  assert.ok(probe.__c.attempt < probe.__c.budget);
+  assert.match(source, /maxAttempts:\s*2/);
   assert.equal(probe.__c.allow.length, 0);
   assert.equal(probe.__c.hosts.includes('sites.demox.site'), true);
   assert.equal(probe.__c.re.test('site-3.demox.site'), true);
@@ -1700,6 +1703,183 @@ test('a decoded C0 or DEL control character is 400 and does not fetch origin', a
   }
   assert.equal(r.calls.resolve.length, 0);
   assert.equal(r.calls.origin.length, 0);
+});
+
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    const onAbort = () => {
+      clearTimeout(timer);
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function countResolves(r, websiteId) {
+  return r.calls.resolve.filter((payload) => payload.websiteId === websiteId).length;
+}
+
+function idCacheEntry(r, websiteId, uid) {
+  const key = `https://resolve.demox.site/v2/id/${websiteId}/${uid}`;
+  const stored = r.cache.store.get(key);
+  assert.ok(stored, key);
+  assert.match(stored.headers['cache-control'], /max-age=15\b/);
+  assert.doesNotMatch(stored.headers['cache-control'], /max-age=60\b/);
+  assert.doesNotMatch(stored.headers['cache-control'], /max-age=600\b/);
+  return JSON.parse(stored.body);
+}
+
+// www 的页面回源到 sites.demox.site。没有签名密钥时这次子请求会再次进入守卫，
+// 走 by-ID，而不是用户站那条 6s 的 label 解析。重入期间的对象 fetch 不再重入，避免打环。
+// 每次 www 导航都会重新进入，这样下一页命中的是 by-ID 缓存，而不是跳过守卫。
+function reenterWwwOrigin() {
+  let depth = 0;
+  return async (info, helpers) => {
+    if (depth === 0 && info.href.includes('sites.demox.site/sites/1985655011013808129/EPX2UU43/')) {
+      depth += 1;
+      try {
+        return await helpers.reenter(info.href, info.headers);
+      } finally {
+        depth -= 1;
+      }
+    }
+    return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  };
+}
+
+function slowBackendResolver(latency) {
+  return async (payload, n, init) => {
+    await abortableDelay(latency, init && init.signal);
+    if (payload.subdomain === 'www') {
+      return json({
+        success: true,
+        path: 'sites/1985655011013808129/EPX2UU43/dist',
+        websiteId: 'EPX2UU43',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      });
+    }
+    if (payload.websiteId === 'EPX2UU43') {
+      return json({ success: true, allow: true, path: 'sites/1985655011013808129/EPX2UU43/dist' });
+    }
+    if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+    if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+    if (payload.websiteId === 'PRIV8') {
+      return json({ success: true, allow: true, path: 'sites/owner-1/PRIV8/dist', visibility: 'private' });
+    }
+    if (payload.websiteId === 'GONE0001') return json({ success: true, allow: false, reason: 'not_found' });
+    throw new Error('unexpected resolve ' + JSON.stringify(payload));
+  };
+}
+
+for (const latency of [1000, 1400, 1500, 2500]) {
+  test(`slow by-id backend at ${latency}ms serves www and public objects without origin-guard=error`, { timeout: 30_000 }, async () => {
+    const r = makeGuard({
+      resolver: slowBackendResolver(latency),
+      origin: reenterWwwOrigin()
+    });
+
+    const www = await r.visit('https://www.demox.site/');
+    assert.equal(www.response.status, 200, 'www ' + latency);
+    assert.match(www.html, /Public body/);
+    assert.equal(www.response.headers.get('x-demox-route'), 'origin-guard=allow', 'www ' + latency);
+    assert.equal(countResolves(r, 'EPX2UU43'), 1, 'www re-entry resolves by id');
+    assert.equal(idCacheEntry(r, 'EPX2UU43', '1985655011013808129').status, 'found');
+
+    const pricing = await r.visit('https://www.demox.site/pricing');
+    assert.equal(pricing.response.status, 200, 'www pricing ' + latency);
+    assert.equal(pricing.response.headers.get('x-demox-route'), 'origin-guard=allow');
+    assert.equal(countResolves(r, 'EPX2UU43'), 1, 'www by-id cache serves the next page');
+
+    const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
+    assert.equal(pub.response.status, 200, 'public ' + latency);
+    assert.equal(pub.html, PUBLIC_HTML);
+    assert.equal(pub.response.headers.get('x-demox-route'), 'origin-guard=allow');
+    assert.equal(pub.response.headers.get('cache-control'), 'public, max-age=60');
+    assert.equal(idCacheEntry(r, 'PUBLIC1', 'owner-1').status, 'found');
+
+    const again = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/assets/app.js');
+    assert.equal(again.response.status, 200);
+    assert.equal(again.response.headers.get('x-demox-route'), 'origin-guard=allow');
+    assert.equal(countResolves(r, 'PUBLIC1'), 1, 'found cache skips the backend');
+
+    const beforeBanOrigin = r.calls.origin.length;
+    const banned = await r.visit('https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html');
+    assert.equal(banned.response.status, 403, 'banned ' + latency);
+    assert.equal(banned.response.headers.get('x-demox-route'), 'origin-guard=blocked');
+    assert.equal(banned.response.headers.get('cache-control'), 'no-store');
+    assert.doesNotMatch(banned.html, /Public body/);
+    assert.equal(r.calls.origin.length, beforeBanOrigin, 'banned must not fetch origin');
+    assert.equal(idCacheEntry(r, 'BANNED1', 'owner-1').status, 'blocked');
+    const bannedAgain = await r.visit('https://sites.demox.site/sites/owner-1/BANNED1/dist/secret.html');
+    assert.equal(bannedAgain.response.status, 403);
+    assert.equal(countResolves(r, 'BANNED1'), 1, 'ban cache skips the backend');
+    assert.equal(r.calls.origin.length, beforeBanOrigin);
+
+    const beforePrivOrigin = r.calls.origin.length;
+    const priv = await r.visit('https://sites.demox.site/sites/owner-1/PRIV8/dist/index.html');
+    assert.equal(priv.response.status, 403, 'private ' + latency);
+    assert.equal(priv.response.headers.get('x-demox-route'), 'origin-guard=blocked');
+    assert.equal(priv.response.headers.get('cache-control'), 'no-store');
+    assert.doesNotMatch(priv.html, /Public body/);
+    assert.equal(r.calls.origin.length, beforePrivOrigin, 'private must not fetch origin');
+    assert.equal(idCacheEntry(r, 'PRIV8', 'owner-1').status, 'blocked');
+    const privAgain = await r.visit('https://sites.demox.site/sites/owner-1/PRIV8/dist/secret.html');
+    assert.equal(privAgain.response.status, 403);
+    assert.equal(countResolves(r, 'PRIV8'), 1, 'private ban-cache skips the backend');
+    assert.equal(r.calls.origin.length, beforePrivOrigin);
+
+    const missing = await r.visit('https://sites.demox.site/sites/owner-1/GONE0001/dist/index.html');
+    assert.equal(missing.response.status, 404);
+    assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=not-found');
+    assert.equal(idCacheEntry(r, 'GONE0001', 'owner-1').status, 'not_found');
+    const missingAgain = await r.visit('https://sites.demox.site/sites/owner-1/GONE0001/dist/other.html');
+    assert.equal(missingAgain.response.status, 404);
+    assert.equal(countResolves(r, 'GONE0001'), 1, 'negative cache skips the backend');
+  });
+}
+
+test('a by-id timeout still refuses banned and private objects and does not fetch origin', { timeout: 25_000 }, async () => {
+  const r = makeGuard({
+    resolver: (payload, n, init) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(json({ success: true, allow: false, reason: 'blocked' }));
+      }, 30_000);
+      const signal = init && init.signal;
+      const onAbort = () => {
+        clearTimeout(timer);
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      };
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
+    })
+  });
+  for (const id of ['BANNED1', 'PRIV8']) {
+    const before = r.calls.origin.length;
+    const started = Date.now();
+    const { response, html } = await r.visit(`https://sites.demox.site/sites/owner-1/${id}/dist/index.html`);
+    const elapsed = Date.now() - started;
+    assert.equal(response.status, 503, id);
+    assert.equal(response.headers.get('x-demox-route'), 'origin-guard=error', id);
+    assert.equal(response.headers.get('cache-control'), 'no-store', id);
+    assert.equal(response.headers.get('retry-after'), '10', id);
+    assert.doesNotMatch(html, /Public body/);
+    assert.match(html, /暂时无法访问/);
+    assert.equal(r.calls.origin.length, before, id);
+    assert.equal(r.cache.puts.length, 0, id + ' timeout is not cached');
+    assert.ok(elapsed > 3000, id + ' elapsed ' + elapsed);
+    assert.ok(elapsed < 20000, id + ' elapsed ' + elapsed);
+  }
 });
 
 test('a non-ASCII first segment is classified before NFKC', async () => {

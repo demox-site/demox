@@ -57,8 +57,14 @@ var ORIGIN_GUARD_HOST_RE = /^(?:site-\d+|sites-[a-z0-9-]+|origin-[a-z0-9-]+)\.de
 var ORIGIN_RESOLVE_BAN_TTL = 15;
 var ORIGIN_RESOLVE_FOUND_TTL = 15;
 var ORIGIN_RESOLVE_NEGATIVE_TTL = 15;
-var ORIGIN_RESOLVE_BUDGET_MS = 1500; // 整次 by-ID 查询的硬预算（含一次重试）
-var ORIGIN_RESOLVE_ATTEMPT_MS = 700;
+// by-ID 整次查询的硬预算，含至多一次重试（maxAttempts = 2）。与用户站单次
+// RESOLVE_TIMEOUT_MS（6000）对齐：挂起时不要比普通解析更久，也不要放宽到两次 6s。
+// 单次尝试 4000ms。线上 api.demox.site 约 1.0–1.5s（大约一半是 TLS，一半是服务端）；
+// 700ms 会在握手结束前 abort，1500ms 总预算连一次完整往返都不够，于是每次都失败关闭。
+// 4000ms 盖住这次实测，也盖住 2.5s 的慢后端，并且在 6000ms 里给一次重试留出约 2s
+// （仍大于 1.5s 的实测）。重试间隔保持 50ms。超时仍是 error：不写缓存、不回源。
+var ORIGIN_RESOLVE_BUDGET_MS = 6000;
+var ORIGIN_RESOLVE_ATTEMPT_MS = 4000;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL，也不写 s-maxage。
 // 节点上的缓存命中绕不过守卫：命中函数规则时函数先执行，封禁在 fetch 之前 403。
