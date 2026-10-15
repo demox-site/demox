@@ -14,7 +14,9 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 的 `appVersion` 是 `0.1.4`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。
+`demox-function-api` 的 `appVersion` 是 `0.1.5`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。`0.1.5` 按目标分别读证书到期时间，并且在签发前复用已有证书。
+
+`runtime.asyncInvoke.retryNum` 固定为 `0`（`UpdateFunctionEventInvokeConfig`，qualifier `production` 和 `$LATEST`，`MsgTTL` 21600）。定时器是 SCF 异步调用，默认再重试 2 次；`monthly-renew` 每次重试都可能新签发一张 Let's Encrypt 证书。这项不进配置指纹，CI 的 app 发布不会调用这个接口，发布角色也没有改配置的权限。指纹保持 `0.1.0`。上线后续期之前要按上面两个 qualifier 各应用一次，本仓库的代码发布不会替线上关掉重试。这是函数级配置，`analytics-rollup-5m` 也不再自动重试。
 
 `deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 

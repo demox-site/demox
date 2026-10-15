@@ -91,6 +91,9 @@ function isPlaceholderVersion(version) {
   return Boolean(pre && pre.includes(PLACEHOLDER));
 }
 
+// asyncInvoke（重试次数）故意不进指纹。CI 的 app 发布必须保持指纹不变，
+// 而且发布角色不能调用 UpdateFunctionEventInvokeConfig。重试次数写在
+// runtime.asyncInvoke，由 validateManifest 检查，要单独应用到 SCF。
 function canonicalRuntime(runtime) {
   return {
     entry: runtime.entry,
@@ -141,6 +144,47 @@ function assertRuntime(runtime) {
       throw Object.assign(new Error(`触发器不合法：${trigger}`), { code: 'bad-runtime' });
     }
   }
+}
+
+function assertAsyncInvoke(fn) {
+  const timers = fn?.runtime?.triggers || [];
+  if (!timers.includes('timer:monthly-renew')) return;
+  const cfg = fn.runtime.asyncInvoke;
+  if (!cfg || cfg.retryNum !== 0) {
+    throw Object.assign(new Error('monthly-renew 的异步重试必须关闭（runtime.asyncInvoke.retryNum = 0）'), { code: 'bad-runtime' });
+  }
+  if (cfg.api !== 'UpdateFunctionEventInvokeConfig') {
+    throw Object.assign(new Error('monthly-renew 的异步重试必须通过 UpdateFunctionEventInvokeConfig 关闭'), { code: 'bad-runtime' });
+  }
+  if (!Number.isInteger(cfg.msgTtlSec) || cfg.msgTtlSec < 60 || cfg.msgTtlSec > 21600) {
+    throw Object.assign(new Error(`异步消息保留时间不合法：${cfg.msgTtlSec}`), { code: 'bad-runtime' });
+  }
+  if (!Array.isArray(cfg.qualifiers) || cfg.qualifiers.length === 0) {
+    throw Object.assign(new Error('asyncInvoke.qualifiers 必须列出要关闭重试的别名'), { code: 'bad-runtime' });
+  }
+  for (const qualifier of cfg.qualifiers) {
+    if (typeof qualifier !== 'string' || !/^[$A-Za-z0-9._-]+$/.test(qualifier)) {
+      throw Object.assign(new Error(`异步重试别名不合法：${qualifier}`), { code: 'bad-runtime' });
+    }
+  }
+}
+
+function asyncInvokeRequests(fn) {
+  assertAsyncInvoke(fn);
+  const cfg = fn.runtime.asyncInvoke;
+  if (!cfg) return [];
+  return cfg.qualifiers.map((qualifier) => ({
+    action: cfg.api,
+    payload: {
+      FunctionName: fn.name,
+      Namespace: fn.namespace,
+      Qualifier: qualifier,
+      AsyncTriggerConfig: {
+        RetryConfig: [{ RetryNum: cfg.retryNum }],
+        MsgTTL: cfg.msgTtlSec
+      }
+    }
+  }));
 }
 
 function formatDescription({ app, runtime, git, sha256, cfg }) {
@@ -269,6 +313,7 @@ function validateManifest(manifest, { checkPaths = false, root = repoRoot() } = 
     }
     try {
       assertRuntime(fn.runtime);
+      assertAsyncInvoke(fn);
     } catch (error) {
       errors.push(`${fn.name} ${error.message}`);
     }
@@ -588,6 +633,7 @@ module.exports = {
   buildReleaseRecord,
   changedFilesBetween,
   compareSemver,
+  asyncInvokeRequests,
   configFingerprint,
   decideAppDeploy,
   deployEntry,

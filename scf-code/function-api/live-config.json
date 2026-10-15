@@ -48,7 +48,14 @@
       { "name": "http", "type": "http", "note": "Keep api.demox.site on the old functions until staging evidence exists." },
       { "name": "analytics-rollup-5m", "type": "timer" },
       { "name": "monthly-renew", "type": "timer" }
-    ]
+    ],
+    "asyncInvoke": {
+      "retryNum": 0,
+      "msgTtlSec": 21600,
+      "api": "UpdateFunctionEventInvokeConfig",
+      "qualifiers": ["production", "$LATEST"],
+      "note": "Recommended runtime setting, not a 2026-08-31 GetFunction observation. Timer invokes are asynchronous and default to 2 retries. monthly-renew must use RetryNum 0. CI code deploy does not call UpdateFunctionEventInvokeConfig."
+    }
   },
   "functions": [
     {
