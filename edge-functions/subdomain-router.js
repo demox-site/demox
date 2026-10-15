@@ -59,6 +59,8 @@ var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL。
 // 节点上的缓存命中绕不过守卫，靠的是触发规则命中时函数先于节点缓存执行。
 var ORIGIN_OBJECT_MAX_AGE = 60;
+// 源站 host 的 OPTIONS 预检 Allow-Headers。云帆以后若要加 baseline 里的额外项，只改这一行。
+var ORIGIN_OPTIONS_CORS_ALLOW_HEADERS = 'Range, If-None-Match, If-Modified-Since';
 // 内部回源令牌 v1.<kid>.<exp>.<mac>。A/B 两个槽都参与校验；签名用 KID 点名的那个槽。
 // 短于 32 字节当作没配。仓库不放密钥值，由云帆用 Secret 配置。旧的单槽变量不再读取。
 var ORIGIN_GUARD_SECRET_SLOTS = { A: 'DEMOX_ORIGIN_GUARD_SECRET_A', B: 'DEMOX_ORIGIN_GUARD_SECRET_B' };
@@ -500,13 +502,21 @@ function joinStoredOriginPath(stored, rest) {
   return '/' + (base || tail);
 }
 
-// 折叠并去掉首尾斜杠之后：段是 . / ..，或仍含 %、反斜杠，则库路径不可用。
-// 不把反斜杠折成斜杠，否则 u\x 会变成合法前缀。
+// 折叠并去掉首尾斜杠之后再解码一次。反斜杠在原文里出现即拒绝。
+// 解码抛错，或解码后仍剩 %，也拒绝。点号只在某一整段解码后正好是 . 或 .. 时拒绝。
+// v1.2、my.site 这种段名保持可回源。
 function storedOriginPathUnsafe(path) {
   const base = normalizeStoredOriginPath(path);
   if (!base) return false;
-  if (base.indexOf('\\') !== -1 || base.indexOf('%') !== -1) return true;
-  const segments = base.split('/');
+  if (base.indexOf('\\') !== -1) return true;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(base);
+  } catch (e) {
+    return true;
+  }
+  if (decoded.indexOf('%') !== -1 || decoded.indexOf('\\') !== -1) return true;
+  const segments = decoded.split('/');
   for (let i = 0; i < segments.length; i += 1) {
     if (segments[i] === '.' || segments[i] === '..') return true;
   }
@@ -2305,6 +2315,7 @@ function capOriginObjectCache(resp, route) {
       headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
+    // 源站 GET/HEAD 原样保留回源响应里的 Access-Control-*，这里不删。
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: headers });
   } catch (e) {
     return resp;
@@ -2319,16 +2330,7 @@ async function handleOriginGuard(req, event, ctx, u, host) {
   ctx.siteTraffic = true;
   ctx.resolveState = 'origin';
   const method = String(req.method || 'GET').toUpperCase();
-  if (method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        Allow: 'GET, HEAD',
-        'Cache-Control': 'no-store',
-        'x-demox-route': 'origin-guard=options'
-      }
-    });
-  }
+  if (method === 'OPTIONS') return originOptionsResponse();
   if (method !== 'GET' && method !== 'HEAD') {
     return new Response('Method Not Allowed', {
       status: 405,
@@ -2416,6 +2418,7 @@ async function handleRequest(req, event, ctx) {
     const passthroughKind = classifyPassthroughOriginPath(u.pathname);
     if (passthroughKind === 'reject') return originPathRejectResponse();
     if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
+    if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   }
   if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
@@ -2525,7 +2528,25 @@ async function handleRequest(req, event, ctx) {
   const unknownKind = classifyPassthroughOriginPath(u.pathname);
   if (unknownKind === 'reject') return originPathRejectResponse();
   if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
+  if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   return fetch(req);
+}
+
+// 源站 host，以及本来要透传的 host，OPTIONS 都在边缘本地 204。不查库、不回源。
+// 不带 credentials 头。Allow-Headers 只读 ORIGIN_OPTIONS_CORS_ALLOW_HEADERS。
+function originOptionsResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      Allow: 'GET, HEAD',
+      'Cache-Control': 'no-store',
+      'x-demox-route': 'origin-guard=options',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': ORIGIN_OPTIONS_CORS_ALLOW_HEADERS,
+      'Access-Control-Max-Age': '86400'
+    }
+  });
 }
 
 // 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。

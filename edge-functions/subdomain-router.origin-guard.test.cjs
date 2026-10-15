@@ -133,6 +133,28 @@ function allow(id, uid) {
   return { success: true, allow: true, path: `sites/${uid}/${id}/dist` };
 }
 
+function assertOptionsCors(response) {
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.match(response.headers.get('allow') || '', /^GET, HEAD$/);
+  assert.equal(response.headers.get('access-control-allow-origin'), '*');
+  assert.equal(response.headers.get('access-control-allow-credentials'), null);
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, HEAD, OPTIONS');
+  assert.equal(response.headers.get('access-control-allow-headers'), 'Range, If-None-Match, If-Modified-Since');
+  assert.equal(response.headers.get('access-control-max-age'), '86400');
+  const corsNames = [];
+  response.headers.forEach((value, name) => {
+    if (name.toLowerCase().indexOf('access-control-') === 0) corsNames.push(name.toLowerCase());
+  });
+  corsNames.sort();
+  assert.deepEqual(corsNames, [
+    'access-control-allow-headers',
+    'access-control-allow-methods',
+    'access-control-allow-origin',
+    'access-control-max-age'
+  ]);
+}
+
 function originTokenMessage(exp, method, host, pathname, search, kid) {
   return [
     'v1',
@@ -870,8 +892,30 @@ test('stored paths with leading or trailing slashes still serve a normal file', 
   }
 });
 
+test('stored paths with a dot inside a segment still serve', async () => {
+  for (const stored of ['v1.2', 'my.site', 'sites/u/v1.2/x']) {
+    const r = makeGuard({
+      secret: SECRET_A,
+      resolver: () => json({
+        success: true,
+        path: stored,
+        websiteId: 'ABC',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      })
+    });
+    const { response, html } = await r.visit('https://abc.demox.site/file.txt');
+    assert.equal(response.status, 200, stored);
+    assert.equal(html, PUBLIC_HTML, stored);
+    const hit = r.calls.origin.find((info) => info.href.includes('/file.txt'));
+    assert.ok(hit, stored);
+    assert.equal(new URL(hit.href).pathname, '/' + stored + '/file.txt', stored);
+  }
+});
+
 test('stored paths with dot segments, percent, or backslash fail closed before signing or origin', async () => {
-  for (const stored of ['sites/u/../other', 'u/./abc', 'u/%2e%2e/x', 'u/a\\b']) {
+  for (const stored of ['.', '..', 'sites/u/../other', 'u/./abc', 'u/%2e%2e/x', 'u/%2e/abc', 'u/a\\b', 'u/%25name']) {
     const r = makeGuard({
       secret: SECRET_A,
       resolver: () => json({
@@ -923,16 +967,83 @@ test('M4: origin hosts allow GET and HEAD; OPTIONS is a local 204 and other meth
     method: 'OPTIONS',
     headers: { Accept: 'text/html', 'x-demox-origin-token': putToken }
   });
-  assert.equal(options.response.status, 204);
-  assert.equal(options.response.headers.get('cache-control'), 'no-store');
-  assert.match(options.response.headers.get('allow') || '', /GET, HEAD/);
-  assert.equal(options.response.headers.get('access-control-allow-origin'), null);
-  assert.equal(options.response.headers.get('access-control-allow-methods'), null);
-  assert.equal(options.response.headers.get('access-control-allow-headers'), null);
+  assertOptionsCors(options.response);
   assert.equal(r.calls.resolve.length, beforeOptions.resolve);
   assert.equal(r.calls.origin.length, beforeOptions.origin);
   const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(pub.response.status, 200);
+});
+
+test('OPTIONS on static, cdn, unknown, and unbound custom hosts is a local 204 and does not fetch origin', async () => {
+  const r = makeGuard({
+    resolver: () => json({ success: false, message: 'not found' })
+  });
+  const hosts = [
+    'https://static.demox.site',
+    'https://cdn.demox.site',
+    'https://randomxyz123.demox.site',
+    'https://not-bound.example'
+  ];
+  for (const host of hosts) {
+    for (const path of ['/', '/sites/x']) {
+      const before = r.calls.origin.length;
+      const { response } = await r.call(host + path, {
+        method: 'OPTIONS',
+        headers: { Accept: 'text/html' }
+      });
+      assertOptionsCors(response);
+      assert.equal(r.calls.origin.length, before, host + path);
+    }
+  }
+  assert.match(source, /var ORIGIN_OPTIONS_CORS_ALLOW_HEADERS = 'Range, If-None-Match, If-Modified-Since';/);
+});
+
+test('GET and HEAD on origin hosts keep CORS headers sent by the origin', async () => {
+  const r = makeGuard({
+    resolver: () => json(allow('PUBLIC1', 'owner-1')),
+    origin: () => new Response(PUBLIC_HTML, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': 'Range, If-None-Match, If-Modified-Since, Content-Type',
+        'Access-Control-Expose-Headers': 'ETag, Content-Length',
+        'Access-Control-Max-Age': '600'
+      }
+    })
+  });
+  for (const method of ['GET', 'HEAD']) {
+    const { response } = await r.call('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', {
+      method,
+      headers: { Accept: 'text/html' }
+    });
+    assert.equal(response.status, 200, method);
+    assert.equal(response.headers.get('access-control-allow-origin'), '*', method);
+    assert.equal(response.headers.get('access-control-allow-methods'), 'GET, HEAD, OPTIONS', method);
+    assert.equal(response.headers.get('access-control-allow-headers'), 'Range, If-None-Match, If-Modified-Since, Content-Type', method);
+    assert.equal(response.headers.get('access-control-expose-headers'), 'ETag, Content-Length', method);
+    assert.equal(response.headers.get('access-control-max-age'), '600', method);
+  }
+});
+
+test('a resolved site OPTIONS still reaches origin', async () => {
+  const r = makeGuard({
+    resolver: () => json({
+      success: true,
+      path: 'u/abc',
+      websiteId: 'ABC',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    })
+  });
+  const { response } = await r.call('https://abc.demox.site/file.txt', {
+    method: 'OPTIONS',
+    headers: { Accept: 'text/html' }
+  });
+  assert.equal(r.calls.origin.length, 1);
+  assert.equal(response.status, 200);
 });
 
 test('M5: tokens are v1.kid.exp.mac, both slots verify, and a short secret stays unset', async () => {
