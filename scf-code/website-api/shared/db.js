@@ -56,4 +56,15 @@ async function transaction(callback) {
   }
 }
 
-module.exports = { query, transaction };
+// GET_LOCK 绑在连接上。query() 每次可能拿到池里不同的连接，锁和释放必须走同一条。
+async function withConnection(fn) {
+  const pool = getPool();
+  const conn = await pool.getConnection();
+  try {
+    return await fn(conn);
+  } finally {
+    conn.release();
+  }
+}
+
+module.exports = { query, transaction, withConnection };
