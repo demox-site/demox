@@ -322,7 +322,7 @@ test('seed placeholder may correct environment names without a runtime bump', ()
     'RUNTIME_INVOKE_SECRET',
     'FAIL_OPEN_CHECK_KEY'
   ];
-  assert.equal(api.runtime.environmentNames.length, 32);
+  assert.equal(api.runtime.environmentNames.length, 33);
   assert.deepEqual(api.runtime.environmentNames, [...api.runtime.environmentNames].sort());
   assert.deepEqual(api.runtime.triggers, ['http:api.demox.site', 'timer:analytics-rollup-5m', 'timer:monthly-renew']);
   assert.equal(api.runtime.entry, 'index.main');
@@ -367,7 +367,7 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   const base = structuredClone(head);
   const baseApi = base.functions.find((fn) => fn.name === 'demox-function-api');
   baseApi.runtime.environmentNames = baseApi.runtime.environmentNames.filter((name) => !added.includes(name));
-  assert.equal(baseApi.runtime.environmentNames.length, 21);
+  assert.equal(baseApi.runtime.environmentNames.length, 22);
 
   const namesOnly = v.evaluateChanges({
     baseManifest: base,

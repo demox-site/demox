@@ -12,18 +12,31 @@ Object.assign(process.env, {
   MYSQL_DATABASE: 'test',
   JWT_SECRET: randomTestSecret(),
   FEISHU_APP_ID: 'cli_test',
-  FEISHU_APP_SECRET: 'secret_test'
+  FEISHU_APP_SECRET: 'secret_test',
+  ANALYTICS_ROLLUP_WATERMARK_ENABLED: '1'
 });
 
+const dbDouble = {
+  query: async () => [],
+  transaction: async (cb) => cb({ query: async () => [{ affectedRows: 0 }, []] })
+};
 const dbModulePath = require.resolve('./shared/db.js');
 require.cache[dbModulePath] = {
   id: dbModulePath,
   filename: dbModulePath,
   loaded: true,
   exports: {
-    query: async () => [],
-    transaction: async (cb) => cb({ query: async () => [{ affectedRows: 0 }, []] })
+    query: (...args) => dbDouble.query(...args),
+    transaction: (...args) => dbDouble.transaction(...args)
   }
+};
+
+const storage = require('./shared/storage.js');
+const realCreateProvider = storage.createProvider;
+let legacyProviderFactory = null;
+storage.createProvider = function createProvider(cfg) {
+  if (typeof legacyProviderFactory === 'function') return legacyProviderFactory(cfg);
+  return realCreateProvider(cfg);
 };
 
 const websiteApi = require('./index.js');
@@ -1231,6 +1244,138 @@ test('only failure codes use the ALERT prefix', async () => {
   assert.ok(seen.has('OBJECT_TOO_LARGE'));
   assert.equal(seen.has('LATE_OBJECT'), false);
   assert.equal(seen.has('NOSUCHKEY'), false);
+});
+
+const LEGACY_ROLLUP_WARNING = 'analytics-rollup-5m watermark disabled; using legacy rollup';
+
+test('watermark rollup is off unless ANALYTICS_ROLLUP_WATERMARK_ENABLED is exactly 1', async () => {
+  assert.equal(LEGACY_ROLLUP_WARNING.startsWith('ALERT'), false);
+  const prevFlag = process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED;
+  const prevEnabled = process.env.ANALYTICS_RAW_ENABLED;
+  const prevBucket = process.env.ANALYTICS_RAW_BUCKET_ID;
+  const prevQuery = dbDouble.query;
+  const prevTx = dbDouble.transaction;
+  const prevFactory = legacyProviderFactory;
+  const sql = [];
+  const watermarkSql = [];
+  const objects = [makeObject(Date.now(), { websiteId: 'SITE0001', rand: 'legacy000001' })];
+  legacyProviderFactory = () => ({
+    async list(prefix) {
+      return objects
+        .filter((obj) => obj.key.startsWith(prefix))
+        .map((obj) => ({ key: obj.key, size: obj.size }));
+    },
+    async get(key) {
+      const obj = objects.find((item) => item.key === key);
+      if (!obj) throw new Error('missing object');
+      return obj.body;
+    }
+  });
+  dbDouble.query = async (statement, params) => {
+    sql.push(String(statement));
+    if (String(statement).includes('FROM websites')) {
+      return (params || []).map((website_id) => ({ website_id }));
+    }
+    return [];
+  };
+  dbDouble.transaction = async (cb) => cb({
+    query: async (statement) => {
+      sql.push(String(statement));
+      return [{ affectedRows: 1 }, []];
+    }
+  });
+  rollup.setDeps({
+    now: Date.now(),
+    logger: loggerFor(),
+    query: async (statement) => {
+      watermarkSql.push(String(statement));
+      return [];
+    },
+    transaction: async () => {
+      watermarkSql.push('TRANSACTION');
+      throw new Error('watermark transaction');
+    },
+    withConnection: async () => {
+      watermarkSql.push('LOCK');
+      throw new Error('watermark lock');
+    },
+    provider: {
+      async list() {
+        watermarkSql.push('LIST');
+        return [];
+      },
+      async get() {
+        watermarkSql.push('GET');
+        throw new Error('watermark get');
+      }
+    }
+  });
+  const event = {
+    Type: 'Timer',
+    TriggerName: 'analytics-rollup-5m',
+    Time: new Date().toISOString()
+  };
+  const offValues = [undefined, '0', 'true', ' 1'];
+  try {
+    const before = logGuard.lines.length;
+    for (const flag of offValues) {
+      if (flag === undefined) delete process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED;
+      else process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED = flag;
+      process.env.ANALYTICS_RAW_ENABLED = '1';
+      process.env.ANALYTICS_RAW_BUCKET_ID = '7';
+      sql.length = 0;
+      watermarkSql.length = 0;
+      const response = await websiteApi.main(event);
+      assert.equal(response.statusCode, 200);
+      const body = JSON.parse(response.body);
+      assert.equal(body.success, true, `flag ${JSON.stringify(flag)} body ${response.body}`);
+      assert.equal(body.processed, 1);
+      assert.equal(body.rollups.daily, 1);
+      assert.equal(Object.hasOwn(body, 'watermark'), false);
+      assert.ok(sql.some((statement) => statement.includes('INSERT INTO site_daily_stats')));
+      assert.ok(sql.some((statement) => statement.includes('INSERT IGNORE INTO site_analytics_ingested_events')));
+      assert.equal(sql.some((statement) => statement.includes('site_analytics_rollup_')), false);
+      assert.equal(sql.some((statement) => /GET_LOCK|RELEASE_LOCK/.test(statement)), false);
+      assert.equal(watermarkSql.length, 0);
+    }
+    const produced = logGuard.lines.slice(before);
+    const warnings = produced.filter((line) => line.method === 'warn' && line.text === LEGACY_ROLLUP_WARNING);
+    assert.equal(warnings.length, 1);
+    assert.equal(produced.filter((line) => line.text.startsWith('ALERT')).length, 0);
+    assert.equal(produced.some((line) => line.text.includes('ALERT analytics-rollup-5m')), false);
+
+    process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED = '1';
+    process.env.ANALYTICS_RAW_ENABLED = '1';
+    process.env.ANALYTICS_RAW_BUCKET_ID = '7';
+    const now = Date.parse('2026-10-15T06:00:00.000Z');
+    const state = makeState(null);
+    const logger = loggerFor();
+    const deps = depsFor(state, [], now, logger);
+    rollup.setDeps(deps);
+    const onResponse = await websiteApi.main({
+      Type: 'Timer',
+      TriggerName: 'analytics-rollup-5m',
+      Time: new Date(now).toISOString()
+    });
+    const onBody = JSON.parse(onResponse.body);
+    assert.equal(onBody.success, true);
+    assert.equal(typeof onBody.watermark, 'number');
+    assert.ok(deps.executed.some((statement) => statement.includes('site_analytics_rollup_watermark')));
+    assert.ok(deps.executed.some((statement) => statement.includes('site_analytics_rollup_gaps')));
+    const warningsAfterOn = logGuard.lines.slice(before).filter((line) => line.text === LEGACY_ROLLUP_WARNING);
+    assert.equal(warningsAfterOn.length, 1);
+  } finally {
+    rollup.setDeps(null);
+    dbDouble.query = prevQuery;
+    dbDouble.transaction = prevTx;
+    legacyProviderFactory = prevFactory;
+    if (prevFlag == null) delete process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED;
+    else process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED = prevFlag;
+    if (prevEnabled == null) delete process.env.ANALYTICS_RAW_ENABLED;
+    else process.env.ANALYTICS_RAW_ENABLED = prevEnabled;
+    if (prevBucket == null) delete process.env.ANALYTICS_RAW_BUCKET_ID;
+    else process.env.ANALYTICS_RAW_BUCKET_ID = prevBucket;
+  }
 });
 
 test('rollup logs do not contain secrets or object contents', () => {

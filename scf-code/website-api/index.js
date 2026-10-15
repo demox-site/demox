@@ -9309,7 +9309,112 @@ async function runAnalyticsRollup(opts = {}) {
   }
 }
 
+let analyticsRollupLegacyWarned = false;
+
+async function handleRollupSiteAnalyticsLegacy(event) {
+  if (!analyticsRollupAllowed(event)) {
+    return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行统计聚合' }) };
+  }
+
+  const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
+  if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
+    return ok({ success: false, message: '原始访问日志未启用，无法延迟聚合' });
+  }
+
+  const body = getRollupRequestBody(event);
+  try {
+    const bucketCfg = await resolveBucketConfig(bucketId);
+    const provider = createProvider(buckets.resolveCreds(bucketCfg));
+    const objects = await listRawAnalyticsObjects(provider, body);
+    let candidates = [];
+    for (const obj of objects) {
+      if (Number(obj.size || 0) > 256 * 1024) continue;
+      const text = await provider.get(obj.key);
+      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
+        if (!item) continue;
+        candidates.push({ key: obj.key, item });
+      }
+    }
+    const websiteIds = Array.from(new Set(candidates.map((c) => c.item.websiteId)));
+    if (websiteIds.length) {
+      const validRows = await query(
+        `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
+        websiteIds
+      );
+      const validIds = new Set(validRows.map((r) => String(r.website_id || '')));
+      candidates = candidates.filter((c) => validIds.has(c.item.websiteId));
+    }
+
+    const summary = await transaction(async (conn) => {
+      const rollups = {
+        daily: new Map(),
+        referrers: new Map(),
+        paths: new Map(),
+        countries: new Map(),
+        provinces: new Map(),
+        accessLogs: []
+      };
+      let processed = 0;
+      let skipped = 0;
+
+      for (const candidate of candidates) {
+        const { key, item } = candidate;
+        const [insertResult] = await conn.query(
+          `INSERT IGNORE INTO site_analytics_ingested_events (object_key, website_id, event_ts, created_at)
+           VALUES (?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
+          [key, item.websiteId, item.ts]
+        );
+        if (!insertResult.affectedRows) {
+          skipped += 1;
+          continue;
+        }
+        processed += 1;
+        if (item.type === 'badge_click') {
+          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'badgeClicks', 1);
+        } else if (item.type === 'view') {
+          rollups.accessLogs.push({ objectKey: key, ...item });
+          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'views', 1);
+          addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
+          addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
+          addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
+          addRollupCount(rollups.provinces, [item.websiteId, item.statDate, item.country, item.province], 'views', 1);
+        }
+      }
+
+      await upsertAnalyticsRollups(conn, rollups);
+      return {
+        processed,
+        skipped,
+        rollups: {
+          daily: rollups.daily.size,
+          referrers: rollups.referrers.size,
+          paths: rollups.paths.size,
+          countries: rollups.countries.size,
+          provinces: rollups.provinces.size,
+          accessLogs: rollups.accessLogs.length
+        }
+      };
+    });
+
+    return ok({ success: true, delayed: true, delayMinutes: 5, scanned: objects.length, candidates: candidates.length, ...summary });
+  } catch (error) {
+    console.error('延迟聚合站点统计失败:', error);
+    return ok({ success: false, message: error.message });
+  }
+}
+
 async function handleRollupSiteAnalytics(event) {
+  // #86 水位汇总默认关闭。ANALYTICS_ROLLUP_WATERMARK_ENABLED 只有精确等于 1 才走水位路径。
+  // 关闭时走 v16 旧汇总：不查询 site_analytics_rollup_*，不加锁，不打 ALERT。每个实例最多一条警告。
+  if (process.env.ANALYTICS_ROLLUP_WATERMARK_ENABLED !== '1') {
+    if (!analyticsRollupLegacyWarned) {
+      analyticsRollupLegacyWarned = true;
+      console.warn('analytics-rollup-5m watermark disabled; using legacy rollup');
+    }
+    return handleRollupSiteAnalyticsLegacy(event);
+  }
   if (!analyticsRollupAllowed(event)) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行统计聚合' }) };
   }
