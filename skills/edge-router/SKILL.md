@@ -29,6 +29,24 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
    - 然后才看未绑定 host
 3. 核对失败：用上一份 `subdomain-router.js` 再 `ModifyFunction`，不要继续改。
 
+## 回滚演练
+
+发布路径只有 `scf-code/deploy-edge-functions.sh` 里的那条 `tccli teo ModifyFunction`（`ef-1281msyw`，zone `zone-3kplfkbflnd6`，region `ap-guangzhou`）。回滚用同一条，不另开发布入口。
+
+`scripts/edge-router-rollback.sh`：
+
+1. `plan` 只打印函数、zone、两边内容的 sha256，以及将要执行的 tccli 形状。不写云，不打印函数正文。
+2. `PREVIOUS=<文件或 git rev> APPLY=1 scripts/edge-router-rollback.sh drill` 才写：
+   - `DescribeFunctions` 把**当前线上正文**存到临时文件（这是「再发回去」的那一版）
+   - `ModifyFunction` 换成 `PREVIOUS`（上一份已发布内容）
+   - 跑 `scripts/edge-p0-check.sh`：`www` 200、一个真实用户站点 200，带和不带假的 `demox_access` 各一遍
+   - `ModifyFunction` 写回刚才存下的线上正文
+   - 再跑一遍同样的核对
+3. 上一份核对失败也会先写回线上正文，再以非 0 退出。
+4. `scripts/edge-router-rollback.sh self-test` 用假的 tccli 走完来回，不接触云。CI 跑的是这一档。
+
+`PREVIOUS` 指向上一次发布时的 `edge-functions/subdomain-router.js`（git rev 或当时留下的文件）。两边 sha256 相同就停，避免空转。
+
 ## D2：OPTIONS 列
 
 下面四类 host 的 OPTIONS 是边缘本地 **204**，不查库、不回源。已解析站点（www、用户站、函数）的 OPTIONS 仍回源；P0 矩阵那一列继续和 baseline 比状态码和正文。

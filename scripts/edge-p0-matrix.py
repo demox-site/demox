@@ -7,6 +7,13 @@
                              the baseline (status + body sha256), carry both demox_access expiry
                              Set-Cookie headers, and the probe function must not see demox_access.
 Exit 1 on any failure. Only sends read-style requests with a tiny JSON body; no credentials.
+
+Also:
+  d2                         live K2 matrix (ban id, public sites, http2 mismatch, cache key, CORS, 15s clock)
+  d2-self-test               local checks for that matrix; no production traffic
+  perf-baseline OUT.json     record median/p90 samples
+  perf BASELINE.json         fail when median grows more than 15% or p90 more than 25%
+  perf-self-test             lock those thresholds
 """
 import hashlib, json, sys, time, urllib.parse, urllib.request, urllib.error, ssl
 
@@ -462,12 +469,475 @@ def first_screen_checks():
     return fail
 
 
+# --- D2 live matrix and perf -------------------------------------------------
+# Thresholds are the acceptance limits. Do not raise them to make a run pass.
+import math
+PERF_MEDIAN_INCREASE_MAX = 0.15
+PERF_P90_INCREASE_MAX = 0.25
+PERF_SAMPLES = 7
+BAN_SITE_ID = "33I17FK6"
+# Not an owner id. A wrong uid and a real ban are the same public 403.
+BAN_PROBE_UID = "k2probe"
+D2_GUARDED_HOSTS = [
+    "sites.demox.site",
+    "sites-eclick.demox.site",
+    "origin-3.demox.site",
+    "site-3.demox.site",
+]
+D2_UNKNOWN_HOST = "k2-matrix-unbound.demox.site"
+# Origin paths that exist in repo fixtures. TKEMDUR9's uid is not in the repo.
+DEFAULT_D2_PUBLIC = [
+    {
+        "id": "EPX2UU43",
+        "subdomain": "https://www.demox.site/",
+        "origin": "https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html",
+    },
+    {
+        "id": "LCJAIAC0",
+        "subdomain": "https://letters-from-the-hill.demox.site/",
+        "origin": "https://sites.demox.site/sites/1985655011013808129/LCJAIAC0/dist/index.html",
+    },
+    {
+        "id": "TKEMDUR9",
+        "subdomain": "https://beixian-lighting.demox.site/",
+        "origin": "",
+    },
+]
+
+
+def _percentile(values, pct):
+    ordered = sorted(values)
+    if not ordered:
+        raise SystemExit("no latency samples")
+    rank = max(1, math.ceil(pct / 100 * len(ordered)))
+    return ordered[rank - 1]
+
+
+def latency_over_budget(baseline_ms, current_ms):
+    """Return problem strings. Empty means median +15% and p90 +25% both hold."""
+    base_median = _percentile(baseline_ms, 50)
+    base_p90 = _percentile(baseline_ms, 90)
+    cur_median = _percentile(current_ms, 50)
+    cur_p90 = _percentile(current_ms, 90)
+    problems = []
+    if base_median <= 0 or base_p90 <= 0:
+        return ["baseline latency is not positive"]
+    median_ratio = (cur_median - base_median) / base_median
+    p90_ratio = (cur_p90 - base_p90) / base_p90
+    if median_ratio > PERF_MEDIAN_INCREASE_MAX:
+        problems.append(f"median +{median_ratio:.0%} exceeds +{PERF_MEDIAN_INCREASE_MAX:.0%}")
+    if p90_ratio > PERF_P90_INCREASE_MAX:
+        problems.append(f"p90 +{p90_ratio:.0%} exceeds +{PERF_P90_INCREASE_MAX:.0%}")
+    return problems
+
+
+def _const_str(name, text):
+    matched = re.search(rf"var {name} = '([^']*)';", text)
+    if not matched:
+        raise SystemExit(f"missing string {name} in subdomain-router.js")
+    return matched.group(1)
+
+
+def cors_spec(text):
+    enabled = re.search(r"var CORS_ENABLED = (true|false);", text)
+    if not enabled:
+        raise SystemExit("missing CORS_ENABLED")
+    return {
+        "enabled": enabled.group(1) == "true",
+        "allow_headers": _const_str("ORIGIN_OPTIONS_CORS_ALLOW_HEADERS", text),
+        "expose_headers": _const_str("ORIGIN_CORS_EXPOSE_HEADERS", text),
+    }
+
+
+def _ac_headers(headers):
+    return {k.lower(): v for k, v in headers.items() if k.lower().startswith("access-control-")}
+
+
+def cors_problems(headers, status, method, spec):
+    """Headers must match the router: off means none; on means the fixed set."""
+    found = _ac_headers(headers)
+    if not spec["enabled"]:
+        return [f"unexpected {name}" for name in sorted(found)]
+    denied = status in (400, 403, 404, 405, 503)
+    if method == "OPTIONS":
+        if denied:
+            return [f"OPTIONS {status} carried CORS"] if found else []
+        expect = {
+            "access-control-allow-origin": "*",
+            "access-control-allow-methods": "GET, HEAD, OPTIONS",
+            "access-control-allow-headers": spec["allow_headers"],
+            "access-control-max-age": "86400",
+        }
+    elif status == 304 or (200 <= status < 300):
+        expect = {
+            "access-control-allow-origin": "*",
+            "access-control-expose-headers": spec["expose_headers"],
+        }
+    else:
+        return [f"{status} carried CORS"] if found else []
+    problems = []
+    if "access-control-allow-credentials" in found:
+        problems.append("Allow-Credentials is set")
+    for name, value in expect.items():
+        if found.get(name) != value:
+            problems.append(f"{name}={found.get(name)!r} want {value!r}")
+    extra = sorted(set(found) - set(expect) - {"access-control-allow-credentials"})
+    for name in extra:
+        problems.append(f"extra {name}")
+    return problems
+
+
+def mismatch_verdict(status):
+    if status in (403, 421):
+        return "pass"
+    if status == 200:
+        return "fail"
+    return "fail"
+
+
+def _public_sites():
+    raw = os.environ.get("D2_PUBLIC_JSON")
+    if raw:
+        return json.loads(raw)
+    return DEFAULT_D2_PUBLIC
+
+
+def _sample_ms(url, count):
+    samples = []
+    for _ in range(count):
+        host = urllib.parse.urlparse(url).hostname or ""
+        result = fetch_checked(url, host)
+        samples.append(int(result.get("elapsed", 0) * 1000))
+    return samples
+
+
+def perf_baseline(out):
+    urls = [site["subdomain"] for site in _public_sites() if site.get("subdomain")]
+    payload = {"kind": "edge-perf-baseline", "samples": PERF_SAMPLES, "items": []}
+    for url in urls:
+        ms = _sample_ms(url, PERF_SAMPLES)
+        payload["items"].append({"url": url, "ms": ms})
+        print(f"{url} median {_percentile(ms, 50)}ms p90 {_percentile(ms, 90)}ms")
+    json.dump(payload, open(out, "w"), indent=1)
+    print("saved", out)
+
+
+def perf_compare(path):
+    data = json.load(open(path))
+    fail = 0
+    for item in data.get("items") or []:
+        url = item["url"]
+        current = _sample_ms(url, len(item["ms"]))
+        problems = latency_over_budget(item["ms"], current)
+        label = "PASS" if not problems else "FAIL"
+        if problems:
+            fail = 1
+        print(f"{label} {url} {'; '.join(problems) if problems else 'within +15% median / +25% p90'}")
+    print("PERF OK" if not fail else "PERF FAILED")
+    return fail
+
+
+def perf_self_test():
+    import math
+    assert PERF_MEDIAN_INCREASE_MAX == 0.15
+    assert PERF_P90_INCREASE_MAX == 0.25
+    base = [100] * 7
+    if latency_over_budget(base, [114] * 7):
+        raise SystemExit("14% must pass")
+    if not latency_over_budget(base, [116] * 7):
+        raise SystemExit("16% median must fail")
+    # median stays +10%, the top sample pushes p90 past +25%
+    skewed = [110, 110, 110, 110, 110, 110, 130]
+    problems = latency_over_budget(base, skewed)
+    if not any("p90" in item for item in problems):
+        raise SystemExit(f"p90 must fail, got {problems}")
+    if any("median" in item for item in problems):
+        raise SystemExit(f"median of the skewed set must pass, got {problems}")
+    text = ROUTER_SOURCE.read_text()
+    spec = cors_spec(text)
+    if spec["enabled"]:
+        raise SystemExit("CORS default in source is no longer off; update the live expectation on purpose")
+    if cors_problems({"Access-Control-Allow-Origin": "*"}, 200, "GET", spec):
+        pass
+    else:
+        raise SystemExit("default-off CORS must reject a stray allow-origin")
+    full = dict(spec, enabled=True)
+    options = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": spec["allow_headers"],
+        "Access-Control-Max-Age": "86400",
+    }
+    if cors_problems(options, 204, "OPTIONS", full):
+        raise SystemExit("full OPTIONS set must match the source constants")
+    if not cors_problems(dict(options, **{"Access-Control-Allow-Credentials": "true"}), 204, "OPTIONS", full):
+        raise SystemExit("credentials must be rejected")
+    if cors_problems({}, 403, "GET", full):
+        raise SystemExit("403 must carry no CORS headers in full mode")
+    if mismatch_verdict(403) != "pass" or mismatch_verdict(421) != "pass" or mismatch_verdict(200) != "fail":
+        raise SystemExit("mismatch verdict drifted")
+    print("PERF SELF-TEST OK")
+    return 0
+
+
+def _d2_public_checks():
+    fail = 0
+    for site in _public_sites():
+        for via, url in (("subdomain", site.get("subdomain") or ""), ("origin", site.get("origin") or "")):
+            if via == "origin" and not url:
+                print(f"SKIP {site.get('id')} origin (no uid in repo fixtures; set D2_PUBLIC_JSON)")
+                continue
+            host = urllib.parse.urlparse(url).hostname or ""
+            result = fetch_checked(url, host)
+            ok = result.get("status") == 200
+            hop = (result.get("headers") or {}).get("x-demox-edge-hop", "")
+            if via == "origin" and ok and hop != "guard":
+                ok = False
+            label = "PASS" if ok else "FAIL"
+            if not ok:
+                fail = 1
+            print(f"{label} public {site.get('id')} {via} {result.get('status')} hop={hop or '-'} {url}")
+    return fail
+
+
+def _d2_ban_checks():
+    fail = 0
+    enforce = os.environ.get("ENFORCE_SITE_N", "0") == "1"
+    path = f"/sites/{BAN_PROBE_UID}/{BAN_SITE_ID}/dist/index.html"
+    hosts = list(D2_GUARDED_HOSTS) + [D2_UNKNOWN_HOST]
+    extra = os.environ.get("D2_CUSTOM_HOST", "")
+    if extra:
+        hosts.append(extra)
+    for host in hosts:
+        url = f"https://{host}{path}"
+        result = fetch_checked(url, host)
+        status = result.get("status")
+        ok = status == 403 or result.get("refused")
+        gap = _site_n(host) and not enforce and not ok
+        if gap:
+            print(f"GAP ban {host} {status} (site-N bypasses EdgeOne until K3)")
+            continue
+        label = "PASS" if ok else "FAIL"
+        if not ok:
+            fail = 1
+        print(f"{label} ban {BAN_SITE_ID} {host} {status} {path}")
+        variant = f"https://{host}/sites/{BAN_PROBE_UID}/{BAN_SITE_ID.lower()}/dist/index.html"
+        varied = fetch_checked(variant, host)
+        if varied.get("status") == 200 and not (_site_n(host) and not enforce):
+            print(f"FAIL ban case-variant 200 {variant}")
+            fail = 1
+    return fail
+
+
+def _curl_http2(url, host_header):
+    import subprocess
+    proc = subprocess.run(
+        [
+            "curl", "--http2", "--silent", "--show-error", "--max-time", "20",
+            "--path-as-is", "-D", "-", "-o", "/dev/null",
+            "-H", f"Host: {host_header}",
+            "-w", "\n%{http_code}",
+            url,
+        ],
+        check=False, capture_output=True, text=True,
+    )
+    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    status = 0
+    if lines and lines[-1].isdigit():
+        status = int(lines[-1])
+    return status
+
+
+def _node_http2_mismatch(url, authority, host_header):
+    import subprocess
+    script = r"""
+const http2 = require('http2');
+const url = new URL(process.argv[1]);
+const authority = process.argv[2];
+const hostHeader = process.argv[3];
+const client = http2.connect(url.origin);
+const req = client.request({
+  ':method': 'GET',
+  ':path': url.pathname + url.search,
+  ':authority': authority,
+  host: hostHeader
+});
+req.on('response', (headers) => {
+  process.stdout.write(String(headers[':status'] || 0));
+  client.close();
+});
+req.on('error', () => { process.stdout.write('0'); client.close(); });
+req.setTimeout(20000, () => { req.close(); client.close(); });
+req.end();
+"""
+    proc = subprocess.run(
+        ["node", "-e", script, url, authority, host_header],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    raw = (proc.stdout or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def _d2_mismatch_checks():
+    fail = 0
+    path = f"/sites/{BAN_PROBE_UID}/{BAN_SITE_ID}/dist/index.html"
+    pairs = [
+        ("https://sites.demox.site" + path, "sites.demox.site", "static.demox.site"),
+        ("https://static.demox.site" + path, "static.demox.site", "sites.demox.site"),
+    ]
+    for url, authority, other in pairs:
+        curled = _curl_http2(url, other)
+        curled_ok = mismatch_verdict(curled) == "pass"
+        print(f"{'PASS' if curled_ok else 'FAIL'} curl --http2 {authority} Host={other} {curled}")
+        if not curled_ok:
+            fail = 1
+        crossed = _node_http2_mismatch(url, authority, other)
+        crossed_ok = mismatch_verdict(crossed) == "pass"
+        print(f"{'PASS' if crossed_ok else 'FAIL'} http2 :authority={authority} Host={other} {crossed}")
+        if not crossed_ok:
+            fail = 1
+    return fail
+
+
+def _d2_cache_case_checks():
+    fail = 0
+    sites = [site for site in _public_sites() if site.get("origin")]
+    if not sites:
+        print("SKIP cache-key case (no origin URL)")
+        return 0
+    origin = sites[0]["origin"]
+    parsed = urllib.parse.urlparse(origin)
+    upper = parsed._replace(path=parsed.path.replace("index.html", "Index.html")).geturl()
+    mixed_host = urllib.parse.urlunparse(parsed._replace(netloc="Sites.Demox.Site"))
+    for label, url in (("lower", origin), ("path-case", upper), ("host-case", mixed_host)):
+        host = urllib.parse.urlparse(url).hostname or ""
+        result = fetch_checked(url, host)
+        headers = result.get("headers") or {}
+        cache = headers.get("eo-cache-status") or headers.get("x-cache") or headers.get("age") or "-"
+        hop = headers.get("x-demox-edge-hop", "")
+        status = result.get("status")
+        ran = hop == "guard" or "origin-guard=" in (result.get("route") or "")
+        ok = status != 200 or ran
+        if label == "lower":
+            ok = status == 200 and ran
+        if not ok:
+            fail = 1
+        print(f"{'PASS' if ok else 'FAIL'} cache-key {label} {status} hop={hop or '-'} cache={cache} {url}")
+    return fail
+
+
+def _d2_cors_checks():
+    fail = 0
+    spec = cors_spec(ROUTER_SOURCE.read_text())
+    origin = next((site["origin"] for site in _public_sites() if site.get("origin")), "")
+    banned = f"https://sites.demox.site/sites/{BAN_PROBE_UID}/{BAN_SITE_ID}/dist/index.html"
+    rows = [("OPTIONS", "https://sites.demox.site/"), ("GET", origin), ("GET", banned)]
+    for method, url in rows:
+        if not url:
+            continue
+        if method == "GET":
+            host = urllib.parse.urlparse(url).hostname or ""
+            result = fetch_checked(url, host)
+            headers = result.get("headers") or {}
+            status = result.get("status") or 0
+        else:
+            headers, status = _options_headers(url)
+        problems = cors_problems(headers, status, method, spec)
+        label = "PASS" if not problems else "FAIL"
+        if problems:
+            fail = 1
+        print(f"{label} cors {method} {status} {url} {'; '.join(problems)}")
+    return fail
+
+
+def _options_headers(url):
+    req = urllib.request.Request(url, method="OPTIONS", headers={"User-Agent": "demox-edge-p0/1"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=30, context=CTX)
+        return {k.lower(): v for k, v in resp.headers.items()}, resp.status
+    except urllib.error.HTTPError as e:
+        return {k.lower(): v for k, v in e.headers.items()}, e.code
+
+
+def d2_checks():
+    fail = 0
+    fail |= _d2_ban_checks()
+    fail |= _d2_public_checks()
+    fail |= _d2_mismatch_checks()
+    fail |= _d2_cache_case_checks()
+    fail |= _d2_cors_checks()
+    fail |= simulate_ban()
+    print("D2 OK" if not fail else "D2 FAILED")
+    print("NOTE live 15s flip: simulate-ban is the clock. To watch a real ban, set BAN_WATCH_URL and re-run d2.")
+    watch = os.environ.get("BAN_WATCH_URL", "")
+    if watch:
+        fail |= _watch_ban(watch)
+    return fail
+
+
+def _watch_ban(url):
+    host = urllib.parse.urlparse(url).hostname or ""
+    deadline = time.monotonic() + 15
+    last = None
+    while time.monotonic() <= deadline:
+        last = fetch_checked(url, host)
+        if last.get("status") == 403:
+            print(f"PASS ban-watch 403 within 15s {url}")
+            return 0
+        time.sleep(1)
+    print(f"FAIL ban-watch still {last.get('status') if last else 0} after 15s {url}")
+    return 1
+
+
+def d2_self_test():
+    """Local http2 server: a crossed Host/:authority must not be classified as 200."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            host = self.headers.get("Host", "")
+            code = 421 if host and not host.startswith("127.0.0.1") else 200
+            body = b"ok"
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        status = _curl_http2(f"http://127.0.0.1:{port}/sites/k2probe/{BAN_SITE_ID}/x", "static.demox.site")
+        if mismatch_verdict(status) != "pass":
+            raise SystemExit(f"local curl mismatch status {status}")
+    finally:
+        server.shutdown()
+    perf_self_test()
+    print("D2 SELF-TEST OK")
+    return 0
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "simulate-ban" and len(sys.argv) == 2:
         sys.exit(simulate_ban())
     if cmd == "origin" and len(sys.argv) == 2:
         sys.exit(origin_checks())
+    if cmd == "d2" and len(sys.argv) == 2:
+        sys.exit(d2_checks())
+    if cmd == "d2-self-test" and len(sys.argv) == 2:
+        sys.exit(d2_self_test())
+    if cmd == "perf-self-test" and len(sys.argv) == 2:
+        sys.exit(perf_self_test())
+    if cmd == "perf-baseline" and len(sys.argv) == 3:
+        perf_baseline(sys.argv[2]); sys.exit(0)
+    if cmd == "perf" and len(sys.argv) == 3:
+        sys.exit(perf_compare(sys.argv[2]))
     if len(sys.argv) != 3 or cmd not in ("baseline", "compare"):
         print(__doc__); sys.exit(2)
     sys.exit(baseline(sys.argv[2]) if cmd == "baseline" else compare(sys.argv[2]))

@@ -27,6 +27,10 @@
 #   FIRST_SCREEN_BUDGET_MS=3000
 #   ENFORCE_SITE_N=1    # site-N 今天不经 EdgeOne。默认只记录 GAP，不因此失败；K3 之后设 1
 #   SKIP_ORIGIN=1       # 只跑本地封禁缓存模拟，不请求源站
+# D0 重入探测（只读，不需要密钥）：python3 scripts/edge-reentry-probe.py https://www.demox.site/
+# D2 现场矩阵（封禁 ID、公开站、http2 Host/:authority、缓存键大小写、CORS、15s）：python3 scripts/edge-p0-matrix.py d2
+# 性能：python3 scripts/edge-p0-matrix.py perf-baseline before.json，发布后再 python3 scripts/edge-p0-matrix.py perf before.json
+# 回滚来回：scripts/edge-router-rollback.sh plan ；APPLY=1 才写，见 skills/edge-router/SKILL.md
 # 每个源站 host × path 都会打 http 和 https。site-N 的 https 证书不匹配只记一笔，不单独失败。
 set -u
 WWW_URL=${WWW_URL:-https://www.demox.site/}
