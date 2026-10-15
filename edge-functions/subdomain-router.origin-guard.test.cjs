@@ -42,7 +42,7 @@ function headerBag(input, init) {
   return new Headers();
 }
 
-function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null, cors = null } = {}) {
+function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null, cors = null, cryptoImpl = null } = {}) {
   const calls = { resolve: [], origin: [] };
   const cache = fakeCache();
   let handle = null;
@@ -62,7 +62,7 @@ function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver
     Request,
     Response,
     Headers,
-    crypto,
+    crypto: cryptoImpl || crypto,
     TextEncoder,
     setTimeout,
     clearTimeout,
@@ -120,10 +120,23 @@ function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver
     const response = await handle(new Request(url, init || { headers: { Accept: 'text/html' } }), event);
     return { response, html: await response.text() };
   };
+  // 边缘运行时入站 Headers 的 set/append/delete 会抛。签发必须写到新的 Headers 上。
+  const visitFrozen = async (url) => {
+    const req = new Request(url, { headers: { Accept: 'text/html' } });
+    for (const name of ['set', 'append', 'delete']) {
+      Object.defineProperty(req.headers, name, {
+        configurable: true,
+        value() { throw new TypeError('immutable headers'); }
+      });
+    }
+    const response = await handle(req, event);
+    return { response, html: await response.text(), req };
+  };
   return {
     calls,
     cache,
     visit,
+    visitFrozen,
     call,
     ctx,
     warns,
@@ -1845,7 +1858,9 @@ for (const latency of [1000, 1400, 1500, 2500]) {
   });
 }
 
-test('a by-id timeout still refuses banned and private objects and does not fetch origin', { timeout: 25_000 }, async () => {
+// N11：makeGuard 把 nowMs 冻住，deadline 不随墙钟往前走。挂起因此会跑满两次
+// ORIGIN_RESOLVE_ATTEMPT_MS（4000ms），墙钟大约 8s，不是生产上 remaining 会缩掉的 6000ms 总预算。
+test('a by-id timeout still refuses banned and private objects and does not fetch origin', { timeout: 40_000 }, async () => {
   const r = makeGuard({
     resolver: (payload, n, init) => new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1877,9 +1892,109 @@ test('a by-id timeout still refuses banned and private objects and does not fetc
     assert.match(html, /暂时无法访问/);
     assert.equal(r.calls.origin.length, before, id);
     assert.equal(r.cache.puts.length, 0, id + ' timeout is not cached');
-    assert.ok(elapsed > 3000, id + ' elapsed ' + elapsed);
-    assert.ok(elapsed < 20000, id + ' elapsed ' + elapsed);
+    assert.ok(elapsed > 7000, id + ' frozen nowMs is ~8s (two 4000ms attempts), not the 6s production budget; elapsed ' + elapsed);
+    assert.ok(elapsed < 16000, id + ' elapsed ' + elapsed);
   }
+});
+
+test('N12: immutable www headers with a secret take origin-guard=internal and skip by-id', { timeout: 20_000 }, async () => {
+  const seen = [];
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: slowBackendResolver(1500),
+    origin: async (info, helpers) => {
+      if (info.token) {
+        const inner = await helpers.reenter(info.href, info.headers);
+        seen.push({
+          href: info.href,
+          route: inner.headers.get('x-demox-route'),
+          token: true
+        });
+        return inner;
+      }
+      seen.push({ href: info.href, token: false });
+      if (info.href.includes('/404.html')) {
+        return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (info.href.endsWith('/index.html')) {
+        return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+
+  const home = await r.visitFrozen('https://www.demox.site/');
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(home.req.headers.get('x-demox-origin-token'), null);
+  assert.throws(() => home.req.headers.set('x-demox-origin-token', 'x'), /immutable headers/);
+
+  const spa = await r.visitFrozen('https://www.demox.site/pricing');
+  assert.equal(spa.response.status, 200);
+  assert.match(spa.html, /Public body/);
+  assert.equal(spa.response.headers.get('x-demox-route'), 'origin-guard=internal');
+
+  const missing = await r.visitFrozen('https://www.demox.site/not-in-spa');
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+
+  assert.equal(countResolves(r, 'EPX2UU43'), 0, 'signed www must not resolve by id');
+  const guarded = seen.filter((info) => info.token);
+  assert.ok(guarded.length >= 3);
+  for (const info of guarded) {
+    assert.equal(info.route, 'origin-guard=internal', info.href);
+  }
+  assert.ok(guarded.some((info) => info.href.endsWith('/index.html')));
+  assert.ok(guarded.some((info) => info.href.includes('/404.html')));
+  assert.equal(r.warns.some((line) => line.includes(SECRET_A)), false);
+});
+
+test('without secrets, immutable www headers still resolve by id', { timeout: 20_000 }, async () => {
+  const r = makeGuard({
+    resolver: slowBackendResolver(1500),
+    origin: reenterWwwOrigin()
+  });
+  const home = await r.visitFrozen('https://www.demox.site/');
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  assert.equal(countResolves(r, 'EPX2UU43'), 1);
+  assert.equal(home.req.headers.get('x-demox-origin-token'), null);
+});
+
+test('a signing failure warns once with fixed text and does not skip the guard', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: (payload) => {
+      if (payload.websiteId) return json(allow('EPX2UU43', '1985655011013808129'));
+      if (payload.subdomain === 'www') {
+        return json({
+          success: true,
+          path: 'sites/1985655011013808129/EPX2UU43/dist',
+          websiteId: 'EPX2UU43',
+          origin: 'sites.demox.site',
+          visibility: 'public',
+          hideWatermark: true
+        });
+      }
+      throw new Error('unexpected ' + JSON.stringify(payload));
+    },
+    origin: reenterWwwOrigin(),
+    cryptoImpl: {
+      subtle: {
+        importKey() { return Promise.reject(new Error('sign failed ' + SECRET_A)); },
+        sign() { return Promise.reject(new Error('sign failed ' + SECRET_A)); }
+      }
+    }
+  });
+  const home = await r.visit('https://www.demox.site/');
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  assert.equal(countResolves(r, 'EPX2UU43'), 1, 'failed signing falls through to by-id');
+  assert.equal(r.warns.filter((line) => line === '[subdomain-router] origin guard token was not attached').length, 1);
+  assert.equal(r.warns.some((line) => line.includes(SECRET_A)), false);
 });
 
 test('a non-ASCII first segment is classified before NFKC', async () => {

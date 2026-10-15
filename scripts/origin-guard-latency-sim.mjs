@@ -61,6 +61,8 @@ function readBody(req) {
 }
 
 const hits = [];
+const slept = [];
+let nextDelay = () => delayMs;
 const server = http.createServer(async (req, res) => {
   try {
     const raw = await readBody(req);
@@ -77,7 +79,9 @@ const server = http.createServer(async (req, res) => {
       subdomain: body.subdomain || '',
       at: Date.now()
     });
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const d = nextDelay();
+    slept.push(d);
+    await new Promise((resolve) => setTimeout(resolve, d));
     const payload = JSON.stringify(verdict(body));
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -118,56 +122,109 @@ function headerBag(input, init) {
 }
 
 const source = fs.readFileSync(routerPath, 'utf8');
-const event = { waitUntil() {}, passThroughOnException() {} };
-let handle = null;
-let depth = 0;
 const PUBLIC_HTML = '<!doctype html><html><head><title>Keep</title></head><body><main>Public body</main></body></html>';
+const TOKEN_HEADER = 'x-demox-origin-token';
+// 测试占位，不是生产密钥。文档和日志都不打印它。
+const SIM_SECRET = 'origin-guard-sim-slot-a-placeholder';
 
-async function edgeFetch(input, init) {
-  const href = String(input && input.url ? input.url : input);
-  if (href.startsWith(apiBase)) {
-    const method = (init && init.method) || 'GET';
-    const headers = headerBag(input, init);
-    const request = { method, headers };
-    if (init && init.body != null && method !== 'GET' && method !== 'HEAD') request.body = init.body;
-    if (init && init.signal) request.signal = init.signal;
-    return fetch(href, request);
-  }
-  const headers = headerBag(input, init);
-  if (depth === 0 && href.includes('sites.demox.site/sites/1985655011013808129/EPX2UU43/')) {
-    depth += 1;
-    try {
-      return await handle(new Request(href, { method: 'GET', headers }), event);
-    } finally {
-      depth -= 1;
+function loadRouter(routerSource, { secret = '', reenter = 'www-origin' } = {}) {
+  const event = { waitUntil() {}, passThroughOnException() {} };
+  const store = new Map();
+  const cache = {
+    match: async (req) => {
+      const key = String(req && req.url ? req.url : req);
+      const entry = store.get(key);
+      return entry ? new Response(entry.body, { headers: entry.headers }) : undefined;
+    },
+    put: async (req, resp) => {
+      const key = String(req && req.url ? req.url : req);
+      store.set(key, { body: await resp.text(), headers: Object.fromEntries(resp.headers.entries()) });
+    },
+    delete: async (req) => store.delete(String(req && req.url ? req.url : req))
+  };
+  let handle = null;
+  let depth = 0;
+  async function edgeFetch(input, init) {
+    const href = String(input && input.url ? input.url : input);
+    if (href.startsWith(apiBase)) {
+      const method = (init && init.method) || 'GET';
+      const headers = headerBag(input, init);
+      const request = { method, headers };
+      if (init && init.body != null && method !== 'GET' && method !== 'HEAD') request.body = init.body;
+      if (init && init.signal) request.signal = init.signal;
+      return fetch(href, request);
     }
+    const headers = headerBag(input, init);
+    const token = headers.get(TOKEN_HEADER) || '';
+    if (reenter === 'token' && token && href.includes('sites.demox.site/')) {
+      return handle(new Request(href, { method: 'GET', headers }), event);
+    }
+    if (reenter === 'www-origin' && depth === 0 && href.includes('sites.demox.site/sites/1985655011013808129/EPX2UU43/')) {
+      depth += 1;
+      try {
+        return await handle(new Request(href, { method: 'GET', headers }), event);
+      } finally {
+        depth -= 1;
+      }
+    }
+    return new Response(PUBLIC_HTML, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
   }
-  return new Response(PUBLIC_HTML, {
-    status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' }
+  const env = { DEMOX_API_URL: apiBase, DEMOX_HOME_URL: 'https://www.demox.site' };
+  if (secret) {
+    env.DEMOX_ORIGIN_GUARD_SECRET_A = secret;
+    env.DEMOX_ORIGIN_GUARD_KID = 'A';
+  }
+  const ctx = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    crypto,
+    TextEncoder,
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    console: { log() {}, warn() {}, error() {} },
+    env,
+    caches: { default: cache },
+    addEventListener() {},
+    fetch: edgeFetch
   });
+  vm.runInContext(`${routerSource}\nglobalThis.__testHooks = { handle }; try { globalThis.__budget = ORIGIN_RESOLVE_BUDGET_MS; globalThis.__attempt = ORIGIN_RESOLVE_ATTEMPT_MS; } catch (e) {}`, ctx);
+  handle = ctx.__testHooks.handle;
+  return {
+    handle,
+    event,
+    clearCache: () => store.clear(),
+    budgetMs: ctx.__budget,
+    attemptMs: ctx.__attempt
+  };
 }
 
-const ctx = vm.createContext({
-  URL,
-  Request,
-  Response,
-  Headers,
-  crypto,
-  TextEncoder,
-  setTimeout,
-  clearTimeout,
-  AbortController,
-  console: { log() {}, warn() {}, error() {} },
-  env: { DEMOX_API_URL: apiBase, DEMOX_HOME_URL: 'https://www.demox.site' },
-  caches: { default: fakeCache() },
-  addEventListener() {},
-  fetch: edgeFetch
-});
-vm.runInContext(`${source}\nglobalThis.__testHooks = { handle, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_RESOLVE_ATTEMPT_MS };`, ctx);
-handle = ctx.__testHooks.handle;
-const budgetMs = ctx.__testHooks.ORIGIN_RESOLVE_BUDGET_MS;
-const attemptMs = ctx.__testHooks.ORIGIN_RESOLVE_ATTEMPT_MS;
+function immutableRequest(url) {
+  const req = new Request(url, { headers: { Accept: 'text/html' } });
+  for (const name of ['set', 'append', 'delete']) {
+    Object.defineProperty(req.headers, name, {
+      configurable: true,
+      value() { throw new TypeError('immutable headers'); }
+    });
+  }
+  return req;
+}
+
+function orderStat(sorted, fraction) {
+  const rank = Math.ceil(fraction * sorted.length);
+  return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1];
+}
+
+const plain = loadRouter(source, { reenter: 'www-origin' });
+const handle = plain.handle;
+const event = plain.event;
+const budgetMs = plain.budgetMs;
+const attemptMs = plain.attemptMs;
 
 const cases = [
   {
@@ -269,19 +326,142 @@ const table = [
   ...rows.map((row) => `| ${row.name} | ${row.status} | \`${row.route}\` | ${row.elapsed} | ${row.backendHits} |`)
 ].join('\n');
 
+// 性能门禁：KID=A、入站头不可变、每次清缓存。后端延迟在 1.0–1.4s 均匀抽取。
+// 端到端门禁是线上 www 基线（median 2.090s / p90 2.454s）的 +15% / +25%。
+const GATE_SAMPLES = 15;
+const GATE_MEDIAN_MS = 2400;
+const GATE_P90_MS = 3070;
+const signed = loadRouter(source, { secret: SIM_SECRET, reenter: 'token' });
+const delays = Array.from({ length: GATE_SAMPLES }, () => 1000 + Math.floor(Math.random() * 401));
+const gateRows = [];
+for (let i = 0; i < delays.length; i += 1) {
+  signed.clearCache();
+  const delay = delays[i];
+  nextDelay = () => delay;
+  const before = hits.length;
+  const sleepAt = slept.length;
+  const started = Date.now();
+  let response;
+  let failed = '';
+  try {
+    response = await signed.handle(immutableRequest('https://www.demox.site/'), signed.event);
+  } catch (e) {
+    failed = (e && e.message) || String(e);
+    response = null;
+  }
+  const elapsed = Date.now() - started;
+  if (response) await response.text();
+  const sampleHits = hits.slice(before);
+  const byId = sampleHits.filter((hit) => hit.websiteId).length;
+  const sleptMs = slept.slice(sleepAt).reduce((sum, n) => sum + n, 0);
+  const route = response ? (response.headers.get('x-demox-route') || '') : '';
+  const status = response ? response.status : 0;
+  gateRows.push({
+    n: i + 1,
+    delay,
+    elapsed,
+    added: elapsed - sleptMs,
+    byId,
+    route,
+    status,
+    failed
+  });
+  if (failed) failures.push(`gate sample ${i + 1}: ${failed}`);
+  if (status !== 200) failures.push(`gate sample ${i + 1}: status ${status}`);
+  if (route !== 'origin-guard=internal') failures.push(`gate sample ${i + 1}: route ${route || '(none)'}`);
+  if (byId !== 0) failures.push(`gate sample ${i + 1}: by-id calls ${byId}`);
+}
+
+const e2eSorted = gateRows.map((row) => row.elapsed).sort((a, b) => a - b);
+const addedSorted = gateRows.map((row) => row.added).sort((a, b) => a - b);
+const e2eMedian = orderStat(e2eSorted, 0.5);
+const e2eP90 = orderStat(e2eSorted, 0.9);
+const addedMedian = orderStat(addedSorted, 0.5);
+const addedP90 = orderStat(addedSorted, 0.9);
+const gatePass = e2eMedian <= GATE_MEDIAN_MS && e2eP90 <= GATE_P90_MS && gateRows.every((row) => row.status === 200 && row.route === 'origin-guard=internal' && row.byId === 0);
+if (!gatePass) {
+  failures.push(`perf gate failed: www e2e median ${e2eMedian}ms (limit ${GATE_MEDIAN_MS}), p90 ${e2eP90}ms (limit ${GATE_P90_MS})`);
+}
+
+let baselineNote = '未能跑 #78（3dea4e0）对照。';
+let baselineTable = '';
+try {
+  const { execFileSync } = await import('node:child_process');
+  const oldSource = execFileSync('git', ['show', '3dea4e0:edge-functions/subdomain-router.js'], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024
+  });
+  const old = loadRouter(oldSource, { reenter: 'none' });
+  const oldRows = [];
+  for (let i = 0; i < delays.length; i += 1) {
+    old.clearCache();
+    const delay = delays[i];
+    nextDelay = () => delay;
+    const sleepAt = slept.length;
+    const started = Date.now();
+    const response = await old.handle(immutableRequest('https://www.demox.site/'), old.event);
+    const elapsed = Date.now() - started;
+    await response.text();
+    const sleptMs = slept.slice(sleepAt).reduce((sum, n) => sum + n, 0);
+    oldRows.push({ elapsed, added: elapsed - sleptMs, status: response.status });
+  }
+  const oldE2e = oldRows.map((row) => row.elapsed).sort((a, b) => a - b);
+  const oldAdded = oldRows.map((row) => row.added).sort((a, b) => a - b);
+  const oldMedian = orderStat(oldE2e, 0.5);
+  const oldP90 = orderStat(oldE2e, 0.9);
+  const oldAddedMedian = orderStat(oldAdded, 0.5);
+  const oldAddedP90 = orderStat(oldAdded, 0.9);
+  baselineNote = '#78 没有源站守卫。对照把对象 fetch 当成没有源站延迟的本地 200，不重入本函数。同一组 1.0–1.4s 延迟、同样每次清缓存。路由器额外耗时 = 端到端 − 这次请求里 mock 实际 sleep 的总和。';
+  baselineTable = [
+    '| 版本 | 端到端 median ms | 端到端 p90 ms | 路由器额外 median ms | 路由器额外 p90 ms |',
+    '| --- | ---: | ---: | ---: | ---: |',
+    `| 当前（有签名，internal） | ${e2eMedian} | ${e2eP90} | ${addedMedian} | ${addedP90} |`,
+    `| #78 \`3dea4e0\` | ${oldMedian} | ${oldP90} | ${oldAddedMedian} | ${oldAddedP90} |`,
+    `| 当前 − #78 | ${e2eMedian - oldMedian} | ${e2eP90 - oldP90} | ${addedMedian - oldAddedMedian} | ${addedP90 - oldAddedP90} |`
+  ].join('\n');
+} catch (e) {
+  baselineNote = '跑 #78 对照失败：' + ((e && e.message) || e);
+  failures.push(baselineNote);
+}
+
+const gateTable = [
+  '| # | 后端延迟 ms | 端到端 ms | 路由器额外 ms | by-ID | 状态 | x-demox-route |',
+  '| ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+  ...gateRows.map((row) => `| ${row.n} | ${row.delay} | ${row.elapsed} | ${row.added} | ${row.byId} | ${row.status} | \`${row.route || row.failed}\` |`)
+].join('\n');
+
 const doc = `# 源站守卫慢后端本地模拟
 
-本地 HTTP mock（\`127.0.0.1\`，延迟 ${delayMs}ms）驱动 \`edge-functions/subdomain-router.js\`。没有访问生产，也没有配置签名密钥。www 回源到 \`sites.demox.site\` 时会再次进入守卫，走 by-ID 解析。
+本地 HTTP mock（\`127.0.0.1\`）驱动 \`edge-functions/subdomain-router.js\`。没有访问生产。
 
 - 命令：\`node scripts/origin-guard-latency-sim.mjs --delay ${delayMs}\`
 - 守卫单次尝试：${attemptMs}ms
 - 守卫总预算：${budgetMs}ms
-- 解析缓存：进程内 Cache API shim（与单测相同的 \`match\` / \`put\` 合约）。延迟本身来自真实的本地 HTTP 往返。
+- 解析缓存：进程内 Cache API shim。延迟来自真实的本地 HTTP 往返。
 - 生成时间：${new Date().toISOString()}
+
+## 无签名（行为与现在的 by-ID 路径一致）
+
+没有配置签名槽。www 回源会再次进入守卫，走 by-ID。
 
 ${table}
 
-www 首页冷请求打两次后端（label 解析，然后重入后的 by-ID）。\`/pricing\` 和同一个公开对象的第二次请求在 15s 缓存里，后端次数为 0。封禁（\`allow:false\`）和私有（\`allow:true\` 但仍带 \`visibility:private\`）都是 403，没有把对象取回来。这些响应都不是 \`origin-guard=error\`。
+www 首页冷请求打两次后端（label 解析，然后重入后的 by-ID）。\`/pricing\` 和同一个公开对象的第二次请求在 15s 缓存里，后端次数为 0。
+
+## 有签名的 www 冷请求门禁
+
+KID=A，测试用占位密钥（不写入本文）。入站 \`Headers.set/append/delete\` 会抛，和边缘运行时一样。每个样本之间清空解析缓存。后端延迟在 1000–1400ms 均匀随机，${GATE_SAMPLES} 个样本。分位数用 nearest-rank：\`ceil(p * n)\`。
+
+线上 www 基线 median 2090ms、p90 2454ms。门禁是端到端 median ≤ ${GATE_MEDIAN_MS}ms（+15%）且 p90 ≤ ${GATE_P90_MS}ms（+25%）。模拟没有真实源站延迟，所以端到端只含 label 解析的后端延迟和路由器自己的开销。
+
+**门禁：${gatePass ? 'PASS' : 'FAIL'}。** 端到端 median ${e2eMedian}ms，p90 ${e2eP90}ms。路由器额外耗时 median ${addedMedian}ms，p90 ${addedP90}ms。by-ID 次数合计 ${gateRows.reduce((sum, row) => sum + row.byId, 0)}。
+
+${gateTable}
+
+${baselineNote}
+
+${baselineTable}
 `;
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });

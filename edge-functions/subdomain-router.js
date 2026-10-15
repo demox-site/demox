@@ -589,14 +589,23 @@ function originGuardSecret(slot) {
   return secretIsConfigured(value) ? value : '';
 }
 
-// 每个 isolate 只打一次。文案是常量，不拼接槽名、KID 或密钥。
+// 每个 isolate 只打一次。文案是常量，不拼接槽名、KID、密钥或令牌。
 var originGuardSigningWarned = false;
+var originGuardAttachWarned = false;
 
 function warnOriginGuardSigningOnce() {
   if (originGuardSigningWarned) return;
   originGuardSigningWarned = true;
   try {
     console.warn('[subdomain-router] origin guard signing unavailable');
+  } catch (e) {}
+}
+
+function warnOriginGuardAttachOnce() {
+  if (originGuardAttachWarned) return;
+  originGuardAttachWarned = true;
+  try {
+    console.warn('[subdomain-router] origin guard token was not attached');
   } catch (e) {}
 }
 
@@ -674,6 +683,7 @@ async function signOriginInternalToken(method, host, pathname, search) {
     const mac = await hmacSha256Hex(secret, originTokenMessage(exp, method, host, pathname, search, kid));
     return 'v1.' + kid + '.' + String(exp) + '.' + mac;
   } catch (e) {
+    warnOriginGuardAttachOnce();
     return '';
   }
 }
@@ -732,18 +742,42 @@ function stripOriginInternalToken(req) {
   return new Request(targetUrl, init);
 }
 
-// www 不经过 fetchSiteOrigin，文档回源必须仍把入站 req 交给 originFetch。
-// 密钥为空时什么都不做。有密钥时只往原请求上追加令牌，不删除 Host，也不换一个新的 Request。
-async function stampWwwOriginRequest(req, url) {
-  if (!originGuardSigningSlot()) return;
-  if (!req || !req.headers || typeof req.headers.set !== 'function') return;
+// 入站请求的 Headers 在边缘上是不可变的，set 会抛。令牌只写到一份新的 Headers 上。
+// 复制失败或签发失败时打一条固定警告（不含任何配置值），调用方继续用原来的 init，
+// 重入后走 by-ID。不因为 Host 是 www 就免裁决。
+function copyRequestHeaders(source) {
+  const headers = new Headers();
+  if (source && typeof source.forEach === 'function') {
+    source.forEach(function (value, key) {
+      try { headers.append(key, value); } catch (e) {}
+    });
+  }
+  return headers;
+}
+
+async function signedWwwInit(req, url, method) {
+  if (!originGuardSigningSlot()) return null;
+  const verb = method || (req && req.method) || 'GET';
   let target;
-  try { target = new URL(url); } catch (e) { return; }
+  try { target = new URL(url); } catch (e) {
+    warnOriginGuardAttachOnce();
+    return null;
+  }
   // site-N 今天是 http。令牌不要出现在明文链路上。
-  if (target.protocol !== 'https:') return;
-  const token = await signOriginInternalToken(req.method || 'GET', target.hostname, target.pathname, target.search);
-  if (!token) return;
-  try { req.headers.set(ORIGIN_INTERNAL_TOKEN_HEADER, token); } catch (e) {}
+  if (target.protocol !== 'https:') return null;
+  const token = await signOriginInternalToken(verb, target.hostname, target.pathname, target.search);
+  if (!token) {
+    warnOriginGuardAttachOnce();
+    return null;
+  }
+  try {
+    const headers = copyRequestHeaders(req && req.headers);
+    headers.set(ORIGIN_INTERNAL_TOKEN_HEADER, token);
+    return { method: verb, headers: headers };
+  } catch (e) {
+    warnOriginGuardAttachOnce();
+    return null;
+  }
 }
 
 // 密钥未配置时返回原来的 init（通常就是 req），fetch(url, req) 保持不变。
@@ -768,23 +802,33 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  // www 的 SPA index 与 404.html 保持 #49 之前的调用形状，不附带令牌。这是跨 host 子请求。
-  // 跨 host 子请求会不会再次进入本函数尚未证实，待用线上 EdgeOne 日志实测（EdgeFunctionSubrequest / ParentRequestID）。
-  // 若重入，这两条按普通源站路径做 by-ID 裁决，不是内部放行。
-  if (!hardened) await stampWwwOriginRequest(req, buildOriginUrl(req, originPath, u.search, originHost));
-  const resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
+  // 没有签名槽时 www 仍把入站 req 交给 originFetch（#49 的调用形状）。
+  // 有签名槽时用新的 Headers，不改入站头。SPA 的 index.html 同样处理。
+  // 404.html 在 serveCustom404 里签。都不按 Host 免裁决。
+  const pageUrl = buildOriginUrl(req, originPath, u.search, originHost);
+  const signedPage = !hardened ? await signedWwwInit(req, pageUrl) : null;
+  const resp = signedPage
+    ? await originFetch(pageUrl, signedPage)
+    : await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
     if (u.hostname.toLowerCase() === WWW_HOST && !isWwwSpaRoute(u.pathname)) {
       return serveCustom404(req, event, u, sitePath, originHost, meta);
     }
-    const idxResp = await originFetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
+    const indexUrl = buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost);
+    const signedIndex = !hardened ? await signedWwwInit(req, indexUrl, 'GET') : null;
+    const idxResp = signedIndex
+      ? await originFetch(indexUrl, signedIndex)
+      : await originFetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
     if (idxResp.ok) {
       // SPA 入口用 200 返回，浏览器交给前端路由渲染(等同站点独占桶根的 fallback 行为)
+      const headers = applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta);
+      const route = idxResp.headers.get('x-demox-route');
+      if (route) headers.set('x-demox-route', route);
       return withDemoxBadge(req, event, new Response(idxResp.body, {
         status: 200,
-        headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta)
+        headers: headers
       }), meta);
     }
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
@@ -793,21 +837,36 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   return withDemoxBadge(req, event, resp, meta);
 }
 
+async function custom404Document(custom404, meta) {
+  const html = await custom404.text();
+  const headers = new Headers(custom404.headers);
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  applySiteCacheHeaders(headers, meta, 404);
+  return new Response(html, { status: 404, headers });
+}
+
 /**
  * 404 处理：优先返回站点自定义 404.html，不存在则返回 Demox 默认 404 页面。
  * 保持 HTTP 404 状态码（SEO 友好）；仅对页面导航请求生效。
  */
 async function serveCustom404(req, event, u, sitePath, originHost, meta) {
-  // 1) 尝试站点的 404.html
+  // 1) 尝试站点的 404.html。www 在有签名槽时用新的 Headers 带上内部令牌。
+  // 没有签名槽，以及用户站，仍走下面那条 #49 之前的 GET。有令牌的响应不再补一条无令牌请求。
   if (sitePath) {
     try {
-      const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
-      if (custom404.ok) {
-        const html = await custom404.text();
-        const headers = new Headers(custom404.headers);
-        headers.set('Content-Type', 'text/html; charset=utf-8');
-        applySiteCacheHeaders(headers, meta, 404);
-        return new Response(html, { status: 404, headers });
+      let skipUnsigned = false;
+      if (isWwwRequest(u)) {
+        const missingUrl = buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost);
+        const signed = await signedWwwInit(req, missingUrl, 'GET');
+        if (signed) {
+          skipUnsigned = true;
+          const custom404 = await fetch(missingUrl, signed);
+          if (custom404.ok) return custom404Document(custom404, meta);
+        }
+      }
+      if (!skipUnsigned) {
+        const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
+        if (custom404.ok) return custom404Document(custom404, meta);
       }
     } catch (e) {}
   }
