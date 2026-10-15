@@ -3142,6 +3142,8 @@ function isValidLabel(label) {
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) return false;
   // 旧格式以 sites- 开头，避免与向后兼容正则冲突
   if (label.startsWith('sites-')) return false;
+  // k2t-* 是非生产边缘核对用的主机名前缀，不能让用户注册后被测试规则劫持。
+  if (label.startsWith('k2t-')) return false;
   if (RESERVED_LABELS.has(label)) return false;
   return true;
 }

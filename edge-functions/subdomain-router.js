@@ -298,7 +298,9 @@ function buildOriginUrl(req, originPath, search, originHost) {
   const origin = new URL(req.url);
   // 多云：回源域由路由表的 origin_host 决定（每个桶绑定自己的回源域）。
   // 缺省(旧数据/默认桶/resolve 未返回 origin)回退到 sites.demox.site。
-  const host = originHost || 'sites.demox.site';
+  // 测试映射打开时，逻辑上的 sites.demox.site 换成映射里的物理主机（k2t-sites），
+  // 子请求才会重新进入测试函数。入站 Request 和 Host 头不动。
+  const host = physicalOriginHost(originHost || 'sites.demox.site');
   origin.hostname = host;
   // site-{bucketId}.demox.site 是 COS 自定义源站域（CNAME 到 COS，不进 EdgeOne）。
   // 证书还没绑到 COS HTTPS 实例时只能走 HTTP；用户侧仍是 https://*.demox.site。
@@ -505,7 +507,7 @@ async function fetchSiteOrigin(url, init, meta) {
 }
 
 function isWwwRequest(u) {
-  return String((u && u.hostname) || '').toLowerCase() === WWW_HOST;
+  return logicalHostName(u && u.hostname) === WWW_HOST;
 }
 
 function normalizeStoredOriginPath(path) {
@@ -568,6 +570,127 @@ function envString(name) {
     if (typeof env !== 'undefined' && env && env[name]) return String(env[name]);
   } catch (e) {}
   return '';
+}
+
+// DEMOX_TEST_HOST_MAP 只在测试函数上设置。生产不设，下面的解析结果是 null，
+// 缓存前缀、回源主机、响应头都保持原样。
+// 值是 JSON：物理主机 → 逻辑主机，例如 "k2t-www.demox.site": "www.demox.site"。
+// 分类用逻辑主机。回源 URL 和 301 目标用物理主机。不重建入站 Request，不改它的 Host。
+var testHostMapState = null;
+var testHostMapReady = false;
+var testHostUnmappedWarned = false;
+var testHostMapRejectedWarned = false;
+
+function normalizeHostName(value) {
+  return String(value || '').trim().toLowerCase().replace(/\.+$/, '');
+}
+
+function warnTestHostMapRejected() {
+  if (testHostMapRejectedWarned) return;
+  testHostMapRejectedWarned = true;
+  try { console.warn('[subdomain-router] test host map rejected'); } catch (e) {}
+}
+
+function warnUnmappedTestHost() {
+  if (testHostUnmappedWarned) return;
+  testHostUnmappedWarned = true;
+  try { console.warn('[subdomain-router] unmapped test host'); } catch (e) {}
+}
+
+function testHostMap() {
+  if (testHostMapReady) return testHostMapState;
+  testHostMapReady = true;
+  const raw = envString('DEMOX_TEST_HOST_MAP').trim();
+  if (!raw) {
+    testHostMapState = null;
+    return null;
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+  const map = Object.create(null);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    warnTestHostMapRejected();
+  } else {
+    const keys = Object.keys(parsed);
+    for (let i = 0; i < keys.length; i += 1) {
+      const physical = normalizeHostName(keys[i]);
+      const logical = normalizeHostName(parsed[keys[i]]);
+      if (!physical || !logical) continue;
+      if (physical.indexOf('://') !== -1 || logical.indexOf('://') !== -1) continue;
+      map[physical] = logical;
+    }
+  }
+  testHostMapState = map;
+  // 节点上的 caches.default 被所有函数共享。映射打开时换前缀，避免读到生产条目。
+  RESOLVE_CACHE_PREFIX = 'https://resolve-k2test.demox.site/v2/';
+  RESOLVE_LEGACY_CACHE_PREFIX = 'https://resolve-k2test.demox.site/';
+  return map;
+}
+
+function testHostMapActive() {
+  return testHostMap() !== null;
+}
+
+function logicalHostName(hostname) {
+  const name = normalizeHostName(hostname);
+  const map = testHostMap();
+  if (!map) return name;
+  return map[name] || name;
+}
+
+function physicalHostName(logical) {
+  const name = normalizeHostName(logical);
+  const map = testHostMap();
+  if (!map) return name;
+  const keys = Object.keys(map);
+  for (let i = 0; i < keys.length; i += 1) {
+    if (map[keys[i]] === name) return keys[i];
+  }
+  return name;
+}
+
+function physicalOriginHost(originHost) {
+  return physicalHostName(originHost || 'sites.demox.site');
+}
+
+function isDemoxZoneHost(hostname) {
+  const name = normalizeHostName(hostname);
+  return name === 'demox.site' || name.endsWith('.demox.site');
+}
+
+function isTestHostExempt(hostname) {
+  const name = normalizeHostName(hostname);
+  if (name === 'api.demox.site') return true;
+  return /^site-\d+\.demox\.site$/.test(name);
+}
+
+function unmappedTestHostResponse() {
+  warnUnmappedTestHost();
+  return new Response('unmapped-host', {
+    status: 599,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'x-demox-route': 'test-host=unmapped',
+      'x-demox-env': 'nonprod'
+    }
+  });
+}
+
+function stampTestEnv(resp) {
+  if (!testHostMapActive() || !resp) return resp;
+  try {
+    resp.headers.set('x-demox-env', 'nonprod');
+    return resp;
+  } catch (e) {
+    try {
+      const copy = new Response(resp.body, resp);
+      copy.headers.set('x-demox-env', 'nonprod');
+      return copy;
+    } catch (err) {
+      return resp;
+    }
+  }
 }
 
 function secretIsConfigured(value) {
@@ -830,7 +953,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
-    if (u.hostname.toLowerCase() === WWW_HOST && !isWwwSpaRoute(u.pathname)) {
+    if (isWwwRequest(u) && !isWwwSpaRoute(u.pathname)) {
       return serveCustom404(req, event, u, sitePath, originHost, meta);
     }
     const indexUrl = buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost);
@@ -1016,7 +1139,7 @@ function disabledSitePage() {
 }
 
 function shouldInjectDemoxBadge(req, resp) {
-  const host = new URL(req.url).hostname.toLowerCase();
+  const host = logicalHostName(new URL(req.url).hostname);
   if (host === WWW_HOST) return false;
   return shouldTrackSiteView(req, resp);
 }
@@ -2250,14 +2373,16 @@ async function handle(req, event) {
   const staleCookieDomain = hasAuthCookie(req.headers) ? officialDomainOfHost(new URL(req.url).hostname) : '';
   try {
     const resp = await handleRequest(req, event, ctx);
-    return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
+    const out = staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
+    return stampTestEnv(out);
   } catch (e) {
     // 已确认是用户站点流量（非 www）时，任何意外异常都映射成 503，
     // 绝不让 passThroughOnException 回源到桶根返回「站点未发布」。
     if (ctx.siteTraffic) {
       try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
       const unavailable = siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
-      return staleCookieDomain ? withExpiredAuthCookie(unavailable, staleCookieDomain) : unavailable;
+      const out = staleCookieDomain ? withExpiredAuthCookie(unavailable, staleCookieDomain) : unavailable;
+      return stampTestEnv(out);
     }
     throw e;
   }
@@ -2588,15 +2713,23 @@ function originAuthorityMismatchResponse() {
 async function handleRequest(req, event, ctx) {
   const u = new URL(req.url);
   originGuardSigningSlot();
-  // 源站 host 按 URL 裁决，/sites 路径也进守卫。跨 host 回源会带着访客原来的 Host
-  //（www → sites.demox.site，以及没有签名密钥时的 fetch(url, req)）。这些请求若再次进入本函数，
+  const urlHost = normalizeHostName(u.hostname);
+  // 映射打开时，没列进表的 *.demox.site（api 和 site-N 除外）直接 599，不回源。
+  // 避免测试函数把流量送进生产主机。不改入站 Request。
+  if (testHostMapActive() && isDemoxZoneHost(urlHost) && !testHostMap()[urlHost] && !isTestHostExempt(urlHost)) {
+    return unmappedTestHostResponse();
+  }
+  const host = logicalHostName(urlHost);
+  // 源站 host 按逻辑角色裁决，/sites 路径也进守卫。跨 host 回源会带着访客原来的 Host
+  //（www → sites，以及没有签名密钥时的 fetch(url, req)）。这些请求若再次进入本函数，
   // 不能因为 Host 和 URL 不一致就 421，否则 www 和用户站会被自己的回源打下来。
-  if (!isOriginGuardHost(u.hostname) && requestHostMismatchesUrl(req, u)) return originAuthorityMismatchResponse();
-  const host = u.hostname.toLowerCase();
+  // 421 的豁免看逻辑角色。令牌校验仍用请求 URL 的主机，因为签名绑的是回源 URL。
+  if (!isOriginGuardHost(host) && requestHostMismatchesUrl(req, u)) return originAuthorityMismatchResponse();
 
   // 0a) apex demox.site → 301 跳转到 www（保留 path+query，OAuth callback 的 code 不丢）
+  // 映射打开时目标是物理 www（k2t-www），不是生产 www。
   if (host === APEX_HOST) {
-    const target = 'https://' + WWW_HOST + u.pathname + u.search;
+    const target = 'https://' + physicalHostName(WWW_HOST) + u.pathname + u.search;
     return new Response(null, {
       status: 301,
       headers: { 'Location': target, 'Cache-Control': 'no-cache' }
@@ -2607,8 +2740,9 @@ async function handleRequest(req, event, ctx) {
   if (originPathUnsafe(u.pathname)) return originPathRejectResponse();
 
   // 源站 host 在任何 fetch(req) 放行之前裁决。子域名和自定义域不进这里。
+  // 守卫角色看逻辑主机。令牌绑定的是回源 URL 的物理主机，所以校验传入 urlHost。
   if (isOriginGuardHost(host)) {
-    return handleOriginGuard(req, event, ctx, u, host);
+    return handleOriginGuard(req, event, ctx, u, urlHost);
   }
 
   // 只处理官方域名池的一层子域名；多层放行回源。
@@ -2624,7 +2758,7 @@ async function handleRequest(req, event, ctx) {
   if (!parsedHost && !(customResolved && customResolved.path)) {
     const passthroughKind = classifyPassthroughOriginPath(u.pathname);
     if (passthroughKind === 'reject') return originPathRejectResponse();
-    if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
+    if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
     if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   }
   if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
@@ -2734,7 +2868,7 @@ async function handleRequest(req, event, ctx) {
   // 解码失败 400。第一段以 sites 开头的路径不能原样回源到桶 1，交给源站守卫。
   const unknownKind = classifyPassthroughOriginPath(u.pathname);
   if (unknownKind === 'reject') return originPathRejectResponse();
-  if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
+  if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
   if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   return fetch(req);
 }

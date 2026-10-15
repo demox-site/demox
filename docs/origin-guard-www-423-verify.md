@@ -24,46 +24,36 @@ www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`a
 
 ## 上线前核对（不要动 ef-1281msyw）
 
-1. 新建一个边缘函数，不要改 `ef-1281msyw`，不要改 `rule-fxfyqmn5`（`*.demox.site`）。
-2. 只在这个测试函数上配置 `DEMOX_API_URL=https://api.demox.site`，以及和线上相同的 KID / 签名槽。值在控制台配，不要写进仓库或这条脚本。
-3. 等该函数的默认域名生效（`<name>.eo-edgefunctions.com`，见 `scf-code/deploy-edge-functions.sh`）。触发规则留空。
-4. 用下面的脚本打默认域名。脚本带真实 Host：`www.demox.site`、用户站、`sites.demox.site`，以及 `EO-Connecting-IP`、`CDN-Loop`、占位 Cookie。后端是测试函数环境里的真实 `api.demox.site`，延迟就是线上那一档。
-5. 路由器看的是请求 URL 的 host，不是单独一个 Host 头。默认域名如果仍用自己的 URL，www 分支不会跑到。这时打开这个测试函数的 Web 调试（[文档](https://edgeone.ai/zh/document/63556)），把请求 URL 设成下面五个，请求头与脚本相同。不要在 `ef-1281msyw` 的编辑页点保存并部署。
+测试函数和将要发布的文件必须是同一份字节。`DEMOX_TEST_HOST_MAP` 只配在 `ef-k2test` 上。生产不设这个变量。触发规则只匹配 `k2t-www`、`k2t-sites`、`k2t-apex`、`k2t-pub`、`k2t-ban`，并且排在 `rule-fxfyqmn5` 前面。不要改 `ef-1281msyw`。
+
+内层那一跳打的是 `k2t-sites`，仍然进这份测试代码，所以 www 的 `/`、`/pricing` 和未知路径必须是 `origin-guard=internal`。`REQUIRE_INTERNAL=1` 是强制的，脚本拒绝把它关掉。
+
+脚本只发公开 GET，带的 Host 和 URL host 相同。不保存正文、IP 或 Cookie。每个响应都要有 `x-demox-env: nonprod`。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
 
 | 请求 URL | 期望 |
 | --- | --- |
-| `https://www.demox.site/` | 200，`x-demox-route: origin-guard=internal`，不是 423 |
-| `https://www.demox.site/pricing` | 200，`origin-guard=internal` |
-| `https://www.demox.site/not-a-published-page` | 404（不在 SPA 名单里），`origin-guard=internal` |
-| `https://sites.demox.site/sites/<uid>/<封禁 ID>/dist/index.html` | 403，`origin-guard=blocked` |
-| `https://coverage.demox.site/` | 200 |
-
-`origin-guard=internal` 只有这份代码自己处理 sites 重入时才会写上。测试函数去拉 `sites.demox.site` 时，zone 规则仍把子请求交给现在的生产函数（#78）。#78 不写 `origin-guard=internal`。这种情况下脚本用 `REQUIRE_INTERNAL=0`，423 和 `origin-guard=allow` 仍然算失败。`allow` 表示令牌没带上。不要为了看到 `internal` 去改 `rule-fxfyqmn5`。
-
-冷的 www 应接近一次真实 API 往返（大约 1–1.5s），而不是 16 跳。
+| `https://k2t-www.demox.site/` | 200，`origin-guard=internal`，`x-demox-env: nonprod` |
+| `https://k2t-www.demox.site/pricing` | 200，`origin-guard=internal` |
+| `https://k2t-www.demox.site/k2t-nope-<rand>` | 404，`origin-guard=internal` |
+| `https://k2t-sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html` | 200，`origin-guard=allow` |
+| `https://k2t-sites.demox.site/sites/<uid>/<封禁 ID>/…` | 403，`origin-guard=blocked`，no-store；再请求一次仍是 403 |
+| `https://k2t-ban.demox.site/` | 403 |
+| `https://k2t-sites.demox.site/sites/<uid>/<私有 ID>/…` | 403，`origin-guard=blocked` |
+| `https://k2t-pub.demox.site/` | 200 |
 
 ```bash
-EDGE_ORIGIN=<测试函数默认域名> \
-USER_HOST=coverage.demox.site \
-BANNED_URL='https://sites.demox.site/sites/<uid>/<ID>/dist/index.html' \
+BANNED_PATH='/sites/<uid>/<ID>/dist/index.html' \
+PRIVATE_PATH='/sites/<uid>/<私有 ID>/dist/index.html' \
 bash scripts/origin-guard-www-verify.sh
 ```
 
-## 回滚（30 秒，无密钥）
+## 回滚
 
-事故里回滚就是把 `ef-1281msyw` 的正文写回 #78（`3dea4e0`）。不要跑 `scripts/edge-router-rollback.sh drill`：drill 会先换成上一份，核对完再把刚才的线上正文写回去。
+上线前先保存当时线上的函数正文，并核对哈希。回滚时 restore the saved, hash-verified pre-release live copy，然后做下面两条 curl。不要用 `git show` 取一份历史文件。不要跑 `scripts/edge-router-rollback.sh drill`。
 
 ```bash
-PREV=$(mktemp)
-git show 3dea4e0:edge-functions/subdomain-router.js >"$PREV"
-tccli teo ModifyFunction \
-  --ZoneId zone-3kplfkbflnd6 \
-  --FunctionId ef-1281msyw \
-  --region ap-guangzhou \
-  --Content "$(cat "$PREV")"
-rm -f "$PREV"
 curl -sS -D - -o /dev/null --max-time 15 https://www.demox.site/
 curl -sS -D - -o /dev/null --max-time 15 https://coverage.demox.site/
 ```
 
-www 不应再是 423，两个都要 200。若仍是 423，只重试这两条 curl，不要再换一份别的正文。
+www 不应是 423，两个都要 200。若仍是 423，只重试这两条 curl，不要再换一份别的正文。
