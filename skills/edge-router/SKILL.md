@@ -28,3 +28,14 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
    - 至少一个真实用户站点（如 `https://coverage.demox.site/`）→ 200
    - 然后才看未绑定 host
 3. 核对失败：用上一份 `subdomain-router.js` 再 `ModifyFunction`，不要继续改。
+
+## D2：OPTIONS 列
+
+下面四类 host 的 OPTIONS 是边缘本地 **204**，不查库、不回源。已解析站点（www、用户站、函数）的 OPTIONS 仍回源；P0 矩阵那一列继续和 baseline 比状态码和正文。
+
+| host | OPTIONS |
+| --- | --- |
+| `static.demox.site` | 本地 204 |
+| `cdn.demox.site` | 本地 204 |
+| 未知官方子域名 | 本地 204 |
+| 未绑定自定义域 | 本地 204 |
