@@ -24,11 +24,11 @@ www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`a
 
 ## 上线前核对（不要动 ef-1281msyw）
 
-测试函数和将要发布的文件必须是同一份字节。`DEMOX_TEST_HOST_MAP` 只配在 `ef-k2test` 上。生产不设这个变量。触发规则只匹配 `k2t-www`、`k2t-sites`、`k2t-apex`、`k2t-pub`、`k2t-ban`，并且排在 `rule-fxfyqmn5` 前面。不要改 `ef-1281msyw`。
+测试函数和将要发布的文件必须是同一份字节。`DEMOX_TEST_HOST_MAP` 只配在 `ef-k2test` 上。生产不设这个变量。触发规则只匹配 `k2t-www`、`k2t-sites`、`k2t-apex`、`k2t-pub`、`k2t-ban`，并且排在 `rule-fxfyqmn5` 前面。不要改 `ef-1281msyw`。`DEMOX_TEST_HOST_MAP` 有任何非空值时，`scripts/edge-router-rollback.sh` 和 `scf-code/deploy-edge-functions.sh` 拒绝部署 `ef-1281msyw`。
 
 内层那一跳打的是 `k2t-sites`，仍然进这份测试代码，所以 www 的 `/`、`/pricing` 和未知路径必须是 `origin-guard=internal`。`REQUIRE_INTERNAL=1` 是强制的，脚本拒绝把它关掉。
 
-脚本只发公开 GET，带的 Host 和 URL host 相同。主机只允许 `*.eo-edgefunctions.com` 和 `k2t-*.demox.site`。会打到生产主机时，`REQUIRE_INTERNAL=0` 不能得到 PASS。日志写在仓库外（默认 `/tmp/demox-origin-guard-verify/`），因为路径里可能有 uid。每个响应都要有 `x-demox-env: nonprod`。除了状态码，还核对 www `/` 和 `/pricing` 的页面标记、404 正文是 HTML，以及 403 里没有被封禁站点的内容。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
+脚本只发公开 GET，带的 Host 和 URL host 相同。`BASE` 必须匹配 `^k2t(-[a-z0-9]+)*$`，主机由这个标签拼出来。不用通配：`*` 会吃掉 `@`、`/`、`?`、`#`、`:`，curl 会连上生产 www。会打到生产主机时，`REQUIRE_INTERNAL=0` 不能得到 PASS。日志写在仓库外（默认 `/tmp/demox-origin-guard-verify/`），因为路径里可能有 uid。每个响应都要有 `x-demox-env: nonprod`。除了状态码，还核对 www `/` 和 `/pricing` 的页面标记、404 正文是 HTML，以及 403 里没有被封禁站点的内容。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
 
 | 请求 URL | 期望 |
 | --- | --- |

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Public GETs against allowlisted non-production hosts only.
-# Allowlist: *.eo-edgefunctions.com and k2t-*.demox.site. Anything else is refused.
+# BASE must match ^k2t(-[a-z0-9]+)*$. Hosts are built from that label.
+# Globs are not used: * would match @ / ? # : and curl would open production www.
 # The inner hop on k2t-* runs this same build, so REQUIRE_INTERNAL=1 is mandatory.
 # A run that would send a production Host never prints PASS, including REQUIRE_INTERNAL=0.
 # Run logs can contain a site uid. They are written outside the repo.
@@ -14,11 +15,12 @@
 #   VERIFY_SELFTEST=1 bash scripts/origin-guard-www-verify.sh
 set -u
 
+base_label_ok() {
+  [[ "$1" =~ ^k2t(-[a-z0-9]+)*$ ]]
+}
+
 host_allowed() {
-  case "$1" in
-    *.eo-edgefunctions.com|k2t-*.demox.site) return 0 ;;
-    *) return 1 ;;
-  esac
+  [[ "$1" =~ ^k2t-[a-z0-9]+(-[a-z0-9]+)*\.demox\.site$ ]]
 }
 
 # 0 means this combination is allowed to finish with PASS.
@@ -51,13 +53,47 @@ if [ "${VERIFY_SELFTEST:-}" = "1" ]; then
       fail=1
     fi
   }
+  expect_base_ok() {
+    if ! base_label_ok "$1"; then
+      echo "FAIL BASE rejected $1" >&2
+      fail=1
+    fi
+  }
+  expect_base_deny() {
+    if base_label_ok "$1"; then
+      echo "FAIL BASE accepted $1" >&2
+      fail=1
+    fi
+    local built
+    built="$(printf '%s-www.demox.site' "$1")"
+    if host_allowed "$built"; then
+      echo "FAIL built host accepted $built" >&2
+      fail=1
+    fi
+  }
   expect_allow "k2t-www.demox.site"
   expect_allow "k2t-sites.demox.site"
   expect_allow "k2t-apex.demox.site"
   expect_allow "k2t-pub.demox.site"
   expect_allow "k2t-ban.demox.site"
-  expect_allow "subdomain-router-test.eo-edgefunctions.com"
-  expect_allow "a.b.eo-edgefunctions.com"
+  expect_base_ok "k2t"
+  expect_base_ok "k2t-a1"
+  expect_base_deny "k2t-x@www.demox.site/?"
+  expect_base_deny "k2t@"
+  expect_base_deny "k2t/"
+  expect_base_deny "k2t?"
+  expect_base_deny "k2t#"
+  expect_base_deny "k2t:"
+  expect_base_deny "k2t."
+  expect_base_deny "k2t-www."
+  expect_base_deny "K2T"
+  expect_base_deny "k2t-WWW"
+  expect_deny "k2t-x@www.demox.site/?-www.demox.site"
+  expect_deny "k2t-www.demox.site."
+  expect_deny "k2t-www.demox.site:"
+  expect_deny "K2T-www.demox.site"
+  expect_deny "subdomain-router-test.eo-edgefunctions.com"
+  expect_deny "a.b.eo-edgefunctions.com"
   expect_deny "www.demox.site"
   expect_deny "sites.demox.site"
   expect_deny "coverage.demox.site"
@@ -87,8 +123,16 @@ if [ "${VERIFY_SELFTEST:-}" = "1" ]; then
     echo "FAIL k2t hosts with REQUIRE_INTERNAL=1 were refused" >&2
     fail=1
   fi
-  if ! may_print_pass 1 "subdomain-router-test.eo-edgefunctions.com"; then
-    echo "FAIL eo-edgefunctions.com with REQUIRE_INTERNAL=1 was refused" >&2
+  if may_print_pass 1 "subdomain-router-test.eo-edgefunctions.com"; then
+    echo "FAIL eo-edgefunctions.com would PASS" >&2
+    fail=1
+  fi
+  if may_print_pass 0 "k2t-x@www.demox.site/?-www.demox.site"; then
+    echo "FAIL userinfo bypass would PASS" >&2
+    fail=1
+  fi
+  if may_print_pass 1 "k2t-x@www.demox.site/?-www.demox.site"; then
+    echo "FAIL userinfo bypass would PASS with REQUIRE_INTERNAL=1" >&2
     fail=1
   fi
   if [ "$fail" != "0" ]; then
@@ -106,15 +150,23 @@ BURST=${BURST:-20}
 PUBLIC_PATH=/sites/1985655011013808129/EPX2UU43/dist/index.html
 INTERNAL="${REQUIRE_INTERNAL:-1}"
 
-WWW="${BASE}-www.demox.site"
-SITES="${BASE}-sites.demox.site"
-PUB="${BASE}-pub.demox.site"
-BAN="${BASE}-ban.demox.site"
+if ! base_label_ok "$BASE"; then
+  echo "refusing BASE; label must match ^k2t(-[a-z0-9]+)*$" >&2
+  if [ "$INTERNAL" = "0" ]; then
+    echo "REQUIRE_INTERNAL=0 cannot PASS when BASE is not a k2t label" >&2
+  fi
+  exit 2
+fi
+
+WWW="$(printf '%s-www.demox.site' "$BASE")"
+SITES="$(printf '%s-sites.demox.site' "$BASE")"
+PUB="$(printf '%s-pub.demox.site' "$BASE")"
+BAN="$(printf '%s-ban.demox.site' "$BASE")"
 
 outside=0
 for host in "$WWW" "$SITES" "$PUB" "$BAN"; do
   if ! host_allowed "$host"; then
-    echo "refusing host outside allowlist (*.eo-edgefunctions.com or k2t-*.demox.site): $host" >&2
+    echo "refusing host outside allowlist (k2t-*.demox.site): $host" >&2
     outside=1
   fi
 done
