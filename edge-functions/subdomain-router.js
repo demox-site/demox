@@ -66,6 +66,95 @@ var DEMOX_AUTH_COOKIE = 'demox_access';
 var DEMOX_SITE_AUTH_COMPLETE_PATH = '/.demox/auth-complete';
 var DEMOX_SITE_AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
+// 2026-10-10 账号令牌 cookie 止血（#53，三次失败后的可发布版本）：
+//   1) 静态 / 源站 / 透传保持 #49 之前的 fetch(req)，不重建请求、不改头、不剥 cookie。
+//   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access。
+//   3) 官方域名请求带着旧 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
+//   4) *.demox.site 私有站点不再认这个 cookie，先返回「需要重新验证」。
+// 自定义域私有站点不走第 4 条：登录成功只写 host-only cookie（无 Domain=）。
+// 公共后缀拒绝在 website-api（psl）里做，check-site-access 回 cookieScope=refuse 时边缘不写 cookie。
+function isAuthCookiePair(part) {
+  const p = String(part || '').trim();
+  const eq = p.indexOf('=');
+  const name = (eq === -1 ? p : p.slice(0, eq)).trim();
+  return name === DEMOX_AUTH_COOKIE;
+}
+
+function stripAuthCookieValue(raw) {
+  return String(raw || '')
+    .split(';')
+    .map(function (part) { return part.trim(); })
+    .filter(function (part) { return part && !isAuthCookiePair(part); })
+    .join('; ');
+}
+
+function hasAuthCookie(headers) {
+  const raw = headers && headers.get ? (headers.get('cookie') || '') : '';
+  return raw ? raw.split(';').some(isAuthCookiePair) : false;
+}
+
+function withoutAuthCookieHeaders(source) {
+  const headers = new Headers(source);
+  const raw = headers.get('cookie');
+  if (raw === null) return headers;
+  const rest = stripAuthCookieValue(raw);
+  if (rest) {
+    headers.set('cookie', rest);
+  } else {
+    headers.delete('cookie');
+  }
+  return headers;
+}
+
+function isOfficialDomain(domain) {
+  return OFFICIAL_DOMAINS.indexOf(String(domain || '').toLowerCase()) !== -1;
+}
+
+function officialDomainOfHost(host) {
+  const h = String(host || '').toLowerCase().replace(/\.+$/, '');
+  for (let i = 0; i < OFFICIAL_DOMAINS.length; i += 1) {
+    const d = OFFICIAL_DOMAINS[i];
+    if (h === d || h.endsWith('.' + d)) return d;
+  }
+  return '';
+}
+
+function expireAuthCookieHeaders(domain) {
+  const gone = '=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/';
+  return [
+    DEMOX_AUTH_COOKIE + gone + '; Domain=.' + domain + '; Secure; SameSite=Lax',
+    DEMOX_AUTH_COOKIE + gone + '; Secure; SameSite=Lax'
+  ];
+}
+
+function withExpiredAuthCookie(resp, domain) {
+  if (!resp || !domain) return resp;
+  try {
+    const out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
+    const values = expireAuthCookieHeaders(domain);
+    for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
+    return out;
+  } catch (e) {
+    return resp;
+  }
+}
+
+// 自定义域：只写 host-only。不写 Domain=，避免扩到 eTLD+1 或公共后缀。
+// 主机本身是不是公共后缀，由 website-api 的 psl 判断（边缘单文件带不了公共后缀表）。
+function customDomainAuthCookieHeader(host, token) {
+  const h = String(host || '').trim().toLowerCase().replace(/\.+$/, '');
+  if (!h || h.length > 253 || h.indexOf('..') !== -1 || h.indexOf('.') === -1) return '';
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) return '';
+  if (officialDomainOfHost(h)) return '';
+  const value = String(token || '');
+  if (!value || value.length > 16384) return '';
+  const header = DEMOX_AUTH_COOKIE + '=' + encodeURIComponent(value) +
+    '; Max-Age=' + DEMOX_SITE_AUTH_COOKIE_MAX_AGE +
+    '; Path=/; HttpOnly; Secure; SameSite=Lax';
+  if (/domain\s*=/i.test(header)) return '';
+  return header;
+}
+
 function runtimeEnv(name) {
   try {
     if (typeof env !== 'undefined' && env && env[name]) {
@@ -104,7 +193,7 @@ function proxySiteFunction(req, websiteId, u) {
     });
   }
   const target = base + '/' + encodeURIComponent(siteId) + '/production' + u.pathname + u.search;
-  const headers = new Headers(req.headers);
+  const headers = withoutAuthCookieHeaders(req.headers);
   headers.delete('host');
   const init = {
     method: req.method,
@@ -1201,6 +1290,7 @@ async function completePrivateSiteLogin(req, label, domain) {
     });
   }
 
+  if (isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
   const access = await checkPrivateSiteAccessToken(token, label, domain, requestUrl.hostname);
   const location = next.pathname + next.search + next.hash;
   if (!access.allowed) {
@@ -1210,14 +1300,71 @@ async function completePrivateSiteLogin(req, label, domain) {
       headers: { Location: location, 'Cache-Control': 'no-store' }
     });
   }
-
-  const headers = { Location: location, 'Cache-Control': 'no-store' };
-  if (domain !== DEFAULT_OFFICIAL_DOMAIN) {
-    headers['Set-Cookie'] = DEMOX_AUTH_COOKIE + '=' + encodeURIComponent(token) +
-      '; Max-Age=' + DEMOX_SITE_AUTH_COOKIE_MAX_AGE +
-      '; Path=/; HttpOnly; Secure; SameSite=Lax';
+  if (access.cookieScope === 'refuse') {
+    return new Response('这个域名不能保存登录状态', {
+      status: 403,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
   }
-  return new Response(null, { status: 303, headers: headers });
+  const cookieHeader = customDomainAuthCookieHeader(requestUrl.hostname, token);
+  if (!cookieHeader) {
+    return new Response('这个域名不能保存登录状态', {
+      status: 403,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+  return new Response(null, {
+    status: 303,
+    headers: { Location: location, 'Cache-Control': 'no-store', 'Set-Cookie': cookieHeader }
+  });
+}
+
+function privateSiteReverifyResponse(req) {
+  if (!isDocumentRequest(req)) {
+    return new Response('Re-verification required', {
+      status: 401,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+  }
+  const host = escapeHtml(new URL(req.url).hostname);
+  const home = escapeHtml(demoxHomeUrl());
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>需要重新验证 - ${host}</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #18181b;
+      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    main { width: min(88vw, 420px); padding: 32px; border: 1px solid rgba(24,24,27,.1); border-radius: 20px; background: #fff; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 0; color: #52525b; }
+    code { color: #18181b; }
+    a { display: inline-block; margin-top: 20px; padding: 9px 16px; border-radius: 999px; background: #18181b; color: #fff; text-decoration: none; font-size: 14px; }
+    @media (prefers-color-scheme: dark) { body { background: #0d0d0d; color: #f5f5f5; } main { background: #18181b; border-color: rgba(255,255,255,.1); } p { color: #a1a1aa; } code { color: #f5f5f5; } a { background: #f5f5f5; color: #18181b; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>需要重新验证</h1>
+    <p><code>${host}</code> 是私有站点。为了账号安全，我们正在升级私有站点的验证方式，暂时无法打开，请稍后再试。</p>
+    <a href="${home}">返回 Demox</a>
+  </main>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Retry-After': '3600',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
 }
 
 function accessDeniedPage(req) {
@@ -1303,6 +1450,8 @@ function accessDeniedPage(req) {
 }
 
 async function checkPrivateSiteAccess(req, label, domain, host) {
+  // 官方域名下的 demox_access 是旧前端写在父域上的账号令牌，不再认。
+  if (isOfficialDomain(domain) && !host) return { allowed: false, loginRequired: true };
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
@@ -1322,7 +1471,8 @@ async function checkPrivateSiteAccessToken(token, label, domain, host) {
     const data = await resp.json();
     return {
       allowed: !!(data && data.success && data.allowed),
-      loginRequired: !!(data && data.loginRequired)
+      loginRequired: !!(data && data.loginRequired),
+      cookieScope: (data && data.cookieScope) || ''
     };
   } catch (e) {
     return { allowed: false, loginRequired: false };
@@ -1622,14 +1772,17 @@ async function resolveSite(label, domain) {
 
 async function handle(req, event) {
   const ctx = { siteTraffic: false, resolveState: 'none' };
+  const staleCookieDomain = hasAuthCookie(req.headers) ? officialDomainOfHost(new URL(req.url).hostname) : '';
   try {
-    return await handleRequest(req, event, ctx);
+    const resp = await handleRequest(req, event, ctx);
+    return staleCookieDomain ? withExpiredAuthCookie(resp, staleCookieDomain) : resp;
   } catch (e) {
     // 已确认是用户站点流量（非 www）时，任何意外异常都映射成 503，
     // 绝不让 passThroughOnException 回源到桶根返回「站点未发布」。
     if (ctx.siteTraffic) {
       try { console.warn('[subdomain-router] unexpected error on site traffic', (e && e.message) || e); } catch (err) {}
-      return siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
+      const unavailable = siteUnavailableResponse('resolve=' + ctx.resolveState + '; origin=error');
+      return staleCookieDomain ? withExpiredAuthCookie(unavailable, staleCookieDomain) : unavailable;
     }
     throw e;
   }
@@ -1724,6 +1877,7 @@ async function handleRequest(req, event, ctx) {
       return disabledSitePage();
     }
     if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
+      if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
       if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
         if (req.method !== 'POST') {
           return new Response('Method Not Allowed', {
@@ -1767,6 +1921,7 @@ async function serveResolvedSite(req, event, u, rest, path, origin, parsedHost, 
     return disabledSitePage();
   }
   if (meta.visibility === VISIBILITY_PRIVATE) {
+    if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
     if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
       if (req.method !== 'POST') {
         return new Response('Method Not Allowed', {
