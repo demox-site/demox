@@ -14,13 +14,15 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 的 `appVersion` 是 `0.1.3`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。
+`demox-function-api` 的 `appVersion` 是 `0.1.3`，`runtimeVersion` 是 `0.2.0`（`timeoutSec` 300 → 600，给 cert-renew 的 DNS-01 重试留足时间；HTTP API 不受影响）。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。
 
 `deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 
 `seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。
 
-`scf-code/website-api/**`（测试和 markdown 除外）要给 `demox-function-api` 升 app。公开的 `https://api.demox.site` 不执行 `demox functions push` 出去的 website 版本：默认不设 `FUNCTIONS_PLATFORM_SITE_MODE=user-runtime` 时，平台站点函数在 function-api 进程内执行，入口是打进统一包的 `scf-code/website-api/index.js`。只推 website 函数、不升 function-api 的 app，公开路径仍是上一份统一包里的旧代码；app 版本不变而包 sha256 变了，发布会因 code-drift 停住。`scf-code/function-api/**` 的代码变更同样要升 app。runtime 仍是 `0.1.0`。
+`scf-code/website-api/**`（测试和 markdown 除外）要给 `demox-function-api` 升 app。公开的 `https://api.demox.site` 不执行 `demox functions push` 出去的 website 版本：默认不设 `FUNCTIONS_PLATFORM_SITE_MODE=user-runtime` 时，平台站点函数在 function-api 进程内执行，入口是打进统一包的 `scf-code/website-api/index.js`。只推 website 函数、不升 function-api 的 app，公开路径仍是上一份统一包里的旧代码；app 版本不变而包 sha256 变了，发布会因 code-drift 停住。`scf-code/function-api/**` 的代码变更同样要升 app。
+
+runtime `0.2.0` 只改了超时。`deploy-develop` / `deploy` 看到配置指纹或 runtime 与线上不同会停（`config-drift` / `runtime-drift`），所以 runtime 变更不走这条自动发布，要云架构复核、Chief 批准后单独上线；线上 runtime 没到 `0.2.0` 之前，master 上的 app 发布也会被 `config-drift` 挡住。
 
 ## 第一次发布
 

@@ -217,7 +217,8 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(Object.hasOwn(manifest, 'seed'), false);
   assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
-  assert.ok(manifest.functions.every((fn) => fn.runtimeVersion === '0.1.0'));
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').runtimeVersion, '0.2.0');
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').runtimeVersion, '0.1.0');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.3');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
@@ -327,10 +328,10 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.deepEqual(api.runtime.triggers, ['http:api.demox.site', 'timer:analytics-rollup-5m', 'timer:monthly-renew']);
   assert.equal(api.runtime.entry, 'index.main');
   assert.equal(api.runtime.memoryMB, 512);
-  assert.equal(api.runtime.timeoutSec, 300);
+  assert.equal(api.runtime.timeoutSec, 600);
   assert.deepEqual(api.runtime.layers, []);
   assert.equal(api.appVersion, '0.1.3');
-  assert.equal(api.runtimeVersion, '0.1.0');
+  assert.equal(api.runtimeVersion, '0.2.0');
   assert.equal(Object.hasOwn(live, 'seed'), false);
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').runtimeVersion, '0.1.0');
@@ -400,7 +401,7 @@ test('release log records versions, commit, sha256, approver, and time', () => {
 
 test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.1\.3 runtime=0\.1\.0/);
+  assert.match(plan, /demox-function-api app=0\.1\.3 runtime=0\.2\.0/);
   assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);
