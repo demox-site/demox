@@ -2292,7 +2292,7 @@ test('DEMOX_TEST_HOST_MAP classifies logical hosts and 599s every other demox ho
   assert.ok(r.warns.includes('[subdomain-router] unmapped test host'));
   assert.equal(r.warns.some((line) => line.includes('www.demox.site') || line.includes('k2t-other') || line.includes(SECRET_A)), false);
 
-  const api = await r.visit('https://api.demox.site/resolve-subdomain');
+  const api = await r.visit('https://api.demox.site/health');
   assert.notEqual(api.response.status, 599);
   const bucket = await r.visit('https://site-1.demox.site/object.html');
   assert.notEqual(bucket.response.status, 599);
