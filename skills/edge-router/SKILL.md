@@ -38,6 +38,8 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
 
 发布路径只有 `scf-code/deploy-edge-functions.sh` 里的那条 `tccli teo ModifyFunction`（`ef-1281msyw`，zone `zone-3kplfkbflnd6`，region `ap-guangzhou`）。回滚用同一条，不另开发布入口。
 
+`DEMOX_TEST_HOST_MAP` 有任何非空值时，`scripts/edge-router-rollback.sh` 和 `scf-code/deploy-edge-functions.sh` 都拒绝动 `ef-1281msyw`，不调用 `ModifyFunction`。这个变量只配在 `ef-k2test` 上。空白不算有值。
+
 `scripts/edge-router-rollback.sh`：
 
 1. `plan` 只打印函数、zone、两边内容的 sha256，以及将要执行的 tccli 形状。不写云，不打印函数正文。

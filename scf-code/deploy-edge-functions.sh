@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 #
+# DEMOX_TEST_HOST_MAP 非空时拒绝部署 ef-1281msyw。该变量只属于 ef-k2test。
+map_value="${DEMOX_TEST_HOST_MAP-}"
+map_value="${map_value#"${map_value%%[![:space:]]*}"}"
+map_value="${map_value%"${map_value##*[![:space:]]}"}"
+if [ -n "$map_value" ]; then
+  echo "refusing to deploy ef-1281msyw while DEMOX_TEST_HOST_MAP is set" >&2
+  exit 2
+fi
+
+#
 # 自定义子域名前缀功能 —— 部署记录 / 重建参考(非一键脚本)
 # ===========================================================================
 # 已于 2026-06-12 部署并端到端验证通过。访问 {label}.demox.site 命中对应站点。
@@ -29,7 +39,7 @@
 #   tccli teo ModifyFunctionRule --ZoneId zone-3kplfkbflnd6 \
 #     --RuleId rule-fxfyqmn5 --FunctionId ef-7ej45f3q --region ap-guangzhou
 #
-# 更新边缘函数代码:
+# 更新边缘函数代码（DEMOX_TEST_HOST_MAP 有值时不要执行；本脚本会直接退出）:
 #   tccli teo ModifyFunction --ZoneId zone-3kplfkbflnd6 --FunctionId ef-1281msyw \
 #     --Content "$(cat edge-functions/subdomain-router.js)" --region ap-guangzhou
 #
