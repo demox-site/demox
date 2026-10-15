@@ -81,4 +81,6 @@ EdgeOne 站点 `zone-3kplfkbflnd6`（`demox.site` / `*.demox.site`）开启强�
 ## 已知未改项
 
 - 根域名 `demox.site` 与 `*.demox.site` 共用同一张 Let's Encrypt 证书（SAN 含 apex）。`demox-cert-renew` 绑定时必须同时写入这两个主机，否则 apex HTTPS 会回落到 `*.cdn.myqcloud.com`。对外主站仍建议走 `https://www.demox.site`。
+- 续期按目标读到期时间，不再只看 EdgeOne 上 `CERT_DOMAIN`（默认 `*.demox.site`）那一张上传证书的 `ExpireTime`。旧代码不读 `demox.site`、`www.demox.site`，也不读 SCF 自定义域名 `api.demox.site` 上实际绑定的证书到期日；所以 EdgeOne 已经换到 2027-01-13 的证书时，api 上 2026-11-23 到期的旧证书会被当成还没到窗口。现在 apex、站点通配符和 api 各自判断，并且只改写 `CERT_DOMAIN` 与 `CERT_SAN` 上 `Type=upload` 的证书。`www` 只记日志，不写入，避免每个月改一次托管证书。运行角色目前只有 `ssl:UploadCertificate`；读 api 到期失败按已到期继续，列出证书若是鉴权失败则改为签发。api 绑定失败会以 `api not updated` 失败，不会静默跳过。
+- `monthly-renew` 挂在 `demox-function-api` 上，定时器走异步调用。默认 `RetryNum=2`（一共 3 次）。清单 `runtime.asyncInvoke.retryNum` 是 `0`。CI 不会调用 `UpdateFunctionEventInvokeConfig`；在下次续期前要对 qualifier `production` 和 `$LATEST` 各设一次。不要为了验证去强制续期。
 - 前端主站发布走 `git push origin master`，GitHub Action 执行 `demox deploy ./dist --id EPX2UU43`，不会自动更新业务云函数；业务云函数走 `demox functions push`。

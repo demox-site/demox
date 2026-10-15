@@ -218,7 +218,7 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
   assert.ok(manifest.functions.every((fn) => fn.runtimeVersion === '0.1.0'));
-  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.4');
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.6');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
   assert.equal(v.deployEntry(manifest).name, 'demox-function-api');
@@ -251,7 +251,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.match(websiteOnly.errors.join('\n'), /demox-function-api 的代码变了/);
 
   const websiteBumped = structuredClone(manifest);
-  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.5';
+  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.7';
   const websiteAfterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: websiteBumped,
@@ -275,7 +275,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.equal(testsOnly.ok, true, testsOnly.errors.join('\n'));
 
   const bumped = structuredClone(manifest);
-  bumped.functions[0].appVersion = '0.1.5';
+  bumped.functions[0].appVersion = '0.1.7';
   const afterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: bumped,
@@ -329,8 +329,28 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.equal(api.runtime.memoryMB, 512);
   assert.equal(api.runtime.timeoutSec, 300);
   assert.deepEqual(api.runtime.layers, []);
-  assert.equal(api.appVersion, '0.1.4');
+  assert.equal(api.appVersion, '0.1.6');
   assert.equal(api.runtimeVersion, '0.1.0');
+  const requests = v.asyncInvokeRequests(api);
+  assert.deepEqual(requests.map((item) => item.payload.Qualifier), ['production', '$LATEST']);
+  for (const request of requests) {
+    assert.equal(request.action, 'UpdateFunctionEventInvokeConfig');
+    assert.equal(request.payload.FunctionName, 'demox-function-api');
+    assert.equal(request.payload.Namespace, 'demox');
+    assert.equal(request.payload.AsyncTriggerConfig.RetryConfig[0].RetryNum, 0);
+    assert.equal(request.payload.AsyncTriggerConfig.MsgTTL, 21600);
+  }
+  const stripped = structuredClone(api.runtime);
+  delete stripped.asyncInvoke;
+  assert.equal(v.configFingerprint(api.runtime), v.configFingerprint(stripped));
+  const retriesOn = structuredClone(live);
+  retriesOn.functions.find((fn) => fn.name === 'demox-function-api').runtime.asyncInvoke.retryNum = 2;
+  assert.equal(v.validateManifest(retriesOn).ok, false);
+  const dropped = structuredClone(live);
+  delete dropped.functions.find((fn) => fn.name === 'demox-function-api').runtime.asyncInvoke;
+  const missingRetry = v.evaluateChanges({ baseManifest: live, headManifest: dropped, changedFiles: [] });
+  assert.equal(missingRetry.ok, false);
+  assert.match(missingRetry.errors.join('\n'), /retryNum = 0/);
   assert.equal(Object.hasOwn(live, 'seed'), false);
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').runtimeVersion, '0.1.0');
@@ -400,7 +420,7 @@ test('release log records versions, commit, sha256, approver, and time', () => {
 
 test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.1\.4 runtime=0\.1\.0/);
+  assert.match(plan, /demox-function-api app=0\.1\.6 runtime=0\.1\.0/);
   assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);

@@ -43,3 +43,8 @@ jobs:
 
       - name: Version rules and reproducible zip
         run: node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
+
+      - name: Cert renew tests
+        run: |
+          npm ci --prefix scf-code/cert-renew --ignore-scripts --no-audit --no-fund
+          npm test --prefix scf-code/cert-renew
