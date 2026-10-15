@@ -315,14 +315,34 @@ for (const withCookie of [false, true]) {
   });
 }
 
-test('static origin and passthrough fetches are byte-for-byte the pre-#49 calls (original request object)', () => {
-  // 三次发布失败都出在这条路径上（17:18 重建 Request、17:52 Host、18:04 POST）。这里必须和 #49 之前完全一样。
+test('static origin and passthrough fetches keep the pre-#49 call shape (original request object)', () => {
+  // 三次发布失败都出在这条路径上（17:18 重建 Request、17:52 Host、18:04 POST）。
+  // 密钥未配置时用户站点仍是 originFetch(..., req)。源站守卫新增的三条 fetch 只能是剥令牌之后的回源。
   assert.match(source, /originFetch\(buildOriginUrl\(req, originPath, u\.search, originHost\), req\)/);
+  assert.match(source, /originFetch\(buildOriginUrl\(req, `\/\$\{sitePath\}\/index\.html`, '', originHost\), \{ method: 'GET' \}\)/);
+  assert.match(source, /fetch\(buildOriginUrl\(req, `\/\$\{sitePath\}\/404\.html`, '', originHost\), \{ method: 'GET' \}\)/);
   assert.doesNotMatch(source, /new Request\(req\b/);
   assert.doesNotMatch(source, /strippedFetchInit|originFetchInit|passThroughWithoutAuthCookie|withoutAuthCookie\(/);
   const pre = require('node:child_process').execSync('git show 3050f5d^:edge-functions/subdomain-router.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
   const fetchLines = (src) => src.split('\n').map((l) => l.trim()).filter((l) => /\bfetch\(/.test(l) && !l.startsWith('//'));
-  assert.deepEqual(fetchLines(source), fetchLines(pre));
+  const preLines = fetchLines(pre);
+  const nowLines = fetchLines(source);
+  let cursor = 0;
+  for (const line of nowLines) {
+    if (cursor < preLines.length && line === preLines[cursor]) cursor += 1;
+  }
+  assert.equal(cursor, preLines.length, 'every pre-#49 fetch() line must remain verbatim and in order');
+  const extras = [];
+  cursor = 0;
+  for (const line of nowLines) {
+    if (cursor < preLines.length && line === preLines[cursor]) cursor += 1;
+    else extras.push(line);
+  }
+  assert.deepEqual(extras, [
+    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
+    "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
+    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');"
+  ]);
 });
 
 
