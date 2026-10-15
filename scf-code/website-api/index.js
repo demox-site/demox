@@ -8593,11 +8593,12 @@ async function upsertAnalyticsRollups(conn, rollups) {
 // 不静默跳过。已入库的对象先剔掉，再套 2000 上限。单对象超过 256KB 不读内容，记缺口并 ALERT。
 // 水位停在 now 之前约 2 分钟：写入端先盖 ts 再上传，刚结束的窗口不能立刻结清。
 // 列表比水位再往前一个小时：盖在 HH:59:5x 的对象可能 5 分钟后才出现在存储里，那时水位已经进入下一小时。
-// ts 早于水位、但还没入库的对象仍要计入（LATE_OBJECT），object_key 主键保证幂等。
+// ts 早于水位、但还没入库的对象仍要计入，打 INFO code=LATE_OBJECT，不是 ALERT。object_key 主键保证幂等。
 // 成功的一轮打一行 HEARTBEAT（只有白名单字段）。开跑时水位比 now 早超过 30 分钟打 STALE_WATERMARK。
-// 原始日志没开或没有桶打 CONFIG_MISSING，不再静默返回。COS NoSuchKey 记 SKIP code=NOSUCHKEY，不当错误。
+// 运行时不建表。开跑时对两张表各做 SELECT 1 … LIMIT 0；缺表打 ALERT step=tables code=CONFIG_MISSING 后停，不推进水位、不打 HEARTBEAT。
+// 原始日志没开或没有桶打 ALERT step=config code=CONFIG_MISSING。COS NoSuchKey 记 SKIP，不当告警。
 // 其它失败打 ALERT，并返回 success:false（不抛错）。SCF 定时器抛错才会重试，RetryNum 保持 0。
-// CLS 告警关键字：ALERT analytics-rollup-5m。告警试打只在 develop。
+// 运行时账号只要这两张表的 SELECT / INSERT / UPDATE。CLS 告警关键字：ALERT analytics-rollup-5m。告警试打只在 develop。
 const ROLLUP_WINDOW_MS = 5 * 60 * 1000;
 const ROLLUP_CLOSE_LAG_MS = 2 * 60 * 1000;
 const ROLLUP_LOOKBACK_MS = 48 * 60 * 60 * 1000;
@@ -8607,45 +8608,37 @@ const ROLLUP_KEY_QUERY_BATCH = 500;
 const ROLLUP_STALE_WATERMARK_MS = 30 * 60 * 1000;
 const ROLLUP_LOCK_NAME = 'demox_analytics_rollup_5m';
 const ANALYTICS_ROLLUP_ALERT = 'ALERT analytics-rollup-5m';
+const ANALYTICS_ROLLUP_INFO = 'INFO analytics-rollup-5m';
 const ANALYTICS_ROLLUP_HEARTBEAT = 'HEARTBEAT analytics-rollup-5m';
 const ANALYTICS_ROLLUP_SKIP = 'SKIP analytics-rollup-5m';
 const HEARTBEAT_FIELD_KEYS = Object.freeze(['watermark', 'windows', 'processed', 'late', 'duration']);
+const ROLLUP_TABLE_NAMES = Object.freeze([
+  'site_analytics_rollup_watermark',
+  'site_analytics_rollup_gaps'
+]);
 let analyticsRollupDepsForTest = null;
-let analyticsRollupTablesReady = null;
 
-// 与 migrations/024_add_analytics_rollup_watermark.sql 的两句 CREATE 一致。
-// 公开 API 走打进 function-api 的这份 index.js。合并 master 不会自动发布
-// （FUNCTION_API_AUTO_DEPLOY 未设置）；上线是手动 stage → deploy-develop → promote，也不会单独执行这个 SQL 文件。
-// 运行时会执行这两句 CREATE。数据库用户需要 CREATE，以及这两张表上的 SELECT / INSERT / UPDATE。
-const ANALYTICS_ROLLUP_TABLE_DDL = [
-  `CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark (
-  id TINYINT NOT NULL PRIMARY KEY,
-  watermark_ms BIGINT NOT NULL COMMENT 'UTC epoch ms，对齐到 5 分钟；早于它的窗口已结清',
-  initial_ms BIGINT NOT NULL COMMENT '第一次开始汇总的 UTC epoch ms；更早的周是暂定',
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总水位（analytics-rollup-5m）'`,
-  `CREATE TABLE IF NOT EXISTS site_analytics_rollup_gaps (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  gap_start DATETIME(3) NOT NULL COMMENT '缺口起点（UTC，含）',
-  gap_end DATETIME(3) NOT NULL COMMENT '缺口终点（UTC，不含）',
-  reason VARCHAR(32) NOT NULL COMMENT 'over_48h | object_too_large',
-  object_key VARCHAR(512) NOT NULL DEFAULT '' COMMENT 'object_too_large 时为对象键；窗口级缺口为空串',
-  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uq_analytics_rollup_gap (reason, gap_start, object_key),
-  INDEX idx_analytics_rollup_gap_range (gap_start, gap_end)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总永久缺口，周报据此把 WAU 标为暂定'`
-];
+function isRollupNoSuchTable(error) {
+  if (!error || typeof error !== 'object') return false;
+  if (Number(error.errno) === 1146) return true;
+  const code = error.code != null ? error.code : error.Code;
+  return typeof code === 'string' && code.toUpperCase() === 'ER_NO_SUCH_TABLE';
+}
 
-function ensureAnalyticsRollupTables(queryFn) {
-  if (!analyticsRollupTablesReady) {
-    analyticsRollupTablesReady = (async () => {
-      for (const ddl of ANALYTICS_ROLLUP_TABLE_DDL) await queryFn(ddl);
-    })().catch((error) => {
-      analyticsRollupTablesReady = null;
+async function missingAnalyticsRollupTables(queryFn) {
+  const missing = [];
+  for (const name of ROLLUP_TABLE_NAMES) {
+    try {
+      await queryFn(`SELECT 1 FROM ${name} LIMIT 0`);
+    } catch (error) {
+      if (isRollupNoSuchTable(error)) {
+        missing.push(name);
+        continue;
+      }
       throw error;
-    });
+    }
   }
-  return analyticsRollupTablesReady;
+  return missing;
 }
 
 function alignRollupWindow(ms) {
@@ -8699,9 +8692,9 @@ function rollupAlertSqlState(value) {
   return /^[0-9A-Z]{5}$/.test(text) ? text : '';
 }
 
-function formatAnalyticsRollupAlert({ step, window: windowLabel, code, remaining, key, errno, sqlState }) {
+function formatAnalyticsRollupSignal(prefix, { step, window: windowLabel, code, remaining, key, errno, sqlState }) {
   const parts = [
-    ANALYTICS_ROLLUP_ALERT,
+    prefix,
     `step=${rollupAlertToken(step)}`,
     `window=${rollupAlertWindow(windowLabel)}`,
     `code=${rollupAlertToken(code)}`
@@ -8716,6 +8709,14 @@ function formatAnalyticsRollupAlert({ step, window: windowLabel, code, remaining
   const safeState = rollupAlertSqlState(sqlState);
   if (safeState) parts.push(`sqlState=${safeState}`);
   return parts.join(' ');
+}
+
+function formatAnalyticsRollupAlert(fields) {
+  return formatAnalyticsRollupSignal(ANALYTICS_ROLLUP_ALERT, fields);
+}
+
+function formatAnalyticsRollupInfo(fields) {
+  return formatAnalyticsRollupSignal(ANALYTICS_ROLLUP_INFO, fields);
 }
 
 function emitAnalyticsRollupAlert(logger, fields) {
@@ -8859,16 +8860,24 @@ function analyticsRollupWeekWindow(ms) {
 }
 
 /**
- * 周报 WAU 是否标「暂定」。
+ * 某一周的覆盖分类。provisional 为 false 且 reason 为 complete 时，WAU 可以当最终值。
  * watermarkMs：site_analytics_rollup_watermark.watermark_ms；null 表示还没有成功跑过。
- * initialMs：第一次开始汇总的时刻。没有它，或 weekStart 早于它 → 这周在开始追踪之前，暂定。
+ * initialMs：第一次开始汇总的时刻。没有它，或 weekStart 早于它 → reason=before_watermark。
  * weekStartMs / weekEndMs：周一 00:00 UTC+8 的 UTC epoch ms（weekEnd 不含）。
- * gaps：[{ gapStartMs, gapEndMs, reason, objectKey }]，对应
+ * gaps：[{ gapStartMs, gapEndMs, reason, objectKey, status }]。只数 status 为 active（缺省也算）
+ * 且 reason 不是 test_fire 的行。对应
  *   SELECT gap_start, gap_end, reason, object_key FROM site_analytics_rollup_gaps
- *   WHERE gap_end > ? AND gap_start < ?
+ *   WHERE gap_end > ? AND gap_start < ? AND status = 'active' AND reason <> 'test_fire'
  * 参数是 UTC 的 'YYYY-MM-DD HH:MM:SS.mmm'，不是 UTC+8 墙上时间。
- * 水位还没盖过本周结束，或有重叠缺口 → provisional。临时积压不写缺口，只停水位。
+ * 水位还没盖过本周结束，或有重叠的有效缺口 → provisional（分类为暂定周）。临时积压不写缺口，只停水位。
+ * 作废用 UPDATE status='void'，不 DELETE。
  */
+function rollupGapCounts(gap) {
+  const status = String((gap && (gap.status != null ? gap.status : 'active')) || 'active').toLowerCase();
+  if (status !== 'active') return false;
+  return String((gap && gap.reason) || '') !== 'test_fire';
+}
+
 function analyticsRollupCoverage({ watermarkMs, initialMs, gaps, weekStartMs, weekEndMs }) {
   const watermark = watermarkMs == null || watermarkMs === '' ? null : Number(watermarkMs);
   const initial = initialMs == null || initialMs === '' ? null : Number(initialMs);
@@ -8876,6 +8885,7 @@ function analyticsRollupCoverage({ watermarkMs, initialMs, gaps, weekStartMs, we
   const open = !Number.isFinite(watermark) || watermark < Number(weekEndMs);
   const hits = [];
   for (const gap of gaps || []) {
+    if (!rollupGapCounts(gap)) continue;
     const start = Number(gap.gapStartMs != null ? gap.gapStartMs : gap.gap_start_ms);
     const end = Number(gap.gapEndMs != null ? gap.gapEndMs : gap.gap_end_ms);
     if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
@@ -8905,7 +8915,7 @@ async function runAnalyticsRollupBody({
   logger = console,
   clock = null
 } = {}) {
-  let step = 'ensure-tables';
+  let step = 'check-tables';
   const horizon = alignRollupWindow(now - ROLLUP_LOOKBACK_MS);
   let windowLabel = formatRollupWindow(horizon, now);
   const tick = typeof clock === 'function' ? clock : () => Date.now();
@@ -8919,7 +8929,21 @@ async function runAnalyticsRollupBody({
       throw error;
     }
     const cap = normalizeRollupRunLimit(limit);
-    await ensureAnalyticsRollupTables(queryFn);
+    const missingTables = await missingAnalyticsRollupTables(queryFn);
+    if (missingTables.length) {
+      const line = emitAnalyticsRollupAlert(logger, {
+        step: 'tables',
+        window: '-',
+        code: 'CONFIG_MISSING'
+      });
+      return {
+        success: false,
+        step: 'tables',
+        code: 'CONFIG_MISSING',
+        missing: missingTables,
+        alerts: [line]
+      };
+    }
     step = 'load-watermark';
     const watermarkRows = await queryFn(
       'SELECT watermark_ms, initial_ms FROM site_analytics_rollup_watermark WHERE id = 1'
@@ -8979,7 +9003,7 @@ async function runAnalyticsRollupBody({
       );
       const skippedLarge = await selectRollupKeys(
         queryFn,
-        "SELECT object_key FROM site_analytics_rollup_gaps WHERE reason = 'object_too_large' AND object_key IN",
+        "SELECT object_key FROM site_analytics_rollup_gaps WHERE reason = 'object_too_large' AND status = 'active' AND object_key IN",
         keys
       );
       const hourPending = [];
@@ -9074,16 +9098,16 @@ async function runAnalyticsRollupBody({
       summary = await transactionFn(async (conn) => {
         if (gap) {
           await conn.query(
-            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key)
-             VALUES (?, ?, 'over_48h', '')`,
+            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key, status)
+             VALUES (?, ?, 'over_48h', '', 'active')`,
             [rollupMsToSql(gap.start), rollupMsToSql(gap.end)]
           );
         }
         for (const obj of oversized) {
           const start = alignRollupWindow(obj.ts);
           await conn.query(
-            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key)
-             VALUES (?, ?, 'object_too_large', ?)`,
+            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key, status)
+             VALUES (?, ?, 'object_too_large', ?, 'active')`,
             [rollupMsToSql(start), rollupMsToSql(start + ROLLUP_WINDOW_MS), obj.key]
           );
         }
@@ -9173,7 +9197,7 @@ async function runAnalyticsRollupBody({
     for (const obj of readObjects) {
       if (!obj.late) continue;
       const start = alignRollupWindow(obj.ts);
-      alerts.push(emitAnalyticsRollupAlert(logger, {
+      emitAnalyticsRollupLog(logger, formatAnalyticsRollupInfo({
         step: 'ingest',
         window: formatRollupWindow(start, start + ROLLUP_WINDOW_MS),
         code: 'LATE_OBJECT',
@@ -11387,11 +11411,11 @@ exports._analyticsRollupForTest = {
   coverage: analyticsRollupCoverage,
   weekWindow: analyticsRollupWeekWindow,
   formatAlert: formatAnalyticsRollupAlert,
+  formatInfo: formatAnalyticsRollupInfo,
   formatHeartbeat: formatAnalyticsRollupHeartbeat,
   normalizeLimit: normalizeRollupRunLimit,
   setDeps(deps) { analyticsRollupDepsForTest = deps; },
-  resetTables() { analyticsRollupTablesReady = null; },
-  tableDdl: ANALYTICS_ROLLUP_TABLE_DDL,
+  TABLE_NAMES: ROLLUP_TABLE_NAMES,
   WINDOW_MS: ROLLUP_WINDOW_MS,
   CLOSE_LAG_MS: ROLLUP_CLOSE_LAG_MS,
   LOOKBACK_MS: ROLLUP_LOOKBACK_MS,
@@ -11399,6 +11423,7 @@ exports._analyticsRollupForTest = {
   TIME_BUDGET_MS: ROLLUP_TIME_BUDGET_MS,
   LOCK_NAME: ROLLUP_LOCK_NAME,
   ALERT_KEYWORD: ANALYTICS_ROLLUP_ALERT,
+  INFO_KEYWORD: ANALYTICS_ROLLUP_INFO,
   HEARTBEAT_KEYWORD: ANALYTICS_ROLLUP_HEARTBEAT,
   HEARTBEAT_KEYS: HEARTBEAT_FIELD_KEYS,
   STALE_WATERMARK_MS: ROLLUP_STALE_WATERMARK_MS,

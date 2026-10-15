@@ -69,6 +69,16 @@ function makeState(watermark) {
 }
 
 function applySql(state, sql, params = []) {
+  const probe = String(sql).match(/^SELECT 1 FROM (site_analytics_rollup_watermark|site_analytics_rollup_gaps) LIMIT 0$/);
+  if (probe) {
+    if ((state.missingTables || []).includes(probe[1])) {
+      const error = new Error(`Table '${probe[1]}' doesn't exist`);
+      error.code = 'ER_NO_SUCH_TABLE';
+      error.errno = 1146;
+      throw error;
+    }
+    return [];
+  }
   if (sql.includes('FROM site_analytics_rollup_watermark WHERE id = 1')) {
     return state.watermark == null ? [] : [{ watermark_ms: state.watermark, initial_ms: state.initialMs }];
   }
@@ -112,6 +122,11 @@ function applySql(state, sql, params = []) {
 }
 
 function depsFor(state, objects, now, logger) {
+  const executed = [];
+  const runSql = (sql, params) => {
+    executed.push(String(sql));
+    return applySql(state, sql, params);
+  };
   const provider = {
     lists: [],
     gets: [],
@@ -134,9 +149,10 @@ function depsFor(state, objects, now, logger) {
   };
   return {
     provider,
+    executed,
     now,
     logger,
-    query: async (sql, params) => applySql(state, sql, params),
+    query: async (sql, params) => runSql(sql, params),
     transaction: async (cb) => {
       if (state.failCommit) {
         const error = new Error(state.failMessage);
@@ -146,7 +162,7 @@ function depsFor(state, objects, now, logger) {
         throw error;
       }
       return cb({
-        query: async (sql, params) => [applySql(state, sql, params), []]
+        query: async (sql, params) => [runSql(sql, params), []]
       });
     }
   };
@@ -178,27 +194,55 @@ function gapMs(row) {
   };
 }
 
-test('migration 024 creates the watermark and gap tables and documents 暂定', () => {
+test('migration 024 creates the watermark and gap tables and the runtime does not', () => {
   const dir = path.join(__dirname, 'migrations');
   const file = path.join(dir, '024_add_analytics_rollup_watermark.sql');
   const sql = fs.readFileSync(file, 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
   const numbers = fs.readdirSync(dir).filter((name) => /^\d{3}_.*\.sql$/.test(name)).map((name) => Number(name.slice(0, 3)));
   assert.equal(numbers.filter((n) => n === 24).length, 1);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark/);
   assert.match(sql, /CREATE TABLE IF NOT EXISTS site_analytics_rollup_gaps/);
   assert.match(sql, /over_48h/);
   assert.match(sql, /object_too_large/);
-  assert.match(sql, /暂定/);
+  assert.match(sql, /before_watermark/);
   assert.match(sql, /watermark_ms < /);
   assert.match(sql, /initial_ms/);
   assert.match(sql, /周一 00:00 UTC\+8/);
   assert.match(sql, /2026-10-04 16:00:00\.000/);
   assert.match(sql, /不要传 UTC\+8 墙上时间/);
+  assert.match(sql, /SELECT watermark_ms, initial_ms FROM site_analytics_rollup_watermark WHERE id = 1/);
+  assert.match(sql, /status = 'active'/);
+  assert.match(sql, /reason <> 'test_fire'/);
+  assert.match(sql, /status VARCHAR\(16\) NOT NULL DEFAULT 'active'/);
+  assert.match(sql, /test-fire:<YYYYMMDD>-<n>/);
+  assert.match(sql, /SET status = 'void'/);
+  assert.doesNotMatch(sql, /\bDELETE\b/i);
+  assert.doesNotMatch(sql, /需要 CREATE/);
+  assert.doesNotMatch(sql, /运行时还会执行/);
+  assert.doesNotMatch(sql, /运行时会执行/);
   assert.doesNotMatch(sql, /\bALTER\b/i);
   assert.doesNotMatch(sql, /DROP TABLE (?!site_analytics_rollup_)/);
-  const creates = (text) => [...text.matchAll(/CREATE TABLE IF NOT EXISTS[\s\S]*?ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[^']*'/g)]
-    .map((match) => match[0].replace(/\s+/g, ' ').trim());
-  assert.deepEqual(creates(rollup.tableDdl.join('\n')), creates(sql.replace(/^--.*$/gm, '')));
+  assert.equal(source.includes('CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark'), false);
+  assert.equal(source.includes('CREATE TABLE IF NOT EXISTS site_analytics_rollup_gaps'), false);
+  assert.equal(source.includes('需要 CREATE'), false);
+  const docs = ['analytics-rollup.md', 'function-versions.md', 'function-api-ci.md'].map((name) => (
+    fs.readFileSync(path.join(__dirname, '../../docs', name), 'utf8')
+  ));
+  for (const doc of docs) assert.doesNotMatch(doc, /需要 CREATE/);
+  assert.match(docs[0], /status = 'active'/);
+  assert.match(docs[0], /reason <> 'test_fire'/);
+  assert.match(docs[0], /SET status = 'void'/);
+  assert.match(docs[0], /test-fire:<YYYYMMDD>-<n>/);
+  assert.match(docs[0], /ANALYTICS_RAW_ENABLED/);
+  assert.match(docs[0], /INFO analytics-rollup-5m/);
+  assert.match(docs[0], /step=tables window=- code=CONFIG_MISSING/);
+  assert.doesNotMatch(docs[0], /周报标/);
+  assert.doesNotMatch(docs[0], /标「暂定」/);
+  assert.match(docs[1], /运行时不执行 CREATE/);
+  assert.match(docs[1], /ANALYTICS_RAW_ENABLED=1/);
+  assert.match(docs[2], /ANALYTICS_RAW_BUCKET_ID/);
+  assert.deepEqual([...rollup.TABLE_NAMES], ['site_analytics_rollup_watermark', 'site_analytics_rollup_gaps']);
   assert.equal(rollup.ALERT_KEYWORD, 'ALERT analytics-rollup-5m');
   assert.equal(rollup.OBJECT_MAX_BYTES, 256 * 1024);
   assert.equal(rollup.LOOKBACK_MS, 48 * 60 * 60 * 1000);
@@ -246,6 +290,19 @@ test('weekly coverage uses Monday 00:00 UTC+8 and treats pre-tracking weeks as p
     gaps: [{ gapStartMs: weekStart - 600_000, gapEndMs: weekStart, reason: 'over_48h', objectKey: '' }]
   });
   assert.equal(before.provisional, false);
+  const activeGap = { gapStartMs: weekStart + 60_000, gapEndMs: weekStart + 120_000, reason: 'over_48h', objectKey: '', status: 'active' };
+  assert.equal(coverage({ ...base, watermarkMs: weekEnd, gaps: [activeGap] }).reason, 'gap');
+  assert.equal(coverage({ ...base, watermarkMs: weekEnd, gaps: [{ ...activeGap, status: 'void' }] }).provisional, false);
+  assert.equal(coverage({
+    ...base,
+    watermarkMs: weekEnd,
+    gaps: [{ ...activeGap, reason: 'test_fire', objectKey: 'test-fire:20261015-1' }]
+  }).provisional, false);
+  assert.equal(coverage({
+    ...base,
+    watermarkMs: weekEnd,
+    gaps: [{ ...activeGap, reason: 'test_fire', objectKey: 'test-fire:20261015-1', status: 'void' }]
+  }).reason, 'complete');
 });
 
 test('alert lines stay single-token and drop unsafe keys', () => {
@@ -560,15 +617,19 @@ test('an uningested object older than the watermark is counted and logged LATE_O
   assert.equal(result.processed, 1);
   assert.equal(state.views, 1);
   assert.equal(state.watermark, watermark);
-  assert.equal(logger.lines.length, 1);
-  assert.match(logger.lines[0], /^ALERT analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
-  assert.ok(logger.lines[0].includes(late.key));
+  assert.deepEqual(logger.lines, []);
+  const lateLines = logger.logs.filter((line) => line.includes('code=LATE_OBJECT'));
+  assert.equal(lateLines.length, 1);
+  assert.match(lateLines[0], /^INFO analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+  assert.ok(lateLines[0].includes(late.key));
+  assert.ok((result.alerts || []).every((line) => !line.includes('LATE_OBJECT')));
 
   const again = loggerFor();
   const second = await rollup.run(depsFor(state, [late], now, again));
   assert.equal(second.processed, 0);
   assert.equal(state.views, 1);
   assert.deepEqual(again.lines, []);
+  assert.ok(again.logs.every((line) => !line.includes('LATE_OBJECT')));
 });
 
 test('the first run records initial_ms so earlier weeks stay provisional', async () => {
@@ -777,8 +838,11 @@ test('an object stamped at HH:59:58 is counted once when it appears 6 or 20 minu
     assert.equal(state.views, 1);
     assert.equal(state.ingested.has(obj.key), true);
     assert.ok(deps.provider.lists.some((prefix) => prefix.includes('hour=05')));
-    assert.equal(logger.lines.filter((line) => line.includes('LATE_OBJECT')).length, 1);
-    assert.match(logger.lines.find((line) => line.includes('LATE_OBJECT')), /^ALERT analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+    const lateLines = logger.logs.filter((line) => line.includes('code=LATE_OBJECT'));
+    assert.equal(lateLines.length, 1);
+    assert.match(lateLines[0], /^INFO analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+    assert.ok(logger.lines.every((line) => !line.includes('LATE_OBJECT')));
+    assert.ok((first.alerts || []).every((line) => !line.includes('LATE_OBJECT')));
 
     const againLogger = loggerFor();
     const againDeps = depsFor(state, [obj], now, againLogger);
@@ -983,6 +1047,190 @@ test('COS NoSuchKey is skipped as a non-error with code NOSUCHKEY', async () => 
   assert.match(brokenLogger.lines[0], /code=ECONNRESET /);
   assert.equal(brokenLogger.logs.filter((line) => line.startsWith('HEARTBEAT ')).length, 0);
   assert.equal(brokenLogger.logs.filter((line) => line.includes('NOSUCHKEY')).length, 0);
+});
+
+test('a rollup run never executes CREATE', async () => {
+  const now = Date.parse('2026-10-15T06:00:00.000Z');
+  const state = makeState(now - 20 * 60 * 1000);
+  const logger = loggerFor();
+  const obj = makeObject(now - 10 * 60 * 1000, { rand: 'nocreate0001' });
+  const huge = makeObject(now - 15 * 60 * 1000, { rand: 'nocreatehuge', size: rollup.OBJECT_MAX_BYTES + 1 });
+  const deps = depsFor(state, [obj, huge], now, logger);
+  const result = await rollup.run(deps);
+  assert.equal(result.success, true);
+  assert.ok(deps.executed.length > 0);
+  assert.ok(deps.executed.some((sql) => sql.includes("reason = 'object_too_large' AND status = 'active'")));
+  assert.ok(deps.executed.some((sql) => sql.includes("'object_too_large'") && sql.includes("'active'")));
+  for (const sql of deps.executed) assert.doesNotMatch(sql, /\bCREATE\b/i);
+
+  const old = makeState(now - 72 * 60 * 60 * 1000);
+  const oldDeps = depsFor(old, [], now, loggerFor());
+  const oldResult = await rollup.run(oldDeps);
+  assert.equal(oldResult.success, true);
+  assert.ok(oldDeps.executed.some((sql) => sql.includes("'over_48h'") && sql.includes("'active'")));
+  for (const sql of oldDeps.executed) assert.doesNotMatch(sql, /\bCREATE\b/i);
+
+  const missing = makeState(now - 20 * 60 * 1000);
+  missing.missingTables = ['site_analytics_rollup_watermark', 'site_analytics_rollup_gaps'];
+  const missingDeps = depsFor(missing, [obj], now, loggerFor());
+  const missingResult = await rollup.run(missingDeps);
+  assert.equal(missingResult.success, false);
+  assert.ok(missingDeps.executed.length > 0);
+  for (const sql of missingDeps.executed) assert.doesNotMatch(sql, /\bCREATE\b/i);
+});
+
+test('a missing rollup table alerts CONFIG_MISSING and does not move the watermark', async () => {
+  const now = Date.parse('2026-10-15T06:00:00.000Z');
+  const stored = now - 20 * 60 * 1000;
+  const line = 'ALERT analytics-rollup-5m step=tables window=- code=CONFIG_MISSING';
+  const cases = [
+    ['site_analytics_rollup_watermark'],
+    ['site_analytics_rollup_gaps'],
+    ['site_analytics_rollup_watermark', 'site_analytics_rollup_gaps']
+  ];
+  for (const names of cases) {
+    const state = makeState(stored);
+    state.missingTables = names;
+    const logger = loggerFor();
+    const obj = makeObject(now - 10 * 60 * 1000, { rand: 'missingtbl01' });
+    const deps = depsFor(state, [obj], now, logger);
+    const result = await rollup.run(deps);
+    assert.equal(result.success, false);
+    assert.equal(result.step, 'tables');
+    assert.equal(result.code, 'CONFIG_MISSING');
+    assert.deepEqual(result.missing, names);
+    assert.deepEqual(result.alerts, [line]);
+    assert.deepEqual(logger.lines, [line]);
+    assert.equal(logger.logs.filter((item) => item.includes('HEARTBEAT')).length, 0);
+    assert.equal(deps.provider.lists.length, 0);
+    assert.equal(deps.provider.gets.length, 0);
+    assert.equal(state.watermark, stored);
+    assert.equal(state.views, 0);
+    assert.equal(state.gaps.length, 0);
+  }
+
+  const present = makeState(stored);
+  const presentLogger = loggerFor();
+  const presentObj = makeObject(now - 10 * 60 * 1000, { rand: 'presenttbl01' });
+  const presentDeps = depsFor(present, [presentObj], now, presentLogger);
+  const presentResult = await rollup.run(presentDeps);
+  assert.equal(presentResult.success, true);
+  assert.equal(presentResult.processed, 1);
+  assert.ok(present.watermark > stored);
+  assert.equal(presentLogger.logs.filter((item) => item.startsWith('HEARTBEAT analytics-rollup-5m ')).length, 1);
+  assert.ok(presentLogger.lines.every((item) => !item.includes('CONFIG_MISSING')));
+
+  const denied = makeState(stored);
+  const deniedLogger = loggerFor();
+  const deniedDeps = depsFor(denied, [], now, deniedLogger);
+  deniedDeps.query = async (sql, params) => {
+    if (String(sql).startsWith('SELECT 1 FROM site_analytics_rollup_watermark')) {
+      const error = new Error('denied');
+      error.code = 'ER_TABLEACCESS_DENIED_ERROR';
+      error.errno = 1142;
+      throw error;
+    }
+    return depsFor(denied, [], now, deniedLogger).query(sql, params);
+  };
+  const deniedResult = await rollup.run(deniedDeps);
+  assert.equal(deniedResult.success, false);
+  assert.equal(deniedResult.code, 'ER_TABLEACCESS_DENIED_ERROR');
+  assert.match(deniedLogger.lines[0], /^ALERT analytics-rollup-5m step=check-tables window=\S+ code=ER_TABLEACCESS_DENIED_ERROR /);
+  assert.equal(deniedLogger.logs.filter((item) => item.includes('HEARTBEAT')).length, 0);
+  assert.equal(denied.watermark, stored);
+});
+
+test('only failure codes use the ALERT prefix', async () => {
+  const failure = /^(STALE_WATERMARK|CONFIG_MISSING|ER_LOCK_DEADLOCK|GAP_OVER_48H|OBJECT_TOO_LARGE|BACKLOG_OVER_CAP|TIME_BUDGET|ECONNRESET|ER_TABLEACCESS_DENIED_ERROR)$/;
+  const seen = new Set();
+  function check(logger, result) {
+    for (const line of logger.lines) {
+      assert.match(line, /^ALERT analytics-rollup-5m step=\S+ window=\S+ code=[A-Za-z0-9_.-]+/);
+      const code = line.match(/code=([A-Za-z0-9_.-]+)/)[1];
+      assert.match(code, failure);
+      seen.add(code);
+    }
+    for (const line of logger.logs) {
+      assert.equal(line.startsWith('ALERT '), false);
+      if (line.includes('code=LATE_OBJECT')) {
+        assert.match(line, /^INFO analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+      }
+      if (line.includes('code=NOSUCHKEY')) {
+        assert.match(line, /^SKIP analytics-rollup-5m step=read window=\S+ code=NOSUCHKEY key=/);
+      }
+    }
+    for (const line of [...logger.lines, ...logger.logs, ...((result && result.alerts) || [])]) {
+      assert.equal(/^ALERT .*code=LATE_OBJECT/.test(line), false);
+      assert.equal(/^ALERT .*code=NOSUCHKEY/.test(line), false);
+      if (line.startsWith('HEARTBEAT ')) assert.equal(line.startsWith('ALERT'), false);
+    }
+    if (result && result.alerts) {
+      assert.ok(result.alerts.every((line) => line.startsWith('ALERT analytics-rollup-5m ')));
+    }
+  }
+
+  const now = Date.parse('2026-10-15T06:15:00.000Z');
+  const staleLogger = loggerFor();
+  const stale = await rollup.run(depsFor(makeState(now - rollup.STALE_WATERMARK_MS - 60 * 1000), [], now, staleLogger));
+  check(staleLogger, stale);
+
+  const missingState = makeState(now - 10 * 60 * 1000);
+  missingState.missingTables = ['site_analytics_rollup_gaps'];
+  const missingLogger = loggerFor();
+  const missing = await rollup.run(depsFor(missingState, [], now, missingLogger));
+  assert.equal(missingLogger.lines[0], 'ALERT analytics-rollup-5m step=tables window=- code=CONFIG_MISSING');
+  check(missingLogger, missing);
+
+  const deadState = makeState(now - 20 * 60 * 1000);
+  deadState.failCommit = true;
+  deadState.failErrno = 1213;
+  deadState.failSqlState = '40001';
+  const deadLogger = loggerFor();
+  const deadObj = makeObject(now - 10 * 60 * 1000, { rand: 'alertfail001' });
+  const dead = await rollup.run(depsFor(deadState, [deadObj], now, deadLogger));
+  check(deadLogger, dead);
+
+  const lateLogger = loggerFor();
+  const lateObj = makeObject(Date.parse('2026-10-15T06:05:00.000Z'), { rand: 'alertlate001' });
+  const late = await rollup.run(depsFor(makeState(Date.parse('2026-10-15T06:10:00.000Z')), [lateObj], now, lateLogger));
+  assert.equal(late.success, true);
+  assert.ok(lateLogger.logs.some((line) => line.startsWith('INFO analytics-rollup-5m ') && line.includes('code=LATE_OBJECT')));
+  assert.ok((late.alerts || []).every((line) => !line.includes('LATE_OBJECT')));
+  check(lateLogger, late);
+
+  const skipLogger = loggerFor();
+  const missingObj = makeObject(Date.parse('2026-10-15T06:00:00.000Z'), { rand: 'alertskip001' });
+  const skipDeps = depsFor(makeState(Date.parse('2026-10-15T05:50:00.000Z')), [missingObj], now, skipLogger);
+  skipDeps.provider.get = async () => {
+    const error = new Error('gone');
+    error.code = 'NoSuchKey';
+    throw error;
+  };
+  const skipped = await rollup.run(skipDeps);
+  assert.equal(skipped.success, true);
+  assert.ok(skipLogger.logs.some((line) => line.startsWith('SKIP analytics-rollup-5m ') && line.includes('code=NOSUCHKEY')));
+  check(skipLogger, skipped);
+
+  const hugeLogger = loggerFor();
+  const huge = makeObject(now - 10 * 60 * 1000, { rand: 'alerthuge001', size: rollup.OBJECT_MAX_BYTES + 1 });
+  const hugeResult = await rollup.run(depsFor(makeState(now - 20 * 60 * 1000), [huge], now, hugeLogger));
+  check(hugeLogger, hugeResult);
+
+  const formatted = rollup.formatInfo({
+    step: 'ingest',
+    window: '2026-10-15T06:00:00.000Z/2026-10-15T06:05:00.000Z',
+    code: 'LATE_OBJECT',
+    key: lateObj.key
+  });
+  assert.match(formatted, /^INFO analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+  assert.equal(formatted.startsWith('ALERT'), false);
+
+  assert.ok(seen.has('STALE_WATERMARK'));
+  assert.ok(seen.has('CONFIG_MISSING'));
+  assert.ok(seen.has('ER_LOCK_DEADLOCK'));
+  assert.ok(seen.has('OBJECT_TOO_LARGE'));
+  assert.equal(seen.has('LATE_OBJECT'), false);
+  assert.equal(seen.has('NOSUCHKEY'), false);
 });
 
 test('rollup logs do not contain secrets or object contents', () => {
