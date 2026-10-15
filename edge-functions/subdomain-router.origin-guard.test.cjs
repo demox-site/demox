@@ -736,6 +736,30 @@ test('M1: banned /sites/ objects are not served from bypass hosts and do not fet
   const encoded = await r.visit('https://static.demox.site/%73ites/owner-1/BANNED1/dist/index.html');
   assert.notEqual(encoded.response.status, 200);
   assert.equal(r.calls.origin.length, 0);
+  const bypassPaths = [
+    '/SITES/x',
+    '/Sites/x',
+    '/%53ITES/x',
+    '/sites;x',
+    '/sites-foo',
+    '/%20sites/x',
+    '/%E3%80%80sites/x',
+    '/%EF%BC%B3ITES/x'
+  ];
+  const bypassHosts = [
+    'https://static.demox.site',
+    'https://cdn.demox.site',
+    'https://randomxyz123.demox.site',
+    'https://not-bound.example'
+  ];
+  for (const host of bypassHosts) {
+    for (const bypassPath of bypassPaths) {
+      const before = r.calls.origin.length;
+      const { response } = await r.visit(host + bypassPath);
+      assert.notEqual(response.status, 200, host + bypassPath);
+      assert.equal(r.calls.origin.length, before, host + bypassPath);
+    }
+  }
   const root = await r.visit('https://sites-eclick.demox.site/');
   assert.notEqual(root.response.status, 200);
   assert.equal(r.calls.origin.length, 0);
@@ -786,7 +810,28 @@ test('M2: ..%2F traversal and other unsafe paths are rejected before lookup, sig
   assert.equal(r.calls.origin.length, 0);
 });
 
-test('M4: guarded origin hosts allow GET, HEAD, and OPTIONS; other methods are 405 and do not fetch', async () => {
+test('stored paths with leading or trailing slashes still serve a normal file', async () => {
+  for (const stored of ['u/abc/', '/u/abc', 'u/abc']) {
+    const r = makeGuard({
+      resolver: () => json({
+        success: true,
+        path: stored,
+        websiteId: 'ABC',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      })
+    });
+    const { response, html } = await r.visit('https://abc.demox.site/file.txt');
+    assert.equal(response.status, 200, stored);
+    assert.equal(html, PUBLIC_HTML, stored);
+    const hit = r.calls.origin.find((info) => info.href.includes('/u/abc/file.txt'));
+    assert.ok(hit, stored);
+    assert.equal(new URL(hit.href).pathname, '/u/abc/file.txt', stored);
+  }
+});
+
+test('M4: origin hosts allow GET and HEAD; OPTIONS is a local 204 and other methods are 405', async () => {
   const r = makeGuard({
     secret: SECRET_A,
     resolver: (payload) => {
@@ -811,10 +856,17 @@ test('M4: guarded origin hosts allow GET, HEAD, and OPTIONS; other methods are 4
   assert.equal(r.calls.origin.length, 0);
   const head = await r.call(banned, { method: 'HEAD', headers: { Accept: 'text/html' } });
   assert.equal(head.response.status, 403);
-  const options = await r.call('https://sites-eclick.demox.site/sites/owner-1/BANNED1/dist/index.html', { method: 'OPTIONS' });
-  assert.notEqual(options.response.status, 405);
-  assert.notEqual(options.response.status, 200);
-  assert.equal(r.calls.origin.length, 0);
+  assert.equal(r.calls.origin.length, 0, 'HEAD on a banned path does not fetch origin');
+  const beforeOptions = { resolve: r.calls.resolve.length, origin: r.calls.origin.length };
+  const options = await r.call('https://sites-eclick.demox.site/sites/owner-1/BANNED1/dist/index.html', {
+    method: 'OPTIONS',
+    headers: { Accept: 'text/html', 'x-demox-origin-token': putToken }
+  });
+  assert.equal(options.response.status, 204);
+  assert.equal(options.response.headers.get('cache-control'), 'no-store');
+  assert.match(options.response.headers.get('allow') || '', /GET, HEAD/);
+  assert.equal(r.calls.resolve.length, beforeOptions.resolve);
+  assert.equal(r.calls.origin.length, beforeOptions.origin);
   const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(pub.response.status, 200);
 });
@@ -859,6 +911,19 @@ test('M5: tokens are v1.kid.exp.mac, both slots verify, and a short secret stays
   });
   assert.equal(swapped.response.status, 404);
   assert.ok(both.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'));
+
+  for (const kid of ['a', 'b']) {
+    both.ctx.env.DEMOX_ORIGIN_GUARD_KID = kid;
+    assert.equal(await both.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, ''), '', kid);
+    const beforeOrigin = both.calls.origin.length;
+    const { response } = await both.visit('https://sites.demox.site' + path, {
+      Accept: 'text/html',
+      'x-demox-origin-token': tokenA.replace('v1.A.', 'v1.' + kid + '.')
+    });
+    assert.equal(response.status, 404, kid);
+    assert.equal(both.calls.origin.length, beforeOrigin, kid);
+  }
+  both.ctx.env.DEMOX_ORIGIN_GUARD_KID = 'A';
 
   const kept = makeGuard({
     secret: SECRET_A,

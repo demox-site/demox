@@ -8,7 +8,7 @@
  * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
  * 源站路径（K2）：sites.demox.site、site-N、sites-*、origin-* 在回源前按站点 ID 裁决。
- * 其它 host 上，解码后以 /sites/ 开头的路径在两条透传之前也进入同一裁决，避免换 host 绕过。
+ * 其它 host 上，解码一次并忽略大小写后，第一段以 sites 开头的路径在两条透传之前也进入同一裁决。
  * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
  * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
  * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。缓存命中绕不过守卫，是因为函数先于节点缓存执行。
@@ -488,9 +488,21 @@ function isWwwRequest(u) {
   return String((u && u.hostname) || '').toLowerCase() === WWW_HOST;
 }
 
+function normalizeStoredOriginPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
+}
+
+function joinStoredOriginPath(stored, rest) {
+  const base = normalizeStoredOriginPath(stored);
+  const tail = String(rest || '').replace(/^\/+/, '');
+  if (base && tail) return '/' + base + '/' + tail;
+  return '/' + (base || tail);
+}
+
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
-  // 用户可控的 rest 在签名和回源之前再验一次。非法路径不签发、不回源。
-  if (originPathUnsafe(u && u.pathname) || originPathUnsafe(originPath)) {
+  // 只验用户请求路径。库里的 path 可能带首尾斜杠（storage prefix 以 / 结尾），
+  // 拼进去再验会把整个站点打成 400。拼之前已经 normalizeStoredOriginPath。
+  if (originPathUnsafe(u && u.pathname)) {
     if (meta) meta.originState = 'none';
     return originPathRejectResponse();
   }
@@ -524,14 +536,16 @@ function secretIsConfigured(value) {
 }
 
 function originGuardSecret(slot) {
-  const name = ORIGIN_GUARD_SECRET_SLOTS[String(slot || '').toUpperCase()];
+  if (slot !== 'A' && slot !== 'B') return '';
+  const name = ORIGIN_GUARD_SECRET_SLOTS[slot];
   if (!name) return '';
   const value = envString(name);
   return secretIsConfigured(value) ? value : '';
 }
 
 function originGuardSigningSlot() {
-  const kid = envString(ORIGIN_GUARD_KID_ENV).trim().toUpperCase();
+  const kid = envString(ORIGIN_GUARD_KID_ENV).trim();
+  if (kid !== 'A' && kid !== 'B') return '';
   if (!originGuardSecret(kid)) return '';
   return kid;
 }
@@ -614,8 +628,8 @@ async function verifyOriginInternalToken(req, host) {
   const kid = parts[1];
   const expRaw = parts[2];
   const mac = parts[3];
-  const slot = String(kid || '').toUpperCase();
-  const secret = originGuardSecret(slot);
+  if (kid !== 'A' && kid !== 'B') return false;
+  const secret = originGuardSecret(kid);
   if (!secret) return false;
   let pathname = '';
   let search = '';
@@ -2144,16 +2158,27 @@ function originPathRejectResponse() {
   });
 }
 
-// 解码一次后是否落到源站对象前缀。URL 解析器已经折掉的 %2e%2e 会变成真实的 /sites/ 路径。
+// 透传前：解码一次、NFKC、小写。第一段去掉空白后只要以 sites 开头
+// （SITES、%53ITES、sites;x、sites-foo、全角或空白前缀）就进守卫，不能原样回源到桶 1。
 function pathnameTargetsOriginSites(pathname) {
   const raw = String(pathname || '');
-  if (raw.startsWith('/sites/')) return true;
+  const candidates = [raw];
   try {
     const decoded = decodeURIComponent(raw);
-    return decoded.startsWith('/sites/');
-  } catch (e) {
-    return false;
+    if (decoded !== raw) candidates.push(decoded);
+  } catch (e) {}
+  for (let i = 0; i < candidates.length; i += 1) {
+    let text = candidates[i];
+    try { text = text.normalize('NFKC'); } catch (err) {}
+    text = text.toLowerCase();
+    const segments = text.split('/');
+    for (let j = 0; j < segments.length; j += 1) {
+      if (!segments[j]) continue;
+      if (segments[j].trim().indexOf('sites') === 0) return true;
+      break;
+    }
   }
+  return false;
 }
 
 // /sites/<uid>/<ID> 没有尾斜杠也算命中：裁决通过后 308 到带斜杠的地址，绝不原样放行。
@@ -2246,11 +2271,21 @@ async function handleOriginGuard(req, event, ctx, u, host) {
   ctx.siteTraffic = true;
   ctx.resolveState = 'origin';
   const method = String(req.method || 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+  if (method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        Allow: 'GET, HEAD',
+        'Cache-Control': 'no-store',
+        'x-demox-route': 'origin-guard=options'
+      }
+    });
+  }
+  if (method !== 'GET' && method !== 'HEAD') {
     return new Response('Method Not Allowed', {
       status: 405,
       headers: {
-        Allow: 'GET, HEAD, OPTIONS',
+        Allow: 'GET, HEAD',
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-store',
         'x-demox-route': 'origin-guard=method'
@@ -2423,7 +2458,7 @@ async function handleRequest(req, event, ctx) {
       return proxySiteFunction(req, websiteId, u);
     }
     // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
-    return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, {
+    return rewriteOrigin(req, event, u, joinStoredOriginPath(path, rest), normalizeStoredOriginPath(path), origin, {
       websiteId: websiteId,
       label: label,
       domain: domain,
@@ -2469,5 +2504,5 @@ async function serveResolvedSite(req, event, u, rest, path, origin, parsedHost, 
     return proxySiteFunction(req, meta.websiteId, u);
   }
   // origin 为空(旧数据/默认桶)时 buildOriginUrl 回退到 sites.demox.site
-  return rewriteOrigin(req, event, u, `/${path}/${rest}`, path, origin, meta);
+  return rewriteOrigin(req, event, u, joinStoredOriginPath(path, rest), normalizeStoredOriginPath(path), origin, meta);
 }
