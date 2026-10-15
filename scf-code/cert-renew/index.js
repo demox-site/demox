@@ -6,6 +6,11 @@
  * api.demox.site. The timer exits without writes when the current certificate
  * is outside the configured renewal window, except to sync SCF if it still
  * points at a stale certificate.
+ *
+ * Attempt order is dns-01, then dns-01-retry (longer DNS wait, same DNSPod
+ * CreateRecord / DeleteRecord). http-01 and tls-alpn-01 cannot issue a
+ * wildcard and are rejected. Failures throw CERT_RENEW_FAILED so the timer
+ * invocation fails; they are not returned as success:false.
  */
 
 const nodeCrypto = require('crypto');
@@ -22,8 +27,65 @@ const CONFIG = {
   zoneId: process.env.EDGEONE_ZONE_ID || process.env.TEO_ZONE_ID || 'zone-3kplfkbflnd6',
   region: process.env.SCF_REGION || 'ap-guangzhou',
   scfCustomDomain: process.env.SCF_CUSTOM_DOMAIN || 'api.demox.site',
-  dnsPropagationMs: parseInteger(process.env.DNS_PROPAGATION_MS, 25_000)
+  dnsPropagationMs: parseInteger(process.env.DNS_PROPAGATION_MS, 25_000),
+  dnsRetryPropagationMs: parseInteger(process.env.DNS_RETRY_PROPAGATION_MS, 90_000)
 };
+
+// 通配符只能走 dns-01。这两个挑战不能签发 *.demox.site，不放进备用顺序。
+const WILDCARD_REJECTED_CHALLENGES = ['http-01', 'tls-alpn-01'];
+
+function buildAttemptOrder(config) {
+  return [
+    { id: 'dns-01', propagationMs: config.dnsPropagationMs },
+    { id: 'dns-01-retry', propagationMs: config.dnsRetryPropagationMs ?? config.dnsPropagationMs }
+  ];
+}
+
+function isRetryableIssuanceError(error) {
+  return error?.retryable !== false;
+}
+
+function rejectUnsupportedChallenge(challenge, config) {
+  if (challenge?.type === 'dns-01') return;
+  const type = challenge?.type || '未知挑战';
+  const names = [config.domain, ...(config.san || [])].filter(Boolean);
+  const wildcard = names.some((name) => String(name).startsWith('*.'));
+  const error = new Error(
+    WILDCARD_REJECTED_CHALLENGES.includes(type)
+      ? (wildcard
+        ? `证书含通配符（${names.join(', ')}），${type} 不能签发，不会当作 dns-01 的备用`
+        : `${type} 不在本任务的挑战顺序里，只使用 dns-01`)
+      : `仅接受 dns-01，收到 ${type}`
+  );
+  error.retryable = false;
+  error.code = 'CERT_CHALLENGE_UNSUPPORTED';
+  throw error;
+}
+
+function markDnsFailure(error) {
+  const wrapped = new Error(`DNSPod 写入 TXT 失败: ${error.message}`);
+  wrapped.retryable = false;
+  wrapped.code = 'CERT_DNS_FAILED';
+  wrapped.cause = error;
+  return wrapped;
+}
+
+function annotateRenewError(error, step, days) {
+  if (!error.step) error.step = step;
+  if (typeof days === 'number') error.remainingDays = days;
+  return error;
+}
+
+function formatRenewalAlert(error) {
+  const parts = ['ALERT cert-renew failed'];
+  if (error?.step) parts.push(`step=${error.step}`);
+  if (Array.isArray(error?.attempts) && error.attempts.length) {
+    parts.push(`attempts=${error.attempts.map((item) => item.id).join('→')}`);
+  }
+  if (typeof error?.remainingDays === 'number') parts.push(`remainingDays=${error.remainingDays}`);
+  parts.push(error?.message || '未知错误');
+  return parts.join(' ');
+}
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -139,15 +201,19 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
       ? dnsRecord.slice(0, -suffix.length)
       : (dnsRecord === config.dnspodDomain ? '@' : dnsRecord);
     if (!subDomain) subDomain = '@';
-    const response = await apis.dnspod('CreateRecord', {
-      Domain: config.dnspodDomain,
-      SubDomain: subDomain,
-      RecordType: 'TXT',
-      RecordLine: '默认',
-      Value: value,
-      TTL: 600
-    });
-    return response.RecordId;
+    try {
+      const response = await apis.dnspod('CreateRecord', {
+        Domain: config.dnspodDomain,
+        SubDomain: subDomain,
+        RecordType: 'TXT',
+        RecordLine: '默认',
+        Value: value,
+        TTL: 600
+      });
+      return response.RecordId;
+    } catch (error) {
+      throw markDnsFailure(error);
+    }
   }
 
   async function removeTxtRecord(recordId) {
@@ -159,27 +225,65 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
     }
   }
 
-  async function issueCertificate() {
+  async function issueOnce(attempt, key, csr) {
+    let recordId = null;
     const accountKey = await acmeClient.crypto.createPrivateKey();
     const client = new acmeClient.Client({ directoryUrl: config.acmeDirectory, accountKey });
+    try {
+      const cert = await client.auto({
+        csr,
+        email: config.acmeEmail,
+        termsOfServiceAgreed: true,
+        challengePriority: ['dns-01'],
+        skipChallengeVerification: true,
+        challengeCreateFn: async (authorization, challenge, keyAuthorization) => {
+          rejectUnsupportedChallenge(challenge, config);
+          const dnsRecord = `_acme-challenge.${authorization.identifier.value}`;
+          const id = await addTxtRecord(dnsRecord, keyAuthorization);
+          challenge._dnspodRecordId = id;
+          recordId = id;
+          logger.log?.(`已写入 TXT ${dnsRecord}（${attempt.id}），等待传播 ${attempt.propagationMs}ms`);
+          await wait(attempt.propagationMs);
+        },
+        challengeRemoveFn: async (_authorization, challenge) => {
+          const id = challenge._dnspodRecordId || recordId;
+          recordId = null;
+          await removeTxtRecord(id);
+        }
+      });
+      return { cert, key: key.toString(), attempt: attempt.id };
+    } catch (error) {
+      if (recordId) await removeTxtRecord(recordId);
+      throw error;
+    }
+  }
+
+  async function issueCertificate() {
     const altNames = [config.domain, ...config.san];
     const [key, csr] = await acmeClient.crypto.createCsr({ commonName: config.domain, altNames });
-    const cert = await client.auto({
-      csr,
-      email: config.acmeEmail,
-      termsOfServiceAgreed: true,
-      challengePriority: ['dns-01'],
-      skipChallengeVerification: true,
-      challengeCreateFn: async (authorization, challenge, keyAuthorization) => {
-        if (challenge.type !== 'dns-01') throw new Error('仅支持 dns-01');
-        const dnsRecord = `_acme-challenge.${authorization.identifier.value}`;
-        challenge._dnspodRecordId = await addTxtRecord(dnsRecord, keyAuthorization);
-        logger.log?.(`已写入 TXT ${dnsRecord}，等待传播 ${config.dnsPropagationMs}ms`);
-        await wait(config.dnsPropagationMs);
-      },
-      challengeRemoveFn: async (_authorization, challenge) => removeTxtRecord(challenge._dnspodRecordId)
-    });
-    return { cert, key: key.toString() };
+    const attempts = buildAttemptOrder(config);
+    const failures = [];
+    for (let index = 0; index < attempts.length; index += 1) {
+      const attempt = attempts[index];
+      try {
+        return await issueOnce(attempt, key, csr);
+      } catch (error) {
+        failures.push({ id: attempt.id, message: error.message });
+        const retry = isRetryableIssuanceError(error) && index < attempts.length - 1;
+        logger.warn?.(`cert-renew ${attempt.id} 失败${retry ? '，进入下一次' : ''}：${error.message}`);
+        if (!retry) {
+          const failure = new Error(
+            `证书签发失败，顺序 ${failures.map((item) => item.id).join(' → ')}：${failures.map((item) => `${item.id}: ${item.message}`).join('；')}`
+          );
+          failure.attempts = failures;
+          failure.retryable = false;
+          failure.step = 'issue';
+          failure.code = error.code || 'CERT_ISSUE_FAILED';
+          throw failure;
+        }
+      }
+    }
+    throw new Error('证书签发失败');
   }
 
   async function uploadToSsl(cert, key) {
@@ -213,9 +317,16 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
     }));
   }
 
-  async function bindToScf(certId) {
+  async function bindToScf(certId, { required = false } = {}) {
     const domainName = config.scfCustomDomain;
-    if (!domainName) return { updated: false, reason: 'no_domain' };
+    if (!domainName) {
+      if (!required) return { updated: false, reason: 'no_domain' };
+      const error = new Error('未配置 SCF_CUSTOM_DOMAIN，拒绝在未绑定 SCF 自定义域名的情况下结束续期');
+      error.retryable = false;
+      error.code = 'CERT_SCF_DOMAIN_MISSING';
+      error.step = 'bind-scf';
+      throw error;
+    }
     const domain = await apis.scf('GetCustomDomain', { Domain: domainName });
     const current = domain.CertConfig?.CertificateId || null;
     if (current === certId) return { updated: false, reason: 'already_bound', certId };
@@ -235,7 +346,13 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
   }
 
   async function renew({ force = false } = {}) {
-    const { days, certId } = await getCurrentCertExpiry();
+    let days = null;
+    let certId;
+    try {
+      ({ days, certId } = await getCurrentCertExpiry());
+    } catch (error) {
+      throw annotateRenewError(error, 'read-expiry', null);
+    }
     logger.log?.(`当前证书 certId=${certId || '(无)'} 剩余天数=${days === null ? '未知' : days}`);
     if (!force && days !== null && days > config.thresholdDays) {
       if (certId) {
@@ -252,11 +369,35 @@ function createRenewService({ config = CONFIG, apis = createApis(), acmeClient =
       }
       return { renewed: false, reason: 'not_due', remainingDays: days, threshold: config.thresholdDays };
     }
-    const { cert, key } = await issueCertificate();
-    const newCertId = await uploadToSsl(cert, key);
-    await bindToEdgeOne(newCertId);
-    await bindToScf(newCertId);
-    return { renewed: true, oldCertId: certId, newCertId, previousRemainingDays: days };
+    let issued;
+    try {
+      issued = await issueCertificate();
+    } catch (error) {
+      throw annotateRenewError(error, 'issue', days);
+    }
+    let newCertId;
+    try {
+      newCertId = await uploadToSsl(issued.cert, issued.key);
+    } catch (error) {
+      throw annotateRenewError(error, 'upload-ssl', days);
+    }
+    try {
+      await bindToEdgeOne(newCertId);
+    } catch (error) {
+      throw annotateRenewError(error, 'bind-edgeone', days);
+    }
+    try {
+      await bindToScf(newCertId, { required: true });
+    } catch (error) {
+      throw annotateRenewError(error, 'bind-scf', days);
+    }
+    return {
+      renewed: true,
+      oldCertId: certId,
+      newCertId,
+      previousRemainingDays: days,
+      attempt: issued.attempt
+    };
   }
 
   return { renew, getCurrentCertExpiry, addTxtRecord, removeTxtRecord, issueCertificate, uploadToSsl, bindToEdgeOne, bindToScf };
@@ -272,23 +413,46 @@ function parseForce(event = {}) {
   }
 }
 
-exports.main = async (event = {}) => {
+async function runRenewal(event = {}, deps = {}) {
+  const logger = deps.logger || console;
   try {
-    const result = await createRenewService().renew({ force: parseForce(event) });
-    console.log('续期结果:', JSON.stringify(result));
+    const result = await createRenewService({ ...deps, logger }).renew({ force: parseForce(event) });
+    logger.log?.('续期结果:', JSON.stringify(result));
     return { success: true, ...result };
   } catch (error) {
-    console.error('续期失败:', error?.stack || error);
-    return { success: false, error: error.message };
+    const alert = formatRenewalAlert(error);
+    logger.error?.(alert);
+    const wrapped = new Error(alert);
+    wrapped.code = 'CERT_RENEW_FAILED';
+    wrapped.cause = error;
+    throw wrapped;
   }
-};
+}
 
-exports.__private = { CONFIG, parseInteger, parseForce, createApis, createRenewService, callTencentCloudApi };
+exports.main = (event = {}) => runRenewal(event);
+
+exports.__private = {
+  CONFIG,
+  WILDCARD_REJECTED_CHALLENGES,
+  parseInteger,
+  parseForce,
+  createApis,
+  createRenewService,
+  callTencentCloudApi,
+  buildAttemptOrder,
+  isRetryableIssuanceError,
+  formatRenewalAlert,
+  runRenewal
+};
 
 if (require.main === module) {
   exports.main({ force: process.argv.includes('--force') })
     .then((result) => {
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.success ? 0 : 1);
+    })
+    .catch((error) => {
+      console.error(error?.message || error);
+      process.exit(1);
     });
 }

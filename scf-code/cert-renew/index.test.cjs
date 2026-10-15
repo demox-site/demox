@@ -16,6 +16,7 @@ function config(overrides = {}) {
     region: 'ap-guangzhou',
     scfCustomDomain: 'api.demox.site',
     dnsPropagationMs: 0,
+    dnsRetryPropagationMs: 0,
     ...overrides
   };
 }
@@ -125,7 +126,13 @@ test('forced renewal writes DNS challenge, uploads SSL, and binds EdgeOne in ord
   });
 
   const result = await service.renew({ force: true });
-  assert.deepEqual(result, { renewed: true, oldCertId: undefined, newCertId: 'cert-new', previousRemainingDays: null });
+  assert.deepEqual(result, {
+    renewed: true,
+    oldCertId: undefined,
+    newCertId: 'cert-new',
+    previousRemainingDays: null,
+    attempt: 'dns-01'
+  });
   assert.equal(challengeOptions.skipChallengeVerification, true);
   assert.deepEqual(calls.map((item) => item.slice(0, 2)), [
     ['teo', 'DescribeAccelerationDomains'],
@@ -205,6 +212,203 @@ test('SCF certificate bind refuses to update a domain with no routes', async () 
     () => service.bindToScf('cert-new'),
     /没有路由/
   );
+});
+
+function acmeClientFor(auto) {
+  return {
+    crypto: {
+      createPrivateKey: async () => 'account-key',
+      createCsr: async () => [Buffer.from('private-key'), 'csr']
+    },
+    Client: class Client {
+      async auto(options) {
+        return auto(options);
+      }
+    }
+  };
+}
+
+test('wildcard attempt order is dns-01 then a longer dns-01 retry', () => {
+  assert.deepEqual(__private.WILDCARD_REJECTED_CHALLENGES, ['http-01', 'tls-alpn-01']);
+  assert.deepEqual(__private.buildAttemptOrder({ dnsPropagationMs: 25_000, dnsRetryPropagationMs: 90_000 }), [
+    { id: 'dns-01', propagationMs: 25_000 },
+    { id: 'dns-01-retry', propagationMs: 90_000 }
+  ]);
+});
+
+test('dns-01 validation failure retries once with the longer wait', async () => {
+  const calls = [];
+  const waits = [];
+  let autos = 0;
+  const service = __private.createRenewService({
+    config: config({ dnsPropagationMs: 25, dnsRetryPropagationMs: 90 }),
+    apis: {
+      teo: async (action) => {
+        calls.push(['teo', action]);
+        if (action === 'DescribeAccelerationDomains') return { AccelerationDomains: [] };
+        return {};
+      },
+      dnspod: async (action) => {
+        calls.push(['dnspod', action]);
+        return action === 'CreateRecord' ? { RecordId: 7 } : {};
+      },
+      ssl: async (action) => {
+        calls.push(['ssl', action]);
+        return { CertificateId: 'cert-new' };
+      },
+      scf: async (action) => {
+        calls.push(['scf', action]);
+        if (action === 'GetCustomDomain') return scfDomain({ certId: 'cert-old' });
+        return {};
+      }
+    },
+    acmeClient: acmeClientFor(async (options) => {
+      autos += 1;
+      const challenge = { type: 'dns-01' };
+      await options.challengeCreateFn({ identifier: { value: 'demox.site' } }, challenge, 'txt-value');
+      await options.challengeRemoveFn({}, challenge);
+      if (autos === 1) throw new Error('challenge invalid: dns');
+      return 'certificate';
+    }),
+    wait: async (ms) => { waits.push(ms); },
+    logger: { log() {}, warn() {} }
+  });
+
+  const result = await service.renew({ force: true });
+  assert.equal(result.attempt, 'dns-01-retry');
+  assert.equal(result.newCertId, 'cert-new');
+  assert.deepEqual(waits, [25, 90]);
+  assert.equal(calls.filter((item) => item[0] === 'dnspod' && item[1] === 'CreateRecord').length, 2);
+});
+
+test('DNSPod write failure is not retried and names the single attempt', async () => {
+  const calls = [];
+  const service = __private.createRenewService({
+    config: config(),
+    apis: {
+      teo: async () => ({ AccelerationDomains: [] }),
+      dnspod: async (action) => {
+        calls.push(action);
+        throw new Error('AuthFailure.SecretIdNotFound: rejected');
+      },
+      ssl: async () => { throw new Error('should not upload'); },
+      scf: async () => { throw new Error('should not bind'); }
+    },
+    acmeClient: acmeClientFor(async (options) => {
+      await options.challengeCreateFn({ identifier: { value: 'demox.site' } }, { type: 'dns-01' }, 'txt');
+      return 'certificate';
+    }),
+    wait: async () => {},
+    logger: { log() {}, warn() {} }
+  });
+
+  await assert.rejects(
+    () => service.renew({ force: true }),
+    (error) => {
+      assert.equal(error.step, 'issue');
+      assert.deepEqual(error.attempts.map((item) => item.id), ['dns-01']);
+      assert.match(error.message, /DNSPod 写入 TXT 失败/);
+      assert.match(error.message, /AuthFailure\.SecretIdNotFound/);
+      assert.doesNotMatch(error.message, /dns-01-retry/);
+      return true;
+    }
+  );
+  assert.deepEqual(calls, ['CreateRecord']);
+});
+
+test('http-01 and tls-alpn-01 are rejected for the wildcard and do not write DNS', async () => {
+  for (const type of ['http-01', 'tls-alpn-01']) {
+    const calls = [];
+    const service = __private.createRenewService({
+      config: config(),
+      apis: {
+        teo: async () => ({ AccelerationDomains: [] }),
+        dnspod: async (action) => { calls.push(action); return { RecordId: 1 }; },
+        ssl: async () => ({}),
+        scf: async () => scfDomain()
+      },
+      acmeClient: acmeClientFor(async (options) => {
+        await options.challengeCreateFn({ identifier: { value: 'demox.site' } }, { type }, 'token');
+        return 'certificate';
+      }),
+      logger: { log() {}, warn() {} }
+    });
+    await assert.rejects(
+      () => service.renew({ force: true }),
+      (error) => error.step === 'issue' && error.message.includes(type) && error.message.includes('通配符')
+    );
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('renewal failure throws CERT_RENEW_FAILED instead of returning success:false', async () => {
+  const errors = [];
+  await assert.rejects(
+    () => __private.runRenewal({}, {
+      config: config(),
+      apis: {
+        teo: async () => { throw new Error('teo down'); },
+        dnspod: async () => {},
+        ssl: async () => {},
+        scf: async () => ({})
+      },
+      logger: { log() {}, warn() {}, error: (line) => errors.push(line) }
+    }),
+    (error) => {
+      assert.equal(error.code, 'CERT_RENEW_FAILED');
+      assert.match(error.message, /^ALERT cert-renew failed step=read-expiry /);
+      assert.match(error.message, /teo down/);
+      return true;
+    }
+  );
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^ALERT cert-renew failed step=read-expiry /);
+});
+
+test('a due renewal without SCF_CUSTOM_DOMAIN fails instead of skipping the api bind', async () => {
+  const service = __private.createRenewService({
+    config: config({ scfCustomDomain: '' }),
+    apis: {
+      teo: async (action) => (action === 'DescribeAccelerationDomains' ? { AccelerationDomains: [] } : {}),
+      dnspod: async (action) => (action === 'CreateRecord' ? { RecordId: 1 } : {}),
+      ssl: async () => ({ CertificateId: 'cert-new' }),
+      scf: async () => { throw new Error('should not call scf'); }
+    },
+    acmeClient: acmeClientFor(async (options) => {
+      const challenge = { type: 'dns-01' };
+      await options.challengeCreateFn({ identifier: { value: 'demox.site' } }, challenge, 'txt');
+      await options.challengeRemoveFn({}, challenge);
+      return 'certificate';
+    }),
+    wait: async () => {},
+    logger: { log() {}, warn() {} }
+  });
+  await assert.rejects(
+    () => service.renew({ force: true }),
+    (error) => error.step === 'bind-scf' && /SCF_CUSTOM_DOMAIN/.test(error.message)
+  );
+});
+
+test('not-due check still skips renewal when SCF custom domain is unset', async () => {
+  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  const service = __private.createRenewService({
+    config: config({ scfCustomDomain: '' }),
+    apis: {
+      teo: async () => ({
+        AccelerationDomains: [{
+          DomainName: '*.demox.site',
+          Certificate: { List: [{ Type: 'upload', CertId: 'cert-old', ExpireTime: future }] }
+        }]
+      }),
+      scf: async () => { throw new Error('should not call scf'); },
+      ssl: async () => { throw new Error('should not upload'); },
+      dnspod: async () => { throw new Error('should not write dns'); }
+    },
+    logger: { log() {}, warn() {} }
+  });
+  const result = await service.renew();
+  assert.equal(result.renewed, false);
+  assert.equal(result.reason, 'not_due');
 });
 
 test('challenge cleanup failure does not hide a successful issuance flow', async () => {

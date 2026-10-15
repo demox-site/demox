@@ -121,6 +121,8 @@ function createSystemFunctionRouter({ entries = loadSystemManifest(), loaders = 
       return await handler(scoped, context);
     } catch (error) {
       logger.error?.('系统函数路由失败:', entry.name, error.code || 'SYSTEM_FUNCTION_ERROR');
+      // 续期失败必须冒泡，定时器调用才算失败。收成 503 会让 SCF 把这次调用记成成功。
+      if (error?.code === 'CERT_RENEW_FAILED') throw error;
       return {
         statusCode: error.statusCode && Number.isInteger(error.statusCode) ? error.statusCode : 503,
         headers: { 'content-type': 'application/json' },

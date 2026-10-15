@@ -123,6 +123,33 @@ test('checked-in manifest routes monthly-renew to recovered cert-renew', () => {
   assert.equal(typeof require(modulePath).main, 'function');
 });
 
+test('cert renewal failure is not turned into a successful router response', async () => {
+  const error = new Error('ALERT cert-renew failed step=issue');
+  error.code = 'CERT_RENEW_FAILED';
+  const logs = [];
+  const router = createSystemFunctionRouter({
+    entries: [{
+      name: 'demox-system-cert-renew',
+      handler: 'main',
+      routePrefixes: [],
+      timerTriggers: ['monthly-renew'],
+      sourcePresent: true
+    }],
+    loaders: {
+      'demox-system-cert-renew': () => ({
+        main: async () => { throw error; }
+      })
+    },
+    logger: { error: (...args) => logs.push(args) }
+  });
+  await assert.rejects(
+    () => router({ Type: 'Timer', TriggerName: 'monthly-renew' }, {}),
+    (err) => err === error && err.code === 'CERT_RENEW_FAILED'
+  );
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][2], 'CERT_RENEW_FAILED');
+});
+
 test('system router rejects source paths outside the package root', async () => {
   const router = createSystemFunctionRouter({
     entries: [{ name: 'escape', routePrefixes: ['/escape'], sourceDir: '../outside', entrypoint: 'index.js', sourcePresent: true }]
