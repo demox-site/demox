@@ -218,7 +218,7 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
   assert.ok(manifest.functions.every((fn) => fn.runtimeVersion === '0.1.0'));
-  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.2');
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.3');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
   assert.equal(v.deployEntry(manifest).name, 'demox-function-api');
@@ -251,7 +251,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.match(websiteOnly.errors.join('\n'), /demox-function-api 的代码变了/);
 
   const websiteBumped = structuredClone(manifest);
-  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.3';
+  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.4';
   const websiteAfterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: websiteBumped,
@@ -275,7 +275,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.equal(testsOnly.ok, true, testsOnly.errors.join('\n'));
 
   const bumped = structuredClone(manifest);
-  bumped.functions[0].appVersion = '0.1.3';
+  bumped.functions[0].appVersion = '0.1.4';
   const afterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: bumped,
@@ -329,7 +329,7 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.equal(api.runtime.memoryMB, 512);
   assert.equal(api.runtime.timeoutSec, 300);
   assert.deepEqual(api.runtime.layers, []);
-  assert.equal(api.appVersion, '0.1.2');
+  assert.equal(api.appVersion, '0.1.3');
   assert.equal(api.runtimeVersion, '0.1.0');
   assert.equal(Object.hasOwn(live, 'seed'), false);
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
