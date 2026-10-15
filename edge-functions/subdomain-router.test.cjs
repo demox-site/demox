@@ -1030,11 +1030,14 @@ test('handle: www keeps its existing path (no 503 mapping, no retry, no route he
   assert.equal(routeOf(response), null);
 });
 
-test('handle: platform hosts (sites.demox.site = www origin) keep passthrough when resolve errors', async () => {
+test('handle: origin hosts fail closed when by-id resolve errors and do not passthrough', async () => {
   const r = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
-  const { response } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
-  assert.notEqual(response.status, 503);
-  assert.equal(r.calls.origin.at(-1), 'https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
+  const { response, html } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.match(html, /暂时无法访问/);
+  assert.equal(r.calls.origin.length, 0, 'resolve error must not fetch the origin object');
+  assert.ok(r.calls.resolve.some((payload) => payload.websiteId === 'EPX2UU43' && payload.uid === 'x'));
 });
 
 test('route header: hit / miss / stale are reported on site responses', async () => {

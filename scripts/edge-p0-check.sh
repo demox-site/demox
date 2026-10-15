@@ -19,6 +19,15 @@
 #   BASELINE=/path/baseline.json   # 必填（生产发布时）：发布前用 `python3 scripts/edge-p0-matrix.py baseline OUT.json`
 #                                  # 在旧代码上记一份（GET/HEAD/POST/PUT/OPTIONS × www/coverage/uv0fkz31/letters-from-the-hill/函数）；
 #                                  # 发布后带 cookie 逐项比状态码 + 正文 sha256，并检查两条过期 Set-Cookie、函数看不到 demox_access。
+# 源站路径（K0，发布后才有意义；本脚本不部署）：
+#   ORIGIN_HOSTS="sites.demox.site site-3.demox.site"
+#   BANNED_PATHS="sites/<uid>/<ID>/dist/index.html ..."   # 封禁 → 403（或连接被拒绝）
+#   PRIVATE_PATHS="sites/<uid>/<ID>/..."                  # 不写死私有站点 uid；未设置则跳过
+#   PUBLIC_PATHS="sites/<uid>/<ID>/dist/index.html ..."   # 公开 → 200
+#   FIRST_SCREEN_BUDGET_MS=3000
+#   ENFORCE_SITE_N=1    # site-N 今天不经 EdgeOne。默认只记录 GAP，不因此失败；K3 之后设 1
+#   SKIP_ORIGIN=1       # 只跑本地封禁缓存模拟，不请求源站
+# 每个源站 host × path 都会打 http 和 https。site-N 的 https 证书不匹配只记一笔，不单独失败。
 set -u
 WWW_URL=${WWW_URL:-https://www.demox.site/}
 SITE_URLS=${SITE_URLS:-"https://coverage.demox.site/ https://uv0fkz31.demox.site/ https://letters-from-the-hill.demox.site/"}
@@ -88,6 +97,12 @@ if [ -n "${BASELINE:-}" ]; then
   python3 "$(dirname "$0")/edge-p0-matrix.py" compare "$BASELINE" || fail=1
 else
   echo "WARN BASELINE not set: method matrix vs baseline skipped (required for production releases)"
+fi
+
+# K0：本地模拟「正缓存 ≤60s，封禁在 1 分钟内生效」。不访问网络。
+python3 "$(dirname "$0")/edge-p0-matrix.py" simulate-ban || fail=1
+if [ "${SKIP_ORIGIN:-0}" != 1 ]; then
+  python3 "$(dirname "$0")/edge-p0-matrix.py" origin || fail=1
 fi
 
 if [ $fail = 0 ]; then echo "P0 OK (with and without demox_access)"; else echo "P0 FAILED → roll back ef-1281msyw now"; fi

@@ -7598,8 +7598,57 @@ async function resolveSiteMetadataByCustomHost(hostname) {
   return suffix[0] || null;
 }
 
+function originIdVerdict(fields) {
+  return {
+    statusCode: 200,
+    headers: getCORSHeaders(),
+    body: JSON.stringify(fields)
+  };
+}
+
+// 公开的按 ID 裁决。只返回 allow / reason /（放行时的）path。
+// 私有、封禁、uid 不符都是同一种 blocked，不带 owner、visibility、密钥。
+async function handleResolveSiteById(body) {
+  const websiteId = String(body.websiteId || '').trim();
+  const uid = body.uid == null ? '' : String(body.uid);
+  if (!/^[A-Za-z0-9]{1,64}$/.test(websiteId)) {
+    return originIdVerdict({ success: true, allow: false, reason: 'not_found' });
+  }
+  if (!uid || uid.length > 128 || /[/\\\r\n]/.test(uid)) {
+    return originIdVerdict({ success: true, allow: false, reason: 'blocked' });
+  }
+  try {
+    const rows = await query(
+      'SELECT w.path AS path, w.user_id AS user_id, w.website_id AS website_id, COALESCE(NULLIF(w.visibility, \'\'), ?) AS visibility FROM websites w WHERE w.website_id = ? LIMIT 1',
+      [VISIBILITY_PUBLIC, websiteId]
+    );
+    const site = rows && rows[0];
+    if (!site || !site.path) {
+      return originIdVerdict({ success: true, allow: false, reason: 'not_found' });
+    }
+    if (String(site.user_id) !== uid) {
+      return originIdVerdict({ success: true, allow: false, reason: 'blocked' });
+    }
+    const visibility = normalizeVisibility(site.visibility);
+    if (visibility === VISIBILITY_DISABLED || visibility === VISIBILITY_PRIVATE) {
+      return originIdVerdict({ success: true, allow: false, reason: 'blocked' });
+    }
+    return originIdVerdict({ success: true, allow: true, path: site.path });
+  } catch (error) {
+    console.error('按站点 ID 解析失败', error && error.name);
+    return {
+      statusCode: 200,
+      headers: getCORSHeaders(),
+      body: JSON.stringify({ success: false, message: 'resolve failed' })
+    };
+  }
+}
+
 async function handleResolveSubdomain(event) {
   const body = event.body || event;
+  if (body && body.websiteId != null && String(body.websiteId).trim() !== '') {
+    return handleResolveSiteById(body);
+  }
   let { subdomain, domain } = body;
   const requestedHost = normalizeCustomHostname(body.host);
   if (requestedHost && !subdomain) {
