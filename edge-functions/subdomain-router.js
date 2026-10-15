@@ -59,8 +59,13 @@ var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL。
 // 节点上的缓存命中绕不过守卫，靠的是触发规则命中时函数先于节点缓存执行。
 var ORIGIN_OBJECT_MAX_AGE = 60;
-// 源站 host 的 OPTIONS 预检 Allow-Headers。云帆以后若要加 baseline 里的额外项，只改这一行。
+// 上线默认关闭，与现网 baseline 一致（启明 + 云帆，#84）。
+// 只有布尔 true 才打开完整 CORS：OPTIONS 与放行的 GET/HEAD 带齐固定头，
+// 400/403/404/405/503 仍然不带。环境变量缺失、字符串、数字或其他写法都当作关闭，
+// 避免拼写错误把 CORS 打开。不回显请求的 Origin，也不发送 Allow-Credentials。
+var CORS_ENABLED = false;
 var ORIGIN_OPTIONS_CORS_ALLOW_HEADERS = 'Range, If-None-Match, If-Modified-Since';
+var ORIGIN_CORS_EXPOSE_HEADERS = 'Content-Length, Content-Range, ETag, Last-Modified';
 // 内部回源令牌 v1.<kid>.<exp>.<mac>。A/B 两个槽都参与校验；签名用 KID 点名的那个槽。
 // 短于 32 字节当作没配。仓库不放密钥值，由云帆用 Secret 配置。旧的单槽变量不再读取。
 var ORIGIN_GUARD_SECRET_SLOTS = { A: 'DEMOX_ORIGIN_GUARD_SECRET_A', B: 'DEMOX_ORIGIN_GUARD_SECRET_B' };
@@ -2315,7 +2320,7 @@ function capOriginObjectCache(resp, route) {
       headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
-    // 源站 GET/HEAD 原样保留回源响应里的 Access-Control-*，这里不删。
+    applyOriginObjectCors(headers, resp.status);
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: headers });
   } catch (e) {
     return resp;
@@ -2532,21 +2537,58 @@ async function handleRequest(req, event, ctx) {
   return fetch(req);
 }
 
-// 源站 host，以及本来要透传的 host，OPTIONS 都在边缘本地 204。不查库、不回源。
-// 不带 credentials 头。Allow-Headers 只读 ORIGIN_OPTIONS_CORS_ALLOW_HEADERS。
-function originOptionsResponse() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      Allow: 'GET, HEAD',
-      'Cache-Control': 'no-store',
-      'x-demox-route': 'origin-guard=options',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': ORIGIN_OPTIONS_CORS_ALLOW_HEADERS,
-      'Access-Control-Max-Age': '86400'
-    }
+function stripAccessControlHeaders(headers) {
+  const drop = [];
+  headers.forEach(function (value, name) {
+    if (String(name).toLowerCase().indexOf('access-control-') === 0) drop.push(name);
   });
+  for (let i = 0; i < drop.length; i += 1) headers.delete(drop[i]);
+}
+
+function corsDeniedStatus(status) {
+  return status === 400 || status === 403 || status === 404 || status === 405 || status === 503;
+}
+
+function corsAllowedObjectStatus(status) {
+  return status === 304 || (status >= 200 && status < 300);
+}
+
+// 只有精确的布尔 true 才打开。env 上有 CORS_ENABLED 时以它为准，缺省才看硬编码。
+// 字符串 'true' / '1' / 'yes'、数字 1、空串和其他写法都是关闭。
+function originCorsEnabled() {
+  try {
+    if (typeof env !== 'undefined' && env && Object.prototype.hasOwnProperty.call(env, 'CORS_ENABLED')) {
+      return env.CORS_ENABLED === true;
+    }
+  } catch (e) {}
+  return CORS_ENABLED === true;
+}
+
+// 先清掉回源带上来的 Access-Control-*，再按开关决定是否写固定头。
+// 错误状态什么都不写。不回显 Origin，不写 Allow-Credentials。
+function applyOriginObjectCors(headers, status) {
+  stripAccessControlHeaders(headers);
+  if (!originCorsEnabled()) return;
+  if (corsDeniedStatus(status) || !corsAllowedObjectStatus(status)) return;
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Access-Control-Expose-Headers', ORIGIN_CORS_EXPOSE_HEADERS);
+}
+
+// 源站 host，以及本来要透传的 host，OPTIONS 都在边缘本地 204。不查库、不回源。
+// 默认不附任何 Access-Control-*。完整模式只在 originCorsEnabled() 时附上固定头。
+function originOptionsResponse() {
+  const headers = {
+    Allow: 'GET, HEAD',
+    'Cache-Control': 'no-store',
+    'x-demox-route': 'origin-guard=options'
+  };
+  if (originCorsEnabled()) {
+    headers['Access-Control-Allow-Origin'] = '*';
+    headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS';
+    headers['Access-Control-Allow-Headers'] = ORIGIN_OPTIONS_CORS_ALLOW_HEADERS;
+    headers['Access-Control-Max-Age'] = '86400';
+  }
+  return new Response(null, { status: 204, headers: headers });
 }
 
 // 已解析的用户站点（非 www）：与原 path 分支逻辑一致，回源走 rewriteOrigin 的加固路径。

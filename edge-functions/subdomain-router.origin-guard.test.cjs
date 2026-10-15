@@ -42,7 +42,7 @@ function headerBag(input, init) {
   return new Headers();
 }
 
-function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null } = {}) {
+function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null, cors = null } = {}) {
   const calls = { resolve: [], origin: [] };
   const cache = fakeCache();
   let handle = null;
@@ -105,6 +105,7 @@ function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver
       ctx
     );
   }
+  if (cors === true || cors === false) vm.runInContext(`CORS_ENABLED = ${cors};`, ctx);
   handle = ctx.__testHooks.handle;
   const visit = async (url, headers) => {
     const response = await handle(new Request(url, { headers: headers || { Accept: 'text/html' } }), event);
@@ -133,6 +134,21 @@ function allow(id, uid) {
   return { success: true, allow: true, path: `sites/${uid}/${id}/dist` };
 }
 
+function corsHeaderNames(response) {
+  const names = [];
+  response.headers.forEach((value, name) => {
+    if (name.toLowerCase().indexOf('access-control-') === 0) names.push(name.toLowerCase());
+  });
+  names.sort();
+  return names;
+}
+
+function assertNoCors(response, label) {
+  assert.deepEqual(corsHeaderNames(response), [], label || String(response.status));
+  assert.equal(response.headers.get('access-control-allow-origin'), null, label);
+  assert.equal(response.headers.get('access-control-allow-credentials'), null, label);
+}
+
 function assertOptionsCors(response) {
   assert.equal(response.status, 204);
   assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -142,16 +158,22 @@ function assertOptionsCors(response) {
   assert.equal(response.headers.get('access-control-allow-methods'), 'GET, HEAD, OPTIONS');
   assert.equal(response.headers.get('access-control-allow-headers'), 'Range, If-None-Match, If-Modified-Since');
   assert.equal(response.headers.get('access-control-max-age'), '86400');
-  const corsNames = [];
-  response.headers.forEach((value, name) => {
-    if (name.toLowerCase().indexOf('access-control-') === 0) corsNames.push(name.toLowerCase());
-  });
-  corsNames.sort();
-  assert.deepEqual(corsNames, [
+  assert.deepEqual(corsHeaderNames(response), [
     'access-control-allow-headers',
     'access-control-allow-methods',
     'access-control-allow-origin',
     'access-control-max-age'
+  ]);
+}
+
+function assertObjectCors(response) {
+  assert.equal(response.headers.get('access-control-allow-origin'), '*');
+  assert.equal(response.headers.get('access-control-expose-headers'), 'Content-Length, Content-Range, ETag, Last-Modified');
+  assert.equal(response.headers.get('access-control-allow-credentials'), null);
+  assert.equal(response.headers.get('access-control-allow-methods'), null);
+  assert.deepEqual(corsHeaderNames(response), [
+    'access-control-allow-origin',
+    'access-control-expose-headers'
   ]);
 }
 
@@ -286,6 +308,7 @@ test('a public origin path passes through with the same body and a client max-ag
   assert.equal(html, PUBLIC_HTML);
   assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
   assert.equal(response.headers.get('cache-control'), 'public, max-age=60');
+  assertNoCors(response, 'public GET 200');
   assert.equal(r.calls.resolve[0].websiteId, 'PUBLIC1');
   assert.equal(r.calls.resolve[0].uid, 'owner-1');
   assert.equal(r.calls.resolve[0].subdomain, undefined);
@@ -956,22 +979,28 @@ test('M4: origin hosts allow GET and HEAD; OPTIONS is a local 204 and other meth
     assert.equal(response.status, 405, method);
     assert.match(response.headers.get('allow') || '', /GET/);
     assert.equal(response.headers.get('cache-control'), 'no-store');
+    assertNoCors(response, method);
   }
   assert.equal(r.calls.resolve.length, 0);
   assert.equal(r.calls.origin.length, 0);
   const head = await r.call(banned, { method: 'HEAD', headers: { Accept: 'text/html' } });
   assert.equal(head.response.status, 403);
+  assertNoCors(head.response, 'HEAD 403');
   assert.equal(r.calls.origin.length, 0, 'HEAD on a banned path does not fetch origin');
   const beforeOptions = { resolve: r.calls.resolve.length, origin: r.calls.origin.length };
   const options = await r.call('https://sites-eclick.demox.site/sites/owner-1/BANNED1/dist/index.html', {
     method: 'OPTIONS',
     headers: { Accept: 'text/html', 'x-demox-origin-token': putToken }
   });
-  assertOptionsCors(options.response);
+  assert.equal(options.response.status, 204);
+  assert.equal(options.response.headers.get('cache-control'), 'no-store');
+  assert.match(options.response.headers.get('allow') || '', /^GET, HEAD$/);
+  assertNoCors(options.response, 'OPTIONS 204');
   assert.equal(r.calls.resolve.length, beforeOptions.resolve);
   assert.equal(r.calls.origin.length, beforeOptions.origin);
   const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(pub.response.status, 200);
+  assertNoCors(pub.response, 'GET 200');
 });
 
 test('OPTIONS on static, cdn, unknown, and unbound custom hosts is a local 204 and does not fetch origin', async () => {
@@ -991,40 +1020,171 @@ test('OPTIONS on static, cdn, unknown, and unbound custom hosts is a local 204 a
         method: 'OPTIONS',
         headers: { Accept: 'text/html' }
       });
-      assertOptionsCors(response);
+      assert.equal(response.status, 204, host + path);
+      assert.equal(response.headers.get('cache-control'), 'no-store', host + path);
+      assert.match(response.headers.get('allow') || '', /^GET, HEAD$/, host + path);
+      assertNoCors(response, host + path);
       assert.equal(r.calls.origin.length, before, host + path);
     }
   }
   assert.match(source, /var ORIGIN_OPTIONS_CORS_ALLOW_HEADERS = 'Range, If-None-Match, If-Modified-Since';/);
 });
 
-test('GET and HEAD on origin hosts keep CORS headers sent by the origin', async () => {
+test('complete CORS on origin hosts: OPTIONS, allowed GET/HEAD, and no headers on errors', async () => {
+  const evil = { Accept: 'text/html', Origin: 'https://evil.example' };
   const r = makeGuard({
-    resolver: () => json(allow('PUBLIC1', 'owner-1')),
+    cors: true,
+    resolver: (payload) => {
+      if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+      if (payload.websiteId === 'MISSING') return json({ success: true, allow: false, reason: 'not_found' });
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId === 'DOWN1') throw new Error('resolve down');
+      throw new Error('unexpected id ' + payload.websiteId);
+    },
+    origin: (info) => {
+      const status = info.href.includes('/partial') ? 206 : info.href.includes('/revalidate') ? 304 : 200;
+      return new Response(status === 304 ? null : PUBLIC_HTML, {
+        status,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Access-Control-Allow-Origin': 'https://evil.example',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Expose-Headers': 'X-From-Origin',
+          ETag: '"abc"'
+        }
+      });
+    }
+  });
+  const options = await r.call('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', {
+    method: 'OPTIONS',
+    headers: evil
+  });
+  assertOptionsCors(options.response);
+  assert.equal(r.calls.origin.length, 0);
+  assert.equal(r.calls.resolve.length, 0);
+  assert.notEqual(options.response.headers.get('access-control-allow-origin'), 'https://evil.example');
+
+  for (const method of ['GET', 'HEAD']) {
+    const { response } = await r.call('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', { method, headers: evil });
+    assert.equal(response.status, 200, method);
+    assertObjectCors(response);
+    assert.notEqual(response.headers.get('access-control-allow-origin'), 'https://evil.example');
+  }
+  for (const spec of [
+    ['GET', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/partial'],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/revalidate']
+  ]) {
+    const { response } = await r.call(spec[1], { method: spec[0], headers: evil });
+    assert.equal(response.status, spec[1].includes('partial') ? 206 : 304, spec[1]);
+    assertObjectCors(response);
+  }
+
+  const denied = [
+    ['400', 'https://sites.demox.site/sites/owner-1/PUBLIC1/%2e%2e%2fsecret', 'GET'],
+    ['403', 'https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html', 'GET'],
+    ['404', 'https://sites.demox.site/sites/owner-1/MISSING/dist/index.html', 'GET'],
+    ['405', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 'PUT'],
+    ['503', 'https://sites.demox.site/sites/owner-1/DOWN1/dist/index.html', 'GET']
+  ];
+  for (const row of denied) {
+    const { response } = await r.call(row[1], { method: row[2], headers: evil });
+    assert.equal(response.status, Number(row[0]), row[0]);
+    assertNoCors(response, row[0]);
+  }
+});
+
+test('default CORS is off: OPTIONS 204 and GET/HEAD responses carry no Access-Control-* headers', async () => {
+  assert.match(source, /var CORS_ENABLED = false;/);
+  assert.match(source, /return env\.CORS_ENABLED === true/);
+  assert.match(source, /return CORS_ENABLED === true/);
+  assert.doesNotMatch(source, /if \(CORS_ENABLED\)/);
+  assert.doesNotMatch(source, /if \(!CORS_ENABLED\)/);
+  const evil = { Accept: 'text/html', Origin: 'https://evil.example' };
+  const r = makeGuard({
+    resolver: (payload) => {
+      if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId === 'MISSING') return json({ success: true, allow: false, reason: 'not_found' });
+      if (payload.websiteId === 'DOWN1') throw new Error('resolve down');
+      return json({ success: false, message: 'not found' });
+    },
     origin: () => new Response(PUBLIC_HTML, {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': 'Range, If-None-Match, If-Modified-Since, Content-Type',
-        'Access-Control-Expose-Headers': 'ETag, Content-Length',
-        'Access-Control-Max-Age': '600'
+        'Access-Control-Allow-Origin': 'https://evil.example',
+        'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Expose-Headers': 'X-From-Origin'
       }
     })
   });
-  for (const method of ['GET', 'HEAD']) {
-    const { response } = await r.call('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', {
-      method,
-      headers: { Accept: 'text/html' }
-    });
-    assert.equal(response.status, 200, method);
-    assert.equal(response.headers.get('access-control-allow-origin'), '*', method);
-    assert.equal(response.headers.get('access-control-allow-methods'), 'GET, HEAD, OPTIONS', method);
-    assert.equal(response.headers.get('access-control-allow-headers'), 'Range, If-None-Match, If-Modified-Since, Content-Type', method);
-    assert.equal(response.headers.get('access-control-expose-headers'), 'ETag, Content-Length', method);
-    assert.equal(response.headers.get('access-control-max-age'), '600', method);
+  assert.equal(Object.prototype.hasOwnProperty.call(r.ctx.env, 'CORS_ENABLED'), false);
+  const cases = [
+    ['OPTIONS', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 204],
+    ['GET', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 200],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 200],
+    ['GET', 'https://sites.demox.site/sites/owner-1/PUBLIC1/%2e%2e%2fsecret', 400],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/PUBLIC1/%2e%2e%2fsecret', 400],
+    ['GET', 'https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html', 403],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html', 403],
+    ['GET', 'https://sites.demox.site/sites/owner-1/MISSING/dist/index.html', 404],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/MISSING/dist/index.html', 404],
+    ['PUT', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 405],
+    ['POST', 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', 405],
+    ['GET', 'https://sites.demox.site/sites/owner-1/DOWN1/dist/index.html', 503],
+    ['HEAD', 'https://sites.demox.site/sites/owner-1/DOWN1/dist/index.html', 503],
+    ['OPTIONS', 'https://static.demox.site/', 204],
+    ['OPTIONS', 'https://cdn.demox.site/', 204],
+    ['OPTIONS', 'https://not-bound.example/sites/x', 204]
+  ];
+  for (const row of cases) {
+    const { response } = await r.call(row[1], { method: row[0], headers: evil });
+    assert.equal(response.status, row[2], row[0] + ' ' + row[1]);
+    assertNoCors(response, row[0] + ' ' + row[2]);
+    assert.equal(response.headers.get('access-control-allow-origin'), null);
+    assert.equal(response.headers.get('access-control-allow-credentials'), null);
+    assert.equal(response.headers.get('access-control-expose-headers'), null);
   }
+});
+
+test('unrecognized CORS_ENABLED values stay off, and only boolean true opens full mode', async () => {
+  const evil = { Accept: 'text/html', Origin: 'https://evil.example' };
+  const resolver = (payload) => {
+    if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+    throw new Error('unexpected id ' + payload.websiteId);
+  };
+  const origin = () => new Response(PUBLIC_HTML, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Access-Control-Allow-Origin': 'https://evil.example',
+      'Access-Control-Allow-Credentials': 'true'
+    }
+  });
+  const url = 'https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html';
+  const opened = makeGuard({ cors: true, resolver, origin });
+  for (const value of ['true', 'TRUE', '1', 'yes', 'on', 1, '', 'false']) {
+    opened.ctx.env.CORS_ENABLED = value;
+    for (const method of ['OPTIONS', 'GET', 'HEAD']) {
+      const { response } = await opened.call(url, { method, headers: evil });
+      if (method === 'OPTIONS') assert.equal(response.status, 204, String(value));
+      else assert.equal(response.status, 200, method + ' ' + String(value));
+      assertNoCors(response, method + ' env=' + String(value));
+    }
+  }
+  const missing = makeGuard({ resolver, origin });
+  vm.runInContext('CORS_ENABLED = undefined;', missing.ctx);
+  delete missing.ctx.env.CORS_ENABLED;
+  const unset = await missing.call(url, { method: 'OPTIONS', headers: evil });
+  assert.equal(unset.response.status, 204);
+  assertNoCors(unset.response, 'unset var and missing env');
+  const viaEnv = makeGuard({ cors: false, resolver, origin });
+  viaEnv.ctx.env.CORS_ENABLED = true;
+  const opted = await viaEnv.call(url, { method: 'OPTIONS', headers: evil });
+  assertOptionsCors(opted.response);
+  const got = await viaEnv.call(url, { method: 'GET', headers: evil });
+  assert.equal(got.response.status, 200);
+  assertObjectCors(got.response);
 });
 
 test('a resolved site OPTIONS still reaches origin', async () => {
