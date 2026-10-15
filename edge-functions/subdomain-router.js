@@ -575,14 +575,29 @@ function envString(name) {
 // DEMOX_TEST_HOST_MAP 只在测试函数上设置。生产不设，下面的解析结果是 null，
 // 缓存前缀、回源主机、响应头都保持原样。
 // 值是 JSON：物理主机 → 逻辑主机，例如 "k2t-www.demox.site": "www.demox.site"。
+// 键必须是 k2t(-[a-z0-9]+)*.demox.site。值只能是 demox.site、www.demox.site、
+// sites.demox.site，或单个用户站标签（不要 api、site-N、k2t-*、sites-*）。
+// 空表、非对象、任一键或值不合格：整张表作废，当成没设。不换缓存前缀，不全站 599。
 // 分类用逻辑主机。回源 URL 和 301 目标用物理主机。不重建入站 Request，不改它的 Host。
 var testHostMapState = null;
 var testHostMapReady = false;
 var testHostUnmappedWarned = false;
 var testHostMapRejectedWarned = false;
+var TEST_HOST_MAP_KEY_RE = /^k2t(-[a-z0-9]+)*\.demox\.site$/;
 
 function normalizeHostName(value) {
   return String(value || '').trim().toLowerCase().replace(/\.+$/, '');
+}
+
+function testHostMapValueOk(value) {
+  if (value === 'demox.site' || value === 'www.demox.site' || value === 'sites.demox.site') return true;
+  const match = /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.demox\.site$/.exec(value);
+  if (!match) return false;
+  const label = match[1];
+  if (label === 'www' || label === 'sites' || label === 'api' || label === 'demox') return false;
+  if (label.indexOf('k2t-') === 0 || label.indexOf('sites-') === 0) return false;
+  if (/^site-\d+$/.test(label)) return false;
+  return true;
 }
 
 function warnTestHostMapRejected() {
@@ -597,6 +612,12 @@ function warnUnmappedTestHost() {
   try { console.warn('[subdomain-router] unmapped test host'); } catch (e) {}
 }
 
+function rejectTestHostMap() {
+  warnTestHostMapRejected();
+  testHostMapState = null;
+  return null;
+}
+
 function testHostMap() {
   if (testHostMapReady) return testHostMapState;
   testHostMapReady = true;
@@ -607,18 +628,15 @@ function testHostMap() {
   }
   let parsed = null;
   try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return rejectTestHostMap();
+  const keys = Object.keys(parsed);
+  if (!keys.length) return rejectTestHostMap();
   const map = Object.create(null);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    warnTestHostMapRejected();
-  } else {
-    const keys = Object.keys(parsed);
-    for (let i = 0; i < keys.length; i += 1) {
-      const physical = normalizeHostName(keys[i]);
-      const logical = normalizeHostName(parsed[keys[i]]);
-      if (!physical || !logical) continue;
-      if (physical.indexOf('://') !== -1 || logical.indexOf('://') !== -1) continue;
-      map[physical] = logical;
-    }
+  for (let i = 0; i < keys.length; i += 1) {
+    const physical = String(keys[i] || '').trim().toLowerCase();
+    const logical = String(parsed[keys[i]] == null ? '' : parsed[keys[i]]).trim().toLowerCase();
+    if (!TEST_HOST_MAP_KEY_RE.test(physical) || !testHostMapValueOk(logical)) return rejectTestHostMap();
+    map[physical] = logical;
   }
   testHostMapState = map;
   // 节点上的 caches.default 被所有函数共享。映射打开时换前缀，避免读到生产条目。
@@ -632,9 +650,12 @@ function testHostMapActive() {
 }
 
 function logicalHostName(hostname) {
-  const name = normalizeHostName(hostname);
+  const raw = String(hostname || '').trim().toLowerCase();
   const map = testHostMap();
-  if (!map) return name;
+  // 映射没打开时保留 URL 上的尾点，跟生产一致：demox.site. 不是 apex 301，
+  // www.demox.site. 不走主站自定义 404。只在查表前去掉尾点。
+  if (!map) return raw;
+  const name = raw.replace(/\.+$/, '');
   return map[name] || name;
 }
 
@@ -2765,10 +2786,12 @@ function originAuthorityMismatchResponse() {
 async function handleRequest(req, event, ctx) {
   const u = new URL(req.url);
   originGuardSigningSlot();
-  const urlHost = normalizeHostName(u.hostname);
+  // 令牌绑定请求 URL 的主机，尾点保留。映射未设时这和改映射之前一样。
+  const urlHost = String(u.hostname || '').trim().toLowerCase();
+  const lookupHost = urlHost.replace(/\.+$/, '');
   // 映射打开时，没列进表的 *.demox.site（api 和 site-N 除外）直接 599，不回源。
-  // 避免测试函数把流量送进生产主机。不改入站 Request。
-  if (testHostMapActive() && isDemoxZoneHost(urlHost) && !testHostMap()[urlHost] && !isTestHostExempt(urlHost)) {
+  // 查表前去掉尾点，所以 k2t-www.demox.site. 仍按 www。不改入站 Request。
+  if (testHostMapActive() && isDemoxZoneHost(lookupHost) && !testHostMap()[lookupHost] && !isTestHostExempt(lookupHost)) {
     return unmappedTestHostResponse();
   }
   const host = logicalHostName(urlHost);

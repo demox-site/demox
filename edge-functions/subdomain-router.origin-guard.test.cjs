@@ -2335,22 +2335,129 @@ test('DEMOX_TEST_HOST_MAP classifies logical hosts and 599s every other demox ho
   assert.equal(banHost.response.headers.get('x-demox-env'), 'nonprod');
 });
 
-test('a rejected DEMOX_TEST_HOST_MAP fails closed with a fixed warn and 599', async () => {
+function trailingDotResolver(payload) {
+  if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+  return k2tResolver(payload);
+}
+
+function pageMissingIndexOk(info) {
+  if (info.href.endsWith('/index.html')) {
+    return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+  if (info.href.includes('/404.html')) {
+    return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+  return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+}
+
+test('trailing-dot hosts match production when DEMOX_TEST_HOST_MAP is unset', async () => {
   const r = makeGuard({
     secretA: SECRET_A,
-    hostMap: '{not-json',
-    resolver: () => { throw new Error('resolve must not run'); }
+    kid: 'A',
+    resolver: trailingDotResolver,
+    origin: pageMissingIndexOk
   });
-  const home = await r.visit('https://k2t-www.demox.site/');
-  assert.equal(home.response.status, 599);
-  assert.equal(home.html, 'unmapped-host');
-  assert.equal(home.response.headers.get('x-demox-route'), 'test-host=unmapped');
-  assert.equal(home.response.headers.get('x-demox-env'), 'nonprod');
-  assert.equal(r.calls.origin.length, 0);
-  assert.equal(r.calls.resolve.length, 0);
-  assert.ok(r.warns.includes('[subdomain-router] test host map rejected'));
-  assert.equal(r.warns.some((line) => line.includes(SECRET_A) || line.includes('not-json')), false);
-  assert.equal(r.cache.puts.length, 0);
+  const apex = await r.call('https://demox.site./');
+  assert.equal(apex.response.status, 503);
+  assert.equal(apex.response.headers.get('location'), null);
+  assert.notEqual(apex.response.status, 301);
+  const plain = await r.call('https://demox.site/pricing');
+  assert.equal(plain.response.status, 301);
+  assert.equal(plain.response.headers.get('location'), 'https://www.demox.site/pricing');
+
+  const dotted = await r.visit('https://www.demox.site./nope');
+  assert.equal(dotted.response.status, 200);
+  assert.match(dotted.html, /Public body/);
+  assert.equal(dotted.html.includes('Missing page'), false);
+  const undotted = await r.visit('https://www.demox.site/nope');
+  assert.equal(undotted.response.status, 404);
+  assert.match(undotted.html, /Missing page/);
+
+  const path = '/sites/owner-1/PUBLIC1/dist/index.html';
+  const token = await r.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  assert.ok(token);
+  const headers = { Accept: 'text/html', 'x-demox-origin-token': token };
+  const dottedSites = await r.visit('https://sites.demox.site.' + path, headers);
+  assert.notEqual(dottedSites.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(dottedSites.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  const exactSites = await r.visit('https://sites.demox.site' + path, headers);
+  assert.equal(exactSites.response.headers.get('x-demox-route'), 'origin-guard=internal');
+});
+
+test('trailing-dot k2t hosts follow the map, and production dotted hosts stay 599', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    hostMap: K2T_HOST_MAP,
+    resolver: trailingDotResolver,
+    origin: pageMissingIndexOk
+  });
+  const nope = await r.visit('https://k2t-www.demox.site./nope');
+  assert.equal(nope.response.status, 404);
+  assert.match(nope.html, /Missing page/);
+  assert.equal(nope.response.headers.get('x-demox-env'), 'nonprod');
+  const apex = await r.call('https://k2t-apex.demox.site./pricing');
+  assert.equal(apex.response.status, 301);
+  assert.equal(apex.response.headers.get('location'), 'https://k2t-www.demox.site/pricing');
+  const prodWww = await r.visit('https://www.demox.site./');
+  assert.equal(prodWww.response.status, 599);
+  const prodApex = await r.call('https://demox.site./');
+  assert.equal(prodApex.response.status, 599);
+
+  const path = '/sites/owner-1/PUBLIC1/dist/index.html';
+  const token = await r.ctx.__testHooks.signOriginInternalToken('GET', 'k2t-sites.demox.site', path, '');
+  const headers = { Accept: 'text/html', 'x-demox-origin-token': token };
+  const dotted = await r.visit('https://k2t-sites.demox.site.' + path, headers);
+  assert.notEqual(dotted.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(dotted.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  const exact = await r.visit('https://k2t-sites.demox.site' + path, headers);
+  assert.equal(exact.response.headers.get('x-demox-route'), 'origin-guard=internal');
+});
+
+test('a rejected DEMOX_TEST_HOST_MAP behaves as unset and never 599s the zone', async () => {
+  const cases = [
+    '{not-json',
+    '[]',
+    '{}',
+    JSON.stringify({ 'k2t-www.demox.site': 'www.demox.site', 'evil.com': 'www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site.': 'www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'api.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'site-1.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'k2t-pub.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'https://www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'www.demox.site.' })
+  ];
+  for (const hostMap of cases) {
+    const r = makeGuard({
+      secretA: SECRET_A,
+      hostMap,
+      resolver: k2tResolver
+    });
+    const home = await r.visit('https://www.demox.site/');
+    assert.equal(home.response.status, 200, hostMap);
+    assert.equal(home.response.headers.get('x-demox-env'), null, hostMap);
+    assert.notEqual(home.response.status, 599, hostMap);
+    const again = await r.visit('https://www.demox.site/pricing');
+    assert.equal(again.response.status, 200, hostMap);
+    const probe = await r.visit('https://k2t-www.demox.site/');
+    assert.notEqual(probe.response.status, 599, hostMap);
+    assert.equal(probe.response.headers.get('x-demox-env'), null, hostMap);
+    assert.ok(r.calls.resolve.some((payload) => payload.subdomain === 'k2t-www'), hostMap);
+    assert.equal(r.warns.filter((line) => line === '[subdomain-router] test host map rejected').length, 1, hostMap);
+    assert.equal(r.warns.some((line) => line.includes(SECRET_A) || line.includes('not-json') || line.includes('evil.com') || line.includes('k2t-www')), false, hostMap);
+    assert.equal(r.cache.puts.some((entry) => entry.key.includes('resolve-k2test')), false, hostMap);
+    assert.ok(r.cache.puts.some((entry) => entry.key.startsWith('https://resolve.demox.site/v2/')), hostMap);
+  }
+
+  const upper = makeGuard({
+    hostMap: { 'K2T-WWW.demox.site': 'WWW.demox.site' },
+    resolver: k2tResolver
+  });
+  const mapped = await upper.visit('https://k2t-www.demox.site/');
+  assert.equal(mapped.response.status, 200);
+  assert.equal(mapped.response.headers.get('x-demox-env'), 'nonprod');
+  assert.ok(upper.calls.resolve.some((payload) => payload.subdomain === 'www'));
+  assert.equal(upper.warns.some((line) => line.includes('test host map rejected')), false);
 });
 
 test('mapped k2t-www with a copied Host loops; the allowlist stays internal on k2t-sites', async () => {
