@@ -133,6 +133,31 @@ function allow(id, uid) {
   return { success: true, allow: true, path: `sites/${uid}/${id}/dist` };
 }
 
+function originTokenMessage(exp, method, host, pathname, search, kid) {
+  return [
+    'v1',
+    String(kid || ''),
+    String(exp),
+    String(method || 'GET').toUpperCase(),
+    String(host || '').toLowerCase(),
+    String(pathname || ''),
+    String(search || '')
+  ].join('\n');
+}
+
+async function hmacHex(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return Buffer.from(sig).toString('hex');
+}
+
 function verdictResolver(map) {
   return (payload, n, init, href) => {
     if (href.includes('/check-site-access')) return json({ success: true, allowed: true });
@@ -760,6 +785,20 @@ test('M1: banned /sites/ objects are not served from bypass hosts and do not fet
       assert.equal(r.calls.origin.length, before, host + bypassPath);
     }
   }
+  const formatPaths = [
+    '/%E2%80%8Bsites/x',
+    '/%C2%ADsites/x',
+    '/%FFsites/x'
+  ];
+  for (const host of bypassHosts) {
+    for (const formatPath of formatPaths) {
+      const before = r.calls.origin.length;
+      const { response } = await r.visit(host + formatPath);
+      assert.notEqual(response.status, 200, host + formatPath);
+      assert.equal(r.calls.origin.length, before, host + formatPath);
+      if (formatPath.indexOf('%FF') !== -1) assert.equal(response.status, 400, host + formatPath);
+    }
+  }
   const root = await r.visit('https://sites-eclick.demox.site/');
   assert.notEqual(root.response.status, 200);
   assert.equal(r.calls.origin.length, 0);
@@ -831,6 +870,28 @@ test('stored paths with leading or trailing slashes still serve a normal file', 
   }
 });
 
+test('stored paths with dot segments, percent, or backslash fail closed before signing or origin', async () => {
+  for (const stored of ['sites/u/../other', 'u/./abc', 'u/%2e%2e/x', 'u/a\\b']) {
+    const r = makeGuard({
+      secret: SECRET_A,
+      resolver: () => json({
+        success: true,
+        path: stored,
+        websiteId: 'ABC',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      })
+    });
+    const { response, html } = await r.visit('https://abc.demox.site/file.txt');
+    assert.equal(response.status, 503, stored);
+    assert.equal(response.headers.get('cache-control'), 'no-store', stored);
+    assert.doesNotMatch(html, /Public body/, stored);
+    assert.equal(r.calls.origin.length, 0, stored);
+    assert.equal(r.calls.origin.some((info) => info.token), false, stored);
+  }
+});
+
 test('M4: origin hosts allow GET and HEAD; OPTIONS is a local 204 and other methods are 405', async () => {
   const r = makeGuard({
     secret: SECRET_A,
@@ -865,6 +926,9 @@ test('M4: origin hosts allow GET and HEAD; OPTIONS is a local 204 and other meth
   assert.equal(options.response.status, 204);
   assert.equal(options.response.headers.get('cache-control'), 'no-store');
   assert.match(options.response.headers.get('allow') || '', /GET, HEAD/);
+  assert.equal(options.response.headers.get('access-control-allow-origin'), null);
+  assert.equal(options.response.headers.get('access-control-allow-methods'), null);
+  assert.equal(options.response.headers.get('access-control-allow-headers'), null);
   assert.equal(r.calls.resolve.length, beforeOptions.resolve);
   assert.equal(r.calls.origin.length, beforeOptions.origin);
   const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
@@ -912,18 +976,39 @@ test('M5: tokens are v1.kid.exp.mac, both slots verify, and a short secret stays
   assert.equal(swapped.response.status, 404);
   assert.ok(both.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'));
 
-  for (const kid of ['a', 'b']) {
-    both.ctx.env.DEMOX_ORIGIN_GUARD_KID = kid;
-    assert.equal(await both.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, ''), '', kid);
-    const beforeOrigin = both.calls.origin.length;
-    const { response } = await both.visit('https://sites.demox.site' + path, {
-      Accept: 'text/html',
-      'x-demox-origin-token': tokenA.replace('v1.A.', 'v1.' + kid + '.')
-    });
-    assert.equal(response.status, 404, kid);
-    assert.equal(both.calls.origin.length, beforeOrigin, kid);
+  const signedLower = [];
+  for (const spec of [
+    { kid: 'a', secret: SECRET_A, token: tokenA },
+    { kid: 'b', secret: SECRET_B, token: tokenB }
+  ]) {
+    const exp = spec.token.split('.')[2];
+    const upperMac = await hmacHex(spec.secret, originTokenMessage(exp, 'GET', 'sites.demox.site', path, '', spec.kid.toUpperCase()));
+    assert.equal(upperMac, spec.token.split('.')[3], spec.kid);
+    const lowerMac = await hmacHex(spec.secret, originTokenMessage(exp, 'GET', 'sites.demox.site', path, '', spec.kid));
+    assert.notEqual(lowerMac, upperMac, spec.kid);
+    signedLower.push('v1.' + spec.kid + '.' + exp + '.' + lowerMac);
+    both.ctx.env.DEMOX_ORIGIN_GUARD_KID = spec.kid;
+    assert.equal(await both.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, ''), '', spec.kid);
   }
   both.ctx.env.DEMOX_ORIGIN_GUARD_KID = 'A';
+  for (const token of signedLower) {
+    const lowerGuard = makeGuard({
+      secretA: SECRET_A,
+      secretB: SECRET_B,
+      kid: 'A',
+      resolver: (payload) => {
+        if (payload.websiteId === 'PUBLIC1') return json({ success: true, allow: false, reason: 'not_found' });
+        throw new Error('unexpected id ' + payload.websiteId);
+      }
+    });
+    const { response } = await lowerGuard.visit('https://sites.demox.site' + path, {
+      Accept: 'text/html',
+      'x-demox-origin-token': token
+    });
+    assert.notEqual(response.status, 200, token.slice(0, 4));
+    assert.equal(lowerGuard.calls.origin.length, 0, token.slice(0, 4));
+    assert.ok(lowerGuard.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'), token.slice(0, 4));
+  }
 
   const kept = makeGuard({
     secret: SECRET_A,

@@ -8,7 +8,8 @@
  * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
  * 源站路径（K2）：sites.demox.site、site-N、sites-*、origin-* 在回源前按站点 ID 裁决。
- * 其它 host 上，解码一次并忽略大小写后，第一段以 sites 开头的路径在两条透传之前也进入同一裁决。
+ * 其它 host 上，解码一次（百分号或 UTF-8 失败则 400）、去掉 Cf 格式字符并忽略大小写后，
+ * 第一段以 sites 开头的路径在两条透传之前也进入同一裁决。
  * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
  * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
  * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。缓存命中绕不过守卫，是因为函数先于节点缓存执行。
@@ -489,7 +490,7 @@ function isWwwRequest(u) {
 }
 
 function normalizeStoredOriginPath(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
+  return String(path || '').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
 }
 
 function joinStoredOriginPath(stored, rest) {
@@ -499,12 +500,30 @@ function joinStoredOriginPath(stored, rest) {
   return '/' + (base || tail);
 }
 
+// 折叠并去掉首尾斜杠之后：段是 . / ..，或仍含 %、反斜杠，则库路径不可用。
+// 不把反斜杠折成斜杠，否则 u\x 会变成合法前缀。
+function storedOriginPathUnsafe(path) {
+  const base = normalizeStoredOriginPath(path);
+  if (!base) return false;
+  if (base.indexOf('\\') !== -1 || base.indexOf('%') !== -1) return true;
+  const segments = base.split('/');
+  for (let i = 0; i < segments.length; i += 1) {
+    if (segments[i] === '.' || segments[i] === '..') return true;
+  }
+  return false;
+}
+
 async function rewriteOrigin(req, event, u, originPath, sitePath, originHost, meta) {
   // 只验用户请求路径。库里的 path 可能带首尾斜杠（storage prefix 以 / 结尾），
   // 拼进去再验会把整个站点打成 400。拼之前已经 normalizeStoredOriginPath。
   if (originPathUnsafe(u && u.pathname)) {
     if (meta) meta.originState = 'none';
     return originPathRejectResponse();
+  }
+  // 库路径在签名和回源之前失败关闭，不签发令牌。
+  if (storedOriginPathUnsafe(sitePath)) {
+    if (meta) meta.originState = 'none';
+    return siteUnavailableResponse('origin-stored=reject');
   }
   // www（主站）保持原路径：不加超时/重试，异常仍按原逻辑处理。
   if (isWwwRequest(u)) return rewriteOriginOnce(req, event, u, originPath, sitePath, originHost, meta, false);
@@ -2158,27 +2177,56 @@ function originPathRejectResponse() {
   });
 }
 
-// 透传前：解码一次、NFKC、小写。第一段去掉空白后只要以 sites 开头
-// （SITES、%53ITES、sites;x、sites-foo、全角或空白前缀）就进守卫，不能原样回源到桶 1。
-function pathnameTargetsOriginSites(pathname) {
-  const raw = String(pathname || '');
-  const candidates = [raw];
-  try {
-    const decoded = decodeURIComponent(raw);
-    if (decoded !== raw) candidates.push(decoded);
-  } catch (e) {}
-  for (let i = 0; i < candidates.length; i += 1) {
-    let text = candidates[i];
-    try { text = text.normalize('NFKC'); } catch (err) {}
-    text = text.toLowerCase();
-    const segments = text.split('/');
-    for (let j = 0; j < segments.length; j += 1) {
-      if (!segments[j]) continue;
-      if (segments[j].trim().indexOf('sites') === 0) return true;
-      break;
-    }
+// Unicode Cf（格式字符）。不用 \p{Cf}，避免边缘运行时不认 Unicode 属性转义导致整份脚本解析失败。
+function isUnicodeFormatChar(cp) {
+  return cp === 0xAD || cp === 0x61C || cp === 0x6DD || cp === 0x70F || cp === 0x8E2 ||
+    cp === 0x180E || cp === 0xFEFF || cp === 0x110BD || cp === 0x110CD || cp === 0xE0001 ||
+    (cp >= 0x600 && cp <= 0x605) ||
+    (cp >= 0x890 && cp <= 0x891) ||
+    (cp >= 0x200B && cp <= 0x200F) ||
+    (cp >= 0x202A && cp <= 0x202E) ||
+    (cp >= 0x2060 && cp <= 0x2064) ||
+    (cp >= 0x2066 && cp <= 0x206F) ||
+    (cp >= 0xFFF9 && cp <= 0xFFFB) ||
+    (cp >= 0x13430 && cp <= 0x1343F) ||
+    (cp >= 0x1BCA0 && cp <= 0x1BCA3) ||
+    (cp >= 0x1D173 && cp <= 0x1D17A) ||
+    (cp >= 0xE0020 && cp <= 0xE007F);
+}
+
+function stripUnicodeFormatChars(text) {
+  const input = String(text || '');
+  let out = '';
+  for (let i = 0; i < input.length;) {
+    const cp = input.codePointAt(i);
+    const width = cp > 0xFFFF ? 2 : 1;
+    if (!isUnicodeFormatChar(cp)) out += input.slice(i, i + width);
+    i += width;
   }
-  return false;
+  return out;
+}
+
+// 透传前：百分号解码即 UTF-8 解码，失败返回 'reject'（调用方 400，不回源）。
+// 成功后去掉 Cf（零宽空格、软连字符、BOM 等），再 NFKC、小写。
+// 第一段去掉空白后只要以 sites 开头就返回 'sites'。
+function classifyPassthroughOriginPath(pathname) {
+  const raw = String(pathname || '');
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch (e) {
+    return 'reject';
+  }
+  let text = stripUnicodeFormatChars(decoded);
+  try { text = text.normalize('NFKC'); } catch (err) {}
+  text = text.toLowerCase();
+  const segments = text.split('/');
+  for (let j = 0; j < segments.length; j += 1) {
+    if (!segments[j]) continue;
+    if (segments[j].trim().indexOf('sites') === 0) return 'sites';
+    break;
+  }
+  return 'pass';
 }
 
 // /sites/<uid>/<ID> 没有尾斜杠也算命中：裁决通过后 308 到带斜杠的地址，绝不原样放行。
@@ -2363,9 +2411,11 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  // 未绑定自定义域：解码后以 /sites/ 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
-  if (!parsedHost && !(customResolved && customResolved.path) && pathnameTargetsOriginSites(u.pathname)) {
-    return handleOriginGuard(req, event, ctx, u, host);
+  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
+  if (!parsedHost && !(customResolved && customResolved.path)) {
+    const passthroughKind = classifyPassthroughOriginPath(u.pathname);
+    if (passthroughKind === 'reject') return originPathRejectResponse();
+    if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
   }
   if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
 
@@ -2471,8 +2521,10 @@ async function handleRequest(req, event, ctx) {
   // 未知官方子域名（resolve 没有 path）。P0 2026-09-14：这里只处理「站点不存在」。
   // 已绑定站点即使回源 404 也绝不能落到这支。改品牌 404 前必读
   // docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md
-  // 解码后以 /sites/ 开头的路径不能原样回源到桶 1，交给源站守卫。
-  if (pathnameTargetsOriginSites(u.pathname)) return handleOriginGuard(req, event, ctx, u, host);
+  // 解码失败 400。第一段以 sites 开头的路径不能原样回源到桶 1，交给源站守卫。
+  const unknownKind = classifyPassthroughOriginPath(u.pathname);
+  if (unknownKind === 'reject') return originPathRejectResponse();
+  if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, host);
   return fetch(req);
 }
 
