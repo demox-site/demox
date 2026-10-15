@@ -42,7 +42,7 @@ function headerBag(input, init) {
   return new Headers();
 }
 
-function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null, cors = null, cryptoImpl = null } = {}) {
+function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver, origin = null, now = 1_000_000, budget = null, cors = null, cryptoImpl = null, hostMap = null } = {}) {
   const calls = { resolve: [], origin: [] };
   const cache = fakeCache();
   let handle = null;
@@ -56,6 +56,9 @@ function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver
   if (secretB) env.DEMOX_ORIGIN_GUARD_SECRET_B = secretB;
   if (kid) env.DEMOX_ORIGIN_GUARD_KID = kid;
   else if (slotA || secretB) env.DEMOX_ORIGIN_GUARD_KID = 'A';
+  if (hostMap != null && hostMap !== '') {
+    env.DEMOX_TEST_HOST_MAP = typeof hostMap === 'string' ? hostMap : JSON.stringify(hostMap);
+  }
   const warns = [];
   const ctx = vm.createContext({
     URL,
@@ -1997,6 +2000,179 @@ test('a signing failure warns once with fixed text and does not skip the guard',
   assert.equal(r.warns.some((line) => line.includes(SECRET_A)), false);
 });
 
+// Host 路由模型：有 Host 头就送到那个 host，否则用 URL host。
+// 送到 www.demox.site 会再次进入 www 函数。CDN-Loop >= 16 时节点回 423，函数本身没有 423。
+function hostRoutedHost(url, headers) {
+  const raw = headers && headers.get ? (headers.get('host') || '') : '';
+  const headerHost = String(raw).split(',')[0].trim().split(':')[0].toLowerCase();
+  if (headerHost) return headerHost;
+  return new URL(url).hostname.toLowerCase();
+}
+
+function simulateHostRoutingEo(url, headers, loopHost) {
+  const loop = loopHost || 'www.demox.site';
+  const hops = [];
+  for (let loops = 1; loops <= 16; loops += 1) {
+    const effective = hostRoutedHost(url, headers);
+    hops.push(effective);
+    if (effective !== loop) {
+      return { status: 200, loop: false, routedToWww: false, hops: hops, effectiveHost: effective };
+    }
+  }
+  return { status: 423, loop: true, routedToWww: loop === 'www.demox.site', hops: hops, effectiveHost: loop };
+}
+
+function legacyCopiedWwwHeaders(source) {
+  const headers = new Headers();
+  source.forEach(function (value, key) {
+    try { headers.append(key, value); } catch (e) {}
+  });
+  headers.set(TOKEN_HEADER, 'v1.A.1.deadbeef');
+  return headers;
+}
+
+const EDGE_INBOUND_HEADERS = {
+  host: 'www.demox.site',
+  accept: 'text/html',
+  'accept-encoding': 'gzip, br',
+  'accept-language': 'zh-CN',
+  range: 'bytes=0-10',
+  'if-none-match': '"etag"',
+  'if-modified-since': 'Wed, 21 Oct 2015 07:28:00 GMT',
+  'user-agent': 'DemoxVerify/1.0',
+  cookie: 'demox_access=ACCOUNT_TOKEN',
+  authorization: 'Bearer account-token',
+  'proxy-authorization': 'Basic cHJveHk=',
+  connection: 'keep-alive',
+  'keep-alive': 'timeout=5',
+  te: 'trailers',
+  trailer: 'Expires',
+  'transfer-encoding': 'chunked',
+  upgrade: 'websocket',
+  'proxy-connection': 'keep-alive',
+  'eo-connecting-ip': '203.0.113.8',
+  'eo-client-ipcountry': 'SG',
+  'x-forwarded-for': '203.0.113.8',
+  'x-forwarded-host': 'www.demox.site',
+  'cdn-loop': 'TencentEdgeOne; loops=1'
+};
+
+function assertAllowlistedOrigin(info) {
+  const names = [];
+  info.headers.forEach(function (_value, key) { names.push(key); });
+  assert.equal(info.headers.get('host'), null, info.href);
+  assert.equal(info.headers.get('cookie'), null, info.href);
+  assert.equal(info.headers.get('authorization'), null, info.href);
+  assert.equal(info.headers.get('proxy-authorization'), null, info.href);
+  assert.equal(names.some(function (name) { return name.startsWith('eo-'); }), false, names.join(','));
+  assert.equal(names.some(function (name) { return name.startsWith('x-forwarded-'); }), false, names.join(','));
+  assert.equal(names.indexOf('cdn-loop'), -1, names.join(','));
+  for (const hop of ['connection', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'proxy-connection']) {
+    assert.equal(info.headers.get(hop), null, hop);
+  }
+  assert.equal(names.some(function (name) { return name.startsWith('proxy-'); }), false, names.join(','));
+  assert.equal(info.headers.get('accept'), 'text/html');
+  assert.equal(info.headers.get('accept-encoding'), 'gzip, br');
+  assert.equal(info.headers.get('accept-language'), 'zh-CN');
+  assert.equal(info.headers.get('user-agent'), 'DemoxVerify/1.0');
+  assert.ok(info.token, info.href);
+  assert.equal(new URL(info.href).hostname, 'sites.demox.site');
+  assert.equal(hostRoutedHost(info.href, info.headers), 'sites.demox.site');
+}
+
+test('Host-routing EO sends a Host: www subrequest back to www and 423s; the allowlist does not', async () => {
+  const inbound = new Request('https://www.demox.site/', { headers: EDGE_INBOUND_HEADERS });
+  const sitesUrl = 'https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html';
+  const withHost = legacyCopiedWwwHeaders(inbound.headers);
+  const withoutHost = new Headers(withHost);
+  withoutHost.delete('host');
+
+  const looped = simulateHostRoutingEo(sitesUrl, withHost);
+  assert.equal(withHost.get('host'), 'www.demox.site');
+  assert.equal(looped.routedToWww, true);
+  assert.equal(looped.loop, true);
+  assert.equal(looped.status, 423);
+  assert.equal(looped.hops.length, 16);
+  assert.ok(looped.hops.every(function (hop) { return hop === 'www.demox.site'; }));
+
+  const direct = simulateHostRoutingEo(sitesUrl, withoutHost);
+  assert.equal(withoutHost.get('host'), null);
+  assert.equal(direct.routedToWww, false);
+  assert.equal(direct.loop, false);
+  assert.equal(direct.status, 200);
+  assert.deepEqual(direct.hops, ['sites.demox.site']);
+
+  const seen = [];
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: (payload) => {
+      if (payload.websiteId) return json(allow('EPX2UU43', '1985655011013808129'));
+      if (payload.subdomain === 'www') {
+        return json({
+          success: true,
+          path: 'sites/1985655011013808129/EPX2UU43/dist',
+          websiteId: 'EPX2UU43',
+          origin: 'sites.demox.site',
+          visibility: 'public',
+          hideWatermark: true
+        });
+      }
+      throw new Error('unexpected ' + JSON.stringify(payload));
+    },
+    origin: async (info, helpers) => {
+      seen.push(info);
+      if (info.token) {
+        const inner = await helpers.reenter(info.href, info.headers);
+        return inner;
+      }
+      if (info.href.includes('/404.html')) {
+        return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (info.href.endsWith('/index.html')) {
+        return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+
+  const home = await r.call('https://www.demox.site/', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const pricing = await r.call('https://www.demox.site/pricing', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(pricing.response.status, 200);
+  assert.equal(pricing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const missing = await r.call('https://www.demox.site/not-in-spa', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+
+  const signed = seen.filter(function (info) { return info.token; });
+  assert.ok(signed.length >= 3);
+  for (const info of signed) {
+    assertAllowlistedOrigin(info);
+    const routed = simulateHostRoutingEo(info.href, info.headers);
+    assert.equal(routed.loop, false, info.href);
+    assert.equal(routed.routedToWww, false, info.href);
+    assert.equal(routed.effectiveHost, 'sites.demox.site', info.href);
+    assert.notEqual(routed.status, 423, info.href);
+  }
+  const indexFetches = signed.filter(function (info) { return info.href.endsWith('/index.html'); });
+  assert.ok(indexFetches.some(function (info) { return info.headers.get('range') === 'bytes=0-10'; }));
+  assert.ok(indexFetches.some(function (info) {
+    return info.headers.get('range') == null && info.headers.get('if-none-match') == null;
+  }));
+  const missingFetches = signed.filter(function (info) { return info.href.includes('/404.html'); });
+  assert.ok(missingFetches.length >= 1);
+  for (const info of missingFetches) {
+    assert.equal(info.headers.get('range'), null, info.href);
+    assert.equal(info.headers.get('if-none-match'), null, info.href);
+    assert.equal(info.headers.get('if-modified-since'), null, info.href);
+  }
+  assert.equal(countResolves(r, 'EPX2UU43'), 0);
+  assert.equal(r.warns.some(function (line) { return line.includes(SECRET_A); }), false);
+});
+
 test('a non-ASCII first segment is classified before NFKC', async () => {
   const r = makeGuard({
     resolver: () => json({ success: false, message: 'not found' })
@@ -2015,4 +2191,488 @@ test('a non-ASCII first segment is classified before NFKC', async () => {
   const open = await r.visit('https://static.demox.site/assets/%E4%B8%AD%E6%96%87.png');
   assert.equal(open.response.status, 200);
   assert.equal(open.html, PUBLIC_HTML);
+});
+
+const K2T_HOST_MAP = {
+  'k2t-www.demox.site': 'www.demox.site',
+  'k2t-sites.demox.site': 'sites.demox.site',
+  'k2t-apex.demox.site': 'demox.site',
+  'k2t-pub.demox.site': 'coverage.demox.site',
+  'k2t-ban.demox.site': 'phish01.demox.site'
+};
+
+function k2tResolver(payload) {
+  if (payload.websiteId === 'EPX2UU43') return json(allow('EPX2UU43', '1985655011013808129'));
+  if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+  if (payload.websiteId) throw new Error('unexpected id ' + payload.websiteId);
+  if (payload.subdomain === 'www') {
+    return json({
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    });
+  }
+  if (payload.subdomain === 'coverage') {
+    return json({
+      success: true,
+      path: 'sites/owner-1/COVERAGE/dist',
+      websiteId: 'COVERAGE',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: false
+    });
+  }
+  if (payload.subdomain === 'phish01') {
+    return json({
+      success: true,
+      path: 'sites/owner-1/BANNED1/dist',
+      websiteId: 'BANNED1',
+      origin: 'sites.demox.site',
+      visibility: 'disabled'
+    });
+  }
+  if (payload.subdomain === 'k2t-www' || payload.subdomain === 'api' || payload.subdomain === 'site-1') {
+    return json({ success: false, message: 'not found' });
+  }
+  throw new Error('unexpected ' + JSON.stringify(payload));
+}
+
+test('DEMOX_TEST_HOST_MAP unset keeps production hosts, cache prefix, and omits x-demox-env', async () => {
+  assert.match(source, /var RESOLVE_CACHE_PREFIX = 'https:\/\/resolve\.demox\.site\/v2\/'/);
+  assert.match(source, /var RESOLVE_LEGACY_CACHE_PREFIX = 'https:\/\/resolve\.demox\.site\/'/);
+  const r = makeGuard({ resolver: k2tResolver });
+  const home = await r.visit('https://www.demox.site/');
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-env'), null);
+  assert.equal(new URL(r.calls.origin[0].href).hostname, 'sites.demox.site');
+  assert.ok(r.cache.puts.some((entry) => entry.key.startsWith('https://resolve.demox.site/v2/')));
+  assert.equal(r.cache.puts.some((entry) => entry.key.includes('resolve-k2test')), false);
+  const apex = await r.call('https://demox.site/pricing?x=1');
+  assert.equal(apex.response.status, 301);
+  assert.equal(apex.response.headers.get('location'), 'https://www.demox.site/pricing?x=1');
+  assert.equal(apex.response.headers.get('x-demox-env'), null);
+  const probe = await r.visit('https://k2t-www.demox.site/');
+  assert.equal(probe.response.headers.get('x-demox-env'), null);
+  assert.ok(r.calls.resolve.some((payload) => payload.subdomain === 'k2t-www' && payload.domain === 'demox.site'));
+  assert.ok(r.calls.origin.some((info) => new URL(info.href).hostname === 'k2t-www.demox.site'));
+  assert.equal(r.calls.resolve.filter((payload) => payload.subdomain === 'www').length, 1);
+});
+
+test('DEMOX_TEST_HOST_MAP classifies logical hosts and 599s every other demox host', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    hostMap: K2T_HOST_MAP,
+    resolver: k2tResolver
+  });
+  const req = new Request('https://k2t-www.demox.site/', {
+    headers: { Accept: 'text/html', host: 'k2t-www.demox.site' }
+  });
+  const urlBefore = req.url;
+  const hostBefore = req.headers.get('host');
+  const response = await r.ctx.__testHooks.handle(req, { waitUntil() {}, passThroughOnException() {} });
+  assert.equal(req.url, urlBefore);
+  assert.equal(req.headers.get('host'), hostBefore);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-demox-env'), 'nonprod');
+  assert.ok(r.calls.resolve.some((payload) => payload.subdomain === 'www' && payload.domain === 'demox.site'));
+  assert.equal(r.calls.resolve.some((payload) => payload.subdomain === 'k2t-www'), false);
+  const wwwOrigin = r.calls.origin.find((info) => info.href.includes('/EPX2UU43/'));
+  assert.ok(wwwOrigin);
+  assert.equal(new URL(wwwOrigin.href).hostname, 'k2t-sites.demox.site');
+  assert.ok(r.cache.puts.some((entry) => entry.key.startsWith('https://resolve-k2test.demox.site/v2/')));
+  assert.equal(r.cache.puts.some((entry) => entry.key.includes('https://resolve.demox.site/')), false);
+
+  const originBefore = r.calls.origin.length;
+  const resolveBefore = r.calls.resolve.length;
+  const production = await r.visit('https://www.demox.site/');
+  assert.equal(production.response.status, 599);
+  assert.equal(production.html, 'unmapped-host');
+  assert.equal(production.response.headers.get('x-demox-route'), 'test-host=unmapped');
+  assert.equal(production.response.headers.get('x-demox-env'), 'nonprod');
+  const other = await r.visit('https://k2t-other.demox.site/');
+  assert.equal(other.response.status, 599);
+  assert.equal(other.html, 'unmapped-host');
+  assert.equal(r.calls.origin.length, originBefore);
+  assert.equal(r.calls.resolve.length, resolveBefore);
+  assert.ok(r.warns.includes('[subdomain-router] unmapped test host'));
+  assert.equal(r.warns.some((line) => line.includes('www.demox.site') || line.includes('k2t-other') || line.includes(SECRET_A)), false);
+
+  const api = await r.visit('https://api.demox.site/health');
+  assert.notEqual(api.response.status, 599);
+  const bucket = await r.visit('https://site-1.demox.site/object.html');
+  assert.notEqual(bucket.response.status, 599);
+  assert.equal(api.response.headers.get('x-demox-env'), 'nonprod');
+  assert.equal(bucket.response.headers.get('x-demox-env'), 'nonprod');
+
+  const apex = await r.call('https://k2t-apex.demox.site/pricing?x=1');
+  assert.equal(apex.response.status, 301);
+  assert.equal(apex.response.headers.get('location'), 'https://k2t-www.demox.site/pricing?x=1');
+  assert.equal(apex.response.headers.get('x-demox-env'), 'nonprod');
+
+  const bannedBefore = r.calls.origin.length;
+  const banned = await r.visit('https://k2t-sites.demox.site/sites/owner-1/BANNED1/dist/index.html');
+  assert.equal(banned.response.status, 403);
+  assert.equal(banned.response.headers.get('x-demox-route'), 'origin-guard=blocked');
+  assert.equal(banned.response.headers.get('x-demox-env'), 'nonprod');
+  assert.equal(r.calls.origin.length, bannedBefore);
+  assert.equal(r.calls.origin.some((info) => new URL(info.href).hostname === 'sites.demox.site'), false);
+
+  const pub = await r.visit('https://k2t-pub.demox.site/');
+  assert.equal(pub.response.status, 200);
+  assert.equal(pub.response.headers.get('x-demox-env'), 'nonprod');
+  assert.ok(r.calls.resolve.some((payload) => payload.subdomain === 'coverage' && payload.domain === 'demox.site'));
+  const pubOrigin = r.calls.origin.find((info) => info.href.includes('/COVERAGE/'));
+  assert.ok(pubOrigin);
+  assert.equal(new URL(pubOrigin.href).hostname, 'k2t-sites.demox.site');
+
+  const banHost = await r.visit('https://k2t-ban.demox.site/');
+  assert.equal(banHost.response.status, 403);
+  assert.match(banHost.html, /此站点已被停用/);
+  assert.equal(banHost.response.headers.get('x-demox-env'), 'nonprod');
+});
+
+function trailingDotResolver(payload) {
+  if (payload.websiteId === 'PUBLIC1') return json(allow('PUBLIC1', 'owner-1'));
+  return k2tResolver(payload);
+}
+
+function pageMissingIndexOk(info) {
+  if (info.href.endsWith('/index.html')) {
+    return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+  if (info.href.includes('/404.html')) {
+    return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }
+  return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+}
+
+test('trailing-dot hosts match production when DEMOX_TEST_HOST_MAP is unset', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: trailingDotResolver,
+    origin: pageMissingIndexOk
+  });
+  const apex = await r.call('https://demox.site./');
+  assert.equal(apex.response.status, 503);
+  assert.equal(apex.response.headers.get('location'), null);
+  assert.notEqual(apex.response.status, 301);
+  const plain = await r.call('https://demox.site/pricing');
+  assert.equal(plain.response.status, 301);
+  assert.equal(plain.response.headers.get('location'), 'https://www.demox.site/pricing');
+
+  const dotted = await r.visit('https://www.demox.site./nope');
+  assert.equal(dotted.response.status, 200);
+  assert.match(dotted.html, /Public body/);
+  assert.equal(dotted.html.includes('Missing page'), false);
+  const undotted = await r.visit('https://www.demox.site/nope');
+  assert.equal(undotted.response.status, 404);
+  assert.match(undotted.html, /Missing page/);
+
+  const path = '/sites/owner-1/PUBLIC1/dist/index.html';
+  const token = await r.ctx.__testHooks.signOriginInternalToken('GET', 'sites.demox.site', path, '');
+  assert.ok(token);
+  const headers = { Accept: 'text/html', 'x-demox-origin-token': token };
+  const dottedSites = await r.visit('https://sites.demox.site.' + path, headers);
+  assert.notEqual(dottedSites.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(dottedSites.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  const exactSites = await r.visit('https://sites.demox.site' + path, headers);
+  assert.equal(exactSites.response.headers.get('x-demox-route'), 'origin-guard=internal');
+});
+
+test('trailing-dot k2t hosts follow the map, and production dotted hosts stay 599', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    hostMap: K2T_HOST_MAP,
+    resolver: trailingDotResolver,
+    origin: pageMissingIndexOk
+  });
+  const nope = await r.visit('https://k2t-www.demox.site./nope');
+  assert.equal(nope.response.status, 404);
+  assert.match(nope.html, /Missing page/);
+  assert.equal(nope.response.headers.get('x-demox-env'), 'nonprod');
+  const apex = await r.call('https://k2t-apex.demox.site./pricing');
+  assert.equal(apex.response.status, 301);
+  assert.equal(apex.response.headers.get('location'), 'https://k2t-www.demox.site/pricing');
+  const prodWww = await r.visit('https://www.demox.site./');
+  assert.equal(prodWww.response.status, 599);
+  const prodApex = await r.call('https://demox.site./');
+  assert.equal(prodApex.response.status, 599);
+
+  const path = '/sites/owner-1/PUBLIC1/dist/index.html';
+  const token = await r.ctx.__testHooks.signOriginInternalToken('GET', 'k2t-sites.demox.site', path, '');
+  const headers = { Accept: 'text/html', 'x-demox-origin-token': token };
+  const dotted = await r.visit('https://k2t-sites.demox.site.' + path, headers);
+  assert.notEqual(dotted.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(dotted.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  const exact = await r.visit('https://k2t-sites.demox.site' + path, headers);
+  assert.equal(exact.response.headers.get('x-demox-route'), 'origin-guard=internal');
+});
+
+test('a rejected DEMOX_TEST_HOST_MAP behaves as unset and never 599s the zone', async () => {
+  const cases = [
+    '{not-json',
+    '[]',
+    '{}',
+    JSON.stringify({ 'k2t-www.demox.site': 'www.demox.site', 'evil.com': 'www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site.': 'www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'api.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'site-1.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'k2t-pub.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'https://www.demox.site' }),
+    JSON.stringify({ 'k2t-www.demox.site': 'www.demox.site.' })
+  ];
+  for (const hostMap of cases) {
+    const r = makeGuard({
+      secretA: SECRET_A,
+      hostMap,
+      resolver: k2tResolver
+    });
+    const home = await r.visit('https://www.demox.site/');
+    assert.equal(home.response.status, 200, hostMap);
+    assert.equal(home.response.headers.get('x-demox-env'), null, hostMap);
+    assert.notEqual(home.response.status, 599, hostMap);
+    const again = await r.visit('https://www.demox.site/pricing');
+    assert.equal(again.response.status, 200, hostMap);
+    const probe = await r.visit('https://k2t-www.demox.site/');
+    assert.notEqual(probe.response.status, 599, hostMap);
+    assert.equal(probe.response.headers.get('x-demox-env'), null, hostMap);
+    assert.ok(r.calls.resolve.some((payload) => payload.subdomain === 'k2t-www'), hostMap);
+    assert.equal(r.warns.filter((line) => line === '[subdomain-router] test host map rejected').length, 1, hostMap);
+    assert.equal(r.warns.some((line) => line.includes(SECRET_A) || line.includes('not-json') || line.includes('evil.com') || line.includes('k2t-www')), false, hostMap);
+    assert.equal(r.cache.puts.some((entry) => entry.key.includes('resolve-k2test')), false, hostMap);
+    assert.ok(r.cache.puts.some((entry) => entry.key.startsWith('https://resolve.demox.site/v2/')), hostMap);
+  }
+
+  const upper = makeGuard({
+    hostMap: { 'K2T-WWW.demox.site': 'WWW.demox.site' },
+    resolver: k2tResolver
+  });
+  const mapped = await upper.visit('https://k2t-www.demox.site/');
+  assert.equal(mapped.response.status, 200);
+  assert.equal(mapped.response.headers.get('x-demox-env'), 'nonprod');
+  assert.ok(upper.calls.resolve.some((payload) => payload.subdomain === 'www'));
+  assert.equal(upper.warns.some((line) => line.includes('test host map rejected')), false);
+});
+
+test('mapped k2t-www with a copied Host loops; the allowlist stays internal on k2t-sites', async () => {
+  const inboundHeaders = Object.assign({}, EDGE_INBOUND_HEADERS, { host: 'k2t-www.demox.site' });
+  const sitesUrl = 'https://k2t-sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html';
+  const copied = legacyCopiedWwwHeaders(new Headers(inboundHeaders));
+  assert.equal(copied.get('host'), 'k2t-www.demox.site');
+  const looped = simulateHostRoutingEo(sitesUrl, copied, 'k2t-www.demox.site');
+  assert.equal(looped.status, 423);
+  assert.equal(looped.loop, true);
+  assert.equal(looped.hops.length, 16);
+  assert.ok(looped.hops.every((hop) => hop === 'k2t-www.demox.site'));
+
+  const seen = [];
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    hostMap: K2T_HOST_MAP,
+    resolver: k2tResolver,
+    origin: async (info, helpers) => {
+      seen.push(info);
+      if (info.token) return helpers.reenter(info.href, info.headers);
+      if (info.href.includes('/404.html')) {
+        return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (info.href.endsWith('/index.html')) {
+        return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+
+  const req = new Request('https://k2t-www.demox.site/', { headers: inboundHeaders });
+  const urlBefore = req.url;
+  const hostBefore = req.headers.get('host');
+  const homeResponse = await r.ctx.__testHooks.handle(req, { waitUntil() {}, passThroughOnException() {} });
+  assert.equal(req.url, urlBefore);
+  assert.equal(req.headers.get('host'), hostBefore);
+  assert.equal(homeResponse.status, 200);
+  assert.equal(homeResponse.headers.get('x-demox-route'), 'origin-guard=internal');
+  assert.equal(homeResponse.headers.get('x-demox-env'), 'nonprod');
+
+  const pricing = await r.call('https://k2t-www.demox.site/pricing', { headers: inboundHeaders });
+  assert.equal(pricing.response.status, 200);
+  assert.equal(pricing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const missing = await r.call('https://k2t-www.demox.site/k2t-nope-test', { headers: inboundHeaders });
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+
+  const signed = seen.filter((info) => info.token);
+  assert.ok(signed.length >= 3);
+  for (const info of signed) {
+    assert.equal(info.headers.get('host'), null, info.href);
+    assert.equal(new URL(info.href).hostname, 'k2t-sites.demox.site', info.href);
+    const routed = simulateHostRoutingEo(info.href, info.headers, 'k2t-www.demox.site');
+    assert.equal(routed.loop, false, info.href);
+    assert.notEqual(routed.status, 423, info.href);
+    assert.equal(routed.effectiveHost, 'k2t-sites.demox.site', info.href);
+  }
+  assert.equal(countResolves(r, 'EPX2UU43'), 0);
+  assert.equal(r.warns.some((line) => line.includes(SECRET_A)), false);
+});
+
+function wwwPageResolver(payload) {
+  if (payload.websiteId === 'EPX2UU43') return json(allow('EPX2UU43', '1985655011013808129'));
+  if (payload.websiteId) throw new Error('unexpected id ' + payload.websiteId);
+  if (payload.subdomain === 'www') {
+    return json({
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    });
+  }
+  throw new Error('unexpected ' + JSON.stringify(payload));
+}
+
+function conditionalHeader(info) {
+  return info.headers.get('range') || info.headers.get('if-none-match') || info.headers.get('if-modified-since');
+}
+
+test('SPA index.html and 404.html signed fetches omit range and if-* headers', async () => {
+  const seen = [];
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: wwwPageResolver,
+    origin: async (info) => {
+      seen.push(info);
+      if (info.href.endsWith('/index.html')) {
+        if (info.headers.get('range')) {
+          return new Response('PARTIAL', {
+            status: 206,
+            headers: { 'Content-Type': 'text/html', 'Content-Range': 'bytes 0-6/20' }
+          });
+        }
+        if (info.headers.get('if-none-match') || info.headers.get('if-modified-since')) {
+          return new Response(null, { status: 304, headers: { ETag: '"spa-etag"' } });
+        }
+        return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (info.href.includes('/404.html')) {
+        if (conditionalHeader(info)) return new Response(null, { status: 304 });
+        return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+  const conditional = {
+    Accept: 'text/html',
+    Range: 'bytes=0-10',
+    'If-None-Match': '"spa-etag"',
+    'If-Modified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT'
+  };
+  const home = await r.call('https://www.demox.site/', { headers: conditional });
+  assert.equal(home.response.status, 206);
+  assert.equal(home.html, 'PARTIAL');
+  const homeFetch = seen.find((info) => info.href.endsWith('/index.html'));
+  assert.equal(homeFetch.headers.get('range'), 'bytes=0-10');
+  assert.equal(homeFetch.headers.get('if-none-match'), '"spa-etag"');
+
+  const pricing = await r.call('https://www.demox.site/pricing', { headers: conditional });
+  assert.equal(pricing.response.status, 200);
+  assert.match(pricing.html, /Public body/);
+  assert.equal(pricing.html.includes('PARTIAL'), false);
+  const spaIndex = seen.filter((info) => info.href.endsWith('/index.html')).pop();
+  assert.equal(spaIndex.headers.get('range'), null);
+  assert.equal(spaIndex.headers.get('if-none-match'), null);
+  assert.equal(spaIndex.headers.get('if-modified-since'), null);
+
+  const missing = await r.call('https://www.demox.site/not-in-spa', { headers: conditional });
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  const missingFetch = seen.filter((info) => info.href.includes('/404.html')).pop();
+  assert.equal(missingFetch.headers.get('range'), null);
+  assert.equal(missingFetch.headers.get('if-none-match'), null);
+  assert.equal(missingFetch.headers.get('if-modified-since'), null);
+});
+
+test('custom 404 drops gzip content-encoding and the stale content-length', async () => {
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: wwwPageResolver,
+    origin: async (info) => {
+      if (info.href.includes('/404.html')) {
+        return new Response(CUSTOM_404, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html',
+            'Content-Encoding': 'gzip',
+            'Content-Length': '4'
+          }
+        });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+  const missing = await r.call('https://www.demox.site/not-in-spa', { headers: { Accept: 'text/html' } });
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  assert.equal(missing.html.includes('Missing page'), true);
+  assert.equal(missing.response.headers.get('content-encoding'), null);
+  assert.notEqual(missing.response.headers.get('content-length'), '4');
+});
+
+function assertFixedOriginSign(response, expected) {
+  const value = response.headers.get('x-demox-origin-sign');
+  assert.equal(value, expected);
+  assert.equal(value === 'signed' || value === 'no-slot' || value === 'sign-failed', true);
+  assert.equal(value.includes(SECRET_A), false);
+  assert.equal(value.includes('v1.'), false);
+  assert.equal(value.includes('A'), false);
+}
+
+test('www responses use a fixed x-demox-origin-sign value for signed, no-slot, and sign-failed', async () => {
+  const signedGuard = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: wwwPageResolver,
+    origin: reenterWwwOrigin()
+  });
+  const signedHome = await signedGuard.visit('https://www.demox.site/');
+  assert.equal(signedHome.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  assertFixedOriginSign(signedHome.response, 'signed');
+  const signedPricing = await signedGuard.visit('https://www.demox.site/pricing');
+  assertFixedOriginSign(signedPricing.response, 'signed');
+  const object = await signedGuard.visit('https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html');
+  assert.equal(object.response.headers.get('x-demox-origin-sign'), null);
+
+  const empty = makeGuard({
+    resolver: wwwPageResolver,
+    origin: reenterWwwOrigin()
+  });
+  const unsigned = await empty.visit('https://www.demox.site/');
+  assert.equal(unsigned.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  assertFixedOriginSign(unsigned.response, 'no-slot');
+
+  const failed = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: wwwPageResolver,
+    origin: reenterWwwOrigin(),
+    cryptoImpl: {
+      subtle: {
+        importKey() { return Promise.reject(new Error('sign failed ' + SECRET_A)); },
+        sign() { return Promise.reject(new Error('sign failed ' + SECRET_A)); }
+      }
+    }
+  });
+  const broken = await failed.visit('https://www.demox.site/');
+  assert.equal(broken.response.headers.get('x-demox-route'), 'origin-guard=allow');
+  assertFixedOriginSign(broken.response, 'sign-failed');
+  assert.equal(failed.warns.some((line) => line.includes(SECRET_A)), false);
 });

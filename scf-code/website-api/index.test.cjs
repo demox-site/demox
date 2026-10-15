@@ -2466,6 +2466,26 @@ test('database errors that echo emails or tokens are redacted before they are lo
   assert.ok(produced.some((line) => line.text.includes('[email]') || line.text.includes('[jwt]')), 'redaction placeholders expected');
 });
 
+test('k2t- labels are reserved and never reach the database', async () => {
+  let queried = false;
+  queryImpl = async () => {
+    queried = true;
+    return [];
+  };
+  for (const label of ['k2t-www', 'k2t-sites', 'k2t-pub', 'k2t-ban', 'k2t-apex']) {
+    const checked = JSON.parse((await request('check_subdomain', { subdomain: label })).body);
+    assert.equal(checked.success, true, label);
+    assert.equal(checked.available, false, label);
+    assert.equal(checked.reason, 'invalid', label);
+    const set = await request('set_subdomain', { docId: 9, subdomain: label });
+    const body = JSON.parse(set.body);
+    assert.equal(set.statusCode, 400, label);
+    assert.equal(body.success, false, label);
+    assert.equal(body.reason, 'invalid', label);
+  }
+  assert.equal(queried, false);
+});
+
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();

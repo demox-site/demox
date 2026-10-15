@@ -22,6 +22,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ROUTER="$ROOT/edge-functions/subdomain-router.js"
 ACTION="${1:-plan}"
 
+refuse_test_host_map() {
+  local value="${DEMOX_TEST_HOST_MAP-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [ -n "$value" ]; then
+    echo "refusing to deploy ef-1281msyw while DEMOX_TEST_HOST_MAP is set" >&2
+    exit 2
+  fi
+}
+
+refuse_test_host_map
+
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
 modify_argv() {
@@ -31,6 +43,7 @@ modify_argv() {
 
 run_modify() {
   local file="$1"
+  refuse_test_host_map
   if [ "${TCCLI_BIN:-tccli}" = "tccli" ]; then
     tccli teo ModifyFunction --ZoneId "$ZONE_ID" --FunctionId "$FUNCTION_ID" \
       --Content "$(cat "$file")" --region "$REGION" >/dev/null
@@ -289,6 +302,62 @@ JS
     echo "drill without APPLY=1 must refuse" >&2
     exit 1
   }
+  map_log="$work/calls-map"
+  : >"$map_log"
+  set +e
+  DEMOX_TEST_HOST_MAP='{"k2t-www.demox.site":"www.demox.site"}' \
+    LIVE_FILE="$work/live.js" FUNCTION_ID="$FUNCTION_ID" TCCLI_LOG="$map_log" \
+    TCCLI_BIN="$work/tccli" PREVIOUS="$work/previous.js" APPLY=1 \
+    bash "$ROOT/scripts/edge-router-rollback.sh" drill >"$work/map.out" 2>"$work/map.err"
+  map_rc=$?
+  set -e
+  if [ "$map_rc" = "0" ]; then
+    echo "DEMOX_TEST_HOST_MAP must refuse a drill" >&2
+    exit 1
+  fi
+  if ! grep -q "DEMOX_TEST_HOST_MAP" "$work/map.err"; then
+    echo "refusal must name DEMOX_TEST_HOST_MAP" >&2
+    exit 1
+  fi
+  if grep -q ModifyFunction "$map_log"; then
+    echo "DEMOX_TEST_HOST_MAP drill must not ModifyFunction" >&2
+    exit 1
+  fi
+  set +e
+  DEMOX_TEST_HOST_MAP='   ' APPLY=0 TCCLI_BIN="$work/tccli" \
+    bash "$ROOT/scripts/edge-router-rollback.sh" drill >"$work/blank.out" 2>"$work/blank.err"
+  blank_rc=$?
+  set -e
+  if [ "$blank_rc" = "0" ]; then
+    echo "whitespace DEMOX_TEST_HOST_MAP must not turn a drill into success" >&2
+    exit 1
+  fi
+  if grep -q "DEMOX_TEST_HOST_MAP" "$work/blank.err"; then
+    echo "whitespace DEMOX_TEST_HOST_MAP must be treated as unset" >&2
+    exit 1
+  fi
+  if ! grep -q "without APPLY=1" "$work/blank.err"; then
+    echo "whitespace map must still hit the APPLY refusal" >&2
+    exit 1
+  fi
+  set +e
+  DEMOX_TEST_HOST_MAP='{"k2t-www.demox.site":"www.demox.site"}' \
+    bash "$ROOT/scf-code/deploy-edge-functions.sh" >"$work/deploy.out" 2>"$work/deploy.err"
+  deploy_rc=$?
+  set -e
+  if [ "$deploy_rc" = "0" ]; then
+    echo "deploy script must refuse when DEMOX_TEST_HOST_MAP is set" >&2
+    exit 1
+  fi
+  if ! grep -q "DEMOX_TEST_HOST_MAP" "$work/deploy.err"; then
+    echo "deploy refusal must name DEMOX_TEST_HOST_MAP" >&2
+    exit 1
+  fi
+  bash "$ROOT/scf-code/deploy-edge-functions.sh" >"$work/deploy-ok.out"
+  if ! grep -q "非可执行脚本" "$work/deploy-ok.out"; then
+    echo "deploy script without the map must stay a non-executable record" >&2
+    exit 1
+  fi
   echo "ROLLBACK SELF-TEST OK"
 }
 
