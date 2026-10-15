@@ -742,16 +742,34 @@ function stripOriginInternalToken(req) {
   return new Request(targetUrl, init);
 }
 
-// 入站请求的 Headers 在边缘上是不可变的，set 会抛。令牌只写到一份新的 Headers 上。
-// 复制失败或签发失败时打一条固定警告（不含任何配置值），调用方继续用原来的 init，
-// 重入后走 by-ID。不因为 Host 是 www 就免裁决。
-function copyRequestHeaders(source) {
+// www 签过名的子请求只带源站需要的头，外加内部令牌。
+// 不复制 Host：URL 是 sites.demox.site，Host 仍是 www.demox.site 时，EdgeOne 按 Host 把子请求送回 www，
+// CDN-Loop 加到 16 后节点自己回 423（函数里没有 423）。也不复制逐跳头、eo-*、x-forwarded-*、cdn-loop、
+// Cookie、Authorization、Proxy-Authorization。不因为 Host 是 www 就免裁决。
+var WWW_SIGNED_REQUEST_HEADERS = [
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'range',
+  'if-none-match',
+  'if-modified-since',
+  'user-agent'
+];
+
+function signedWwwHeaders(source, token) {
   const headers = new Headers();
-  if (source && typeof source.forEach === 'function') {
-    source.forEach(function (value, key) {
-      try { headers.append(key, value); } catch (e) {}
-    });
+  for (let i = 0; i < WWW_SIGNED_REQUEST_HEADERS.length; i += 1) {
+    const name = WWW_SIGNED_REQUEST_HEADERS[i];
+    let value = '';
+    try {
+      if (source && typeof source.get === 'function') value = source.get(name) || '';
+    } catch (e) {
+      value = '';
+    }
+    if (!value) continue;
+    headers.set(name, value);
   }
+  headers.set(ORIGIN_INTERNAL_TOKEN_HEADER, token);
   return headers;
 }
 
@@ -771,8 +789,7 @@ async function signedWwwInit(req, url, method) {
     return null;
   }
   try {
-    const headers = copyRequestHeaders(req && req.headers);
-    headers.set(ORIGIN_INTERNAL_TOKEN_HEADER, token);
+    const headers = signedWwwHeaders(req && req.headers, token);
     return { method: verb, headers: headers };
   } catch (e) {
     warnOriginGuardAttachOnce();
@@ -803,7 +820,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
   // 没有签名槽时 www 仍把入站 req 交给 originFetch（#49 的调用形状）。
-  // 有签名槽时用新的 Headers，不改入站头。SPA 的 index.html 同样处理。
+  // 有签名槽时用白名单 Headers（不含 Host），不改入站头。SPA 的 index.html 同样处理。
   // 404.html 在 serveCustom404 里签。都不按 Host 免裁决。
   const pageUrl = buildOriginUrl(req, originPath, u.search, originHost);
   const signedPage = !hardened ? await signedWwwInit(req, pageUrl) : null;

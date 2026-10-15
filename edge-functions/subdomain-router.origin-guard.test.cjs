@@ -1997,6 +1997,169 @@ test('a signing failure warns once with fixed text and does not skip the guard',
   assert.equal(r.warns.some((line) => line.includes(SECRET_A)), false);
 });
 
+// Host 路由模型：有 Host 头就送到那个 host，否则用 URL host。
+// 送到 www.demox.site 会再次进入 www 函数。CDN-Loop >= 16 时节点回 423，函数本身没有 423。
+function hostRoutedHost(url, headers) {
+  const raw = headers && headers.get ? (headers.get('host') || '') : '';
+  const headerHost = String(raw).split(',')[0].trim().split(':')[0].toLowerCase();
+  if (headerHost) return headerHost;
+  return new URL(url).hostname.toLowerCase();
+}
+
+function simulateHostRoutingEo(url, headers) {
+  const hops = [];
+  for (let loops = 1; loops <= 16; loops += 1) {
+    const effective = hostRoutedHost(url, headers);
+    hops.push(effective);
+    if (effective !== 'www.demox.site') {
+      return { status: 200, loop: false, routedToWww: false, hops: hops, effectiveHost: effective };
+    }
+  }
+  return { status: 423, loop: true, routedToWww: true, hops: hops, effectiveHost: 'www.demox.site' };
+}
+
+function legacyCopiedWwwHeaders(source) {
+  const headers = new Headers();
+  source.forEach(function (value, key) {
+    try { headers.append(key, value); } catch (e) {}
+  });
+  headers.set(TOKEN_HEADER, 'v1.A.1.deadbeef');
+  return headers;
+}
+
+const EDGE_INBOUND_HEADERS = {
+  host: 'www.demox.site',
+  accept: 'text/html',
+  'accept-encoding': 'gzip, br',
+  'accept-language': 'zh-CN',
+  range: 'bytes=0-10',
+  'if-none-match': '"etag"',
+  'if-modified-since': 'Wed, 21 Oct 2015 07:28:00 GMT',
+  'user-agent': 'DemoxVerify/1.0',
+  cookie: 'demox_access=ACCOUNT_TOKEN',
+  authorization: 'Bearer account-token',
+  'proxy-authorization': 'Basic cHJveHk=',
+  connection: 'keep-alive',
+  'keep-alive': 'timeout=5',
+  te: 'trailers',
+  trailer: 'Expires',
+  'transfer-encoding': 'chunked',
+  upgrade: 'websocket',
+  'proxy-connection': 'keep-alive',
+  'eo-connecting-ip': '203.0.113.8',
+  'eo-client-ipcountry': 'SG',
+  'x-forwarded-for': '203.0.113.8',
+  'x-forwarded-host': 'www.demox.site',
+  'cdn-loop': 'TencentEdgeOne; loops=1'
+};
+
+function assertAllowlistedOrigin(info) {
+  const names = [];
+  info.headers.forEach(function (_value, key) { names.push(key); });
+  assert.equal(info.headers.get('host'), null, info.href);
+  assert.equal(info.headers.get('cookie'), null, info.href);
+  assert.equal(info.headers.get('authorization'), null, info.href);
+  assert.equal(info.headers.get('proxy-authorization'), null, info.href);
+  assert.equal(names.some(function (name) { return name.startsWith('eo-'); }), false, names.join(','));
+  assert.equal(names.some(function (name) { return name.startsWith('x-forwarded-'); }), false, names.join(','));
+  assert.equal(names.indexOf('cdn-loop'), -1, names.join(','));
+  for (const hop of ['connection', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'proxy-connection']) {
+    assert.equal(info.headers.get(hop), null, hop);
+  }
+  assert.equal(names.some(function (name) { return name.startsWith('proxy-'); }), false, names.join(','));
+  assert.equal(info.headers.get('accept'), 'text/html');
+  assert.equal(info.headers.get('accept-encoding'), 'gzip, br');
+  assert.equal(info.headers.get('accept-language'), 'zh-CN');
+  assert.equal(info.headers.get('range'), 'bytes=0-10');
+  assert.equal(info.headers.get('if-none-match'), '"etag"');
+  assert.equal(info.headers.get('if-modified-since'), 'Wed, 21 Oct 2015 07:28:00 GMT');
+  assert.equal(info.headers.get('user-agent'), 'DemoxVerify/1.0');
+  assert.ok(info.token, info.href);
+  assert.equal(new URL(info.href).hostname, 'sites.demox.site');
+  assert.equal(hostRoutedHost(info.href, info.headers), 'sites.demox.site');
+}
+
+test('Host-routing EO sends a Host: www subrequest back to www and 423s; the allowlist does not', async () => {
+  const inbound = new Request('https://www.demox.site/', { headers: EDGE_INBOUND_HEADERS });
+  const sitesUrl = 'https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html';
+  const withHost = legacyCopiedWwwHeaders(inbound.headers);
+  const withoutHost = new Headers(withHost);
+  withoutHost.delete('host');
+
+  const looped = simulateHostRoutingEo(sitesUrl, withHost);
+  assert.equal(withHost.get('host'), 'www.demox.site');
+  assert.equal(looped.routedToWww, true);
+  assert.equal(looped.loop, true);
+  assert.equal(looped.status, 423);
+  assert.equal(looped.hops.length, 16);
+  assert.ok(looped.hops.every(function (hop) { return hop === 'www.demox.site'; }));
+
+  const direct = simulateHostRoutingEo(sitesUrl, withoutHost);
+  assert.equal(withoutHost.get('host'), null);
+  assert.equal(direct.routedToWww, false);
+  assert.equal(direct.loop, false);
+  assert.equal(direct.status, 200);
+  assert.deepEqual(direct.hops, ['sites.demox.site']);
+
+  const seen = [];
+  const r = makeGuard({
+    secretA: SECRET_A,
+    kid: 'A',
+    resolver: (payload) => {
+      if (payload.websiteId) return json(allow('EPX2UU43', '1985655011013808129'));
+      if (payload.subdomain === 'www') {
+        return json({
+          success: true,
+          path: 'sites/1985655011013808129/EPX2UU43/dist',
+          websiteId: 'EPX2UU43',
+          origin: 'sites.demox.site',
+          visibility: 'public',
+          hideWatermark: true
+        });
+      }
+      throw new Error('unexpected ' + JSON.stringify(payload));
+    },
+    origin: async (info, helpers) => {
+      seen.push(info);
+      if (info.token) {
+        const inner = await helpers.reenter(info.href, info.headers);
+        return inner;
+      }
+      if (info.href.includes('/404.html')) {
+        return new Response(CUSTOM_404, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (info.href.endsWith('/index.html')) {
+        return new Response(PUBLIC_HTML, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+
+  const home = await r.call('https://www.demox.site/', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(home.response.status, 200);
+  assert.equal(home.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const pricing = await r.call('https://www.demox.site/pricing', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(pricing.response.status, 200);
+  assert.equal(pricing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const missing = await r.call('https://www.demox.site/not-in-spa', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(missing.response.status, 404);
+  assert.match(missing.html, /Missing page/);
+  assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+
+  const signed = seen.filter(function (info) { return info.token; });
+  assert.ok(signed.length >= 3);
+  for (const info of signed) {
+    assertAllowlistedOrigin(info);
+    const routed = simulateHostRoutingEo(info.href, info.headers);
+    assert.equal(routed.loop, false, info.href);
+    assert.equal(routed.routedToWww, false, info.href);
+    assert.equal(routed.effectiveHost, 'sites.demox.site', info.href);
+    assert.notEqual(routed.status, 423, info.href);
+  }
+  assert.equal(countResolves(r, 'EPX2UU43'), 0);
+  assert.equal(r.warns.some(function (line) { return line.includes(SECRET_A); }), false);
+});
+
 test('a non-ASCII first segment is classified before NFKC', async () => {
   const r = makeGuard({
     resolver: () => json({ success: false, message: 'not found' })
