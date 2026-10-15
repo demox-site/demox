@@ -31,14 +31,27 @@ const rollup = websiteApi._analyticsRollupForTest;
 
 function loggerFor() {
   const lines = [];
+  const logs = [];
+  const push = (bucket, line, method) => {
+    const text = String(line);
+    bucket.push(text);
+    console[method](text);
+    return text;
+  };
   return {
     lines,
+    logs,
     error(line) {
-      const text = String(line);
-      lines.push(text);
-      console.error(text);
+      push(lines, line, 'error');
+    },
+    log(line) {
+      push(logs, line, 'log');
     }
   };
+}
+
+function heartbeatKeys(line) {
+  return [...String(line).matchAll(/(?:^|\s)([A-Za-z0-9_.-]+)=/g)].map((match) => match[1]);
 }
 
 function makeState(watermark) {
@@ -293,7 +306,7 @@ test('a 3h stall backfills from the watermark and ignores older objects', async 
   const now = Date.parse('2026-10-15T06:00:00.000Z');
   const state = makeState(now - 3 * 60 * 60 * 1000);
   const logger = loggerFor();
-  const stale = makeObject(now - 4 * 60 * 60 * 1000, { rand: 'stale0000001' });
+  const stale = makeObject(now - 5 * 60 * 60 * 1000, { rand: 'stale0000001' });
   const objects = [
     stale,
     makeObject(now - 3 * 60 * 60 * 1000 + 10 * 60 * 1000, { rand: 'back00000001' }),
@@ -307,11 +320,13 @@ test('a 3h stall backfills from the watermark and ignores older objects', async 
   assert.equal(state.views, 3);
   assert.equal(state.watermark, now - 5 * 60 * 1000);
   assert.equal(result.gap, null);
+  assert.ok(deps.provider.lists.some((prefix) => prefix.includes('hour=02')));
   assert.ok(deps.provider.lists.some((prefix) => prefix.includes('hour=03')));
   assert.ok(deps.provider.lists.some((prefix) => prefix.includes('hour=05')));
-  assert.ok(deps.provider.lists.every((prefix) => !prefix.includes('hour=02')));
+  assert.ok(deps.provider.lists.every((prefix) => !prefix.includes('hour=01')));
   assert.ok(deps.provider.gets.every((key) => key !== stale.key));
-  assert.deepEqual(logger.lines, []);
+  assert.equal(logger.lines.length, 1);
+  assert.match(logger.lines[0], /^ALERT analytics-rollup-5m step=watermark window=\S+ code=STALE_WATERMARK$/);
 });
 
 test('already-ingested objects are filtered before the 2000 cap and the rest drains on the next run', async () => {
@@ -337,8 +352,9 @@ test('already-ingested objects are filtered before the 2000 cap and the rest dra
   assert.equal(state.watermark, Date.parse('2026-10-15T04:30:00.000Z'));
   assert.equal(deps.provider.gets.length, 2000);
   assert.ok(deps.provider.gets.every((key) => key.includes('hour=04')));
-  assert.equal(logger.lines.length, 1);
-  assert.match(logger.lines[0], /^ALERT analytics-rollup-5m step=backlog window=\S+ code=BACKLOG_OVER_CAP remaining=500$/);
+  assert.equal(logger.lines.length, 2);
+  assert.ok(logger.lines.some((line) => /code=STALE_WATERMARK$/.test(line)));
+  assert.ok(logger.lines.some((line) => /^ALERT analytics-rollup-5m step=backlog window=\S+ code=BACKLOG_OVER_CAP remaining=500$/.test(line)));
 
   deps.provider.gets.length = 0;
   const secondLogger = loggerFor();
@@ -349,7 +365,8 @@ test('already-ingested objects are filtered before the 2000 cap and the rest dra
   assert.equal(state.views, 2500);
   assert.equal(state.watermark, now - 5 * 60 * 1000);
   assert.equal(state.ingested.size, 4500);
-  assert.deepEqual(secondLogger.lines, []);
+  assert.equal(secondLogger.lines.length, 1);
+  assert.match(secondLogger.lines[0], /^ALERT analytics-rollup-5m step=watermark window=\S+ code=STALE_WATERMARK$/);
 });
 
 test('an object over 256KB is skipped with an alert and makes the week provisional', async () => {
@@ -410,11 +427,12 @@ test('a watermark older than 48h alerts the gap and does not read the skipped ob
   assert.equal(result.processed, 1);
   assert.equal(state.views, 1);
   assert.deepEqual(deps.provider.gets, [kept.key]);
-  assert.equal(logger.lines.length, 1);
+  assert.equal(logger.lines.length, 2);
+  assert.match(logger.lines[0], /^ALERT analytics-rollup-5m step=watermark window=\S+ code=STALE_WATERMARK$/);
   const gapStart = new Date(now - 72 * 60 * 60 * 1000).toISOString();
   const gapEnd = new Date(now - 48 * 60 * 60 * 1000).toISOString();
   assert.equal(
-    logger.lines[0],
+    logger.lines[1],
     `ALERT analytics-rollup-5m step=gap window=${gapStart}/${gapEnd} code=GAP_OVER_48H`
   );
   assert.equal(state.gaps.length, 1);
@@ -658,7 +676,8 @@ test('manual limit above 2000 is capped and a short limit leaves a backlog', asy
   const result = await rollup.run({ ...depsFor(state, objects, now, logger), limit: 2 });
   assert.equal(result.processed, 2);
   assert.equal(result.backlog, 2);
-  assert.match(logger.lines[0], /code=BACKLOG_OVER_CAP remaining=2$/);
+  assert.ok(logger.lines.some((line) => /code=STALE_WATERMARK$/.test(line)));
+  assert.ok(logger.lines.some((line) => /code=BACKLOG_OVER_CAP remaining=2$/.test(line)));
   assert.equal(state.watermark, Date.parse('2026-10-15T05:10:00.000Z'));
 });
 
@@ -680,7 +699,8 @@ test('a time budget stops cleanly and does not settle unread objects', async () 
   assert.equal(idleDeps.provider.lists.length, 0);
   assert.equal(idle.watermark, watermark);
   assert.equal(idle.ingested.size, 0);
-  assert.match(idleLogger.lines[0], /code=TIME_BUDGET$/);
+  assert.ok(idleLogger.lines.some((line) => /code=STALE_WATERMARK$/.test(line)));
+  assert.ok(idleLogger.lines.some((line) => /code=TIME_BUDGET$/.test(line)));
 
   const start = Date.parse('2026-10-15T03:00:00.000Z');
   const state = makeState(start);
@@ -737,6 +757,232 @@ test('manual days and hours do not shrink the scan', async () => {
     if (prevBucket == null) delete process.env.ANALYTICS_RAW_BUCKET_ID;
     else process.env.ANALYTICS_RAW_BUCKET_ID = prevBucket;
   }
+});
+
+test('an object stamped at HH:59:58 is counted once when it appears 6 or 20 minutes later', async () => {
+  const stamped = Date.parse('2026-10-15T05:59:58.000Z');
+  const delays = [
+    { minutes: 6, watermark: Date.parse('2026-10-15T06:00:00.000Z') },
+    { minutes: 20, watermark: Date.parse('2026-10-15T06:15:00.000Z') }
+  ];
+  for (const { minutes, watermark } of delays) {
+    const obj = makeObject(stamped, { rand: `xhour${String(minutes).padStart(4, '0')}` });
+    const now = stamped + minutes * 60 * 1000;
+    const state = makeState(watermark);
+    const logger = loggerFor();
+    const deps = depsFor(state, [obj], now, logger);
+    const first = await rollup.run(deps);
+    assert.equal(first.success, true);
+    assert.equal(first.processed, 1);
+    assert.equal(state.views, 1);
+    assert.equal(state.ingested.has(obj.key), true);
+    assert.ok(deps.provider.lists.some((prefix) => prefix.includes('hour=05')));
+    assert.equal(logger.lines.filter((line) => line.includes('LATE_OBJECT')).length, 1);
+    assert.match(logger.lines.find((line) => line.includes('LATE_OBJECT')), /^ALERT analytics-rollup-5m step=ingest window=\S+ code=LATE_OBJECT key=/);
+
+    const againLogger = loggerFor();
+    const againDeps = depsFor(state, [obj], now, againLogger);
+    const second = await rollup.run(againDeps);
+    assert.equal(second.success, true);
+    assert.equal(second.processed, 0);
+    assert.equal(state.views, 1);
+    assert.equal(againDeps.provider.gets.length, 0);
+    assert.ok(againLogger.lines.every((line) => !line.includes('LATE_OBJECT')));
+  }
+});
+
+test('a successful run emits one heartbeat and the formatter keeps the key allow-list', async () => {
+  assert.deepEqual([...rollup.HEARTBEAT_KEYS], ['watermark', 'windows', 'processed', 'late', 'duration']);
+  const leaked = rollup.formatHeartbeat({
+    watermark: Date.parse('2026-10-15T05:55:00.000Z'),
+    windows: 2,
+    processed: 1,
+    late: 0,
+    duration: 'lt1s',
+    error: 'deadlock admin@demox.site password=supersecret',
+    message: 'raw event body',
+    user: 'SITE0001',
+    note: 'should-not-appear'
+  });
+  assert.equal(leaked.startsWith('HEARTBEAT analytics-rollup-5m '), true);
+  assert.deepEqual(heartbeatKeys(leaked), [...rollup.HEARTBEAT_KEYS]);
+  assert.equal(leaked.includes('admin@'), false);
+  assert.equal(leaked.includes('password'), false);
+  assert.equal(leaked.includes('should-not-appear'), false);
+  assert.equal(leaked.includes('SITE0001'), false);
+  assert.equal(leaked.includes('\n'), false);
+  const dirtyDuration = rollup.formatHeartbeat({
+    watermark: 1,
+    windows: 0,
+    processed: 0,
+    late: 0,
+    duration: '1s password=supersecret'
+  });
+  assert.equal(dirtyDuration.includes('password'), false);
+  assert.match(dirtyDuration, /duration=UNKNOWN$/);
+  assert.equal(rollup.durationBucket(0), 'lt1s');
+  assert.equal(rollup.durationBucket(1500), '1to10s');
+  assert.equal(rollup.durationBucket(20000), '10to60s');
+  assert.equal(rollup.durationBucket(120000), '1to4m');
+  assert.equal(rollup.durationBucket(240000), 'gt4m');
+
+  const now = Date.parse('2026-10-15T06:00:00.000Z');
+  const state = makeState(now - 20 * 60 * 1000);
+  const logger = loggerFor();
+  const obj = makeObject(now - 10 * 60 * 1000, { rand: 'heart0000001' });
+  let ticks = 0;
+  const deps = depsFor(state, [obj], now, logger);
+  deps.clock = () => {
+    ticks += 1;
+    return ticks === 1 ? now : now + 1500;
+  };
+  const result = await rollup.run(deps);
+  assert.equal(result.success, true);
+  assert.equal(result.processed, 1);
+  const beats = logger.logs.filter((line) => line.startsWith('HEARTBEAT analytics-rollup-5m '));
+  assert.equal(beats.length, 1);
+  assert.deepEqual(heartbeatKeys(beats[0]), [...rollup.HEARTBEAT_KEYS]);
+  assert.match(beats[0], /^HEARTBEAT analytics-rollup-5m watermark=\d+ windows=\d+ processed=1 late=0 duration=1to10s$/);
+  assert.equal(beats[0].includes(obj.key), false);
+  assert.equal(beats[0].includes('SITE'), false);
+  assert.equal(beats[0].includes('\n'), false);
+  assert.ok(logger.lines.every((line) => !line.startsWith('HEARTBEAT ')));
+
+  const again = loggerFor();
+  const second = await rollup.run(depsFor(state, [obj], now, again));
+  assert.equal(second.processed, 0);
+  assert.equal(state.views, 1);
+  assert.equal(again.logs.filter((line) => line.startsWith('HEARTBEAT analytics-rollup-5m ')).length, 1);
+});
+
+test('a watermark more than 30 minutes behind alerts STALE_WATERMARK at run start', async () => {
+  const now = Date.parse('2026-10-15T06:00:00.000Z');
+  const staleAt = now - rollup.STALE_WATERMARK_MS - 60 * 1000;
+  const state = makeState(staleAt);
+  const logger = loggerFor();
+  const result = await rollup.run(depsFor(state, [], now, logger));
+  assert.equal(result.success, true);
+  assert.equal(logger.lines.length, 1);
+  assert.match(logger.lines[0], /^ALERT analytics-rollup-5m step=watermark window=\S+ code=STALE_WATERMARK$/);
+  assert.equal(logger.logs.filter((line) => line.startsWith('HEARTBEAT analytics-rollup-5m ')).length, 1);
+
+  const exact = makeState(now - rollup.STALE_WATERMARK_MS);
+  const exactLogger = loggerFor();
+  const exactResult = await rollup.run(depsFor(exact, [], now, exactLogger));
+  assert.equal(exactResult.success, true);
+  assert.ok(exactLogger.lines.every((line) => !line.includes('STALE_WATERMARK')));
+});
+
+test('disabled raw logging or a missing bucket alerts CONFIG_MISSING', async () => {
+  const prevEnabled = process.env.ANALYTICS_RAW_ENABLED;
+  const prevBucket = process.env.ANALYTICS_RAW_BUCKET_ID;
+  const logger = loggerFor();
+  const event = {
+    Type: 'Timer',
+    TriggerName: 'analytics-rollup-5m',
+    Time: '2026-10-15T06:00:00.000Z'
+  };
+  rollup.setDeps({ logger, now: Date.parse('2026-10-15T06:00:00.000Z') });
+  try {
+    delete process.env.ANALYTICS_RAW_ENABLED;
+    delete process.env.ANALYTICS_RAW_BUCKET_ID;
+    const disabled = await websiteApi.main(event);
+    assert.equal(disabled.statusCode, 200);
+    const disabledBody = JSON.parse(disabled.body);
+    assert.equal(disabledBody.success, false);
+    assert.equal(disabledBody.code, 'CONFIG_MISSING');
+    assert.equal(logger.lines.length, 1);
+    assert.equal(logger.lines[0], 'ALERT analytics-rollup-5m step=config window=- code=CONFIG_MISSING');
+    assert.equal(logger.logs.length, 0);
+    assert.equal(logger.lines[0].includes('未启用'), false);
+
+    logger.lines.length = 0;
+    process.env.ANALYTICS_RAW_ENABLED = '1';
+    delete process.env.ANALYTICS_RAW_BUCKET_ID;
+    const noBucket = await websiteApi.main(event);
+    const noBucketBody = JSON.parse(noBucket.body);
+    assert.equal(noBucketBody.success, false);
+    assert.equal(noBucketBody.code, 'CONFIG_MISSING');
+    assert.equal(logger.lines.length, 1);
+    assert.equal(logger.lines[0], 'ALERT analytics-rollup-5m step=config window=- code=CONFIG_MISSING');
+    assert.equal(logger.logs.length, 0);
+  } finally {
+    rollup.setDeps(null);
+    if (prevEnabled == null) delete process.env.ANALYTICS_RAW_ENABLED;
+    else process.env.ANALYTICS_RAW_ENABLED = prevEnabled;
+    if (prevBucket == null) delete process.env.ANALYTICS_RAW_BUCKET_ID;
+    else process.env.ANALYTICS_RAW_BUCKET_ID = prevBucket;
+  }
+});
+
+test('COS NoSuchKey is skipped as a non-error with code NOSUCHKEY', async () => {
+  const now = Date.parse('2026-10-15T06:00:00.000Z');
+  const state = makeState(Date.parse('2026-10-15T05:30:00.000Z'));
+  const logger = loggerFor();
+  const missing = makeObject(Date.parse('2026-10-15T05:35:00.000Z'), { rand: 'nosuch000001' });
+  const kept = makeObject(Date.parse('2026-10-15T05:40:00.000Z'), { rand: 'keptnosuch01' });
+  const secretNote = 'do-not-log-this-body';
+  const deps = depsFor(state, [missing, kept], now, logger);
+  const origGet = deps.provider.get.bind(deps.provider);
+  deps.provider.get = async (key) => {
+    if (key === missing.key) {
+      const error = new Error(`The specified key does not exist. ${secretNote}`);
+      error.code = 'NoSuchKey';
+      error.statusCode = 404;
+      throw error;
+    }
+    return origGet(key);
+  };
+  const result = await rollup.run(deps);
+  assert.equal(result.success, true);
+  assert.equal(result.processed, 1);
+  assert.equal(state.views, 1);
+  assert.equal(state.ingested.has(kept.key), true);
+  assert.equal(state.ingested.has(missing.key), false);
+  assert.ok(logger.lines.every((line) => !line.includes('code=ERROR')));
+  assert.ok(logger.lines.every((line) => !line.includes('NoSuchKey')));
+  assert.ok(logger.lines.every((line) => !line.includes(secretNote)));
+  const skips = logger.logs.filter((line) => line.startsWith('SKIP analytics-rollup-5m '));
+  assert.equal(skips.length, 1);
+  assert.match(skips[0], /^SKIP analytics-rollup-5m step=read window=\S+ code=NOSUCHKEY key=/);
+  assert.ok(skips[0].includes(missing.key));
+  assert.equal(skips[0].includes(secretNote), false);
+  assert.equal(skips[0].includes('\n'), false);
+  assert.equal(logger.logs.filter((line) => line.startsWith('HEARTBEAT analytics-rollup-5m ')).length, 1);
+
+  const again = loggerFor();
+  const againDeps = depsFor(state, [missing, kept], now, again);
+  const againGet = againDeps.provider.get.bind(againDeps.provider);
+  againDeps.provider.get = async (key) => {
+    if (key === missing.key) {
+      const error = new Error(`The specified key does not exist. ${secretNote}`);
+      error.code = 'NoSuchKey';
+      error.statusCode = 404;
+      throw error;
+    }
+    return againGet(key);
+  };
+  const second = await rollup.run(againDeps);
+  assert.equal(second.success, true);
+  assert.equal(second.processed, 0);
+  assert.equal(state.views, 1);
+  assert.equal(again.logs.filter((line) => line.includes('code=NOSUCHKEY')).length, 1);
+  assert.ok(again.lines.every((line) => !line.includes('code=ERROR')));
+
+  const broken = makeState(Date.parse('2026-10-15T05:30:00.000Z'));
+  const brokenLogger = loggerFor();
+  const brokenDeps = depsFor(broken, [kept], now, brokenLogger);
+  brokenDeps.provider.get = async () => {
+    const error = new Error('socket hang up');
+    error.code = 'ECONNRESET';
+    throw error;
+  };
+  const failed = await rollup.run(brokenDeps);
+  assert.equal(failed.success, false);
+  assert.equal(failed.code, 'ECONNRESET');
+  assert.match(brokenLogger.lines[0], /code=ECONNRESET /);
+  assert.equal(brokenLogger.logs.filter((line) => line.startsWith('HEARTBEAT ')).length, 0);
+  assert.equal(brokenLogger.logs.filter((line) => line.includes('NOSUCHKEY')).length, 0);
 });
 
 test('rollup logs do not contain secrets or object contents', () => {

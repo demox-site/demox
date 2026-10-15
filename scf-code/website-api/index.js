@@ -8592,22 +8592,31 @@ async function upsertAnalyticsRollups(conn, rollups) {
 // 每 5 分钟从水位接着补，最多回看 48 小时。再早的区间写入 site_analytics_rollup_gaps，
 // 不静默跳过。已入库的对象先剔掉，再套 2000 上限。单对象超过 256KB 不读内容，记缺口并 ALERT。
 // 水位停在 now 之前约 2 分钟：写入端先盖 ts 再上传，刚结束的窗口不能立刻结清。
-// 同一小时里 ts 早于水位、但还没入库的对象仍要计入（LATE_OBJECT），object_key 主键保证幂等。
-// 失败只打一行 ALERT，并返回 success:false（不抛错）。SCF 定时器抛错才会重试，RetryNum 保持 0。
-// CLS 告警关键字：ALERT analytics-rollup-5m
+// 列表比水位再往前一个小时：盖在 HH:59:5x 的对象可能 5 分钟后才出现在存储里，那时水位已经进入下一小时。
+// ts 早于水位、但还没入库的对象仍要计入（LATE_OBJECT），object_key 主键保证幂等。
+// 成功的一轮打一行 HEARTBEAT（只有白名单字段）。开跑时水位比 now 早超过 30 分钟打 STALE_WATERMARK。
+// 原始日志没开或没有桶打 CONFIG_MISSING，不再静默返回。COS NoSuchKey 记 SKIP code=NOSUCHKEY，不当错误。
+// 其它失败打 ALERT，并返回 success:false（不抛错）。SCF 定时器抛错才会重试，RetryNum 保持 0。
+// CLS 告警关键字：ALERT analytics-rollup-5m。告警试打只在 develop。
 const ROLLUP_WINDOW_MS = 5 * 60 * 1000;
 const ROLLUP_CLOSE_LAG_MS = 2 * 60 * 1000;
 const ROLLUP_LOOKBACK_MS = 48 * 60 * 60 * 1000;
 const ROLLUP_OBJECT_MAX_BYTES = 256 * 1024;
 const ROLLUP_TIME_BUDGET_MS = 240 * 1000;
 const ROLLUP_KEY_QUERY_BATCH = 500;
+const ROLLUP_STALE_WATERMARK_MS = 30 * 60 * 1000;
 const ROLLUP_LOCK_NAME = 'demox_analytics_rollup_5m';
 const ANALYTICS_ROLLUP_ALERT = 'ALERT analytics-rollup-5m';
+const ANALYTICS_ROLLUP_HEARTBEAT = 'HEARTBEAT analytics-rollup-5m';
+const ANALYTICS_ROLLUP_SKIP = 'SKIP analytics-rollup-5m';
+const HEARTBEAT_FIELD_KEYS = Object.freeze(['watermark', 'windows', 'processed', 'late', 'duration']);
 let analyticsRollupDepsForTest = null;
 let analyticsRollupTablesReady = null;
 
 // 与 migrations/024_add_analytics_rollup_watermark.sql 的两句 CREATE 一致。
-// 公开 API 走的是打进 function-api 的这份 index.js；合并 master 会触发统一包发布，但不会执行 SQL 文件。
+// 公开 API 走打进 function-api 的这份 index.js。合并 master 不会自动发布
+// （FUNCTION_API_AUTO_DEPLOY 未设置）；上线是手动 stage → deploy-develop → promote，也不会单独执行这个 SQL 文件。
+// 运行时会执行这两句 CREATE。数据库用户需要 CREATE，以及这两张表上的 SELECT / INSERT / UPDATE。
 const ANALYTICS_ROLLUP_TABLE_DDL = [
   `CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark (
   id TINYINT NOT NULL PRIMARY KEY,
@@ -8714,6 +8723,65 @@ function emitAnalyticsRollupAlert(logger, fields) {
   const sink = logger && typeof logger.error === 'function' ? logger : console;
   sink.error(line);
   return line;
+}
+
+function emitAnalyticsRollupLog(logger, line) {
+  const sink = logger && typeof logger.log === 'function' ? logger : console;
+  sink.log(line);
+  return line;
+}
+
+function formatHeartbeatInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return '0';
+  return String(Math.floor(n));
+}
+
+function rollupDurationBucket(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 1000) return 'lt1s';
+  if (n < 10000) return '1to10s';
+  if (n < 60000) return '10to60s';
+  if (n < 240000) return '1to4m';
+  return 'gt4m';
+}
+
+// 只输出白名单字段。调用方多传的键（错误原文、用户数据）不会出现在这一行。
+function formatAnalyticsRollupHeartbeat(fields) {
+  const src = fields && typeof fields === 'object' ? fields : {};
+  const values = {
+    watermark: formatHeartbeatInt(src.watermark),
+    windows: formatHeartbeatInt(src.windows),
+    processed: formatHeartbeatInt(src.processed),
+    late: formatHeartbeatInt(src.late),
+    duration: rollupAlertToken(src.duration)
+  };
+  const parts = [ANALYTICS_ROLLUP_HEARTBEAT];
+  for (const key of HEARTBEAT_FIELD_KEYS) parts.push(`${key}=${values[key]}`);
+  return parts.join(' ');
+}
+
+function formatAnalyticsRollupSkip({ step, window: windowLabel, code, key }) {
+  const parts = [
+    ANALYTICS_ROLLUP_SKIP,
+    `step=${rollupAlertToken(step)}`,
+    `window=${rollupAlertWindow(windowLabel)}`,
+    `code=${rollupAlertToken(code)}`
+  ];
+  const safeKey = safeRollupObjectKey(key);
+  if (safeKey) parts.push(`key=${safeKey}`);
+  return parts.join(' ');
+}
+
+function isRollupNoSuchKey(error) {
+  if (!error || typeof error !== 'object') return false;
+  const raw = error.code != null ? error.code : (error.Code != null ? error.Code : error.name);
+  return typeof raw === 'string' && raw.toLowerCase() === 'nosuchkey';
+}
+
+function rollupWindowsSettled(fromMs, toMs) {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return 0;
+  return Math.round((toMs - fromMs) / ROLLUP_WINDOW_MS);
 }
 
 function rollupHourPrefixes(startMs, endMs) {
@@ -8867,6 +8935,14 @@ async function runAnalyticsRollupBody({
       scanStart = alignRollupWindow(stored);
     }
     windowLabel = formatRollupWindow(scanStart, now);
+    const alerts = [];
+    if (stored != null && Number.isFinite(stored) && (now - stored) > ROLLUP_STALE_WATERMARK_MS) {
+      alerts.push(emitAnalyticsRollupAlert(logger, {
+        step: 'watermark',
+        window: formatRollupWindow(stored, now),
+        code: 'STALE_WATERMARK'
+      }));
+    }
 
     const batch = [];
     const oversized = [];
@@ -8877,7 +8953,7 @@ async function runAnalyticsRollupBody({
     let backlogTo = null;
     let listedThrough = scanStart;
 
-    for (const prefix of rollupHourPrefixes(scanStart, now)) {
+    for (const prefix of rollupHourPrefixes(scanStart - 3600000, now)) {
       if (overBudget()) {
         stoppedForBudget = true;
         break;
@@ -8949,6 +9025,15 @@ async function runAnalyticsRollupBody({
       try {
         text = await provider.get(obj.key);
       } catch (error) {
+        if (isRollupNoSuchKey(error)) {
+          emitAnalyticsRollupLog(logger, formatAnalyticsRollupSkip({
+            step: 'read',
+            window: windowLabel,
+            code: 'NOSUCHKEY',
+            key: obj.key
+          }));
+          continue;
+        }
         if (error && typeof error === 'object') error.rollupKey = obj.key;
         throw error;
       }
@@ -9069,7 +9154,6 @@ async function runAnalyticsRollupBody({
       });
     }
 
-    const alerts = [];
     if (gap) {
       alerts.push(emitAnalyticsRollupAlert(logger, {
         step: 'gap',
@@ -9114,6 +9198,16 @@ async function runAnalyticsRollupBody({
         code: 'TIME_BUDGET'
       }));
     }
+
+    const watermarkMs = summary.nextWatermark;
+    const settledFrom = stored != null && Number.isFinite(stored) ? stored : scanStart;
+    emitAnalyticsRollupLog(logger, formatAnalyticsRollupHeartbeat({
+      watermark: watermarkMs,
+      windows: rollupWindowsSettled(settledFrom, watermarkMs),
+      processed: summary.processed,
+      late: readObjects.filter((obj) => obj.late).length,
+      duration: rollupDurationBucket(tick() - startedAt)
+    }));
 
     return {
       success: true,
@@ -9196,14 +9290,25 @@ async function handleRollupSiteAnalytics(event) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行统计聚合' }) };
   }
 
+  const deps = analyticsRollupDepsForTest;
+  const configLogger = (deps && deps.logger) || console;
   const bucketId = normalizePositiveId(process.env.ANALYTICS_RAW_BUCKET_ID);
   if (process.env.ANALYTICS_RAW_ENABLED !== '1' || !bucketId) {
-    return ok({ success: false, message: '原始访问日志未启用，无法延迟聚合' });
+    const line = emitAnalyticsRollupAlert(configLogger, {
+      step: 'config',
+      window: '-',
+      code: 'CONFIG_MISSING'
+    });
+    return ok({
+      success: false,
+      code: 'CONFIG_MISSING',
+      message: '原始访问日志未启用，无法延迟聚合',
+      alerts: [line]
+    });
   }
 
   const body = getRollupRequestBody(event);
   // body.days / body.hours 是空操作。扫描范围只由水位决定，手动传这两个字段不会缩短或拉长回看。
-  const deps = analyticsRollupDepsForTest;
   let provider = deps && deps.provider;
   if (!provider) {
     try {
@@ -11282,6 +11387,7 @@ exports._analyticsRollupForTest = {
   coverage: analyticsRollupCoverage,
   weekWindow: analyticsRollupWeekWindow,
   formatAlert: formatAnalyticsRollupAlert,
+  formatHeartbeat: formatAnalyticsRollupHeartbeat,
   normalizeLimit: normalizeRollupRunLimit,
   setDeps(deps) { analyticsRollupDepsForTest = deps; },
   resetTables() { analyticsRollupTablesReady = null; },
@@ -11292,7 +11398,11 @@ exports._analyticsRollupForTest = {
   OBJECT_MAX_BYTES: ROLLUP_OBJECT_MAX_BYTES,
   TIME_BUDGET_MS: ROLLUP_TIME_BUDGET_MS,
   LOCK_NAME: ROLLUP_LOCK_NAME,
-  ALERT_KEYWORD: ANALYTICS_ROLLUP_ALERT
+  ALERT_KEYWORD: ANALYTICS_ROLLUP_ALERT,
+  HEARTBEAT_KEYWORD: ANALYTICS_ROLLUP_HEARTBEAT,
+  HEARTBEAT_KEYS: HEARTBEAT_FIELD_KEYS,
+  STALE_WATERMARK_MS: ROLLUP_STALE_WATERMARK_MS,
+  durationBucket: rollupDurationBucket
 };
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };

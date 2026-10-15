@@ -7,7 +7,12 @@
 -- 水位早于 now-48h：把 [水位, now-48h) 写入 site_analytics_rollup_gaps（reason=over_48h），然后从 48 小时前接着补。
 -- 单个原始对象超过 256KB：不读内容，记 reason=object_too_large，object_key 为对象键。
 -- 单次未处理对象仍超过 2000：只处理按时间排好的前 2000 个，水位停在第一个没结清的 5 分钟窗口，不写缺口。
--- 同一小时里 ts 早于水位、但还没入库的对象仍然计入（日志 code=LATE_OBJECT）。object_key 主键保证重复跑不会计两次。
+-- 列表比水位再往前一个小时，避免盖在 HH:59:58、数分钟后才出现的对象被丢掉。
+-- ts 早于水位、但还没入库的对象仍然计入（日志 code=LATE_OBJECT）。object_key 主键保证重复跑不会计两次。
+-- 运行时还会执行与下面两句相同的 CREATE TABLE IF NOT EXISTS。
+-- 数据库用户需要 CREATE，以及对这两张表的 SELECT、INSERT、UPDATE。
+-- 合并 master 不会自动发布（FUNCTION_API_AUTO_DEPLOY 未设置）。上线是手动 stage → deploy-develop → promote。
+-- 告警试打只在 develop 上做。
 --
 -- 周报 WAU 怎么读（标「暂定」）：
 -- 统计周从周一 00:00 UTC+8 开始，到下一周同一时刻结束（结束不含）。

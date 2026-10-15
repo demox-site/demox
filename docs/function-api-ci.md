@@ -25,7 +25,7 @@ app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 
 7. 公网复查 `https://api.demox.site/health`、`/`（3 轮，间隔 20 秒）。失败自动把 production 切回发布前的版本。
 8. 可选 `with_runtime`：同一个包更新 `demox-user-nodejs`。它没有别名（路由用 `$LATEST` 触发器地址调用），所以先发一个快照版本作为回滚点，更新后公网复查，失败就把快照版本的代码装回去。
 
-push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AUTO_DEPLOY=true` 时才自动发布；手动触发（`plan` / `deploy` / `rollback`）随时可用。`concurrency: deploy-function-api`，同一时间只跑一个，不取消正在跑的发布。
+push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AUTO_DEPLOY=true` 时才自动发布。这个变量当前没有设置，所以合并到 master **不会**自动发布。要上线时手动按顺序：`stage`（只打包上传 COS）→ `deploy-develop`（只切 develop）→ 在 develop 上验证 → `promote`（只切 production）。`plan` / `deploy` / `rollback` 仍是手动入口。`concurrency: deploy-function-api`，同一时间只跑一个，不取消正在跑的发布。`ALERT analytics-rollup-5m` 的试打（含 `STALE_WATERMARK`、`CONFIG_MISSING`）只打 develop，不要打 production 或 `api.demox.site`。
 
 ## 回滚
 
