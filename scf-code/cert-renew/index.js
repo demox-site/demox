@@ -6,11 +6,16 @@
  *
  * Each target is read separately: EdgeOne apex (demox.site), www, and the
  * wildcard that serves user sites, plus the certificate actually bound on
- * the SCF custom domain api.demox.site. A not-due target keeps its cert.
+ * the SCF custom domain api.demox.site. Writes only replace Type=upload
+ * certs on [CERT_DOMAIN, ...CERT_SAN]. www and any managed cert are logged
+ * and left untouched. A not-due target keeps its cert.
  * When a due target can be covered by a cert that is already serving another
- * target, or by an SSL cert issued in the last few days for the same name
- * set with more than 60 days left, that CertificateId is reused and issue
- * plus upload are skipped. Bind skips a target that already has that cert.
+ * writable target, or by an SSL cert issued in the last few days for the
+ * same name set with more than 60 days left, that CertificateId is reused
+ * and issue plus upload are skipped. Bind skips a target that already has
+ * that cert. The runtime role may lack ssl:DescribeCertificate and
+ * ssl:DescribeCertificates: a failed api expiry read is treated as due, and
+ * an authorization failure on the certificate list falls through to issue.
  *
  * The previous reader used only the EdgeOne acceleration domain named by
  * CERT_DOMAIN (default *.demox.site), preferring Certificate.List Type=upload
@@ -99,12 +104,25 @@ function formatRenewalAlert(error) {
   const parts = ['ALERT cert-renew failed'];
   if (error?.step) parts.push(`step=${error.step}`);
   if (error?.status) parts.push(`status=${error.status}`);
+  if (error?.newCertId) parts.push(`newCertId=${error.newCertId}`);
+  if (error?.path) parts.push(`path=${error.path}`);
   if (Array.isArray(error?.attempts) && error.attempts.length) {
     parts.push(`attempts=${error.attempts.map((item) => item.id).join('→')}`);
   }
   if (typeof error?.remainingDays === 'number') parts.push(`remainingDays=${error.remainingDays}`);
   parts.push(redactSecrets(error?.message || '未知错误'));
   return parts.join(' ');
+}
+
+function isSslReadDenied(error) {
+  const message = String(error?.message || '');
+  return message.includes('AuthFailure') || message.includes('UnauthorizedOperation');
+}
+
+function stampRenewError(error, fields = {}) {
+  if (fields.newCertId) error.newCertId = fields.newCertId;
+  if (fields.path) error.path = fields.path;
+  return error;
 }
 
 function parseCloudTime(value) {
@@ -170,7 +188,7 @@ function issuedAt(view) {
 function selectReusableCertificate(certs, config, now) {
   const matches = (certs || []).filter((cert) => {
     if (!cert.certificateId) return false;
-    if (cert.status != null && Number(cert.status) !== 1) return false;
+    if (cert.status == null || cert.status === '' || Number(cert.status) !== 1) return false;
     if (!sameDomainSet(certNames(cert), config)) return false;
     const remaining = daysUntil(cert.endTime, now);
     if (remaining == null || remaining <= config.reuseMinRemainingDays) return false;
@@ -183,14 +201,21 @@ function selectReusableCertificate(certs, config, now) {
   return matches[0] || null;
 }
 
+const FORCE_UNKNOWN_ISSUE_MIN_DAYS = 83;
+
+function writableHosts(config) {
+  return [...new Set([config.domain, ...(config.san || [])].filter(Boolean))];
+}
+
 function edgeTargetsFor(config) {
   const apex = config.dnspodDomain;
   const sites = String(config.domain || '').startsWith('*.') ? config.domain : `*.${apex}`;
+  const writable = new Set(writableHosts(config).map((host) => String(host).toLowerCase()));
   return [
     { role: 'apex', host: apex },
     { role: 'www', host: `www.${apex}` },
     { role: 'sites', host: sites }
-  ];
+  ].map((spec) => ({ ...spec, writable: writable.has(String(spec.host).toLowerCase()) }));
 }
 
 function summarizeTarget(target) {
@@ -199,6 +224,8 @@ function summarizeTarget(target) {
     role: target.role,
     host: target.host,
     present: target.present,
+    writable: Boolean(target.writable),
+    upload: Boolean(target.upload),
     certId: target.certId || null,
     days: target.days,
     due: target.due
@@ -342,7 +369,7 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
 
   function edgeCertificate(domain) {
     const certificates = domain?.Certificate?.List || [];
-    return certificates.find((item) => item.Type === 'upload') || certificates[0] || null;
+    return certificates.find((item) => item.Type === 'upload') || null;
   }
 
   async function readEdgeTargets(now, { force = false } = {}) {
@@ -350,9 +377,20 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
     return edgeTargetsFor(config).map((spec) => {
       const domain = domains.find((item) => item.DomainName === spec.host);
       if (!domain) {
-        return { kind: 'edgeone', role: spec.role, host: spec.host, present: false, days: null, certId: null, due: false };
+        return {
+          kind: 'edgeone',
+          role: spec.role,
+          host: spec.host,
+          present: false,
+          writable: spec.writable,
+          upload: false,
+          days: null,
+          certId: null,
+          due: false
+        };
       }
       const certificate = edgeCertificate(domain);
+      const upload = Boolean(certificate);
       const days = certificate?.ExpireTime ? daysUntil(certificate.ExpireTime, now) : null;
       const certId = certificate?.CertId || null;
       return {
@@ -360,9 +398,11 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
         role: spec.role,
         host: spec.host,
         present: true,
+        writable: spec.writable,
+        upload,
         days,
         certId,
-        due: targetIsDue(days, force)
+        due: Boolean(spec.writable && upload && targetIsDue(days, force))
       };
     });
   }
@@ -380,14 +420,21 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
     const certId = domain.CertConfig?.CertificateId || null;
     let days = null;
     if (certId) {
-      const view = await describeCert(certId);
-      days = daysUntil(view.endTime, now);
+      try {
+        const view = await describeCert(certId);
+        days = daysUntil(view.endTime, now);
+      } catch (error) {
+        logger.warn?.(redactSecrets(`cert-renew 读取 api 证书到期失败，按已到期继续：${error.message}`));
+        days = null;
+      }
     }
     return {
       kind: 'scf',
       role: 'api',
       host: config.scfCustomDomain,
       present: true,
+      writable: true,
+      upload: Boolean(certId),
       days,
       certId,
       domain,
@@ -408,13 +455,13 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
 
   function logTargets(targets) {
     const line = targets.map((target) => (
-      `${target.role}:${target.host} present=${target.present} certId=${target.certId || '-'} days=${target.days === null ? 'unknown' : target.days} due=${target.due}`
+      `${target.role}:${target.host} present=${target.present} write=${target.writable ? 'yes' : 'no'} upload=${target.upload ? 'yes' : 'no'} certId=${target.certId || '-'} days=${target.days === null ? 'unknown' : target.days} due=${target.due}`
     )).join(' | ');
     logger.log?.(`cert-renew targets ${line}`);
   }
 
   function logPath(path, extra = {}) {
-    const fields = [`cert-renew dry-run path=${path}`];
+    const fields = [`cert-renew decision path=${path}`];
     if (extra.certificateId) fields.push(`certificateId=${extra.certificateId}`);
     if (extra.due) fields.push(`due=${extra.due}`);
     if (extra.reason) fields.push(`reason=${extra.reason}`);
@@ -517,7 +564,7 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
       CertificatePublicKey: cert,
       CertificatePrivateKey: key,
       CertificateType: 'SVR',
-      Alias: `wildcard-demox.site-LE-${new Date().toISOString().slice(0, 10)}`,
+      Alias: `wildcard-demox.site-LE-${new Date(clock()).toISOString().slice(0, 10)}`,
       Repeatable: true
     });
     return response.CertificateId;
@@ -535,24 +582,43 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
     return { updated: true, hosts: list };
   }
 
-  async function findBoundReuse(targets, dueTargets) {
-    const fresh = targets.filter((target) => (
-      target.present && target.certId && !target.due && target.days != null && target.days > config.thresholdDays
-    ));
+  async function findBoundReuse(targets, dueTargets, { force = false, now = clock() } = {}) {
     const groups = new Map();
-    for (const target of fresh) {
-      const group = groups.get(target.certId) || { certId: target.certId, hosts: [], days: target.days };
+    for (const target of targets) {
+      if (!target.present || !target.certId || target.days == null) continue;
+      if (!target.writable) continue;
+      const normal = !target.due && target.days > config.thresholdDays;
+      const forced = Boolean(force) && target.days > config.reuseMinRemainingDays;
+      if (!normal && !forced) continue;
+      const group = groups.get(target.certId) || {
+        certId: target.certId,
+        hosts: [],
+        days: target.days,
+        forcedOnly: true
+      };
       group.hosts.push(target.host);
       group.days = Math.max(group.days, target.days);
+      if (normal) group.forcedOnly = false;
       groups.set(target.certId, group);
     }
     let best = null;
     for (const group of groups.values()) {
       let names = [];
+      let issued = null;
       try {
-        names = certNames(await describeCert(group.certId));
+        const view = await describeCert(group.certId);
+        names = certNames(view);
+        issued = issuedAt(view);
       } catch (error) {
         logger.warn?.(redactSecrets(`cert-renew 读取已绑定证书的域名失败，改用主机名判断覆盖：${error.message}`));
+      }
+      if (group.forcedOnly) {
+        if (issued == null) {
+          if (group.days < FORCE_UNKNOWN_ISSUE_MIN_DAYS) continue;
+        } else {
+          const ageDays = (now - issued) / 86_400_000;
+          if (ageDays < 0 || ageDays > config.reuseWithinDays) continue;
+        }
       }
       const pool = [...names, ...group.hosts];
       if (!dueTargets.every((target) => certCoversHost(pool, target.host))) continue;
@@ -594,9 +660,13 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
   }
 
   async function bindDueEdge(certId, dueTargets) {
-    const dueHosts = dueTargets.filter((target) => target.kind === 'edgeone');
+    const order = writableHosts(config);
+    const dueHosts = dueTargets.filter((target) => (
+      target.kind === 'edgeone' && target.writable && order.includes(target.host)
+    ));
     const skipped = dueHosts.filter((target) => target.certId === certId);
-    const hosts = dueHosts.filter((target) => target.certId !== certId).map((target) => target.host);
+    const pending = new Set(dueHosts.filter((target) => target.certId !== certId).map((target) => target.host));
+    const hosts = order.filter((host) => pending.has(host));
     if (skipped.length) {
       logPath('bind-edgeone', {
         certificateId: certId,
@@ -700,7 +770,7 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
 
     let reused = null;
     try {
-      reused = await findBoundReuse(targets, due);
+      reused = await findBoundReuse(targets, due, { force, now });
     } catch (error) {
       throw annotateRenewError(error, 'list-ssl', days);
     }
@@ -708,7 +778,11 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
       try {
         reused = await findUploadedReuse(now);
       } catch (error) {
-        throw annotateRenewError(error, 'list-ssl', days);
+        if (isSslReadDenied(error)) {
+          logger.warn?.(redactSecrets(`cert-renew DescribeCertificates 无权限，改为签发：${error.message}`));
+        } else {
+          throw annotateRenewError(error, 'list-ssl', days);
+        }
       }
     }
 
@@ -740,14 +814,14 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
     try {
       edgeBind = await bindDueEdge(newCertId, due);
     } catch (error) {
-      throw annotateRenewError(error, 'bind-edgeone', days);
+      throw annotateRenewError(stampRenewError(error, { newCertId, path }), 'bind-edgeone', days);
     }
     let scfBind = { updated: false, reason: 'not_due' };
     if (apiTarget?.due) {
       try {
         scfBind = await bindDueApi(newCertId);
       } catch (error) {
-        throw annotateRenewError(error, 'bind-scf', apiTarget.days);
+        throw annotateRenewError(stampRenewError(error, { newCertId, path }), 'bind-scf', apiTarget.days);
       }
     }
     return {
@@ -792,6 +866,8 @@ async function runRenewal(event = {}, deps = {}) {
     wrapped.code = 'CERT_RENEW_FAILED';
     wrapped.status = error.status;
     wrapped.step = error.step;
+    wrapped.newCertId = error.newCertId;
+    wrapped.path = error.path;
     wrapped.cause = error;
     throw wrapped;
   }
