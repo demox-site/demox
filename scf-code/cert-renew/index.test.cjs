@@ -230,9 +230,14 @@ function acmeClientFor(auto) {
 
 test('wildcard attempt order is dns-01 then a longer dns-01 retry', () => {
   assert.deepEqual(__private.WILDCARD_REJECTED_CHALLENGES, ['http-01', 'tls-alpn-01']);
-  assert.deepEqual(__private.buildAttemptOrder({ dnsPropagationMs: 25_000, dnsRetryPropagationMs: 90_000 }), [
+  const override = process.env.DNS_RETRY_PROPAGATION_MS;
+  const expectedDefault = override == null || override === '' ? 60_000 : Number.parseInt(override, 10);
+  assert.equal(__private.CONFIG.dnsRetryPropagationMs, expectedDefault);
+  assert.equal(__private.parseInteger(undefined, 60_000), 60_000);
+  assert.equal(__private.parseInteger('45000', 60_000), 45_000);
+  assert.deepEqual(__private.buildAttemptOrder({ dnsPropagationMs: 25_000, dnsRetryPropagationMs: 60_000 }), [
     { id: 'dns-01', propagationMs: 25_000 },
-    { id: 'dns-01-retry', propagationMs: 90_000 }
+    { id: 'dns-01-retry', propagationMs: 60_000 }
   ]);
 });
 

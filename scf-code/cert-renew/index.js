@@ -28,7 +28,7 @@ const CONFIG = {
   region: process.env.SCF_REGION || 'ap-guangzhou',
   scfCustomDomain: process.env.SCF_CUSTOM_DOMAIN || 'api.demox.site',
   dnsPropagationMs: parseInteger(process.env.DNS_PROPAGATION_MS, 25_000),
-  dnsRetryPropagationMs: parseInteger(process.env.DNS_RETRY_PROPAGATION_MS, 90_000)
+  dnsRetryPropagationMs: parseInteger(process.env.DNS_RETRY_PROPAGATION_MS, 60_000)
 };
 
 // 通配符只能走 dns-01。这两个挑战不能签发 *.demox.site，不放进备用顺序。
