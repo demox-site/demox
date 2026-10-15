@@ -146,11 +146,15 @@ function assertRuntime(runtime) {
   }
 }
 
-function assertAsyncInvoke(fn) {
+function assertAsyncInvoke(fn, { required = false } = {}) {
   const timers = fn?.runtime?.triggers || [];
   if (!timers.includes('timer:monthly-renew')) return;
   const cfg = fn.runtime.asyncInvoke;
-  if (!cfg || cfg.retryNum !== 0) {
+  if (!cfg) {
+    if (!required) return;
+    throw Object.assign(new Error('monthly-renew 的异步重试必须关闭（runtime.asyncInvoke.retryNum = 0）'), { code: 'bad-runtime' });
+  }
+  if (cfg.retryNum !== 0) {
     throw Object.assign(new Error('monthly-renew 的异步重试必须关闭（runtime.asyncInvoke.retryNum = 0）'), { code: 'bad-runtime' });
   }
   if (cfg.api !== 'UpdateFunctionEventInvokeConfig') {
@@ -555,6 +559,11 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
       configChanged = JSON.stringify(canonicalRuntime(headFn.runtime)) !== JSON.stringify(canonicalRuntime(baseFn.runtime));
     } catch (error) {
       errors.push(`${baseFn.name} 的 runtime 配置 ${error.message}`);
+    }
+    try {
+      assertAsyncInvoke(headFn, { required: true });
+    } catch (error) {
+      errors.push(`${headFn.name} ${error.message}`);
     }
     const runtimeChanged = files.filter((file) => matchesPath(file, headFn.runtimePaths));
     if ((runtimeChanged.length || configChanged) && runtimeCmp <= 0) {

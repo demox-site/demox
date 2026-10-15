@@ -346,6 +346,11 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   const retriesOn = structuredClone(live);
   retriesOn.functions.find((fn) => fn.name === 'demox-function-api').runtime.asyncInvoke.retryNum = 2;
   assert.equal(v.validateManifest(retriesOn).ok, false);
+  const dropped = structuredClone(live);
+  delete dropped.functions.find((fn) => fn.name === 'demox-function-api').runtime.asyncInvoke;
+  const missingRetry = v.evaluateChanges({ baseManifest: live, headManifest: dropped, changedFiles: [] });
+  assert.equal(missingRetry.ok, false);
+  assert.match(missingRetry.errors.join('\n'), /retryNum = 0/);
   assert.equal(Object.hasOwn(live, 'seed'), false);
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.equal(live.functions.find((fn) => fn.name === 'demox-user-nodejs').runtimeVersion, '0.1.0');
