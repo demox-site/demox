@@ -40,6 +40,25 @@ test('system routes match exact prefixes and nested paths, not lookalikes', () =
   assert.equal(routeMatches('/authentic', '/auth'), false);
 });
 
+test('public custom-domain routes load the packaged website entry that refuses public suffixes', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const manifest = loadSystemManifest();
+  for (const route of ['/check-site-access', '/add-project-custom-domain']) {
+    const entry = resolveSystemFunction({ path: route }, manifest);
+    assert.equal(entry.name, 'demox-system-website', route);
+    assert.equal(entry.sourceDir, 'scf-code/website-api', route);
+    assert.equal(entry.entrypoint, 'index.js', route);
+  }
+  const sourcePath = path.join(__dirname, '..', 'website-api', 'index.js');
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  assert.match(source, /cookieScope: 'refuse'/);
+  assert.match(source, /reason: 'public_suffix'/);
+  assert.match(source, /reason: 'public-suffix'/);
+  const routerRoot = path.resolve(__dirname, '..', '..');
+  assert.equal(path.join(routerRoot, 'scf-code/website-api', 'index.js'), sourcePath);
+});
+
 test('checked-in manifest preserves legacy website and MCP paths', () => {
   const manifest = loadSystemManifest();
   assert.equal(resolveSystemFunction({ path: '/upload' }, manifest).name, 'demox-system-website');

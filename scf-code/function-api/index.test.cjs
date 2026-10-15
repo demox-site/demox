@@ -610,6 +610,75 @@ async function publishPlatformAuth() {
   });
 }
 
+test('public custom-domain routes ignore a published website bundle and stay in process', async () => {
+  const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  try {
+    const executed = [];
+    const runtime = {
+      async execute(opts) {
+        executed.push(opts);
+        return { status: 200, headers: {}, body: 'runtime' };
+      }
+    };
+    const app = makeApp({ runtime });
+    const created = JSON.parse((await app.handler(event('/functions', 'POST', {
+      websiteId: 'EPX2UU43',
+      name: 'Website',
+      slug: 'website',
+      runtime: 'nodejs',
+      routes: ['/check-site-access', '/add-project-custom-domain']
+    }))).body).function;
+    const accepting = 'exports.main = async function() { return { statusCode: 200, headers: {}, body: JSON.stringify({ success: true, accepted: true }) }; };';
+    await app.handler(event(`/functions/${created.functionId}/versions`, 'POST', { source: accepting }));
+    await app.handler(event(`/functions/${created.functionId}/publish`, 'POST', { version: 1 }));
+    const seen = [];
+    const platform = createPlatformHandler({
+      userHandler: createFunctionHttpHandler({
+        repository: app.repository,
+        bundleStore: app.bundleStore,
+        runtime,
+        authenticate: () => ({ userId: 'user-1' }),
+        publicBaseUrl: 'https://functions.test'
+      }),
+      systemRouterOptions: {
+        loaders: {
+          'demox-system-website': () => ({
+            main: async (request) => {
+              seen.push(request.path);
+              return {
+                statusCode: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  success: true,
+                  allowed: false,
+                  cookieScope: 'refuse',
+                  reason: 'public_suffix',
+                  path: request.path
+                })
+              };
+            }
+          })
+        }
+      }
+    });
+    for (const path of ['/check-site-access', '/add-project-custom-domain']) {
+      const response = await platform(event(path, 'POST', { host: 'github.io', hostname: 'github.io' }));
+      assert.equal(response.statusCode, 200, path);
+      const body = JSON.parse(response.body);
+      assert.equal(body.accepted, undefined, path);
+      assert.equal(body.cookieScope, 'refuse', path);
+      assert.equal(body.reason, 'public_suffix', path);
+      assert.equal(body.path, path);
+    }
+    assert.deepEqual(seen, ['/check-site-access', '/add-project-custom-domain']);
+    assert.equal(executed.length, 0);
+  } finally {
+    if (previous === undefined) delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+    else process.env.FUNCTIONS_PLATFORM_SITE_MODE = previous;
+  }
+});
+
 test('platform site functions run in process by default, never in the shared user runtime', async () => {
   const previous = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
   delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;

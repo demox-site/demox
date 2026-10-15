@@ -1277,6 +1277,22 @@ function siteResolveRow(websiteId, path) {
   };
 }
 
+test('check_site_access refuses public-suffix hosts with cookieScope refuse before any database lookup', async () => {
+  let queried = false;
+  queryImpl = async () => {
+    queried = true;
+    throw new Error('public suffix must not hit the database');
+  };
+  for (const host of ['github.io', 'co.uk', 'com.cn']) {
+    const body = JSON.parse((await request('check_site_access', { host })).body);
+    assert.equal(body.success, true, host + ' ' + JSON.stringify(body));
+    assert.equal(body.allowed, false, host);
+    assert.equal(body.cookieScope, 'refuse', host);
+    assert.equal(body.reason, 'public_suffix', host);
+    assert.equal(queried, false, host);
+  }
+});
+
 test('project custom domain belongs to the project and can route root plus a subdomain', async () => {
   const insertedDomains = [];
   const insertedRoutes = [];
@@ -1328,13 +1344,15 @@ test('project custom domain belongs to the project and can route root plus a sub
     assert.equal(rejected.success, false, JSON.stringify(rejected));
     assert.equal(rejected.reason, 'official');
 
-    const publicSuffix = JSON.parse((await request('add_project_custom_domain', {
-      projectId: 42,
-      hostname: 'github.io',
-      websiteId: 'SITEOK01'
-    }, 'project-owner')).body);
-    assert.equal(publicSuffix.success, false, JSON.stringify(publicSuffix));
-    assert.equal(publicSuffix.reason, 'public_suffix');
+    for (const hostname of ['github.io', 'co.uk', 'com.cn']) {
+      const publicSuffix = JSON.parse((await request('add_project_custom_domain', {
+        projectId: 42,
+        hostname,
+        websiteId: 'SITEOK01'
+      }, 'project-owner')).body);
+      assert.equal(publicSuffix.success, false, hostname + ' ' + JSON.stringify(publicSuffix));
+      assert.equal(publicSuffix.reason, 'public_suffix', hostname);
+    }
 
     const added = JSON.parse((await request('add_project_custom_domain', {
       projectId: 42,
