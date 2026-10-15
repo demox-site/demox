@@ -99,7 +99,7 @@ else
   echo "WARN BASELINE not set: method matrix vs baseline skipped (required for production releases)"
 fi
 
-# K0：本地模拟「正缓存 ≤60s，封禁在 1 分钟内生效」。不访问网络。
+# K0：本地模拟「封禁和解封都在 15s 内生效，过期后解析失败是 503」。不访问网络。
 python3 "$(dirname "$0")/edge-p0-matrix.py" simulate-ban || fail=1
 if [ "${SKIP_ORIGIN:-0}" != 1 ]; then
   python3 "$(dirname "$0")/edge-p0-matrix.py" origin || fail=1

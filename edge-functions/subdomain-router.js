@@ -8,7 +8,8 @@
  * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
  * 源站路径（K2）：sites.demox.site 与 site-N.demox.site 上的 /sites/<uid>/<ID>/ 在回源前按站点 ID 裁决。
- * 正缓存 ≤60s，封禁/私有/uid 不符 ≤15s，没有 stale 宽限。子域名和自定义域不走这支。
+ * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
+ * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
  * 内部回源用 HMAC（环境变量 DEMOX_ORIGIN_GUARD_SECRET，仓库留空）。不用可伪造的普通头、UA 或 query。
  * 密钥未设置时不签发，调用点仍把入站请求原样交给回源。伪造头校验失败，守卫照常执行。
  *
@@ -42,9 +43,12 @@ var SITE_UNAVAILABLE_RETRY_AFTER = 10; // 秒
 // 源站 host 守卫。K3 把 origin-3.demox.site 加进 ORIGIN_GUARD_HOSTS 即可，不必改判断函数。
 var ORIGIN_GUARD_HOSTS = ['sites.demox.site'];
 var ORIGIN_GUARD_HOST_RE = /^site-\d+\.demox\.site$/;
-// by-ID 解析缓存。每一档都 ≤60s，正缓存也是。新封禁的源站路径必须在 1 分钟内变成 403。
-// 没有额外的 stale-if-error：过期后的正缓存不能在故障期间继续放行。
-var ORIGIN_RESOLVE_FOUND_TTL = 60;
+// by-ID 解析缓存。允许和封禁同一窗口：新封禁约 15s 内 403，解封约 15s 内 200。
+// 不允许把「允许」单独留 60s，那会挡住新封禁；也不把封禁裁决负缓存留得更长。
+// 子域名 / 自定义域的 RESOLVE_CACHE_TTL（60s）不参与这次裁决，所以保持不动。
+// 过期后再遇到解析失败是 503，不回源。
+var ORIGIN_RESOLVE_BAN_TTL = 15;
+var ORIGIN_RESOLVE_FOUND_TTL = 15;
 var ORIGIN_RESOLVE_NEGATIVE_TTL = 15;
 var ORIGIN_RESOLVE_BUDGET_MS = 1500; // 整次 by-ID 查询的硬预算（含一次重试）
 var ORIGIN_RESOLVE_ATTEMPT_MS = 700;
@@ -2009,10 +2013,11 @@ function resolveSiteByIdCacheKey(websiteId, uid) {
   return RESOLVE_CACHE_PREFIX + 'id/' + encodeURIComponent(websiteId) + '/' + encodeURIComponent(uid);
 }
 
-// 公开 resolve 端点，不带新凭证。正缓存物理 TTL = 新鲜期 60s，不用 10 分钟 stale。
+// 公开 resolve 端点，不带新凭证。允许与封禁的物理 TTL 都是 15s，不用 10 分钟 stale。
 async function resolveSiteById(websiteId, uid) {
-  const ttl = ORIGIN_RESOLVE_FOUND_TTL;
-  const negative = ORIGIN_RESOLVE_NEGATIVE_TTL;
+  // 允许结果不得超过封禁窗口，否则新封禁要等那条正缓存过期。
+  const ttl = Math.min(ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_BAN_TTL);
+  const negative = Math.min(ORIGIN_RESOLVE_NEGATIVE_TTL, ORIGIN_RESOLVE_BAN_TTL);
   return cachedResolve(
     resolveSiteByIdCacheKey(websiteId, uid),
     { action: 'resolve_subdomain', websiteId: websiteId, uid: uid },
@@ -2102,7 +2107,7 @@ function originGuardNotFound() {
   });
 }
 
-// 允许放行的对象也把 Cache-Control 压到 ≤60s。拒绝响应 no-store。
+// 允许放行的对象也把 Cache-Control 压到封禁窗口（15s），避免缓存的 200 比封禁裁决活得更久。
 // 触发规则命中时函数先于节点缓存执行；这层头是触发规则被绕开时的上限，已有 HIT 仍要 purge。
 function capOriginObjectCache(resp, route) {
   if (!resp) return resp;
@@ -2112,7 +2117,7 @@ function capOriginObjectCache(resp, route) {
       headers.set('Cache-Control', 'no-store');
       headers.delete('Expires');
     } else {
-      headers.set('Cache-Control', 'public, max-age=' + ORIGIN_RESOLVE_FOUND_TTL);
+      headers.set('Cache-Control', 'public, max-age=' + ORIGIN_RESOLVE_BAN_TTL);
     }
     if (route) headers.set('x-demox-route', route);
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: headers });

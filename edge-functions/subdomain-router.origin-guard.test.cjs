@@ -89,7 +89,7 @@ function makeGuard({ secret = '', resolver, origin = null, now = 1_000_000, budg
   });
   vm.runInContext(
     `${source}\nglobalThis.__now = ${now};\nnowMs = function () { return globalThis.__now; };\n` +
-      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS };',
+      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, ORIGIN_RESOLVE_BAN_TTL, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, RESOLVE_CACHE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS };',
     ctx
   );
   if (budget) {
@@ -135,15 +135,16 @@ function verdictResolver(map) {
   };
 }
 
-test('origin-guard TTLs stay at or under 60s and site-N is in the host list', () => {
+test('origin ban and unban expire in 15s; non-ban host resolve stays at most 60s', () => {
   const probe = vm.createContext({
     URL, Request, Response, Headers, console, addEventListener() {}, fetch: async () => { throw new Error('no fetch'); }
   });
-  vm.runInContext(`${source}\nglobalThis.__c = { found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE };`, probe);
-  assert.equal(probe.__c.found, 60);
-  assert.ok(probe.__c.found <= 60);
-  assert.ok(probe.__c.negative <= 15);
-  assert.ok(probe.__c.negative <= probe.__c.found);
+  vm.runInContext(`${source}\nglobalThis.__c = { ban: ORIGIN_RESOLVE_BAN_TTL, found: ORIGIN_RESOLVE_FOUND_TTL, negative: ORIGIN_RESOLVE_NEGATIVE_TTL, host: RESOLVE_CACHE_TTL, budget: ORIGIN_RESOLVE_BUDGET_MS, hosts: ORIGIN_GUARD_HOSTS, allow: ORIGIN_GUARD_ALLOWLIST, re: ORIGIN_GUARD_HOST_RE };`, probe);
+  assert.equal(probe.__c.ban, 15);
+  assert.ok(probe.__c.found <= probe.__c.ban);
+  assert.ok(probe.__c.negative <= probe.__c.ban);
+  assert.ok(probe.__c.host <= 60);
+  assert.equal(probe.__c.host, 60);
   assert.equal(probe.__c.budget, 1500);
   assert.equal(probe.__c.allow.length, 0);
   assert.equal(probe.__c.hosts.includes('sites.demox.site'), true);
@@ -207,7 +208,7 @@ test('an allow:true verdict that still says private is not served', async () => 
   assert.equal(r.calls.origin.length, 0);
 });
 
-test('a public origin path passes through with the same body and a 60s cache cap', async () => {
+test('a public origin path passes through with the same body and a 15s cache cap', async () => {
   const r = makeGuard({
     resolver: verdictResolver({ PUBLIC1: allow('PUBLIC1', 'owner-1') })
   });
@@ -215,7 +216,7 @@ test('a public origin path passes through with the same body and a 60s cache cap
   assert.equal(response.status, 200);
   assert.equal(html, PUBLIC_HTML);
   assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
-  assert.equal(response.headers.get('cache-control'), 'public, max-age=60');
+  assert.equal(response.headers.get('cache-control'), 'public, max-age=15');
   assert.equal(r.calls.resolve[0].websiteId, 'PUBLIC1');
   assert.equal(r.calls.resolve[0].uid, 'owner-1');
   assert.equal(r.calls.resolve[0].subdomain, undefined);
@@ -319,7 +320,7 @@ test('one transient failure inside the budget still serves; a backend error is n
   assert.equal(hops, 2);
 });
 
-test('a positive cache entry of at most 60s is the only outage fallback, and a ban shows within 60s', async () => {
+test('a ban is 403 within 15s, an unban is 200 within 15s, and expiry plus resolver failure is 503', async () => {
   let mode = 'allow';
   const r = makeGuard({
     resolver: () => {
@@ -331,14 +332,14 @@ test('a positive cache entry of at most 60s is the only outage fallback, and a b
   assert.equal((await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html')).response.status, 200);
   const key = 'https://resolve.demox.site/v2/id/PUBLIC1/owner-1';
   const stored = r.cache.store.get(key);
-  assert.match(stored.headers['cache-control'], /max-age=60\b/);
+  assert.match(stored.headers['cache-control'], /max-age=15\b/);
+  assert.doesNotMatch(stored.headers['cache-control'], /max-age=60\b/);
   assert.doesNotMatch(stored.headers['cache-control'], /max-age=600\b/);
-  mode = 'blocked';
-  r.advance(59_000);
-  const still = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
-  assert.equal(still.response.status, 200, 'within 60s the positive cache still serves');
-  assert.equal(still.html, PUBLIC_HTML);
 
+  mode = 'blocked';
+  r.advance(14_000);
+  const hidden = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
+  assert.equal(hidden.response.status, 200, 'a fresh allow entry still serves just inside 15s');
   r.advance(1_000);
   const beforeBan = r.calls.origin.length;
   const banned = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
@@ -348,11 +349,12 @@ test('a positive cache entry of at most 60s is the only outage fallback, and a b
   assert.equal(r.calls.origin.length, beforeBan, 'a ban must not fetch the object');
   assert.equal(JSON.parse(r.cache.store.get(key).body).status, 'blocked');
   assert.match(r.cache.store.get(key).headers['cache-control'], /max-age=15\b/);
+  assert.doesNotMatch(r.cache.store.get(key).headers['cache-control'], /max-age=60\b/);
 
   mode = 'allow';
-  r.advance(10_000);
+  r.advance(14_000);
   assert.equal((await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html')).response.status, 403);
-  r.advance(5_000);
+  r.advance(1_000);
   const unbanned = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(unbanned.response.status, 200);
   assert.equal(unbanned.html, PUBLIC_HTML);
@@ -361,7 +363,7 @@ test('a positive cache entry of at most 60s is the only outage fallback, and a b
   const duringOutage = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(duringOutage.response.status, 200);
   assert.equal(duringOutage.html, PUBLIC_HTML);
-  r.advance(60_000);
+  r.advance(15_000);
   const beforeFail = r.calls.origin.length;
   const expiredOutage = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(expiredOutage.response.status, 503);

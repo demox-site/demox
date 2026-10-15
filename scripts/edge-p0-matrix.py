@@ -97,7 +97,7 @@ def compare(path):
 
 # --- K0 origin-path guard ----------------------------------------------------
 # Live rows run only when this file is invoked as `origin` (from edge-p0-check.sh).
-# `simulate-ban` is local: it reads the router source and walks the 60s cache clock.
+# `simulate-ban` is local: it reads the router source and walks the 15s ban clock.
 
 import os, pathlib, re
 
@@ -148,65 +148,91 @@ def fresh(age_ms, ttl_s):
 
 
 def simulate_ban():
-    """Walk a by-ID cache clock. No network. A ban is visible once the positive entry expires."""
+    """Walk a by-ID cache clock. No network. Ban and unban both land within 15s."""
     text = ROUTER_SOURCE.read_text()
+    ban = _const("ORIGIN_RESOLVE_BAN_TTL", text)
     found = _const("ORIGIN_RESOLVE_FOUND_TTL", text)
     negative = _const("ORIGIN_RESOLVE_NEGATIVE_TTL", text)
+    host_ttl = _const("RESOLVE_CACHE_TTL", text)
     budget = _const("ORIGIN_RESOLVE_BUDGET_MS", text)
     token_ttl = _const("ORIGIN_INTERNAL_TOKEN_TTL_MS", text)
     problems = []
-    if found > 60:
-        problems.append(f"positive TTL {found}s exceeds 60s")
-    if negative > 15 or negative > found:
-        problems.append(f"negative TTL {negative}s exceeds 15s or the positive TTL")
+    if ban != 15:
+        problems.append(f"ban TTL {ban}s is not 15s")
+    if found > ban:
+        problems.append(f"allow TTL {found}s outlives the {ban}s ban window")
+    if negative > ban:
+        problems.append(f"ban verdict TTL {negative}s outlives the {ban}s window")
+    if host_ttl > 60:
+        problems.append(f"non-ban host resolve TTL {host_ttl}s exceeds 60s")
     if "staleIfError: false" not in text:
         problems.append("by-ID resolve still has a stale-if-error grace window")
     if "ORIGIN_GUARD_ALLOWLIST = []" not in text:
         problems.append("origin allowlist is no longer empty; document every new exception")
-    # t=0 allow cached. t=59s still fresh (outage may serve it). t=60s expired → backend says blocked → 403.
+    # Allow cached at t=0, then the backend bans. 403 once that entry expires (15s).
+    # The blocked entry itself expires 15s later, so an unban is a 200. After the
+    # new allow entry expires, a resolver failure is 503 and does not serve stale.
     timeline = []
     cached_at = 0
-    backend = "allow"
+    cached_kind = "allow"
 
-    def decide(now_ms):
+    def status_at(now_ms, backend):
         age = now_ms - cached_at
-        if fresh(age, found) and backend_at_cache == "allow":
-            return "200", "positive-cache"
-        return ("403", "re-resolve-blocked") if backend == "blocked" else ("200", "re-resolve-allow")
+        limit = found if cached_kind == "allow" else negative
+        if fresh(age, limit):
+            if cached_kind == "allow":
+                return "200", "positive-cache"
+            return "403", "ban-cache"
+        if backend == "down":
+            return "503", "fail-closed"
+        if backend == "blocked":
+            return "403", "re-resolve-blocked"
+        return "200", "re-resolve-allow"
 
-    backend_at_cache = "allow"
-    for label, now_ms, backend_now in (
-        ("t=0 cache fill", 0, "allow"),
-        ("t=59s outage", 59_000, "down"),
-        ("t=60s banned", 60_000, "blocked"),
-    ):
+    def remember(now_ms, kind):
+        nonlocal cached_at, cached_kind
+        cached_at = now_ms
+        cached_kind = kind
+
+    steps = (
+        ("t=0 allow fill", 0, "allow", True),
+        ("t=14s ban hidden by fresh allow", 14_000, "blocked", False),
+        ("ban at t=0 seen by t=15s", 15_000, "blocked", True),
+        ("t=14s after ban, unban still cached", 29_000, "allow", False),
+        ("unban seen by t=15s", 30_000, "allow", True),
+        ("t=14s outage", 44_000, "down", False),
+        ("resolver failure after expiry", 45_000, "down", False),
+    )
+    expect = {
+        "t=0 allow fill": "200",
+        "t=14s ban hidden by fresh allow": "200",
+        "ban at t=0 seen by t=15s": "403",
+        "t=14s after ban, unban still cached": "403",
+        "unban seen by t=15s": "200",
+        "t=14s outage": "200",
+        "resolver failure after expiry": "503",
+    }
+    for label, now_ms, backend, store in steps:
         if label.startswith("t=0"):
-            cached_at = 0
-            backend_at_cache = "allow"
-            backend = "allow"
+            remember(0, "allow")
             timeline.append((label, "200", "miss"))
             continue
-        backend = backend_now
-        if backend_now == "down":
-            age = now_ms - cached_at
-            got = ("200", "positive-cache") if fresh(age, found) else ("503", "fail-closed")
-        else:
-            got = decide(now_ms)
-        timeline.append((label, got[0], got[1]))
-    expect = {
-        "t=0 cache fill": "200",
-        "t=59s outage": "200",
-        "t=60s banned": "403",
-    }
-    print(f"{'when':22} {'status':8} {'why'}")
+        status, why = status_at(now_ms, backend)
+        timeline.append((label, status, why))
+        if store and status in ("200", "403"):
+            remember(now_ms, "allow" if status == "200" else "blocked")
+    print(f"{'when':36} {'status':8} {'why'}")
     for label, status, why in timeline:
         ok = status == expect[label]
         if not ok:
             problems.append(f"{label} → {status} (want {expect[label]})")
-        print(f"{'PASS' if ok else 'FAIL'} {label:22} {status:8} {why}")
+        print(f"{'PASS' if ok else 'FAIL'} {label:36} {status:8} {why}")
     if token_ttl > 60_000:
         problems.append("internal token TTL is not short")
-    print(f"simulate-ban constants: found={found}s negative={negative}s budget={budget}ms token={token_ttl}ms")
+    print(
+        f"simulate-ban constants: ban={ban}s found={found}s negative={negative}s "
+        f"host={host_ttl}s budget={budget}ms token={token_ttl}ms"
+    )
     print("SIMULATE OK" if not problems else "SIMULATE FAILED: " + "; ".join(problems))
     return 1 if problems else 0
 
