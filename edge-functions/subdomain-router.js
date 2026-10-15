@@ -869,20 +869,58 @@ function stripOriginInternalToken(req) {
 // 不复制 Host：URL 是 sites.demox.site，Host 仍是 www.demox.site 时，EdgeOne 按 Host 把子请求送回 www，
 // CDN-Loop 加到 16 后节点自己回 423（函数里没有 423）。也不复制逐跳头、eo-*、x-forwarded-*、cdn-loop、
 // Cookie、Authorization、Proxy-Authorization。不因为 Host 是 www 就免裁决。
-var WWW_SIGNED_REQUEST_HEADERS = [
+// range 和 if-* 只跟主文档那一次回源。SPA 的 index.html 和 404.html 再带上它们时，
+// Range 会把整页收成 206 片段，If-None-Match 会把仍有效的路由收成 304/404。
+var WWW_SIGNED_DOCUMENT_HEADERS = [
   'accept',
   'accept-encoding',
   'accept-language',
-  'range',
-  'if-none-match',
-  'if-modified-since',
   'user-agent'
 ];
+var WWW_SIGNED_CONDITIONAL_HEADERS = [
+  'range',
+  'if-none-match',
+  'if-modified-since'
+];
+var WWW_SIGNED_REQUEST_HEADERS = WWW_SIGNED_DOCUMENT_HEADERS.concat(WWW_SIGNED_CONDITIONAL_HEADERS);
+var ORIGIN_SIGN_HEADER = 'x-demox-origin-sign';
+var originSignByRequest = typeof WeakMap === 'function' ? new WeakMap() : null;
 
-function signedWwwHeaders(source, token) {
+function noteOriginSign(req, sign) {
+  if (!originSignByRequest || !req) return;
+  if (sign !== 'signed' && sign !== 'no-slot' && sign !== 'sign-failed') return;
+  originSignByRequest.set(req, sign);
+}
+
+function readOriginSign(req) {
+  if (!originSignByRequest || !req) return '';
+  return originSignByRequest.get(req) || '';
+}
+
+function stampOriginSign(resp, req) {
+  const sign = readOriginSign(req);
+  if (sign !== 'signed' && sign !== 'no-slot' && sign !== 'sign-failed') return resp;
+  if (!resp) return resp;
+  try {
+    resp.headers.set(ORIGIN_SIGN_HEADER, sign);
+    return resp;
+  } catch (e) {
+    try {
+      const copy = new Response(resp.body, resp);
+      copy.headers.set(ORIGIN_SIGN_HEADER, sign);
+      return copy;
+    } catch (err) {
+      return resp;
+    }
+  }
+}
+
+function signedWwwHeaders(source, token, includeConditional) {
+  const names = includeConditional ? WWW_SIGNED_REQUEST_HEADERS : WWW_SIGNED_DOCUMENT_HEADERS;
   const headers = new Headers();
-  for (let i = 0; i < WWW_SIGNED_REQUEST_HEADERS.length; i += 1) {
-    const name = WWW_SIGNED_REQUEST_HEADERS[i];
+  for (let i = 0; i < names.length; i += 1) {
+    const name = names[i];
+    if (!includeConditional && (name === 'range' || name.indexOf('if-') === 0)) continue;
     let value = '';
     try {
       if (source && typeof source.get === 'function') value = source.get(name) || '';
@@ -896,26 +934,36 @@ function signedWwwHeaders(source, token) {
   return headers;
 }
 
-async function signedWwwInit(req, url, method) {
-  if (!originGuardSigningSlot()) return null;
+async function signedWwwInit(req, url, method, includeConditional) {
+  if (!originGuardSigningSlot()) {
+    noteOriginSign(req, 'no-slot');
+    return null;
+  }
   const verb = method || (req && req.method) || 'GET';
   let target;
   try { target = new URL(url); } catch (e) {
     warnOriginGuardAttachOnce();
+    noteOriginSign(req, 'sign-failed');
     return null;
   }
   // site-N 今天是 http。令牌不要出现在明文链路上。
-  if (target.protocol !== 'https:') return null;
+  if (target.protocol !== 'https:') {
+    noteOriginSign(req, 'sign-failed');
+    return null;
+  }
   const token = await signOriginInternalToken(verb, target.hostname, target.pathname, target.search);
   if (!token) {
     warnOriginGuardAttachOnce();
+    noteOriginSign(req, 'sign-failed');
     return null;
   }
   try {
-    const headers = signedWwwHeaders(req && req.headers, token);
+    const headers = signedWwwHeaders(req && req.headers, token, includeConditional !== false);
+    noteOriginSign(req, 'signed');
     return { method: verb, headers: headers };
   } catch (e) {
     warnOriginGuardAttachOnce();
+    noteOriginSign(req, 'sign-failed');
     return null;
   }
 }
@@ -943,10 +991,11 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
   // 没有签名槽时 www 仍把入站 req 交给 originFetch（#49 的调用形状）。
-  // 有签名槽时用白名单 Headers（不含 Host），不改入站头。SPA 的 index.html 同样处理。
-  // 404.html 在 serveCustom404 里签。都不按 Host 免裁决。
+  // 有签名槽时用白名单 Headers（不含 Host），不改入站头。
+  // 主文档保留 range / if-*。SPA 的 index.html 不带这两类头。404.html 在 serveCustom404 里签，同样不带。
+  // 都不按 Host 免裁决。
   const pageUrl = buildOriginUrl(req, originPath, u.search, originHost);
-  const signedPage = !hardened ? await signedWwwInit(req, pageUrl) : null;
+  const signedPage = !hardened ? await signedWwwInit(req, pageUrl, undefined, true) : null;
   const resp = signedPage
     ? await originFetch(pageUrl, signedPage)
     : await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
@@ -957,7 +1006,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
       return serveCustom404(req, event, u, sitePath, originHost, meta);
     }
     const indexUrl = buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost);
-    const signedIndex = !hardened ? await signedWwwInit(req, indexUrl, 'GET') : null;
+    const signedIndex = !hardened ? await signedWwwInit(req, indexUrl, 'GET', false) : null;
     const idxResp = signedIndex
       ? await originFetch(indexUrl, signedIndex)
       : await originFetch(buildOriginUrl(req, `/${sitePath}/index.html`, '', originHost), { method: 'GET' });
@@ -966,15 +1015,15 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
       const headers = applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta);
       const route = idxResp.headers.get('x-demox-route');
       if (route) headers.set('x-demox-route', route);
-      return withDemoxBadge(req, event, new Response(idxResp.body, {
+      return stampOriginSign(await withDemoxBadge(req, event, new Response(idxResp.body, {
         status: 200,
         headers: headers
-      }), meta);
+      }), meta), req);
     }
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
     return serveCustom404(req, event, u, sitePath, originHost, meta);
   }
-  return withDemoxBadge(req, event, resp, meta);
+  return stampOriginSign(await withDemoxBadge(req, event, resp, meta), req);
 }
 
 async function custom404Document(custom404, meta) {
@@ -982,6 +1031,9 @@ async function custom404Document(custom404, meta) {
   const headers = new Headers(custom404.headers);
   headers.set('Content-Type', 'text/html; charset=utf-8');
   applySiteCacheHeaders(headers, meta, 404);
+  // 正文已经按文本读出。留下源站的 content-encoding / 压缩前的 content-length 会让浏览器把明文当 gzip。
+  headers.delete('content-encoding');
+  headers.delete('content-length');
   return new Response(html, { status: 404, headers });
 }
 
@@ -997,25 +1049,25 @@ async function serveCustom404(req, event, u, sitePath, originHost, meta) {
       let skipUnsigned = false;
       if (isWwwRequest(u)) {
         const missingUrl = buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost);
-        const signed = await signedWwwInit(req, missingUrl, 'GET');
+        const signed = await signedWwwInit(req, missingUrl, 'GET', false);
         if (signed) {
           skipUnsigned = true;
           const custom404 = await fetch(missingUrl, signed);
-          if (custom404.ok) return custom404Document(custom404, meta);
+          if (custom404.ok) return stampOriginSign(await custom404Document(custom404, meta), req);
         }
       }
       if (!skipUnsigned) {
         const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
-        if (custom404.ok) return custom404Document(custom404, meta);
+        if (custom404.ok) return stampOriginSign(await custom404Document(custom404, meta), req);
       }
     } catch (e) {}
   }
   // 2) 兜底：Demox 默认 404 页面
   const html = getDefault404Html(meta, u);
-  return new Response(html, {
+  return stampOriginSign(new Response(html, {
     status: 404,
     headers: applySiteCacheHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, meta, 404)
-  });
+  }), req);
 }
 
 /**
