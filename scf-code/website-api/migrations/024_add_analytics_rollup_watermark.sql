@@ -1,0 +1,38 @@
+-- 024：analytics-rollup-5m 的水位和永久缺口。
+--
+-- 定时器每次从 site_analytics_rollup_watermark.watermark_ms 往后补，最多回看 48 小时。
+-- 水位是「已结清」的 5 分钟边界（UTC epoch ms）：早于它的窗口要么已经计入计数器，
+-- 要么已经记成下面的缺口。没有水位时从 48 小时前开始（不把更早的时间记成缺口，因为没有可比的旧水位）。
+-- 水位早于 now-48h：把 [水位, now-48h) 写入 site_analytics_rollup_gaps（reason=over_48h），然后从 48 小时前接着补。
+-- 单个原始对象超过 256KB：不读内容，记 reason=object_too_large，object_key 为对象键。
+-- 单次未处理对象仍超过 2000：只处理按时间排好的前 2000 个，水位停在第一个没结清的 5 分钟窗口，不写缺口。
+--
+-- 周报 WAU 怎么读（标「暂定」）：
+-- 1. 水位。SELECT watermark_ms FROM site_analytics_rollup_watermark WHERE id = 1。
+--    没有行，或 watermark_ms < 统计周结束时刻（UTC epoch ms，结束不含）→ 本周还没汇总完 → 暂定。
+-- 2. 永久缺口。有任意一行与统计周重叠 → 暂定（数据确有缺失，补跑也不会回来）：
+--      SELECT gap_start, gap_end, reason, object_key
+--      FROM site_analytics_rollup_gaps
+--      WHERE gap_end > ? AND gap_start < ?;   -- 参数是统计周的 UTC 起、止（止不含）
+-- 3. 两样都没有：水位已经 >= 本周结束，且没有重叠缺口 → WAU 可以当最终值。
+-- 临时积压不写这张表。积压消化完、水位盖过本周后，「暂定」会自己去掉。
+-- 代码里的同一判断：analyticsRollupCoverage（index.js，测试出口 _analyticsRollupForTest.coverage）。
+--
+-- 只建表，不改已有表。可重复执行。
+-- 回滚：DROP TABLE site_analytics_rollup_gaps; DROP TABLE site_analytics_rollup_watermark;
+CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark (
+  id TINYINT NOT NULL PRIMARY KEY,
+  watermark_ms BIGINT NOT NULL COMMENT 'UTC epoch ms，对齐到 5 分钟；早于它的窗口已结清',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总水位（analytics-rollup-5m）';
+
+CREATE TABLE IF NOT EXISTS site_analytics_rollup_gaps (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  gap_start DATETIME(3) NOT NULL COMMENT '缺口起点（UTC，含）',
+  gap_end DATETIME(3) NOT NULL COMMENT '缺口终点（UTC，不含）',
+  reason VARCHAR(32) NOT NULL COMMENT 'over_48h | object_too_large',
+  object_key VARCHAR(512) NOT NULL DEFAULT '' COMMENT 'object_too_large 时为对象键；窗口级缺口为空串',
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uq_analytics_rollup_gap (reason, gap_start, object_key),
+  INDEX idx_analytics_rollup_gap_range (gap_start, gap_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总永久缺口，周报据此把 WAU 标为暂定';

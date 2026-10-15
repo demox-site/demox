@@ -8530,6 +8530,483 @@ async function upsertAnalyticsRollups(conn, rollups) {
   }
 }
 
+// ── analytics-rollup-5m 水位（迁移 024，周报读法见 docs/analytics-rollup.md）────────
+// 每 5 分钟从水位接着补，最多回看 48 小时。再早的区间写入 site_analytics_rollup_gaps，
+// 不静默跳过。已入库的对象先剔掉，再套 2000 上限。单对象超过 256KB 不读内容，记缺口并 ALERT。
+// 失败只打一行 ALERT，并返回 success:false（不抛错）。SCF 定时器抛错才会重试，RetryNum 保持 0。
+// CLS 告警关键字：ALERT analytics-rollup-5m
+const ROLLUP_WINDOW_MS = 5 * 60 * 1000;
+const ROLLUP_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+const ROLLUP_OBJECT_MAX_BYTES = 256 * 1024;
+const ROLLUP_KEY_QUERY_BATCH = 500;
+const ANALYTICS_ROLLUP_ALERT = 'ALERT analytics-rollup-5m';
+let analyticsRollupDepsForTest = null;
+let analyticsRollupTablesReady = null;
+
+// 与 migrations/024_add_analytics_rollup_watermark.sql 的两句 CREATE 一致。
+// 公开 API 走的是打进 function-api 的这份 index.js；合并 master 会触发统一包发布，但不会执行 SQL 文件。
+const ANALYTICS_ROLLUP_TABLE_DDL = [
+  `CREATE TABLE IF NOT EXISTS site_analytics_rollup_watermark (
+  id TINYINT NOT NULL PRIMARY KEY,
+  watermark_ms BIGINT NOT NULL COMMENT 'UTC epoch ms，对齐到 5 分钟；早于它的窗口已结清',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总水位（analytics-rollup-5m）'`,
+  `CREATE TABLE IF NOT EXISTS site_analytics_rollup_gaps (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  gap_start DATETIME(3) NOT NULL COMMENT '缺口起点（UTC，含）',
+  gap_end DATETIME(3) NOT NULL COMMENT '缺口终点（UTC，不含）',
+  reason VARCHAR(32) NOT NULL COMMENT 'over_48h | object_too_large',
+  object_key VARCHAR(512) NOT NULL DEFAULT '' COMMENT 'object_too_large 时为对象键；窗口级缺口为空串',
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uq_analytics_rollup_gap (reason, gap_start, object_key),
+  INDEX idx_analytics_rollup_gap_range (gap_start, gap_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问汇总永久缺口，周报据此把 WAU 标为暂定'`
+];
+
+function ensureAnalyticsRollupTables(queryFn) {
+  if (!analyticsRollupTablesReady) {
+    analyticsRollupTablesReady = (async () => {
+      for (const ddl of ANALYTICS_ROLLUP_TABLE_DDL) await queryFn(ddl);
+    })().catch((error) => {
+      analyticsRollupTablesReady = null;
+      throw error;
+    });
+  }
+  return analyticsRollupTablesReady;
+}
+
+function alignRollupWindow(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return 0;
+  return Math.floor(n / ROLLUP_WINDOW_MS) * ROLLUP_WINDOW_MS;
+}
+
+function formatRollupWindow(startMs, endMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return '-';
+  return `${new Date(startMs).toISOString()}/${new Date(endMs).toISOString()}`;
+}
+
+function rollupMsToSql(ms) {
+  return new Date(ms).toISOString().slice(0, 23).replace('T', ' ');
+}
+
+function rollupAlertToken(value) {
+  const text = String(value || '').trim();
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(text) ? text : 'UNKNOWN';
+}
+
+function rollupAlertWindow(value) {
+  const text = String(value || '').trim();
+  if (text === '-') return '-';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text)) return text;
+  return '-';
+}
+
+function safeRollupObjectKey(key) {
+  const value = String(key || '');
+  if (/^analytics\/raw\/date=\d{4}-\d{2}-\d{2}\/hour=\d{2}\/[A-Za-z0-9._-]{1,180}$/.test(value)) return value;
+  return '';
+}
+
+function rollupErrorCode(error) {
+  const code = error && error.code;
+  if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) return code;
+  if (typeof code === 'number' && Number.isFinite(code)) return `ERRNO_${code}`;
+  return 'ERROR';
+}
+
+function formatAnalyticsRollupAlert({ step, window: windowLabel, code, remaining, key }) {
+  const parts = [
+    ANALYTICS_ROLLUP_ALERT,
+    `step=${rollupAlertToken(step)}`,
+    `window=${rollupAlertWindow(windowLabel)}`,
+    `code=${rollupAlertToken(code)}`
+  ];
+  if (remaining != null && Number.isFinite(Number(remaining))) {
+    parts.push(`remaining=${Math.max(0, Math.floor(Number(remaining)))}`);
+  }
+  const safeKey = safeRollupObjectKey(key);
+  if (safeKey) parts.push(`key=${safeKey}`);
+  return parts.join(' ');
+}
+
+function emitAnalyticsRollupAlert(logger, fields) {
+  const line = formatAnalyticsRollupAlert(fields);
+  const sink = logger && typeof logger.error === 'function' ? logger : console;
+  sink.error(line);
+  return line;
+}
+
+function rollupHourPrefixes(startMs, endMs) {
+  const prefixes = [];
+  const cursor = new Date(startMs);
+  cursor.setUTCMinutes(0, 0, 0);
+  const last = new Date(endMs);
+  last.setUTCMinutes(0, 0, 0);
+  while (cursor.getTime() <= last.getTime()) {
+    const date = cursor.toISOString().slice(0, 10);
+    const hour = String(cursor.getUTCHours()).padStart(2, '0');
+    prefixes.push(`analytics/raw/date=${date}/hour=${hour}/`);
+    cursor.setUTCHours(cursor.getUTCHours() + 1);
+  }
+  return prefixes;
+}
+
+function parseRollupHourPrefix(prefix) {
+  const match = String(prefix).match(/date=(\d{4}-\d{2}-\d{2})\/hour=(\d{2})\//);
+  if (!match) return null;
+  const ms = Date.parse(`${match[1]}T${match[2]}:00:00.000Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function parseRawAnalyticsObject(obj) {
+  const key = String((obj && obj.key) || '');
+  if (!key.endsWith('.ndjson')) return null;
+  const named = key.match(/date=(\d{4}-\d{2}-\d{2})\/hour=(\d{2})\/[A-Za-z0-9]{1,16}-(\d{10,16})-[A-Za-z0-9]+\.ndjson$/);
+  let ts = named ? Number(named[3]) : NaN;
+  if (!Number.isFinite(ts)) {
+    const hour = key.match(/date=(\d{4}-\d{2}-\d{2})\/hour=(\d{2})\//);
+    ts = hour ? Date.parse(`${hour[1]}T${hour[2]}:00:00.000Z`) : NaN;
+  }
+  if (!Number.isFinite(ts)) return null;
+  return { key, size: Number(obj.size || 0), ts };
+}
+
+async function selectRollupKeys(queryFn, sqlPrefix, keys) {
+  const found = new Set();
+  for (let i = 0; i < keys.length; i += ROLLUP_KEY_QUERY_BATCH) {
+    const slice = keys.slice(i, i + ROLLUP_KEY_QUERY_BATCH);
+    if (!slice.length) continue;
+    const rows = await queryFn(`${sqlPrefix} (${slice.map(() => '?').join(',')})`, slice);
+    for (const row of rows || []) {
+      if (row && row.object_key) found.add(String(row.object_key));
+    }
+  }
+  return found;
+}
+
+function nextRollupWatermark({ scanStart, now, listedThrough, objects, settled }) {
+  const closedEnd = alignRollupWindow(now);
+  const limitEnd = Math.min(closedEnd, listedThrough);
+  let cursor = scanStart;
+  while (cursor + ROLLUP_WINDOW_MS <= limitEnd) {
+    const end = cursor + ROLLUP_WINDOW_MS;
+    const blocking = objects.some((obj) => obj.ts >= cursor && obj.ts < end && !settled.has(obj.key));
+    if (blocking) break;
+    cursor = end;
+  }
+  return cursor;
+}
+
+/**
+ * 周报 WAU 是否标「暂定」。
+ * watermarkMs：site_analytics_rollup_watermark.watermark_ms；null 表示还没有成功跑过。
+ * gaps：[{ gapStartMs, gapEndMs, reason, objectKey }]，对应
+ *   SELECT gap_start, gap_end, reason, object_key FROM site_analytics_rollup_gaps
+ *   WHERE gap_end > :weekStart AND gap_start < :weekEnd
+ * 水位还没盖过本周结束，或有重叠缺口 → provisional。临时积压不写缺口，只停水位。
+ */
+function analyticsRollupCoverage({ watermarkMs, gaps, weekStartMs, weekEndMs }) {
+  const watermark = watermarkMs == null || watermarkMs === '' ? null : Number(watermarkMs);
+  const open = !Number.isFinite(watermark) || watermark < Number(weekEndMs);
+  const hits = [];
+  for (const gap of gaps || []) {
+    const start = Number(gap.gapStartMs != null ? gap.gapStartMs : gap.gap_start_ms);
+    const end = Number(gap.gapEndMs != null ? gap.gapEndMs : gap.gap_end_ms);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    if (end > Number(weekStartMs) && start < Number(weekEndMs)) {
+      hits.push({
+        gapStartMs: start,
+        gapEndMs: end,
+        reason: gap.reason || '',
+        objectKey: gap.objectKey || gap.object_key || ''
+      });
+    }
+  }
+  let reason = 'complete';
+  if (open && hits.length) reason = 'watermark_and_gap';
+  else if (open) reason = 'watermark';
+  else if (hits.length) reason = 'gap';
+  return { provisional: reason !== 'complete', reason, gaps: hits };
+}
+
+async function runAnalyticsRollup({
+  provider,
+  query: queryFn = query,
+  transaction: transactionFn = transaction,
+  now = Date.now(),
+  limit = 2000,
+  logger = console
+} = {}) {
+  let step = 'ensure-tables';
+  const horizon = alignRollupWindow(now - ROLLUP_LOOKBACK_MS);
+  let windowLabel = formatRollupWindow(horizon, now);
+  try {
+    if (!provider || typeof provider.list !== 'function' || typeof provider.get !== 'function') {
+      const error = new Error('missing provider');
+      error.code = 'ROLLUP_NO_PROVIDER';
+      throw error;
+    }
+    const cap = normalizeRollupLimit(limit);
+    await ensureAnalyticsRollupTables(queryFn);
+    step = 'load-watermark';
+    const watermarkRows = await queryFn(
+      'SELECT watermark_ms FROM site_analytics_rollup_watermark WHERE id = 1'
+    );
+    const storedRaw = watermarkRows && watermarkRows[0] && watermarkRows[0].watermark_ms;
+    const stored = storedRaw == null || storedRaw === '' ? null : Number(storedRaw);
+    let gap = null;
+    let scanStart = horizon;
+    if (stored != null && Number.isFinite(stored) && stored < horizon) {
+      gap = { start: stored, end: horizon };
+      scanStart = horizon;
+    } else if (stored != null && Number.isFinite(stored)) {
+      scanStart = alignRollupWindow(stored);
+    }
+    windowLabel = formatRollupWindow(scanStart, now);
+
+    const batch = [];
+    const oversized = [];
+    const seen = [];
+    const settled = new Set();
+    let backlog = 0;
+    let backlogFrom = null;
+    let backlogTo = null;
+    let listedThrough = scanStart;
+
+    for (const prefix of rollupHourPrefixes(scanStart, now)) {
+      const hourStart = parseRollupHourPrefix(prefix);
+      if (hourStart == null) continue;
+      step = 'list';
+      const listed = await provider.list(prefix);
+      const parsed = [];
+      for (const item of listed || []) {
+        const obj = parseRawAnalyticsObject(item);
+        if (!obj || obj.ts < scanStart) continue;
+        parsed.push(obj);
+      }
+      step = 'filter';
+      const keys = parsed.map((obj) => obj.key);
+      const ingested = await selectRollupKeys(
+        queryFn,
+        'SELECT object_key FROM site_analytics_ingested_events WHERE object_key IN',
+        keys
+      );
+      const skippedLarge = await selectRollupKeys(
+        queryFn,
+        "SELECT object_key FROM site_analytics_rollup_gaps WHERE reason = 'object_too_large' AND object_key IN",
+        keys
+      );
+      const hourPending = [];
+      for (const obj of parsed) {
+        seen.push(obj);
+        if (ingested.has(obj.key) || skippedLarge.has(obj.key)) {
+          settled.add(obj.key);
+          continue;
+        }
+        if (obj.size > ROLLUP_OBJECT_MAX_BYTES) {
+          oversized.push(obj);
+          settled.add(obj.key);
+          continue;
+        }
+        hourPending.push(obj);
+      }
+      hourPending.sort((a, b) => a.ts - b.ts || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      const room = cap - batch.length;
+      if (hourPending.length > room) {
+        const taken = hourPending.slice(0, room);
+        const left = hourPending.slice(room);
+        batch.push(...taken);
+        backlog += left.length;
+        backlogFrom = left[0].ts;
+        backlogTo = left[left.length - 1].ts;
+        listedThrough = hourStart + 60 * 60 * 1000;
+        break;
+      }
+      batch.push(...hourPending);
+      listedThrough = hourStart + 60 * 60 * 1000;
+    }
+
+    for (const obj of batch) settled.add(obj.key);
+    const nextWatermark = nextRollupWatermark({ scanStart, now, listedThrough, objects: seen, settled });
+    const watermarkMoved = stored == null || !Number.isFinite(stored) || nextWatermark > stored;
+
+    step = 'read';
+    let candidates = [];
+    for (const obj of batch) {
+      windowLabel = formatRollupWindow(alignRollupWindow(obj.ts), alignRollupWindow(obj.ts) + ROLLUP_WINDOW_MS);
+      let text;
+      try {
+        text = await provider.get(obj.key);
+      } catch (error) {
+        if (error && typeof error === 'object') error.rollupKey = obj.key;
+        throw error;
+      }
+      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
+      for (const line of lines) {
+        const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
+        if (!item) continue;
+        candidates.push({ key: obj.key, item, objectTs: obj.ts });
+      }
+    }
+
+    const websiteIds = Array.from(new Set(candidates.map((c) => c.item.websiteId)));
+    if (websiteIds.length) {
+      step = 'filter';
+      const validRows = await queryFn(
+        `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
+        websiteIds
+      );
+      const validIds = new Set((validRows || []).map((r) => String(r.website_id || '')));
+      candidates = candidates.filter((c) => validIds.has(c.item.websiteId));
+    }
+
+    windowLabel = formatRollupWindow(scanStart, now);
+    const nothingToWrite = !gap && !oversized.length && !batch.length && !watermarkMoved;
+    let summary = {
+      processed: 0,
+      skipped: 0,
+      rollups: { daily: 0, referrers: 0, paths: 0, countries: 0, provinces: 0, accessLogs: 0 },
+      nextWatermark: stored != null && Number.isFinite(stored) ? stored : nextWatermark
+    };
+    if (!nothingToWrite) {
+      step = 'commit';
+      summary = await transactionFn(async (conn) => {
+        if (gap) {
+          await conn.query(
+            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key)
+             VALUES (?, ?, 'over_48h', '')`,
+            [rollupMsToSql(gap.start), rollupMsToSql(gap.end)]
+          );
+        }
+        for (const obj of oversized) {
+          const start = alignRollupWindow(obj.ts);
+          await conn.query(
+            `INSERT IGNORE INTO site_analytics_rollup_gaps (gap_start, gap_end, reason, object_key)
+             VALUES (?, ?, 'object_too_large', ?)`,
+            [rollupMsToSql(start), rollupMsToSql(start + ROLLUP_WINDOW_MS), obj.key]
+          );
+        }
+
+        const rollups = {
+          daily: new Map(),
+          referrers: new Map(),
+          paths: new Map(),
+          countries: new Map(),
+          provinces: new Map(),
+          accessLogs: []
+        };
+        let processed = 0;
+        let skipped = 0;
+        const inserted = new Set();
+        for (const candidate of candidates) {
+          const { key, item } = candidate;
+          const [insertResult] = await conn.query(
+            `INSERT IGNORE INTO site_analytics_ingested_events (object_key, website_id, event_ts, created_at)
+             VALUES (?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
+            [key, item.websiteId, item.ts]
+          );
+          if (!insertResult || !insertResult.affectedRows) {
+            skipped += 1;
+            continue;
+          }
+          inserted.add(key);
+          processed += 1;
+          if (item.type === 'badge_click') {
+            addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'badgeClicks', 1);
+          } else if (item.type === 'view') {
+            rollups.accessLogs.push({ objectKey: key, ...item });
+            addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'views', 1);
+            addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
+            addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
+            addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
+            addRollupCount(rollups.provinces, [item.websiteId, item.statDate, item.country, item.province], 'views', 1);
+          }
+        }
+        for (const obj of batch) {
+          if (inserted.has(obj.key)) continue;
+          await conn.query(
+            `INSERT IGNORE INTO site_analytics_ingested_events (object_key, website_id, event_ts, created_at)
+             VALUES (?, 'UNKNOWN', FROM_UNIXTIME(? / 1000), NOW())`,
+            [obj.key, obj.ts]
+          );
+        }
+        await upsertAnalyticsRollups(conn, rollups);
+        await conn.query(
+          `INSERT INTO site_analytics_rollup_watermark (id, watermark_ms, updated_at)
+           VALUES (1, ?, NOW())
+           ON DUPLICATE KEY UPDATE watermark_ms = GREATEST(watermark_ms, VALUES(watermark_ms)), updated_at = NOW()`,
+          [nextWatermark]
+        );
+        return {
+          processed,
+          skipped,
+          nextWatermark,
+          rollups: {
+            daily: rollups.daily.size,
+            referrers: rollups.referrers.size,
+            paths: rollups.paths.size,
+            countries: rollups.countries.size,
+            provinces: rollups.provinces.size,
+            accessLogs: rollups.accessLogs.length
+          }
+        };
+      });
+    }
+
+    const alerts = [];
+    if (gap) {
+      alerts.push(emitAnalyticsRollupAlert(logger, {
+        step: 'gap',
+        window: formatRollupWindow(gap.start, gap.end),
+        code: 'GAP_OVER_48H'
+      }));
+    }
+    for (const obj of oversized) {
+      const start = alignRollupWindow(obj.ts);
+      alerts.push(emitAnalyticsRollupAlert(logger, {
+        step: 'read',
+        window: formatRollupWindow(start, start + ROLLUP_WINDOW_MS),
+        code: 'OBJECT_TOO_LARGE',
+        key: obj.key
+      }));
+    }
+    if (backlog > 0) {
+      const from = alignRollupWindow(backlogFrom);
+      const to = alignRollupWindow(backlogTo) + ROLLUP_WINDOW_MS;
+      alerts.push(emitAnalyticsRollupAlert(logger, {
+        step: 'backlog',
+        window: formatRollupWindow(from, to),
+        code: 'BACKLOG_OVER_CAP',
+        remaining: backlog
+      }));
+    }
+
+    return {
+      success: true,
+      scanned: seen.length,
+      candidates: candidates.length,
+      processed: summary.processed,
+      skipped: summary.skipped,
+      watermark: summary.nextWatermark,
+      backlog,
+      gap: gap ? { start: gap.start, end: gap.end } : null,
+      oversized: oversized.map((obj) => obj.key),
+      alerts,
+      rollups: summary.rollups
+    };
+  } catch (error) {
+    const code = rollupErrorCode(error);
+    const line = emitAnalyticsRollupAlert(logger, {
+      step,
+      window: windowLabel,
+      code,
+      key: error && error.rollupKey
+    });
+    return { success: false, step, code, window: windowLabel, alerts: [line] };
+  }
+}
+
 async function handleRollupSiteAnalytics(event) {
   if (!analyticsRollupAllowed(event)) {
     return { statusCode: 403, headers: getCORSHeaders(), body: JSON.stringify({ success: false, error: '无权限执行统计聚合' }) };
@@ -8541,87 +9018,29 @@ async function handleRollupSiteAnalytics(event) {
   }
 
   const body = getRollupRequestBody(event);
-  try {
-    const bucketCfg = await resolveBucketConfig(bucketId);
-    const provider = createProvider(buckets.resolveCreds(bucketCfg));
-    const objects = await listRawAnalyticsObjects(provider, body);
-    let candidates = [];
-    for (const obj of objects) {
-      if (Number(obj.size || 0) > 256 * 1024) continue;
-      const text = await provider.get(obj.key);
-      const lines = String(text || '').split(/\r?\n/).filter(Boolean);
-      for (const line of lines) {
-        const item = normalizeRawAnalyticsEvent(parseRawAnalyticsLine(line) || {});
-        if (!item) continue;
-        candidates.push({ key: obj.key, item });
-      }
+  const deps = analyticsRollupDepsForTest;
+  let provider = deps && deps.provider;
+  if (!provider) {
+    try {
+      const bucketCfg = await resolveBucketConfig(bucketId);
+      provider = createProvider(buckets.resolveCreds(bucketCfg));
+    } catch (error) {
+      const code = rollupErrorCode(error);
+      const line = emitAnalyticsRollupAlert(console, { step: 'resolve-bucket', window: '-', code });
+      return ok({ success: false, step: 'resolve-bucket', code, alerts: [line] });
     }
-    const websiteIds = Array.from(new Set(candidates.map((c) => c.item.websiteId)));
-    if (websiteIds.length) {
-      const validRows = await query(
-        `SELECT website_id FROM websites WHERE website_id IN (${websiteIds.map(() => '?').join(',')})`,
-        websiteIds
-      );
-      const validIds = new Set(validRows.map((r) => String(r.website_id || '')));
-      candidates = candidates.filter((c) => validIds.has(c.item.websiteId));
-    }
-
-    const summary = await transaction(async (conn) => {
-      const rollups = {
-        daily: new Map(),
-        referrers: new Map(),
-        paths: new Map(),
-        countries: new Map(),
-        provinces: new Map(),
-        accessLogs: []
-      };
-      let processed = 0;
-      let skipped = 0;
-
-      for (const candidate of candidates) {
-        const { key, item } = candidate;
-        const [insertResult] = await conn.query(
-          `INSERT IGNORE INTO site_analytics_ingested_events (object_key, website_id, event_ts, created_at)
-           VALUES (?, ?, FROM_UNIXTIME(? / 1000), NOW())`,
-          [key, item.websiteId, item.ts]
-        );
-        if (!insertResult.affectedRows) {
-          skipped += 1;
-          continue;
-        }
-        processed += 1;
-        if (item.type === 'badge_click') {
-          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'badgeClicks', 1);
-        } else if (item.type === 'view') {
-          rollups.accessLogs.push({ objectKey: key, ...item });
-          addRollupCount(rollups.daily, [item.websiteId, item.statDate], 'views', 1);
-          addRollupCount(rollups.referrers, [item.websiteId, item.statDate, item.referrerHost], 'views', 1);
-          addRollupCount(rollups.paths, [item.websiteId, item.statDate, item.path], 'views', 1);
-          addRollupCount(rollups.countries, [item.websiteId, item.statDate, item.country], 'views', 1);
-          addRollupCount(rollups.provinces, [item.websiteId, item.statDate, item.country, item.province], 'views', 1);
-        }
-      }
-
-      await upsertAnalyticsRollups(conn, rollups);
-      return {
-        processed,
-        skipped,
-        rollups: {
-          daily: rollups.daily.size,
-          referrers: rollups.referrers.size,
-          paths: rollups.paths.size,
-          countries: rollups.countries.size,
-          provinces: rollups.provinces.size,
-          accessLogs: rollups.accessLogs.length
-        }
-      };
-    });
-
-    return ok({ success: true, delayed: true, delayMinutes: 5, scanned: objects.length, candidates: candidates.length, ...summary });
-  } catch (error) {
-    console.error('延迟聚合站点统计失败:', error);
-    return ok({ success: false, message: error.message });
   }
+
+  const result = await runAnalyticsRollup({
+    provider,
+    query: (deps && deps.query) || query,
+    transaction: (deps && deps.transaction) || transaction,
+    now: (deps && Number.isFinite(deps.now)) ? deps.now : Date.now(),
+    limit: normalizeRollupLimit(body.limit || body.maxObjects),
+    logger: (deps && deps.logger) || console
+  });
+  if (!result.success) return ok(result);
+  return ok({ delayed: true, delayMinutes: 5, ...result });
 }
 
 async function handleBackfillSiteAnalyticsGeo(event) {
@@ -10662,6 +11081,18 @@ exports.classifyDeploySource = classifyDeploySource;
 exports._adminBiForTest = adminBi;
 exports._statTimeForTest = statTime;
 exports._adminBiLibForTest = adminBiLib;
+exports._analyticsRollupForTest = {
+  run: runAnalyticsRollup,
+  coverage: analyticsRollupCoverage,
+  formatAlert: formatAnalyticsRollupAlert,
+  setDeps(deps) { analyticsRollupDepsForTest = deps; },
+  resetTables() { analyticsRollupTablesReady = null; },
+  tableDdl: ANALYTICS_ROLLUP_TABLE_DDL,
+  WINDOW_MS: ROLLUP_WINDOW_MS,
+  LOOKBACK_MS: ROLLUP_LOOKBACK_MS,
+  OBJECT_MAX_BYTES: ROLLUP_OBJECT_MAX_BYTES,
+  ALERT_KEYWORD: ANALYTICS_ROLLUP_ALERT
+};
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;

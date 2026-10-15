@@ -14,7 +14,7 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 的 `appVersion` 是 `0.1.4`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。
+`demox-function-api` 的 `appVersion` 是 `0.1.5`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。`0.1.5` 给 analytics-rollup-5m 加水位和永久缺口（迁移 024）；合并 master 会走统一包发布，上线前仍要先有这两张表（函数里也有同一份 CREATE TABLE IF NOT EXISTS）。
 
 `deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 
