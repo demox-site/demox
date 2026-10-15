@@ -20,7 +20,7 @@ EdgeOne 写明的「子请求走节点缓存 / 回源、而不是按另一个 ho
 
 ## 修复
 
-www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`accept`、`accept-encoding`、`accept-language`、`range`、`if-none-match`、`if-modified-since`、`user-agent`，再加上 `x-demox-origin-token`。不带 Host、Cookie、Authorization、Proxy-Authorization、逐跳头（`connection`、`keep-alive`、`te`、`trailer`、`transfer-encoding`、`upgrade`、`proxy-*`）、`eo-*`、`x-forwarded-*`、`cdn-loop`。没有签名槽时仍把原来的 `req` 交给 `originFetch`。不按 Host 免裁决。15s TTL 和 503 超时响应不动。
+www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`accept`、`accept-encoding`、`accept-language`、`user-agent`，再加上 `x-demox-origin-token`。`range`、`if-none-match`、`if-modified-since` 只跟主文档那一次回源。SPA 的 `index.html` 和 `404.html` 不带这两类头。不带 Host、Cookie、Authorization、Proxy-Authorization、逐跳头（`connection`、`keep-alive`、`te`、`trailer`、`transfer-encoding`、`upgrade`、`proxy-*`）、`eo-*`、`x-forwarded-*`、`cdn-loop`。没有签名槽时仍把原来的 `req` 交给 `originFetch`。不按 Host 免裁决。www 的响应带固定值 `x-demox-origin-sign: signed|no-slot|sign-failed`，里面没有密钥、KID 或令牌。15s TTL 和 503 超时响应不动。
 
 ## 上线前核对（不要动 ef-1281msyw）
 
@@ -28,7 +28,7 @@ www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`a
 
 内层那一跳打的是 `k2t-sites`，仍然进这份测试代码，所以 www 的 `/`、`/pricing` 和未知路径必须是 `origin-guard=internal`。`REQUIRE_INTERNAL=1` 是强制的，脚本拒绝把它关掉。
 
-脚本只发公开 GET，带的 Host 和 URL host 相同。不保存正文、IP 或 Cookie。每个响应都要有 `x-demox-env: nonprod`。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
+脚本只发公开 GET，带的 Host 和 URL host 相同。主机只允许 `*.eo-edgefunctions.com` 和 `k2t-*.demox.site`。会打到生产主机时，`REQUIRE_INTERNAL=0` 不能得到 PASS。日志写在仓库外（默认 `/tmp/demox-origin-guard-verify/`），因为路径里可能有 uid。每个响应都要有 `x-demox-env: nonprod`。除了状态码，还核对 www `/` 和 `/pricing` 的页面标记、404 正文是 HTML，以及 403 里没有被封禁站点的内容。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
 
 | 请求 URL | 期望 |
 | --- | --- |

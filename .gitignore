@@ -1,6 +1,10 @@
 # Logs
 logs
 *.log
+# origin-guard verify logs can contain a site uid
+origin-guard-www-verify.log
+origin-guard-www-verify*.log
+demox-origin-guard-verify/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
