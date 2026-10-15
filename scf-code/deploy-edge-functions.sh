@@ -33,6 +33,11 @@
 #   tccli teo ModifyFunction --ZoneId zone-3kplfkbflnd6 --FunctionId ef-1281msyw \
 #     --Content "$(cat edge-functions/subdomain-router.js)" --region ap-guangzhou
 #
+# 回滚演练（同一条 ModifyFunction，先换到上一份已发布正文，核对后再写回）：
+#   scripts/edge-router-rollback.sh plan
+#   PREVIOUS=<git rev 或文件> APPLY=1 scripts/edge-router-rollback.sh drill
+# 不打印函数正文。步骤和核对项在 skills/edge-router/SKILL.md「回滚演练」。
+#
 # 强制 HTTPS（站点全局，HTTP 301 → HTTPS + HSTS）:
 #   tccli teo ModifyL7AccSetting --ZoneId zone-3kplfkbflnd6 --region ap-guangzhou \
 #     --ZoneConfig '{"ForceRedirectHTTPS":{"Switch":"on","RedirectStatusCode":301},"HSTS":{"Switch":"on","Timeout":31536000,"IncludeSubDomains":"on","Preload":"off"}}'

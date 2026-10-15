@@ -12,9 +12,13 @@
  * 第一段以 sites 开头的路径在两条透传之前也进入同一裁决。
  * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
  * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
- * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。缓存命中绕不过守卫，是因为函数先于节点缓存执行。
+ * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。
+ * 命中 *.demox.site 的函数规则时，函数先于节点缓存执行；节点缓存只出现在函数自己的 fetch 子请求里
+ * （URL host 与 Host 头都和客户端一致时）。封禁在那次 fetch 之前返回 403 + no-store，所以已缓存的对象不会被送回客户端。
+ * 若以后把缓存规则配到函数规则之前，HIT 会跳过守卫，那时要按 website-api 的 origin prefix 做 purge。
  * 内部回源用 HMAC（DEMOX_ORIGIN_GUARD_SECRET_A / _B，仓库留空；签名槽由 DEMOX_ORIGIN_GUARD_KID 指定）。
- * 不用可伪造的普通头、UA 或 query。密钥未设置或短于 32 字节时不签发，伪造头校验失败，守卫照常执行。
+ * 不用可伪造的普通头、UA 或 query。密钥未设置、短于 32 字节，或 KID 不是 A/B 时不签发。
+ * 这种情况每个实例只打一条警告，警告里没有任何配置值。伪造头校验失败，守卫照常执行。
  *
  * 路由表用现有 MySQL，不用 KV(标准版 EdgeOne 边缘函数无法绑定 Pages KV,
  * 但支持 fetch 子请求)。
@@ -56,8 +60,10 @@ var ORIGIN_RESOLVE_NEGATIVE_TTL = 15;
 var ORIGIN_RESOLVE_BUDGET_MS = 1500; // 整次 by-ID 查询的硬预算（含一次重试）
 var ORIGIN_RESOLVE_ATTEMPT_MS = 700;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
-// 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL。
-// 节点上的缓存命中绕不过守卫，靠的是触发规则命中时函数先于节点缓存执行。
+// 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL，也不写 s-maxage。
+// 节点上的缓存命中绕不过守卫：命中函数规则时函数先执行，封禁在 fetch 之前 403。
+// 浏览器仍可能按这个 max-age 保留副本，最长 60s 不回边缘。边缘封禁时钟是 15s。
+// 若产品要求浏览器也在 15s 内停，要另改这个常量。
 var ORIGIN_OBJECT_MAX_AGE = 60;
 // 上线默认关闭，与现网 baseline 一致（启明 + 云帆，#84）。
 // 只有布尔 true 才打开完整 CORS：OPTIONS 与放行的 GET/HEAD 带齐固定头，
@@ -577,10 +583,24 @@ function originGuardSecret(slot) {
   return secretIsConfigured(value) ? value : '';
 }
 
+// 每个 isolate 只打一次。文案是常量，不拼接槽名、KID 或密钥。
+var originGuardSigningWarned = false;
+
+function warnOriginGuardSigningOnce() {
+  if (originGuardSigningWarned) return;
+  originGuardSigningWarned = true;
+  try {
+    console.warn('[subdomain-router] origin guard signing unavailable');
+  } catch (e) {}
+}
+
 function originGuardSigningSlot() {
   const kid = envString(ORIGIN_GUARD_KID_ENV).trim();
-  if (kid !== 'A' && kid !== 'B') return '';
-  if (!originGuardSecret(kid)) return '';
+  const kidOk = kid === 'A' || kid === 'B';
+  if (!kidOk || !originGuardSecret(kid)) {
+    warnOriginGuardSigningOnce();
+    return '';
+  }
   return kid;
 }
 
@@ -2168,12 +2188,23 @@ function isOriginGuardHost(host) {
 }
 
 // 路径里出现这些，一律拒绝：不查库、不签名、不回源。
-// %2f %5c %2e %25 不区分大小写。反斜杠、连续斜杠、. / .. 段同样拒绝。
+// %2f %5c %2e %25 不区分大小写。单独的 %、截断的 %、非法十六进制、
+// 过长 UTF-8 和非法 UTF-8（decodeURIComponent 抛错）同样拒绝。
+// 解码后的 C0 控制字符和 DEL（%00、%01、%7F 等）也拒绝。
+// 反斜杠、连续斜杠、. / .. 段同样拒绝。
 function originPathUnsafe(pathname) {
   const path = String(pathname || '');
   if (/%(?:2f|5c|2e|25)/i.test(path)) return true;
+  if (/%(?![0-9A-Fa-f]{2})/.test(path)) return true;
   if (path.indexOf('\\') !== -1) return true;
   if (path.indexOf('//') !== -1) return true;
+  try {
+    const decoded = decodeURIComponent(path);
+    if (decoded.indexOf('\\') !== -1 || decoded.indexOf('%') !== -1) return true;
+    if (/[\u0000-\u001f\u007f]/.test(decoded)) return true;
+  } catch (e) {
+    return true;
+  }
   const segments = path.split('/');
   for (let i = 0; i < segments.length; i += 1) {
     if (segments[i] === '.' || segments[i] === '..') return true;
@@ -2221,9 +2252,30 @@ function stripUnicodeFormatChars(text) {
   return out;
 }
 
+function segmentHasNonAscii(segment) {
+  const text = String(segment || '');
+  for (let i = 0; i < text.length;) {
+    const cp = text.codePointAt(i);
+    if (cp > 0x7F) return true;
+    i += cp > 0xFFFF ? 2 : 1;
+  }
+  return false;
+}
+
+function firstDecodedSegment(text) {
+  const segments = String(text || '').split('/');
+  for (let j = 0; j < segments.length; j += 1) {
+    if (!segments[j]) continue;
+    return segments[j].trim();
+  }
+  return '';
+}
+
 // 透传前：百分号解码即 UTF-8 解码，失败返回 'reject'（调用方 400，不回源）。
-// 成功后去掉 Cf（零宽空格、软连字符、BOM 等），再 NFKC、小写。
-// 第一段去掉空白后只要以 sites 开头就返回 'sites'。
+// 成功后先去掉 Cf（零宽空格、软连字符、BOM 等）。第一段去掉空白后若仍含非 ASCII，
+// 在 NFKC 之前就交给守卫。数学粗体 s（U+1D42C）加 "sites" 经 NFKC 会折成 "ssites"，
+// 折完再查就不再以 sites 开头，也会变成纯 ASCII。Cf 必须先去掉，否则零宽空格加 assets 会被误判。
+// 只剩 ASCII 时再 NFKC、小写；第一段以 sites 开头也交给守卫。
 function classifyPassthroughOriginPath(pathname) {
   const raw = String(pathname || '');
   let decoded;
@@ -2232,15 +2284,12 @@ function classifyPassthroughOriginPath(pathname) {
   } catch (e) {
     return 'reject';
   }
-  let text = stripUnicodeFormatChars(decoded);
+  const stripped = stripUnicodeFormatChars(decoded);
+  if (segmentHasNonAscii(firstDecodedSegment(stripped))) return 'sites';
+  let text = stripped;
   try { text = text.normalize('NFKC'); } catch (err) {}
   text = text.toLowerCase();
-  const segments = text.split('/');
-  for (let j = 0; j < segments.length; j += 1) {
-    if (!segments[j]) continue;
-    if (segments[j].trim().indexOf('sites') === 0) return 'sites';
-    break;
-  }
+  if (firstDecodedSegment(text).indexOf('sites') === 0) return 'sites';
   return 'pass';
 }
 
@@ -2331,7 +2380,30 @@ function capOriginObjectCache(resp, route) {
 // 这与对象上的 max-age 无关：max-age 只影响客户端，不改 EdgeOne 节点缓存 TTL。
 // 同 host 且 Host 头仍在的 fetch 落在文档已写明的「不再进入函数」里。
 // 跨 host 子请求会不会重入尚未证实，待用线上 EdgeOne 日志实测（EdgeFunctionSubrequest / ParentRequestID）。
+var ORIGIN_GUARD_HOP_HEADER = 'x-demox-edge-hop';
+var ORIGIN_GUARD_HOP_VALUE = 'guard';
+
+function stampGuardHop(resp) {
+  if (!resp) return resp;
+  try {
+    resp.headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
+    return resp;
+  } catch (e) {
+    try {
+      const copy = new Response(resp.body, resp);
+      copy.headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
+      return copy;
+    } catch (err) {
+      return resp;
+    }
+  }
+}
+
 async function handleOriginGuard(req, event, ctx, u, host) {
+  return stampGuardHop(await originGuardDecision(req, event, ctx, u, host));
+}
+
+async function originGuardDecision(req, event, ctx, u, host) {
   ctx.siteTraffic = true;
   ctx.resolveState = 'origin';
   const method = String(req.method || 'GET').toUpperCase();
@@ -2388,8 +2460,56 @@ async function handleOriginGuard(req, event, ctx, u, host) {
   return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');
 }
 
+function stripHostPort(host) {
+  const value = String(host || '').trim();
+  if (!value) return '';
+  if (value.charAt(0) === '[') {
+    const end = value.indexOf(']');
+    return end === -1 ? value : value.slice(1, end);
+  }
+  const colon = value.lastIndexOf(':');
+  if (colon > 0 && /^\d{1,5}$/.test(value.slice(colon + 1))) return value.slice(0, colon);
+  return value;
+}
+
+function normalizeAuthorityHost(value) {
+  return stripHostPort(value).toLowerCase().replace(/\.+$/, '');
+}
+
+// Host 头和 URL authority 不一致时拒绝。HTTP/2 上这是 Host 与 :authority 交叉。
+// 缺 Host 头不算不一致（:authority 已经在 URL 里）。比较前小写并去掉尾点。
+function requestHostMismatchesUrl(req, url) {
+  let raw = '';
+  try {
+    raw = req && req.headers && req.headers.get ? (req.headers.get('host') || '') : '';
+  } catch (e) {
+    raw = '';
+  }
+  if (!raw) return false;
+  const headerHost = normalizeAuthorityHost(raw);
+  const urlHost = normalizeAuthorityHost(url && url.hostname);
+  if (!headerHost || !urlHost) return false;
+  return headerHost !== urlHost;
+}
+
+function originAuthorityMismatchResponse() {
+  return new Response('Misdirected Request', {
+    status: 421,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'x-demox-route': 'origin-guard=authority'
+    }
+  });
+}
+
 async function handleRequest(req, event, ctx) {
   const u = new URL(req.url);
+  originGuardSigningSlot();
+  // 源站 host 按 URL 裁决，/sites 路径也进守卫。跨 host 回源会带着访客原来的 Host
+  //（www → sites.demox.site，以及没有签名密钥时的 fetch(url, req)）。这些请求若再次进入本函数，
+  // 不能因为 Host 和 URL 不一致就 421，否则 www 和用户站会被自己的回源打下来。
+  if (!isOriginGuardHost(u.hostname) && requestHostMismatchesUrl(req, u)) return originAuthorityMismatchResponse();
   const host = u.hostname.toLowerCase();
 
   // 0a) apex demox.site → 301 跳转到 www（保留 path+query，OAuth callback 的 code 不丢）
