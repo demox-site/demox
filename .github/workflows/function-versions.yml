@@ -51,7 +51,7 @@ jobs:
 
       - name: Edge router, website-api, D0/D2 self-tests, rollback drill
         run: |
-          npm ci --prefix scf-code/website-api --no-audit --no-fund
+          npm ci --prefix scf-code/website-api --ignore-scripts --no-audit --no-fund
           npm run test:edge-router
           node --test scf-code/website-api/*.test.cjs scf-code/website-api/shared/*.test.cjs
           python3 scripts/edge-reentry-probe.py --self-test

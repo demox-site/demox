@@ -2190,6 +2190,7 @@ function isOriginGuardHost(host) {
 // 路径里出现这些，一律拒绝：不查库、不签名、不回源。
 // %2f %5c %2e %25 不区分大小写。单独的 %、截断的 %、非法十六进制、
 // 过长 UTF-8 和非法 UTF-8（decodeURIComponent 抛错）同样拒绝。
+// 解码后的 C0 控制字符和 DEL（%00、%01、%7F 等）也拒绝。
 // 反斜杠、连续斜杠、. / .. 段同样拒绝。
 function originPathUnsafe(pathname) {
   const path = String(pathname || '');
@@ -2200,6 +2201,7 @@ function originPathUnsafe(pathname) {
   try {
     const decoded = decodeURIComponent(path);
     if (decoded.indexOf('\\') !== -1 || decoded.indexOf('%') !== -1) return true;
+    if (/[\u0000-\u001f\u007f]/.test(decoded)) return true;
   } catch (e) {
     return true;
   }
@@ -2260,11 +2262,20 @@ function segmentHasNonAscii(segment) {
   return false;
 }
 
+function firstDecodedSegment(text) {
+  const segments = String(text || '').split('/');
+  for (let j = 0; j < segments.length; j += 1) {
+    if (!segments[j]) continue;
+    return segments[j].trim();
+  }
+  return '';
+}
+
 // 透传前：百分号解码即 UTF-8 解码，失败返回 'reject'（调用方 400，不回源）。
-// 成功后去掉 Cf（零宽空格、软连字符、BOM 等），再 NFKC、小写。
-// 第一段去掉空白后，含有任何非 ASCII（含 Default_Ignorable 但不是 Cf 的
-// U+034F / U+FE0F / U+3164 / U+115F / U+180B / U+17B4）就交给守卫。
-// 只剩 ASCII 时，只要以 sites 开头也交给守卫。
+// 成功后先去掉 Cf（零宽空格、软连字符、BOM 等）。第一段去掉空白后若仍含非 ASCII，
+// 在 NFKC 之前就交给守卫。数学粗体 s（U+1D42C）加 "sites" 经 NFKC 会折成 "ssites"，
+// 折完再查就不再以 sites 开头，也会变成纯 ASCII。Cf 必须先去掉，否则零宽空格加 assets 会被误判。
+// 只剩 ASCII 时再 NFKC、小写；第一段以 sites 开头也交给守卫。
 function classifyPassthroughOriginPath(pathname) {
   const raw = String(pathname || '');
   let decoded;
@@ -2273,17 +2284,12 @@ function classifyPassthroughOriginPath(pathname) {
   } catch (e) {
     return 'reject';
   }
-  let text = stripUnicodeFormatChars(decoded);
+  const stripped = stripUnicodeFormatChars(decoded);
+  if (segmentHasNonAscii(firstDecodedSegment(stripped))) return 'sites';
+  let text = stripped;
   try { text = text.normalize('NFKC'); } catch (err) {}
   text = text.toLowerCase();
-  const segments = text.split('/');
-  for (let j = 0; j < segments.length; j += 1) {
-    if (!segments[j]) continue;
-    const segment = segments[j].trim();
-    if (segmentHasNonAscii(segment)) return 'sites';
-    if (segment.indexOf('sites') === 0) return 'sites';
-    break;
-  }
+  if (firstDecodedSegment(text).indexOf('sites') === 0) return 'sites';
   return 'pass';
 }
 
@@ -2500,7 +2506,10 @@ function originAuthorityMismatchResponse() {
 async function handleRequest(req, event, ctx) {
   const u = new URL(req.url);
   originGuardSigningSlot();
-  if (requestHostMismatchesUrl(req, u)) return originAuthorityMismatchResponse();
+  // 源站 host 按 URL 裁决，/sites 路径也进守卫。跨 host 回源会带着访客原来的 Host
+  //（www → sites.demox.site，以及没有签名密钥时的 fetch(url, req)）。这些请求若再次进入本函数，
+  // 不能因为 Host 和 URL 不一致就 421，否则 www 和用户站会被自己的回源打下来。
+  if (!isOriginGuardHost(u.hostname) && requestHostMismatchesUrl(req, u)) return originAuthorityMismatchResponse();
   const host = u.hostname.toLowerCase();
 
   // 0a) apex demox.site → 301 跳转到 www（保留 path+query，OAuth callback 的 code 不丢）

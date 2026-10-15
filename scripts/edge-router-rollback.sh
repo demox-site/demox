@@ -130,8 +130,26 @@ drill() {
   echo "step 2/4 verify previous"
   local verify_rc=0
   verify || verify_rc=$?
-  echo "step 3/4 ModifyFunction live again"
-  run_modify "$live"
+  # Step 3 puts the saved live content back. set -e must not skip the retry:
+  # a failed ModifyFunction here would otherwise leave PREVIOUS live.
+  attempt_restore() {
+    echo "step 3/4 ModifyFunction live again"
+    if run_modify "$live"; then
+      return 0
+    fi
+    echo "step 3/4 ModifyFunction live failed; retrying once" >&2
+    if run_modify "$live"; then
+      return 0
+    fi
+    echo "LIVE NOT RESTORED" >&2
+    return 1
+  }
+  trap 'attempt_restore || true' ERR
+  if ! attempt_restore; then
+    trap - ERR
+    exit 1
+  fi
+  trap - ERR
   echo "step 4/4 verify live"
   verify
   if [ "$verify_rc" != "0" ]; then
@@ -156,6 +174,24 @@ if [ "$1" = "teo" ] && [ "$2" = "DescribeFunctions" ]; then
   exit 0
 fi
 if [ "$1" = "teo" ] && [ "$2" = "ModifyFunction" ]; then
+  case "$*" in
+    *live.js*)
+      if [ -n "${FAIL_LIVE_LIMIT:-}" ] && [ "${FAIL_LIVE_LIMIT:-0}" -gt 0 ]; then
+        n=0
+        if [ -n "${FAIL_COUNT_FILE:-}" ] && [ -f "$FAIL_COUNT_FILE" ]; then
+          n=$(cat "$FAIL_COUNT_FILE")
+        fi
+        n=$((n + 1))
+        if [ -n "${FAIL_COUNT_FILE:-}" ]; then
+          printf '%s\n' "$n" >"$FAIL_COUNT_FILE"
+        fi
+        if [ "$n" -le "$FAIL_LIVE_LIMIT" ]; then
+          echo "simulated live modify failure" >&2
+          exit 1
+        fi
+      fi
+      ;;
+  esac
   exit 0
 fi
 echo "unexpected tccli $*" >&2
@@ -185,6 +221,67 @@ if (verifies.length !== 2) {
 }
 if (lines.some((line) => line.includes('live-function-body') || line.includes('previous-function-body'))) {
   console.error('function content was written into the call log');
+  process.exit(1);
+}
+JS
+  run_case() {
+    local name="$1"
+    local limit="$2"
+    local log="$work/calls-$name"
+    local fails="$work/fails-$name"
+    : >"$log"
+    rm -f "$fails"
+    LIVE_FILE="$work/live.js" FUNCTION_ID="$FUNCTION_ID" TCCLI_LOG="$log" \
+      FAIL_COUNT_FILE="$fails" FAIL_LIVE_LIMIT="$limit" \
+      TCCLI_BIN="$work/tccli" PREVIOUS="$work/previous.js" APPLY=1 \
+      VERIFY_CMD="echo verified >>\"$log\"" \
+      bash "$ROOT/scripts/edge-router-rollback.sh" drill
+  }
+  run_case retry 1 >"$work/retry.out" 2>"$work/retry.err"
+  if grep -q "LIVE NOT RESTORED" "$work/retry.err"; then
+    echo "a successful retry must not raise LIVE NOT RESTORED" >&2
+    exit 1
+  fi
+  node - "$work/calls-retry" <<'JS'
+const fs = require('fs');
+const lines = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n');
+const modifies = lines.filter((line) => line.includes('ModifyFunction'));
+const verifies = lines.filter((line) => line.startsWith('verified'));
+if (modifies.length !== 3) {
+  console.error('expected previous plus one failed live restore and one retry, got ' + modifies.length);
+  process.exit(1);
+}
+if (!modifies[0].includes('previous.js') || !modifies[1].includes('live.js') || !modifies[2].includes('live.js')) {
+  console.error('retry order was not previous, live, live');
+  process.exit(1);
+}
+if (verifies.length !== 2) {
+  console.error('expected verification after the rolled-back publish and after the restored live publish');
+  process.exit(1);
+}
+JS
+  set +e
+  run_case bothfail 2 >"$work/both.out" 2>"$work/both.err"
+  both_rc=$?
+  set -e
+  if [ "$both_rc" = "0" ]; then
+    echo "two failed live restores must not succeed" >&2
+    exit 1
+  fi
+  if ! grep -q "LIVE NOT RESTORED" "$work/both.err"; then
+    echo "two failed live restores must print LIVE NOT RESTORED" >&2
+    exit 1
+  fi
+  node - "$work/calls-bothfail" <<'JS'
+const fs = require('fs');
+const lines = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n');
+const modifies = lines.filter((line) => line.includes('ModifyFunction'));
+if (modifies.length !== 3) {
+  console.error('expected previous plus two failed live restores, got ' + modifies.length);
+  process.exit(1);
+}
+if (!modifies.every((line, index) => line.includes(index === 0 ? 'previous.js' : 'live.js'))) {
+  console.error('double-failure order was not previous then two live attempts');
   process.exit(1);
 }
 JS

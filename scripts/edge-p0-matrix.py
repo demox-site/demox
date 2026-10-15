@@ -9,8 +9,11 @@
 Exit 1 on any failure. Only sends read-style requests with a tiny JSON body; no credentials.
 
 Also:
-  d2                         live K2 matrix (ban id, public sites, http2 mismatch, cache key, CORS, 15s clock)
-  d2-self-test               local checks for that matrix; no production traffic
+  d2                         live K2 matrix (ban id, public sites, http2 mismatch, cache key, CORS, 15s clock).
+                             Requires BAN_WATCH_URL: an origin URL of the ban test site whose path uses
+                             that site's real owner uid (not k2probe). Keep the URL outside the repo.
+                             The watch records 403 within 15s after the ban, then 200 within 15s after unban.
+  d2-self-test               local checks for that matrix; no production traffic and no BAN_WATCH_URL
   perf-baseline OUT.json     record median/p90 samples
   perf BASELINE.json         fail when median grows more than 15% or p90 more than 25%
   perf-self-test             lock those thresholds
@@ -477,6 +480,7 @@ PERF_P90_INCREASE_MAX = 0.25
 PERF_SAMPLES = 7
 BAN_SITE_ID = "33I17FK6"
 # Not an owner id. A wrong uid and a real ban are the same public 403.
+# Static ban rows keep this uid. A real ban/unban proof is BAN_WATCH_URL only.
 BAN_PROBE_UID = "k2probe"
 D2_GUARDED_HOSTS = [
     "sites.demox.site",
@@ -859,7 +863,30 @@ def _options_headers(url):
         return {k.lower(): v for k, v in e.headers.items()}, e.code
 
 
+def require_ban_watch_url():
+    """BAN_WATCH_URL is the release gate for a real ban. k2probe only proves an owner mismatch."""
+    watch = os.environ.get("BAN_WATCH_URL", "").strip()
+    if not watch:
+        print(
+            "FAIL BAN_WATCH_URL is required for d2. "
+            "Set it to an origin URL of the ban test site that uses that site's real owner uid "
+            f"(not {BAN_PROBE_UID}). Keep the URL outside the repo. "
+            "Ban the site and expect 403 within 15s, then unban and expect 200 within 15s."
+        )
+        return ""
+    if BAN_PROBE_UID in watch:
+        print(
+            f"FAIL BAN_WATCH_URL must use the test site's real owner uid, not {BAN_PROBE_UID}. "
+            "Keep the URL outside the repo."
+        )
+        return ""
+    return watch
+
+
 def d2_checks():
+    watch = require_ban_watch_url()
+    if not watch:
+        return 1
     fail = 0
     fail |= _d2_ban_checks()
     fail |= _d2_public_checks()
@@ -868,29 +895,87 @@ def d2_checks():
     fail |= _d2_cors_checks()
     fail |= simulate_ban()
     print("D2 OK" if not fail else "D2 FAILED")
-    print("NOTE live 15s flip: simulate-ban is the clock. To watch a real ban, set BAN_WATCH_URL and re-run d2.")
-    watch = os.environ.get("BAN_WATCH_URL", "")
-    if watch:
-        fail |= _watch_ban(watch)
+    print("NOTE live 15s flip: simulate-ban is the clock. BAN_WATCH_URL records the real ban and unban.")
+    fail |= _watch_ban(watch)
     return fail
 
 
-def _watch_ban(url):
-    host = urllib.parse.urlparse(url).hostname or ""
-    deadline = time.monotonic() + 15
+def _poll_status(fetch_once, want, window_s, monotonic, sleep):
+    started = monotonic()
+    deadline = started + window_s
     last = None
-    while time.monotonic() <= deadline:
-        last = fetch_checked(url, host)
-        if last.get("status") == 403:
-            print(f"PASS ban-watch 403 within 15s {url}")
-            return 0
-        time.sleep(1)
-    print(f"FAIL ban-watch still {last.get('status') if last else 0} after 15s {url}")
-    return 1
+    while monotonic() <= deadline:
+        last = fetch_once()
+        if last.get("status") == want:
+            return last, monotonic(), started
+        sleep(1)
+    return last, None, started
+
+
+def _watch_ban(url, fetch_once=None, monotonic=None, sleep=None, window_s=15):
+    host = urllib.parse.urlparse(url).hostname or ""
+    fetch_once = fetch_once or (lambda: fetch_checked(url, host))
+    monotonic = monotonic or time.monotonic
+    sleep = sleep or time.sleep
+    print(f"ban-watch {url} (path must use the test site's real owner uid, not {BAN_PROBE_UID})")
+    banned, banned_at, ban_started = _poll_status(fetch_once, 403, window_s, monotonic, sleep)
+    if banned_at is None:
+        status = banned.get("status") if banned else 0
+        print(f"FAIL ban-watch still {status} after {window_s}s {url}")
+        return 1
+    print(f"PASS ban-watch 403 at +{banned_at - ban_started:.3f}s within {window_s}s {url}")
+    opened, opened_at, unban_started = _poll_status(fetch_once, 200, window_s, monotonic, sleep)
+    if opened_at is None:
+        status = opened.get("status") if opened else 0
+        print(f"FAIL unban-watch still {status} after {window_s}s {url}")
+        return 1
+    print(f"PASS unban-watch 200 at +{opened_at - unban_started:.3f}s within {window_s}s {url}")
+    return 0
+
+
+def _self_test_ban_watch():
+    """Offline clock. Proves d2 fails closed without BAN_WATCH_URL, then restores the variable. No production traffic."""
+    saved = os.environ.pop("BAN_WATCH_URL", None)
+    try:
+        if require_ban_watch_url() != "":
+            raise SystemExit("unset BAN_WATCH_URL must fail closed")
+        os.environ["BAN_WATCH_URL"] = f"https://sites.demox.site/sites/{BAN_PROBE_UID}/{BAN_SITE_ID}/dist/index.html"
+        if require_ban_watch_url() != "":
+            raise SystemExit("k2probe uid must not satisfy BAN_WATCH_URL")
+        os.environ["BAN_WATCH_URL"] = "https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html"
+        if require_ban_watch_url() == "":
+            raise SystemExit("a real owner uid URL should be accepted")
+    finally:
+        if saved is None:
+            os.environ.pop("BAN_WATCH_URL", None)
+        else:
+            os.environ["BAN_WATCH_URL"] = saved
+    clock = {"t": 0.0}
+    statuses = iter([200, 403, 403, 200])
+
+    def fetch_once():
+        return {"status": next(statuses)}
+
+    def monotonic():
+        return clock["t"]
+
+    def sleep(seconds):
+        clock["t"] += seconds
+
+    rc = _watch_ban(
+        "https://sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html",
+        fetch_once=fetch_once,
+        monotonic=monotonic,
+        sleep=sleep,
+        window_s=15,
+    )
+    if rc != 0:
+        raise SystemExit("ban watch self-test failed")
 
 
 def d2_self_test():
-    """Local http2 server: a crossed Host/:authority must not be classified as 200."""
+    """Local http2 server: a crossed Host/:authority must not be classified as 200.
+    Does not require BAN_WATCH_URL and does not contact production."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -918,6 +1003,7 @@ def d2_self_test():
     finally:
         server.shutdown()
     perf_self_test()
+    _self_test_ban_watch()
     print("D2 SELF-TEST OK")
     return 0
 

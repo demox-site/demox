@@ -29,6 +29,11 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
    - 然后才看未绑定 host
 3. 核对失败：用上一份 `subdomain-router.js` 再 `ModifyFunction`，不要继续改。
 
+## 发布后
+
+1. `ModifyFunction` 之后清理边缘节点上已经缓存的 bucket-1 `/sites/` 对象，再把封禁当成已经生效。用现有的 website-api：`buildOriginPurgeTargets` 拼出 `https://<originHost>/sites/{ownerId}/{websiteId}/`，由 `CreatePurgeTask`（`purge_prefix`）提交。不另开发布入口。
+2. `python3 scripts/edge-p0-matrix.py d2` 必须设置 `BAN_WATCH_URL`。这个 URL 用封禁测试站点的真实 owner uid（不要用 `k2probe`，那一行只证明 uid 不符），并且放在仓库外面。脚本记录封禁后 15 秒内的 403，以及解除封禁后 15 秒内的 200。`d2-self-test` 不读这个变量，也不访问线上。
+
 ## 回滚演练
 
 发布路径只有 `scf-code/deploy-edge-functions.sh` 里的那条 `tccli teo ModifyFunction`（`ef-1281msyw`，zone `zone-3kplfkbflnd6`，region `ap-guangzhou`）。回滚用同一条，不另开发布入口。
@@ -42,8 +47,8 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
    - 跑 `scripts/edge-p0-check.sh`：`www` 200、一个真实用户站点 200，带和不带假的 `demox_access` 各一遍
    - `ModifyFunction` 写回刚才存下的线上正文
    - 再跑一遍同样的核对
-3. 上一份核对失败也会先写回线上正文，再以非 0 退出。
-4. `scripts/edge-router-rollback.sh self-test` 用假的 tccli 走完来回，不接触云。CI 跑的是这一档。
+3. 上一份核对失败也会先写回线上正文，再以非 0 退出。写回（第 3 步）失败会再试一次；仍然失败就打印 `LIVE NOT RESTORED` 并以非 0 退出，避免 `set -e` 把上一份正文留在线上却不再尝试恢复。
+4. `scripts/edge-router-rollback.sh self-test` 用假的 tccli 走完来回，不接触云。CI 跑的是这一档。它覆盖一次恢复失败后重试成功，以及两次都失败时的 `LIVE NOT RESTORED`。
 
 `PREVIOUS` 指向上一次发布时的 `edge-functions/subdomain-router.js`（git rev 或当时留下的文件）。两边 sha256 相同就停，避免空转。
 

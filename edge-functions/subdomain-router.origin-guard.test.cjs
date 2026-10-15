@@ -1484,7 +1484,7 @@ test('a non-ASCII first segment is handed to the guard; later segments and ASCII
   assert.ok(r.calls.origin.length >= 4);
 });
 
-test('Host and URL authority mismatch is 421 and does not fetch origin', async () => {
+test('Host and URL authority mismatch is 421 off guard hosts and 403 on a guard host', async () => {
   const r = makeGuard({
     resolver: (payload) => {
       if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
@@ -1492,8 +1492,15 @@ test('Host and URL authority mismatch is 421 and does not fetch origin', async (
     }
   });
   const banned = '/sites/owner-1/BANNED1/dist/index.html';
+  const guarded = await r.call('https://sites.demox.site' + banned, {
+    headers: { Host: 'static.demox.site', Accept: 'text/html' }
+  });
+  assert.equal(guarded.response.status, 403);
+  assert.equal(guarded.response.headers.get('cache-control'), 'no-store');
+  assert.equal(guarded.response.headers.get('x-demox-route'), 'origin-guard=blocked');
+  assert.equal(guarded.response.headers.get('x-demox-edge-hop'), 'guard');
+  assert.equal(r.calls.origin.length, 0);
   const pairs = [
-    ['https://sites.demox.site' + banned, 'static.demox.site'],
     ['https://static.demox.site' + banned, 'sites.demox.site'],
     ['https://www.demox.site/', 'sites.demox.site'],
     ['https://cdn.demox.site/assets/app.js', 'sites.demox.site']
@@ -1506,7 +1513,7 @@ test('Host and URL authority mismatch is 421 and does not fetch origin', async (
     assert.equal(response.headers.get('x-demox-edge-hop'), null);
   }
   assert.equal(r.calls.origin.length, 0);
-  assert.equal(r.calls.resolve.length, 0);
+  assert.equal(r.calls.resolve.length, 1);
   const same = await r.visit('https://sites.demox.site' + banned, {
     Host: 'Sites.Demox.Site.:443',
     Accept: 'text/html'
@@ -1587,4 +1594,130 @@ test('an origin subrequest that re-enters is marked, and a public site that does
   assert.match(page.html, /Public body/);
   assert.equal(page.response.headers.get('x-demox-edge-hop'), null);
   assert.doesNotMatch(page.html, /无法访问/);
+});
+
+test('a www re-entry that keeps Host www.demox.site returns 200', async () => {
+  let inner = 0;
+  const reentered = makeGuard({
+    secret: SECRET_A,
+    resolver: (payload) => {
+      if (payload.websiteId) {
+        return json({ success: true, allow: true, path: 'sites/1985655011013808129/EPX2UU43/dist' });
+      }
+      return json({
+        success: true,
+        path: 'sites/1985655011013808129/EPX2UU43/dist',
+        websiteId: 'EPX2UU43',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      });
+    },
+    origin: async (info, helpers) => {
+      if (inner++ > 0 || !info.href.includes('sites.demox.site')) return null;
+      const hdr = new Headers(info.headers);
+      if (!hdr.get('host')) hdr.set('host', 'www.demox.site');
+      assert.equal(hdr.get('host'), 'www.demox.site');
+      return helpers.reenter(info.href, hdr);
+    }
+  });
+  const home = await reentered.visit('https://www.demox.site/', {
+    Host: 'www.demox.site',
+    Accept: 'text/html'
+  });
+  assert.equal(home.response.status, 200);
+  assert.match(home.html, /Public body/);
+  assert.equal(home.response.headers.get('x-demox-edge-hop'), 'guard');
+});
+
+test('cross-host origin re-entry that keeps the visitor Host returns 200', async () => {
+  const wwwResolver = (payload) => payload.websiteId
+    ? json({ success: true, allow: true, path: 'sites/1985655011013808129/EPX2UU43/dist' })
+    : json({
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    });
+  const cases = [
+    ['www+secret', SECRET_A, 'https://www.demox.site/', wwwResolver],
+    ['www-nosecret', '', 'https://www.demox.site/', wwwResolver],
+    ['usersite-nosecret', '', 'https://pub1.demox.site/', (payload) => payload.websiteId
+      ? json({ success: true, allow: true, path: 'sites/owner-1/PUB1/dist' })
+      : json({
+        success: true,
+        path: 'sites/owner-1/PUB1/dist',
+        websiteId: 'PUB1',
+        origin: 'sites.demox.site',
+        visibility: 'public',
+        hideWatermark: true
+      })]
+  ];
+  for (const [label, secret, url, resolver] of cases) {
+    let inner = 0;
+    const r = makeGuard({
+      secret,
+      resolver,
+      origin: async (info, helpers) => {
+        if (inner++ > 0 || !info.href.includes('sites.demox.site')) return null;
+        const hdr = new Headers(info.headers);
+        if (!hdr.get('host')) hdr.set('host', new URL(url).host);
+        return helpers.reenter(info.href, hdr);
+      }
+    });
+    const { response, html } = await r.visit(url, { Host: new URL(url).host, Accept: 'text/html' });
+    assert.equal(response.status, 200, label);
+    assert.match(html, /Public body/, label);
+  }
+});
+
+test('a decoded C0 or DEL control character is 400 and does not fetch origin', async () => {
+  const r = makeGuard({
+    resolver: () => { throw new Error('must not look up'); }
+  });
+  const unsafe = r.ctx.__testHooks.originPathUnsafe;
+  const paths = [
+    '/%00sites/owner-1/BANNED1/x',
+    '/%01sites/owner-1/BANNED1/x',
+    '/%7Fsites/owner-1/BANNED1/x',
+    '/%00/sites/owner-1/BANNED1/x',
+    '/sites/owner-1/PUBLIC1/a%00b'
+  ];
+  for (const pathName of paths) assert.equal(unsafe(pathName), true, pathName);
+  assert.equal(unsafe('/assets/app.js'), false);
+  assert.equal(unsafe('/assets/%20file.js'), false);
+  const hosts = ['https://sites.demox.site', 'https://static.demox.site', 'https://pub1.demox.site'];
+  for (const host of hosts) {
+    for (const pathName of paths) {
+      const { response } = await r.visit(host + pathName);
+      assert.equal(response.status, 400, host + pathName);
+      assert.equal(response.headers.get('cache-control'), 'no-store', host + pathName);
+      assert.equal(response.headers.get('x-demox-route'), 'origin-path=reject', host + pathName);
+      assert.equal(response.headers.get('x-demox-edge-hop'), null, host + pathName);
+    }
+  }
+  assert.equal(r.calls.resolve.length, 0);
+  assert.equal(r.calls.origin.length, 0);
+});
+
+test('a non-ASCII first segment is classified before NFKC', async () => {
+  const r = makeGuard({
+    resolver: () => json({ success: false, message: 'not found' })
+  });
+  const classify = r.ctx.__testHooks.classifyPassthroughOriginPath;
+  const mathBold = '/%F0%9D%90%ACsites/owner-1/BANNED1/x';
+  assert.equal(classify(mathBold), 'sites');
+  assert.equal(classify('/assets/%E4%B8%AD%E6%96%87.png'), 'pass');
+  assert.equal(classify('/%E2%80%8Bassets/app.js'), 'pass');
+  const before = r.calls.origin.length;
+  const guarded = await r.visit('https://static.demox.site' + mathBold);
+  assert.equal(guarded.response.status, 403);
+  assert.equal(guarded.response.headers.get('x-demox-route'), 'origin-guard=unparsed');
+  assert.equal(guarded.response.headers.get('x-demox-edge-hop'), 'guard');
+  assert.equal(r.calls.origin.length, before);
+  const open = await r.visit('https://static.demox.site/assets/%E4%B8%AD%E6%96%87.png');
+  assert.equal(open.response.status, 200);
+  assert.equal(open.html, PUBLIC_HTML);
 });
