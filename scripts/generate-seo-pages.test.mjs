@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdtemp, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, mkdir, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { generateSeoPages, PUBLIC_PAGES, ZH_PAGES, NOINDEX_ROUTES } from "./generate-seo-pages.mjs";
+import { generateSeoPages, PUBLIC_PAGES, ZH_PAGES, NOINDEX_ROUTES, CANONICAL_ALIAS_ROUTES, indexablePages } from "./generate-seo-pages.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -248,6 +248,158 @@ test("preview build is noindex but only in its own copy", async () => {
     await assert.rejects(() => makePreviewSite(path.join(root, "dist-preview"), distDir), /Refusing/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+const WWW = "https://www.demox.site";
+
+function robotsGroups(text) {
+  const groups = [];
+  let current = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const agent = line.match(/^User-agent:\s*(.+)$/i);
+    if (agent) {
+      if (!current || current.rules.length) {
+        current = { agents: [], rules: [] };
+        groups.push(current);
+      }
+      current.agents.push(agent[1]);
+      continue;
+    }
+    if (current) current.rules.push(line);
+  }
+  return groups;
+}
+
+async function htmlFiles(dir) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...await htmlFiles(full));
+    else if (entry.name.endsWith(".html")) out.push(full);
+  }
+  return out;
+}
+
+function canonicalHrefs(html) {
+  return [...html.matchAll(/<link\b[^>]*\brel="canonical"[^>]*>/gi)].map((match) => {
+    const href = match[0].match(/\bhref="([^"]+)"/);
+    return href ? href[1] : "";
+  });
+}
+
+function routeFromHtml(distDir, file) {
+  const rel = path.relative(distDir, file).split(path.sep).join("/");
+  if (rel === "404.html") return null;
+  if (rel === "index.html") return "";
+  if (rel.endsWith("/index.html")) return rel.slice(0, -"/index.html".length);
+  return null;
+}
+
+test("indexable pages, aliases, and markdown robots use www canonicals", async () => {
+  const distDir = await mkdtemp(path.join(os.tmpdir(), "demox-seo-canonical-"));
+  try {
+    await writeFile(path.join(distDir, "index.html"), await readFile(path.join(projectRoot, "index.html"), "utf8"));
+    await generateSeoPages(distDir);
+
+    const aliasCanonical = new Map(CANONICAL_ALIAS_ROUTES.map((alias) => [alias.route, `${WWW}${alias.canonicalPath}`]));
+    aliasCanonical.set("index", `${WWW}/`);
+    const indexableCanonical = new Map(indexablePages().map(({ route, config }) => {
+      const href = config.canonicalPath ? `${WWW}${config.canonicalPath}` : (route ? `${WWW}/${route}` : `${WWW}/`);
+      return [route, href];
+    }));
+
+    const files = await htmlFiles(distDir);
+    assert.ok(files.length > Object.keys(PUBLIC_PAGES).length);
+    for (const file of files) {
+      const html = await readFile(file, "utf8");
+      const hrefs = canonicalHrefs(html);
+      assert.equal(hrefs.length, 1, `${file} should have exactly one canonical`);
+      const href = hrefs[0];
+      assert.match(href, /^https:\/\/www\.demox\.site(\/.*)?$/, href);
+      assert.doesNotMatch(href, /^http:\/\//);
+      assert.doesNotMatch(href, /^https:\/\/demox\.site(?:\/|$)/);
+      assert.equal(html.includes("https://demox.site"), false, `${file} must not use the apex host`);
+      assert.equal(html.includes("http://www.demox.site"), false, `${file} must not use http`);
+      assert.equal(html.includes("http://demox.site"), false, `${file} must not use http on the apex`);
+
+      const route = routeFromHtml(distDir, file);
+      if (route === null) {
+        assert.match(html, /content="noindex, nofollow"/);
+        continue;
+      }
+      const indexable = !/content="noindex/.test(html);
+      if (indexableCanonical.has(route)) {
+        assert.equal(indexable, true, route);
+        assert.equal(href, indexableCanonical.get(route), route);
+      } else if (aliasCanonical.has(route)) {
+        assert.equal(indexable, true, route);
+        assert.equal(href, aliasCanonical.get(route), route);
+      } else if (NOINDEX_ROUTES.includes(route)) {
+        assert.equal(indexable, false, route);
+        assert.equal(href, `${WWW}/${route}`, route);
+        assert.notEqual(href, `${WWW}/`);
+      } else {
+        assert.fail(`unexpected prerendered route ${route}`);
+      }
+    }
+
+    const docs = await readFile(path.join(distDir, "docs", "index.html"), "utf8");
+    assert.match(docs, /rel="canonical" href="https:\/\/www\.demox\.site\/doc"/);
+    assert.match(docs, /<h1>用 CLI 或 MCP 发布静态网站和云函数<\/h1>/);
+    assert.doesNotMatch(docs, /noindex/);
+    const home = await readFile(path.join(distDir, "home", "index.html"), "utf8");
+    assert.match(home, /rel="canonical" href="https:\/\/www\.demox\.site\/" /);
+    assert.match(home, /<h1>Deploy AI-generated websites in seconds<\/h1>/);
+    const indexAlias = await readFile(path.join(distDir, "index", "index.html"), "utf8");
+    assert.match(indexAlias, /rel="canonical" href="https:\/\/www\.demox\.site\/" /);
+    for (const route of ["admin", "mcp", "layout-demo"]) {
+      const html = await readFile(path.join(distDir, route, "index.html"), "utf8");
+      assert.match(html, /content="noindex, nofollow"/);
+      assert.match(html, new RegExp(`rel="canonical" href="${WWW}/${route}"`));
+      assert.doesNotMatch(html, /rel="canonical" href="https:\/\/www\.demox\.site\/" /);
+    }
+
+    await assert.rejects(readFile(path.join(distDir, "docs.md"), "utf8"));
+    await assert.rejects(readFile(path.join(distDir, "home.md"), "utf8"));
+    assert.match(await readFile(path.join(distDir, "doc.md"), "utf8"), /Source: https:\/\/www\.demox\.site\/doc/);
+    assert.match(await readFile(path.join(distDir, "index.md"), "utf8"), /Source: https:\/\/www\.demox\.site\//);
+
+    const sitemap = await readFile(path.join(distDir, "sitemap.xml"), "utf8");
+    for (const loc of [`${WWW}/docs`, `${WWW}/home`, `${WWW}/admin`, `${WWW}/mcp`, `${WWW}/layout-demo`, `${WWW}/index`]) {
+      assert.equal(sitemap.includes(`<loc>${loc}</loc>`), false, loc);
+    }
+    assert.match(sitemap, new RegExp(`<loc>${WWW}/doc</loc>`));
+    assert.match(sitemap, new RegExp(`<loc>${WWW}/</loc>`));
+    assert.doesNotMatch(sitemap, /\.md</);
+    const sitemapUrls = [
+      ...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g),
+      ...sitemap.matchAll(/<xhtml:link\b[^>]*href="([^"]+)"/g),
+    ].map((match) => match[1]);
+    assert.ok(sitemapUrls.length > 0);
+    for (const url of sitemapUrls) {
+      assert.match(url, /^https:\/\/www\.demox\.site(\/.*)?$/, url);
+      assert.doesNotMatch(url, /^https:\/\/demox\.site(?:\/|$)/);
+      assert.doesNotMatch(url, /^http:\/\//);
+    }
+
+    const robots = await readFile(path.join(projectRoot, "public", "robots.txt"), "utf8");
+    const groups = robotsGroups(robots);
+    const star = groups.filter((group) => group.agents.includes("*"));
+    const named = groups.filter((group) => !group.agents.includes("*"));
+    assert.equal(star.length, 1);
+    assert.equal(star[0].rules.filter((rule) => rule === "Disallow: /*.md$").length, 1);
+    for (const group of named) {
+      assert.equal(group.rules.some((rule) => rule.includes(".md")), false, group.agents.join(","));
+      assert.ok(group.rules.includes("Allow: /"), group.agents.join(","));
+    }
+    for (const bot of ["GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended"]) {
+      assert.ok(named.some((group) => group.agents.includes(bot)), bot);
+    }
+  } finally {
+    await rm(distDir, { recursive: true, force: true });
   }
 });
 

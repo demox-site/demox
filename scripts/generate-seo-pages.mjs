@@ -413,7 +413,25 @@ export const NOINDEX_ROUTES = [
   "mcp-login",
   "mcp-authorize",
   "site-auth",
+  // 这些路径在 WWW_SPA_ROUTES 里，缺文件时边缘会回退到首页壳（canonical /）。
+  // 它们不是公开文档：预渲染成 noindex，避免被当成首页的重复页。
+  "admin",
+  "mcp",
+  "layout-demo",
 ];
+
+/**
+ * 指向已有主 URL 的别名。不进 sitemap，也不另写 .md。
+ * /docs 的正文与 /doc 相同，canonical 指向 /doc。
+ * /home 的正文与首页相同，canonical 指向 /。
+ * /index 仍在 PUBLIC_PAGES.index，单独写出，canonical 指向 /。
+ */
+export const CANONICAL_ALIAS_ROUTES = [
+  { route: "docs", canonicalPath: "/doc", sourceRoute: "doc" },
+  { route: "home", canonicalPath: "/", sourceRoute: "" },
+];
+
+const NOINDEX_ALIAS_ROUTES = new Set(["admin", "mcp", "layout-demo"]);
 
 function escapeAttribute(value) {
   return value
@@ -703,14 +721,34 @@ export async function generateSeoPages(distDir) {
   await mkdir(path.join(distDir, "index"), { recursive: true });
   await writeFile(path.join(distDir, "index", "index.html"), renderSeoPage(baseHtml, "index", { ...PUBLIC_PAGES.index, pairKey: "" }));
 
+  for (const alias of CANONICAL_ALIAS_ROUTES) {
+    const source = PUBLIC_PAGES[alias.sourceRoute];
+    const pairKey = ZH_PAIRED_ROUTES.includes(alias.sourceRoute) ? alias.sourceRoute : undefined;
+    const routeDir = path.join(distDir, alias.route);
+    await mkdir(routeDir, { recursive: true });
+    await writeFile(path.join(routeDir, "index.html"), renderSeoPage(baseHtml, alias.route, {
+      ...source,
+      canonicalPath: alias.canonicalPath,
+      pairKey,
+      markdownPath: markdownPathFor(alias.sourceRoute),
+    }));
+  }
+
   for (const route of NOINDEX_ROUTES) {
     const routeDir = path.join(distDir, route);
-    const config = {
-      title: "Continue securely | Demox",
-      description: "Complete the Demox sign-in or authorization flow in a JavaScript-enabled browser.",
-      index: false,
-      fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Continue securely in your browser</h1><p>This Demox sign-in or authorization route requires JavaScript and is intentionally excluded from search indexing.</p><p><a href="/">Return to Demox</a>.</p></main>`,
-    };
+    const config = NOINDEX_ALIAS_ROUTES.has(route)
+      ? {
+        title: "Not indexed | Demox",
+        description: "This Demox route is not a public document and is excluded from search indexing.",
+        index: false,
+        fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>This page is not indexed</h1><p>This route is not a public Demox document. <a href="/">Return to Demox</a>.</p></main>`,
+      }
+      : {
+        title: "Continue securely | Demox",
+        description: "Complete the Demox sign-in or authorization flow in a JavaScript-enabled browser.",
+        index: false,
+        fallback: `<main data-crawlable-fallback class="fallback-simple"><h1>Continue securely in your browser</h1><p>This Demox sign-in or authorization route requires JavaScript and is intentionally excluded from search indexing.</p><p><a href="/">Return to Demox</a>.</p></main>`,
+      };
     await mkdir(routeDir, { recursive: true });
     await writeFile(path.join(routeDir, "index.html"), renderSeoPage(baseHtml, route, config));
   }

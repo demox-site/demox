@@ -324,7 +324,9 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
   assert.match(source, /fetch\(buildOriginUrl\(req, `\/\$\{sitePath\}\/404\.html`, '', originHost\), \{ method: 'GET' \}\)/);
   assert.doesNotMatch(source, /new Request\(req\b/);
   assert.doesNotMatch(source, /strippedFetchInit|originFetchInit|passThroughWithoutAuthCookie|withoutAuthCookie\(/);
-  const pre = require('node:child_process').execSync('git show 3050f5d^:edge-functions/subdomain-router.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' });
+  // 浅克隆（www deploy 的 actions/checkout 默认 depth 1）没有 3050f5d^，不能在测试里 git show。
+  // 行内容冻结在 fixtures/pre-49-fetch-lines.txt，过滤规则与当初对源文件的提取一致。
+  const pre = fs.readFileSync(path.join(__dirname, 'fixtures/pre-49-fetch-lines.txt'), 'utf8');
   const fetchLines = (src) => src.split('\n').map((l) => l.trim()).filter((l) => /\bfetch\(/.test(l) && !l.startsWith('//'));
   const preLines = fetchLines(pre);
   const nowLines = fetchLines(source);
