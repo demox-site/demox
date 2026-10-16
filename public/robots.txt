@@ -26,5 +26,7 @@ Disallow: /feishu-link
 Disallow: /mcp-login
 Disallow: /mcp-authorize
 Disallow: /site-auth
+# HTML 的 Markdown 镜像。只拦通用爬虫（Googlebot 走这一组）。上面的 AI 爬虫组不继承这条。
+Disallow: /*.md$
 
 Sitemap: https://www.demox.site/sitemap.xml
