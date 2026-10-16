@@ -1,0 +1,16 @@
+// Pre-#49 fetch() lines from edge-functions/subdomain-router.js.
+// Source commit: 4a6b4dfcef44c3e32788c9477ac32656d0aaa7ac (3050f5d^, first parent of 3050f5d / #49).
+// Extracted once with: git show 3050f5d^:edge-functions/subdomain-router.js
+// Regenerate (full history required; a depth-1 clone does not contain this object):
+//   git show 3050f5d^:edge-functions/subdomain-router.js | node -e 'const fs=require("node:fs"); const src=fs.readFileSync(0,"utf8"); const lines=src.split("\n").map((l)=>l.trim()).filter((l)=>/\bfetch\(/.test(l)&&!l.startsWith("//")); process.stdout.write(lines.join("\n")+"\n");'
+return fetch(proxied);
+event.waitUntil(fetch(url, {
+const attempt = fetch(url, init);
+: function (url, init) { return fetch(url, init); };
+const custom404 = await fetch(buildOriginUrl(req, `/${sitePath}/404.html`, '', originHost), { method: 'GET' });
+fetch(ANALYTICS_URL, {
+fetch(REPORT_URL, {
+const resp = await fetch(backendUrl('/check-site-access'), {
+const resp = await fetch(backendUrl('/resolve-subdomain'), init);
+if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
+return fetch(req);
