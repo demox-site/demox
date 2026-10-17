@@ -1453,9 +1453,17 @@ async function sendEmail(to, code, type) {
       region: 'ap-hongkong'
     });
 
+    // 发件人：显示名默认 Demox，地址默认 demox 自有发信域；两者都可用环境变量覆盖以回退
+    // 回退老域：AUTH_EMAIL_FROM=noreply@mail.aigc.sx.cn
+    // 想关掉显示名只显示地址：AUTH_EMAIL_FROM_NAME=（空字符串）
+    const fromAddress = process.env.AUTH_EMAIL_FROM || 'noreply@mail.demox.site';
+    const fromName =
+      process.env.AUTH_EMAIL_FROM_NAME === undefined ? 'Demox' : process.env.AUTH_EMAIL_FROM_NAME;
+    const from = fromName ? `"${fromName}" <${fromAddress}>` : fromAddress;
+
     // 使用已审核通过的模板（模板ID: 137482）
     const result = await client.SendEmail({
-      FromEmailAddress: 'noreply@mail.aigc.sx.cn',
+      FromEmailAddress: from,
       Destination: [to],
       Subject: '【Demox】验证码',
       Template: {
