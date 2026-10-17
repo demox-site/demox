@@ -58,7 +58,7 @@ tccli scf GetFunction --FunctionName demox-function-api --Namespace demox --regi
 | EdgeOne | zone `demox.site`（`zone-3kplfkbflnd6`） |
 | COS | `resource-game-1307257815`（站点默认回源桶，成都）；`demox-analytics-raw-1307257815` |
 | CI | `resource-game-1307257815` 数据万象 |
-| SES | 发信域名 `mail.demox.site`（香港） |
+| SES | 发信域名 `mail.demox.site`（香港，DNS 四条验证记录已在，**尚未接入代码**）；当前生产实际用 `mail.aigc.sx.cn` 发信（`scf-deploy-packages/auth-api/index.cjs` 的 `sendEmail`，模板 137482） |
 | SSL | `*.demox.site` 泛域名证书；`api.demox.site` 所用证书 |
 | DNSPod | 域名 `demox.site` |
 | CDN | 历史域名 `demox.aigc.sx.cn`、`*.demox.aigc.sx.cn` |
