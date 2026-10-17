@@ -11,6 +11,7 @@ app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 
 - 角色信任条件：`oidc:sub = repo:demox-site/demox:environment:function-api-production`。不在这个 environment 里的 job（别的分支、PR、没批准的 run）都换不到密钥。
 - 权限策略 `demox-ci-deploy-policy`：只允许对带标签 `codename=demox` 的函数 `UpdateFunctionCode` / `PublishVersion` / `UpdateAlias` / 只读列表接口、读 `api.demox.site` 域名配置、往 `scf-deploy/ci/*` 上传包；显式 Deny `scf:Invoke`、`tag:*`、`GetFunction`、`UpdateFunctionConfiguration`、`UpdateFunction`、`scf:Create*` / `scf:Delete*`、触发器、域名修改、`cam:*`、`sts:*`。
 - `scf:Invoke` 是操作级接口，标签条件管不住（实测对无标签函数也能调用），所以策略 v2 去掉了 Invoke 并显式 Deny；健康检查只走公网 HTTPS。策略 v1（含 Invoke）保留为非默认版本，可 `SetDefaultPolicyVersion --VersionId 1` 恢复。
+- 三条发布路径的凭证现状、角色实际调用面、keep / 收窄清单见 [ci-cam-inventory.md](ci-cam-inventory.md)（2026-10-17 盘点）。该文不授权发布。
 
 ## 发布做什么
 
