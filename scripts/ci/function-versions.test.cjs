@@ -420,7 +420,7 @@ test('release log records versions, commit, sha256, approver, and time', () => {
 
 test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.1\.9 runtime=0\.1\.0/);
+  assert.match(plan, /demox-function-api app=0\.1\.10 runtime=0\.1\.0/);
   assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);
