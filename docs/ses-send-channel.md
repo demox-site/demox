@@ -21,7 +21,7 @@ FailedOperation.WithOutPermission  未开通自定义发送权限，必须使用
 | region | `ap-hongkong` |
 | 端点 | `ses.tencentcloudapi.com` |
 | 同账号其他发信身份 | `mail.aigc.sx.cn`（登录验证码在用，生产已验证） |
-| 模板 | `137482` 验证码（已通过）、`226011` Demox 站点停用通知（2026-10-17 提交，审核中） |
+| 模板 | `137482` 验证码（已通过，生产在用）、`226012` Demox 站点停用通知（2026-10-17 重建，审核中） |
 | 凭据 | 本机 `.workbuddy/ses-test.json`，**不入仓库**；建议用子账号，只给 `ses:SendEmail` / `ses:ListEmailIdentities` / `ses:GetEmailTemplate` |
 
 ## DNS（DNSPod，`mail` 子域）
@@ -31,12 +31,13 @@ FailedOperation.WithOutPermission  未开通自定义发送权限，必须使用
 | `mail` | MX | `1 mxbiz1.qq.com.` | **域名验证用，不是收信**。改了它 SES 发信域会掉验证 |
 | `mail` | TXT | `v=spf1 include:qcloudmail.com ~all` | SPF，发信源认证 |
 | `_dmarc.mail` | TXT | `v=DMARC1; p=none` | DMARC，观察模式 |
-| `qcloud._domainkey.mail` | TXT | （1024 位公钥） | DKIM，selector `qcloud` |
+| `qcloud._domainkey.mail` | TXT | （1024 位公钥） | DKIM，旧密钥 |
+| `qcloudhk2048._domainkey.mail` | TXT | （2048 位公钥） | DKIM，新密钥，`DKIMOption=2` |
 
 两条容易误判的地方：
 
 1. **SES 只发不收**。`mxbiz1.qq.com` 那条 MX 是验证记录，SES 没有信箱，往这个域发信不会有人收到。收信要另配（见 REQ-28）。
-2. **DKIM 是 1024 位**，因为发信域建在 2026-07-06 之前。想升 2048 位需要新增 `qcloudsg2048._domainkey.mail`，两把密钥可以并存，不是替换。腾讯云控制台可一键切换。
+2. **DKIM 现在是双密钥并存，2048 位已生效**。`GetEmailIdentity` 实测 `DKIMOption=2`，五条 Attributes 全部 `Status=true`，1024 与 2048 两把同时有效。香港区域的 2048 selector 是 **`qcloudhk2048`**，不是国内文档常写的 `qcloudsg2048`。旧记录里“建议切 2048”那句已过时。
 
 ## 两条发送路径
 
@@ -60,7 +61,7 @@ req.FromEmailAddress = "noreply@mail.demox.site"
 req.Destination = ["user@example.com"]
 req.Subject = "【Demox】站点 10086 已停用，可申诉"      # 主题不占模板，可自定义
 req.Template = {
-    "TemplateID": 226011,
+    "TemplateID": 226012,
     "TemplateData": json.dumps({"siteId": "10086", "siteName": "...", "reason": "...", "replyDays": "3"}, ensure_ascii=False),
 }
 req.ReplyToAddresses = "phosa@qq.com"                   # 申诉回信落点，见下
@@ -87,6 +88,8 @@ client.SendEmail(req)
 | `GetSendEmailStatus` 报 `取值类型错误，参数类型应为 string` | `MessageId` 传**字符串**，不是数组 |
 | `GetSendEmailStatus` 报 `请求缺少必传参数 Limit` / `RequestDate` | 三个都必传：`RequestDate`（`YYYY-MM-DD`）、`Limit`、`Offset` |
 | `AuthFailure.SecretIdNotFound` | 密钥被**删除或禁用**都会这么报，腾讯云故意不区分；换 region 试没用，是密钥本身的问题 |
+| 模板 `TemplateStatus=0`、`GetEmailTemplate` 内容完好，`SendEmail` 仍报 `InvalidTemplateID` | **审核结果没同步到发信侧**。实测这种状态下报的错与“根本不存在的模板 ID”一字不差。API 里没有任何启用/发布接口，等同步或重建模板 |
+| `ListEmailAddress` 报 `UnknownParameter 未定义参数 Imit` | 服务端把 `Limit` 解析成了 `Imit`，SDK 3.1.135 仍复现。这个接口当前不可用，绕开 |
 
 `TemplateStatus`：`0` 通过、`1` 审核中（`2` 拒绝、`3` 待提交）。
 
@@ -110,9 +113,21 @@ DeliverTime    22:51:16
 
 结论：发信域、SPF、DKIM、DMARC 这条链路是通的，**域配置不需要再动**。
 
+## Reply-To 实测（2026-10-17 23:03）
+
+一封借用验证码模板的信，`From: noreply@mail.demox.site` + `ReplyToAddresses: phosa@qq.com`，在 QQ 邮箱里点“回复”，收件人栏确实是 `phosa@qq.com` —— **Reply-To 生效**。
+
+但这条不能当成 100% 保证：
+
+- Reply-To 是 RFC 5322 的标准头，主流客户端（QQ 邮箱、Gmail、Outlook）都遵守，但**不是协议强制**。少数老客户端或企业客户端会忽略它、直接回 `From`
+- 忽略 Reply-To 时，回复会发到 `noreply@mail.demox.site`。而 **SES 只发不收**，这封信会被退，且退给发信人，我们这边看不到 —— **静默失败**
+- 跨组织域的 Reply-To（`mail.demox.site` → `qq.com`）在部分反垃圾规则里是负面信号，影响进箱率
+
+所以 Reply-To 指个人邮箱只适合过渡。终局是收信子域建好后，正文写 `appeal@...` 且 Reply-To 同主域，双保险——正文加邮箱需要模板重新送审，等 REQ-28 定了再一次性改。
+
 ## 未完成
 
-- 模板 `226011` 待审核（2026-10-17 周六提交，最早 2026-10-19 周一）
+- 模板 `226012` 审核中（2026-10-17 周六重建，最早 2026-10-19 周一）。前一条 `226011` 的情况值得记下：`TemplateStatus=0`、控制台也显示审核通过、确认没有启用开关，但发送侧始终报 `InvalidTemplateID`，报错与“根本不存在的模板 ID”完全一致，已删除重建。**226012 通过后第一件事是实发验证**——能用说明是审核结果同步问题，仍不能用则是账号级问题，直接提工单
 - 「自定义发送」权限未申请。申请则不再受模板审批约束，但腾讯云要求说明业务场景与发信量级，个人主体未必能过
 - 发信代码仍指向 `noreply@mail.aigc.sx.cn` + 模板 `137482`，切到 demox 需改代码（发件地址、模板号读环境变量，禁止硬编码）。见 `docs/tencent-cloud.md`、REQ-26
 - 收信链路未定，见 REQ-28
