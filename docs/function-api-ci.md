@@ -46,3 +46,29 @@ push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AU
 6. HTTP 触发器 `3imzoal5x9`（`$LATEST`，曾用 `https://1307257815-3imzoal5x9.ap-guangzhou.tencentscf.com`）是正在拆除的旁路：平台不能把 HTTP 触发器的 Qualifier 从 `$LATEST` 改走，因此只 `DeleteTrigger`，不重建、不改绑到别名。`https://api.demox.site` 与 production HTTP `3y2j2hgctz` 都不依赖它。已停用的 `scripts/deploy-function-api.mjs` 里 `fallbackPublicBaseUrl` 改为 `https://api.demox.site`。本步骤不执行删除。
 7. 不需要配腾讯云 secrets（OIDC，见上）。`demox-function-api`、`demox-user-nodejs` 必须带标签 `codename=demox`（已带）。
 8. 手动跑一次 `action=plan`（同样要在 environment 里批准），全绿后再 `action=deploy`。第一次 plan 也是 OIDC 正向验证：日志里应出现“已通过 OIDC 扮演 …demox-ci-deploy”。
+
+## 双账号发布（REQ-7 双发，2026-10-20）
+
+api.demox.site 走 EdgeOne 源站组：**易点**（UIN 100052992193，主源站 og-3wbc6x4y03bk，入口是 demox-function-api 的 HTTP 触发器）
+和 **磷**（UIN 100021031865，备源站 og-3wbc6yrrll1l，入口是 SCF 自定义域名）。之前 CI 只发 磷，主源站代码会漂移。
+
+- 开关：仓库变量 `DEMOX_EK_ENABLED=true`。不设时 workflow 与改动前完全一样（只发 磷）。
+- 易点 变量（都不是密钥）：`DEMOX_EK_ROLE_ARN`（qcs::cam::uin/100052992193:roleName/demox-ci-deploy）、
+  `DEMOX_EK_COS_BUCKET`（demox-deploy-gz-1490780430）、`DEMOX_EK_COS_REGION`（ap-guangzhou）、
+  `DEMOX_EK_COS_ACCELERATE`（桶开了全球加速后再设 true）、`FUNCTION_API_DEVELOP_URL_EK`（易点 develop 别名的 HTTP 触发器地址）。
+- 易点 角色 demox-ci-deploy：信任同一 GitHub OIDC（sub=repo:demox-site/demox:environment:function-api-production），
+  权限与 磷 289081060 v4 相同（只限 namespace/demox/function/demox-function-api，要求 codename=demox 标签；COS 只限 scf-deploy/ci/*）。
+- 顺序：磷（备）先、易点（主）后。stage 把同一个包（同一 key）传到两边的桶；deploy-develop 两边各发一个版本（版本号各自独立）；
+  promote 需要 `version`（磷）+ `version_ek`（易点）：磷先切（不做公网复查）→ 易点切 → api.demox.site 公网复查（3 次重试）→
+  失败则易点自动切回、再把 磷 切回。rollback 同样两边都切。双账号下不允许 action=deploy（含 push 自动发布）。
+
+### 易点一次性迁移（开 DEMOX_EK_ENABLED 之前必须做；CI 角色不能做，Create* 显式 Deny）
+
+现状（2026-10-20）：易点 demox-function-api 只有 $LATEST，HTTP 触发器 bbo9o057mh 在 $LATEST 上，EO 主源站直连它。
+不迁移就发布 = UpdateFunctionCode 立即切主源站流量，所以脚本在 http-trigger 模式下会拒绝。
+
+1. PublishVersion（当前 $LATEST，即 磷 v17 同一个包）→ 建别名 production、develop 指向它。
+2. 在别名 production 上建 HTTP 触发器（EO 源站用），在 develop 上建 HTTP 触发器（健康检查用，写进 FUNCTION_API_DEVELOP_URL_EK）。
+3. 把 EO 源站组 og-3wbc6x4y03bk 的源站地址改成 production 别名触发器域名（只改地址，**不改主备顺序**），验证后删掉 $LATEST 上的触发器。
+4. 定时触发器（monthly-renew / analytics-rollup-5m，目前 Enable=0）保持关闭或改到 production；不要两边同时开。
+5. 打开 DEMOX_EK_ENABLED，跑 action=plan 两边都应通过。
