@@ -40,6 +40,8 @@ import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import FunctionsPage from "./pages/console/FunctionsPage";
+import ProjectFunctionsPage from "./pages/console/ProjectFunctionsPage";
+import ProjectDatabasePage from "./pages/console/ProjectDatabasePage";
 import UsagePage from "./pages/console/UsagePage";
 import SiteSettingsPage from "./pages/console/SiteSettingsPage.jsx";
 
@@ -168,6 +170,14 @@ const App: React.FC = () => {
                     <Route
                       path="projects/:projectId/sites"
                       element={<SitesPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/functions"
+                      element={<ProjectFunctionsPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/database"
+                      element={<ProjectDatabasePage />}
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId/analytics"
