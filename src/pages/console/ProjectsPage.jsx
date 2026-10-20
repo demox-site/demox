@@ -39,7 +39,7 @@ export default function ProjectsPage() {
 
   const openProject = (project) => {
     if (!project?.id) return;
-    navigate(`/console/projects/${project.id}/sites`);
+    navigate(`/console/projects/${project.id}/overview`);
   };
 
   const handleCreateOpenChange = (open) => {
@@ -53,7 +53,7 @@ export default function ProjectsPage() {
     const project = await projects.createProject();
     if (project) {
       setCreateOpen(false);
-      navigate(`/console/projects/${project.id}/sites`);
+      navigate(`/console/projects/${project.id}/overview`);
     }
   };
 

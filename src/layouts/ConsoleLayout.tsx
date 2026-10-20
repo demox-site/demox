@@ -61,6 +61,7 @@ const navTexts = {
     groupAccount: "账户",
     groupGlobal: "全局",
     projects: "项目",
+    overview: "概览",
     sites: "站点",
     functions: "函数",
     database: "数据库",
@@ -91,6 +92,7 @@ const navTexts = {
     groupAccount: "Account",
     groupGlobal: "Global",
     projects: "Projects",
+    overview: "Overview",
     sites: "Sites",
     functions: "Functions",
     database: "Database",
@@ -225,17 +227,22 @@ export const ConsoleLayout: React.FC = () => {
   useEffect(() => {
     if (!isLoggedIn()) return;
     let alive = true;
-    websiteApi
-      .listProjects()
-      .then((res) => {
-        if (!alive || !res?.success) return;
-        setProjects((res.projects || []).map(normalizeProject).filter((p) => p.id));
-      })
-      .catch((error) => {
-        console.warn("Load console projects failed:", error);
-      });
+    const load = () => {
+      websiteApi
+        .listProjects()
+        .then((res) => {
+          if (!alive || !res?.success) return;
+          setProjects((res.projects || []).map(normalizeProject).filter((p) => p.id));
+        })
+        .catch((error) => {
+          console.warn("Load console projects failed:", error);
+        });
+    };
+    load();
+    window.addEventListener("demox-projects-changed", load);
     return () => {
       alive = false;
+      window.removeEventListener("demox-projects-changed", load);
     };
   }, [location.pathname]);
 
@@ -258,16 +265,18 @@ export const ConsoleLayout: React.FC = () => {
     /^\/console\/projects\/([^/]+)\/sites\/([^/]+)(?:\/([^/]+))?\/?$/
   );
   const projectMatch = location.pathname.match(
-    /^\/console\/projects\/([^/]+)\/(deploy|sites|functions|database|members|settings)(?:\/|$)/
+    /^\/console\/projects\/([^/]+)\/(deploy|sites|functions|database|members|settings|overview)(?:\/|$)/
   );
   const currentProjectId = siteMatch?.[1] || projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
   const currentWebsiteId = siteMatch?.[2] || "";
   const inSiteWorkspace = Boolean(currentProjectId && currentWebsiteId);
   const inProjectWorkspace = !!currentProjectId;
+  const overviewPath = currentProjectId ? `/console/projects/${currentProjectId}/overview` : "";
   const sitesPath = currentProjectId ? `/console/projects/${currentProjectId}/sites` : "";
   const functionsPath = currentProjectId ? `/console/projects/${currentProjectId}/functions` : "";
   const databasePath = currentProjectId ? `/console/projects/${currentProjectId}/database` : "";
+  const projectSettingsPath = currentProjectId ? `/console/projects/${currentProjectId}/settings` : "";
   const onProjectFunctions = Boolean(
     functionsPath &&
       (location.pathname === functionsPath ||
@@ -300,6 +309,12 @@ export const ConsoleLayout: React.FC = () => {
   const projectNav: NavItem[] = currentProjectId
     ? [
         {
+          key: "overview",
+          path: overviewPath,
+          label: t.overview,
+          icon: LayoutDashboard
+        },
+        {
           key: "sites",
           path: sitesPath,
           label: t.sites,
@@ -316,6 +331,12 @@ export const ConsoleLayout: React.FC = () => {
           path: databasePath,
           label: t.database,
           icon: Database
+        },
+        {
+          key: "project-settings",
+          path: projectSettingsPath,
+          label: t.projectSettings,
+          icon: Settings
         }
       ]
     : [];
@@ -351,6 +372,8 @@ export const ConsoleLayout: React.FC = () => {
   ];
 
   const isActive = (path: string, key = "") => {
+    if (key === "overview") return location.pathname === path || location.pathname === `${path}/`;
+    if (key === "project-settings") return location.pathname === path || location.pathname === `${path}/`;
     if (key === "sites") return onProjectSites;
     if (key === "site-settings") return inSiteSettings;
     if (key === "functions") return onProjectFunctions;
@@ -371,7 +394,8 @@ export const ConsoleLayout: React.FC = () => {
         ? "database"
         : currentProjectSection === "members" ||
             currentProjectSection === "deploy" ||
-            currentProjectSection === "settings"
+            currentProjectSection === "settings" ||
+            currentProjectSection === "overview"
           ? currentProjectSection
           : "sites";
     navigate(`/console/projects/${projectId}/${section}`);
