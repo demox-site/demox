@@ -37,6 +37,7 @@ import SitesPage from "./pages/console/SitesPage.jsx";
 import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
 import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
+import ProjectOverviewPage from "./pages/console/ProjectOverviewPage";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import FunctionsPage from "./pages/console/FunctionsPage";
@@ -167,6 +168,10 @@ const App: React.FC = () => {
                   <Route path="/console" element={<ConsoleLayout />}>
                     <Route index element={<Navigate to="/console/projects" replace />} />
                     <Route path="projects" element={<ProjectsPage />} />
+                    <Route
+                      path="projects/:projectId/overview"
+                      element={<ProjectOverviewPage />}
+                    />
                     <Route
                       path="projects/:projectId/deploy"
                       element={<Home />}
