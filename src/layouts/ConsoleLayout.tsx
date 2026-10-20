@@ -47,13 +47,10 @@ import {
   KeyRound,
   Gauge,
   ShieldCheck,
-  UploadCloud,
   FolderKanban,
   ArrowLeft,
-  UsersRound,
-  Settings2,
-  BarChart3,
-  Code2
+  Code2,
+  Database
 } from "lucide-react";
 
 const navTexts = {
@@ -63,9 +60,9 @@ const navTexts = {
     groupAccount: "账户",
     groupGlobal: "全局",
     projects: "项目",
-    deploy: "部署新站点",
-    sites: "我的站点",
-    members: "成员",
+    sites: "站点",
+    functions: "函数",
+    database: "数据库",
     projectSettings: "项目设置",
     usage: "用量套餐",
     tokens: "访问令牌",
@@ -82,12 +79,7 @@ const navTexts = {
     noProjects: "暂无项目",
     logout: "退出登录",
     backHome: "返回首页",
-    backMainMenu: "返回主菜单",
-    groupSite: "站点",
-    siteSettings: "站点设置",
-    siteFunctions: "云函数",
-    siteAnalytics: "访问分析",
-    backSites: "返回站点列表"
+    backMainMenu: "返回主菜单"
   },
   en: {
     groupConsole: "Console",
@@ -95,9 +87,9 @@ const navTexts = {
     groupAccount: "Account",
     groupGlobal: "Global",
     projects: "Projects",
-    deploy: "Deploy New Site",
-    sites: "My Sites",
-    members: "Members",
+    sites: "Sites",
+    functions: "Functions",
+    database: "Database",
     projectSettings: "Project Settings",
     usage: "Usage & Plan",
     tokens: "Access Tokens",
@@ -114,12 +106,7 @@ const navTexts = {
     noProjects: "No projects",
     logout: "Log out",
     backHome: "Home",
-    backMainMenu: "Back to menu",
-    groupSite: "Site",
-    siteSettings: "Site settings",
-    siteFunctions: "Functions",
-    siteAnalytics: "Analytics",
-    backSites: "Back to sites"
+    backMainMenu: "Back to menu"
   }
 } as const;
 
@@ -264,13 +251,32 @@ export const ConsoleLayout: React.FC = () => {
     /^\/console\/projects\/([^/]+)\/sites\/([^/]+)(?:\/([^/]+))?\/?$/
   );
   const projectMatch = location.pathname.match(
-    /^\/console\/projects\/([^/]+)\/(deploy|sites|members|settings)(?:\/|$)/
+    /^\/console\/projects\/([^/]+)\/(deploy|sites|functions|database|members|settings)(?:\/|$)/
   );
   const currentProjectId = siteMatch?.[1] || projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
   const currentWebsiteId = siteMatch?.[2] || "";
   const inSiteWorkspace = Boolean(currentProjectId && currentWebsiteId);
   const inProjectWorkspace = !!currentProjectId;
+  const sitesPath = currentProjectId ? `/console/projects/${currentProjectId}/sites` : "";
+  const functionsPath = currentProjectId ? `/console/projects/${currentProjectId}/functions` : "";
+  const databasePath = currentProjectId ? `/console/projects/${currentProjectId}/database` : "";
+  const onProjectFunctions = Boolean(
+    functionsPath &&
+      (location.pathname === functionsPath ||
+        location.pathname.startsWith(`${functionsPath}/`) ||
+        /\/sites\/[^/]+\/functions(?:\/|$)/.test(location.pathname))
+  );
+  const onProjectDatabase = Boolean(
+    databasePath &&
+      (location.pathname === databasePath || location.pathname.startsWith(`${databasePath}/`))
+  );
+  const onProjectSites = Boolean(
+    sitesPath &&
+      (location.pathname === sitesPath ||
+        location.pathname === `${sitesPath}/` ||
+        (inSiteWorkspace && !onProjectFunctions))
+  );
   const currentProject = projects.find((p) => p.id === currentProjectId || p.numericId === currentProjectId) || null;
   const currentSelectProjectId = currentProject?.id || currentProjectId;
 
@@ -283,48 +289,22 @@ export const ConsoleLayout: React.FC = () => {
   const projectNav: NavItem[] = currentProjectId
     ? [
         {
-          key: "deploy",
-          path: `/console/projects/${currentProjectId}/deploy`,
-          label: t.deploy,
-          icon: UploadCloud
-        },
-        {
           key: "sites",
-          path: `/console/projects/${currentProjectId}/sites`,
+          path: sitesPath,
           label: t.sites,
           icon: Globe
         },
         {
-          key: "members",
-          path: `/console/projects/${currentProjectId}/members`,
-          label: t.members,
-          icon: UsersRound
-        }
-      ]
-    : [];
-
-  const siteBasePath = inSiteWorkspace
-    ? `/console/projects/${currentProjectId}/sites/${currentWebsiteId}`
-    : "";
-  const siteNav: NavItem[] = inSiteWorkspace
-    ? [
-        {
-          key: "site-settings",
-          path: siteBasePath,
-          label: t.siteSettings,
-          icon: Settings2
-        },
-        {
-          key: "site-functions",
-          path: `${siteBasePath}/functions`,
-          label: t.siteFunctions,
+          key: "functions",
+          path: functionsPath,
+          label: t.functions,
           icon: Code2
         },
         {
-          key: "site-analytics",
-          path: `${siteBasePath}/analytics`,
-          label: t.siteAnalytics,
-          icon: BarChart3
+          key: "database",
+          path: databasePath,
+          label: t.database,
+          icon: Database
         }
       ]
     : [];
@@ -348,11 +328,11 @@ export const ConsoleLayout: React.FC = () => {
     { key: "gallery", path: "/console/admin/gallery", label: t.adminGallery }
   ];
 
-  const isActive = (path: string) => {
-    if (
-      path === siteBasePath ||
-      path === `/console/projects/${currentProjectId}/sites`
-    ) {
+  const isActive = (path: string, key = "") => {
+    if (key === "sites") return onProjectSites;
+    if (key === "functions") return onProjectFunctions;
+    if (key === "database") return onProjectDatabase;
+    if (path === `/console/projects/${currentProjectId}/sites`) {
       return location.pathname === path || location.pathname === `${path}/`;
     }
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
@@ -362,17 +342,22 @@ export const ConsoleLayout: React.FC = () => {
 
   const handleSwitchProject = (projectId: string) => {
     if (!projectId || projectId === currentProjectId) return;
-    if (inSiteWorkspace) {
-      navigate(`/console/projects/${projectId}/sites`);
-      return;
-    }
-    navigate(`/console/projects/${projectId}/${currentProjectSection}`);
+    const section = onProjectFunctions
+      ? "functions"
+      : onProjectDatabase
+        ? "database"
+        : currentProjectSection === "members" ||
+            currentProjectSection === "deploy" ||
+            currentProjectSection === "settings"
+          ? currentProjectSection
+          : "sites";
+    navigate(`/console/projects/${projectId}/${section}`);
   };
 
   const renderItem = (item: NavItem) => {
     if (item.adminOnly && !isAdmin) return null;
     const Icon = item.icon;
-    const active = item.key === "backMainMenu" ? false : isActive(item.path);
+    const active = item.key === "backMainMenu" ? false : isActive(item.path, item.key);
     return (
       <SidebarMenuItem key={item.key}>
         <SidebarMenuButton
@@ -407,7 +392,7 @@ export const ConsoleLayout: React.FC = () => {
             {adminSubNav.map((s) => (
               <SidebarMenuSubItem key={s.key}>
                 <SidebarMenuSubButton
-                  isActive={isActive(s.path)}
+                  isActive={isActive(s.path, s.key)}
                   onClick={() => navigate(s.path)}
                   className="cursor-pointer"
                 >
@@ -440,29 +425,7 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarHeader>
 
         <SidebarContent>
-          {inSiteWorkspace ? (
-            <>
-              <SidebarGroup>
-                <SidebarGroupLabel>{t.groupSite}</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>{siteNav.map(renderItem)}</SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-
-              <SidebarGroup className="pt-5">
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {renderItem({
-                      key: "backSites",
-                      path: `/console/projects/${currentProjectId}/sites`,
-                      label: t.backSites,
-                      icon: ArrowLeft
-                    })}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            </>
-          ) : inProjectWorkspace ? (
+          {inProjectWorkspace ? (
             <>
               <SidebarGroup>
                 <SidebarGroupLabel>{t.groupProject}</SidebarGroupLabel>
