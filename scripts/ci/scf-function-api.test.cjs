@@ -802,3 +802,34 @@ test('releasePromote: missing metadata does not switch production; success appen
   assert.equal(record.version, '4');
   fs.rmSync(logFile, { force: true });
 });
+
+// REQ-7 双发：易点入口是 HTTP 触发器（EO 主源站直连），必须在别名上才允许发布。
+test('http-trigger mode: refuses HTTP trigger on $LATEST, passes on production alias, skips custom domain', () => {
+  const aliases = [{ Name: 'production', FunctionVersion: '1' }, { Name: 'develop', FunctionVersion: '1' }];
+  const http = (q) => ({ Type: 'http', TriggerName: 'bbo9o057mh', Enable: 1, Qualifier: q });
+  const bad = checkPreconditions({ fn: { Status: 'Active', Triggers: [http('$LATEST')] }, domain: null, aliases, developBaseUrl: DEV, entryMode: 'http-trigger' });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.errors.some((e) => e.includes('EO 主源站')));
+  const none = checkPreconditions({ fn: { Status: 'Active', Triggers: [] }, domain: null, aliases, developBaseUrl: DEV, entryMode: 'http-trigger' });
+  assert.ok(none.errors.some((e) => e.includes('没有启用的 HTTP 触发器')));
+  const ok = checkPreconditions({ fn: { Status: 'Active', Triggers: [http('production'), { ...http('develop'), TriggerName: 'dev' }] }, domain: null, aliases, developBaseUrl: DEV, entryMode: 'http-trigger' });
+  assert.equal(ok.ok, true, ok.errors.join('; '));
+  const weird = checkPreconditions({ fn: { Status: 'Active', Triggers: [] }, domain: null, aliases, developBaseUrl: DEV, entryMode: 'nope' });
+  assert.ok(weird.errors.some((e) => e.includes('DEMOX_ENTRY_MODE')));
+});
+
+test('validateCosTarget accepts only 磷 / 易点 APPIDs', () => {
+  const { validateCosTarget } = require('./scf-function-api.cjs');
+  assert.doesNotThrow(() => validateCosTarget('demox-deploy-gz-1490780430', 'ap-guangzhou'));
+  assert.doesNotThrow(() => validateCosTarget('demox-deploy-gz-1307257815', 'ap-guangzhou'));
+  assert.throws(() => validateCosTarget('demox-deploy-gz-1234567890', 'ap-guangzhou'), /桶名不合法/);
+});
+
+test('publicCheck skip=true does not probe', async () => {
+  let calls = 0;
+  const d = createDeployer({ scf: {}, fetchImpl: async () => { calls += 1; return { status: 500 }; }, log: quiet, wait: async () => {} });
+  assert.equal(await d.publicCheck({ skip: true }), true);
+  assert.equal(calls, 0);
+  assert.equal(await d.publicCheck({ skip: false, attempts: 1 }), false);
+  assert.ok(calls >= 1);
+});

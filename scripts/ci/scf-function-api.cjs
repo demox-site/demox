@@ -70,6 +70,14 @@ const CONFIG = Object.freeze({
   cosAccelerateRaw: process.env.DEMOX_COS_ACCELERATE || '',
   cosPrefix: 'scf-deploy/ci/',
   publicBaseUrl: 'https://api.demox.site',
+  // 双账号发布（REQ-7 双发）：同一脚本分别对 磷（custom-domain：api.demox.site 走 SCF 自定义域名）
+  // 和 易点（http-trigger：EO 主源站直连函数 HTTP 触发器）各跑一遍。target 只用于日志/summary。
+  target: process.env.DEMOX_TARGET || 'lin',
+  entryMode: process.env.DEMOX_ENTRY_MODE || 'custom-domain',
+  // 只接受这两个账号的 APPID 作为部署桶后缀（磷 1307257815 / 易点 1490780430）。
+  cosAppids: ['1307257815', '1490780430'],
+  // =1 时 promote/rollback 不做 api.demox.site 公网复查（双发时先切的备源站账号用；复查放在主源站切完之后）。
+  skipPublicCheck: ['1', 'true'].includes(String(process.env.DEMOX_SKIP_PUBLIC_CHECK || '').toLowerCase()),
   oidcProviderId: 'github-actions',
   oidcAudience: 'sts.tencentcloudapi.com'
 });
@@ -145,7 +153,7 @@ async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fet
 }
 
 /** 只读前置检查。fn = { Status, Triggers }（来自 ListVersionByFunction + ListTriggers，不用 GetFunction）。 */
-function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
+function checkPreconditions({ fn, domain, aliases, developBaseUrl, entryMode = CONFIG.entryMode }) {
   const errors = [];
   const warnings = [];
   if (!fn) errors.push(`${CONFIG.functionName} 不存在`);
@@ -158,17 +166,28 @@ function checkPreconditions({ fn, domain, aliases, developBaseUrl }) {
   if (!production) errors.push(`别名 ${CONFIG.alias} 不存在（需先做一次性迁移）`);
   else if (production.FunctionVersion === '$LATEST') errors.push(`别名 ${CONFIG.alias} 指向 $LATEST，必须指向固定版本`);
 
-  const endpoints = ((domain && domain.EndpointsConfig) || []).filter((item) => item.FunctionName === CONFIG.functionName);
-  if (!endpoints.length) errors.push(`${CONFIG.domain} 上没有指向 ${CONFIG.functionName} 的入口`);
-  const onLatest = endpoints.filter((item) => item.Qualifier !== CONFIG.alias);
-  if (onLatest.length) {
-    errors.push(`${CONFIG.domain} 有 ${onLatest.length} 个入口不在别名 ${CONFIG.alias} 上（如 ${onLatest[0].PathMatch} → ${onLatest[0].Qualifier}）；更新代码会直接切流量`);
+  if (entryMode === 'http-trigger') {
+    // 易点：EO 主源站直接打函数 HTTP 触发器。所有启用的 HTTP 触发器都必须在别名 production 上，
+    // 否则 UpdateFunctionCode 会让主源站立刻拿到新代码（不经 develop 验证）。
+    const http = ((fn && fn.Triggers) || []).filter((t) => t.Type === 'http' && Number(t.Enable) === 1);
+    if (!http.length) errors.push(`${CONFIG.functionName} 没有启用的 HTTP 触发器（EO 源站入口）`);
+    const off = http.filter((t) => t.Qualifier !== CONFIG.alias && t.Qualifier !== CONFIG.stagingAlias);
+    if (off.length) errors.push(`HTTP 触发器 ${off[0].TriggerName} 绑定在 ${off[0].Qualifier}，不在别名 ${CONFIG.alias}/${CONFIG.stagingAlias} 上；更新代码会直接切 EO 主源站流量（需先做一次性迁移）`);
+  } else if (entryMode === 'custom-domain') {
+    const endpoints = ((domain && domain.EndpointsConfig) || []).filter((item) => item.FunctionName === CONFIG.functionName);
+    if (!endpoints.length) errors.push(`${CONFIG.domain} 上没有指向 ${CONFIG.functionName} 的入口`);
+    const onLatest = endpoints.filter((item) => item.Qualifier !== CONFIG.alias);
+    if (onLatest.length) {
+      errors.push(`${CONFIG.domain} 有 ${onLatest.length} 个入口不在别名 ${CONFIG.alias} 上（如 ${onLatest[0].PathMatch} → ${onLatest[0].Qualifier}）；更新代码会直接切流量`);
+    }
+  } else {
+    errors.push(`DEMOX_ENTRY_MODE 不合法：${entryMode}（只接受 custom-domain / http-trigger）`);
   }
   for (const trigger of (fn && fn.Triggers) || []) {
     if (trigger.Type === 'timer' && Number(trigger.Enable) === 1 && trigger.Qualifier !== CONFIG.alias) {
       errors.push(`定时触发器 ${trigger.TriggerName} 绑定在 ${trigger.Qualifier}，不在别名 ${CONFIG.alias} 上`);
     }
-    if (trigger.Type === 'http' && trigger.Qualifier === '$LATEST') {
+    if (entryMode !== 'http-trigger' && trigger.Type === 'http' && trigger.Qualifier === '$LATEST') {
       warnings.push(`HTTP 触发器 ${trigger.TriggerName} 在 $LATEST 上：直接请求触发器地址会先拿到新代码（api.demox.site 不受影响）`);
     }
   }
@@ -192,7 +211,8 @@ const UPLOAD = Object.freeze({
 
 /** 桶名必须带 APPID 后缀，地域必须是 ap-xxx；不合法直接拒绝（防止 vars 写错把包传到别处）。 */
 function validateCosTarget(bucket = CONFIG.cosBucket, region = CONFIG.cosRegion) {
-  if (!/^[a-z0-9][a-z0-9-]{0,48}-1307257815$/.test(String(bucket))) throw new Error(`COS 桶名不合法：${bucket}（只接受本账号 APPID 1307257815 的桶：<name>-1307257815）`);
+  const m = /^[a-z0-9][a-z0-9-]{0,48}-(\d+)$/.exec(String(bucket));
+  if (!m || !CONFIG.cosAppids.includes(m[1])) throw new Error(`COS 桶名不合法：${bucket}（只接受 磷 1307257815 / 易点 1490780430 的桶：<name>-<APPID>）`);
   if (!/^ap-[a-z]+(?:-[a-z]+)*$/.test(String(region))) throw new Error(`COS 地域不合法：${region}`);
   return { bucket, region };
 }
@@ -232,7 +252,7 @@ function cosClientOptions(cred, { accelerate = false } = {}) {
   return options;
 }
 
-function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = console.log, wait = sleep, summary = () => {}, output = () => {}, developBaseUrl = '', uploadOptions = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const upload = { ...UPLOAD, ...uploadOptions };
   const developUrl = String(developBaseUrl || '').replace(/\/+$/, '');
   const base = { FunctionName: CONFIG.functionName, Namespace: CONFIG.namespace };
@@ -247,7 +267,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     const [status, triggerList, domain, aliasList] = await Promise.all([
       versionStatus(CONFIG.functionName),
       scf.ListTriggers({ ...base, Limit: 100 }),
-      scf.GetCustomDomain({ Domain: CONFIG.domain }),
+      CONFIG.entryMode === 'custom-domain' ? scf.GetCustomDomain({ Domain: CONFIG.domain }) : Promise.resolve(null),
       scf.ListAliases({ ...base })
     ]);
     const fn = status === null ? null : { Status: status, Triggers: triggerList.Triggers || [] };
@@ -257,7 +277,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   async function plan() {
     const state = await readState();
     const result = checkPreconditions(state);
-    log(`函数 ${CONFIG.functionName}: $LATEST ${state.fn ? state.fn.Status : '不存在'}，触发器 ${state.fn ? state.fn.Triggers.length : 0} 个`);
+    log(`[${CONFIG.target}] 函数 ${CONFIG.functionName}: $LATEST ${state.fn ? state.fn.Status : '不存在'}，触发器 ${state.fn ? state.fn.Triggers.length : 0} 个`);
     log(`别名 ${CONFIG.alias}: ${result.productionVersion || '（不存在）'}`);
     for (const w of result.warnings) log(`::warning::${w}`);
     for (const e of result.errors) log(`::error::${e}`);
@@ -342,7 +362,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
    * 任何一次状态码落在该探测原来的 expect 里即通过，不再打后续次数；三次都失败才返回 false。
    * 日志一行：探测名、第几次、状态码、耗时。不打响应体、请求头、cookie、token 或 uid。
    */
-  async function publicCheck({ attempts = PUBLIC_PROBE.attempts, gapMs = PUBLIC_PROBE.gapMs, timeoutMs = PUBLIC_PROBE.timeoutMs } = {}) {
+  async function publicCheck({ attempts = PUBLIC_PROBE.attempts, gapMs = PUBLIC_PROBE.gapMs, timeoutMs = PUBLIC_PROBE.timeoutMs, skip = CONFIG.skipPublicCheck } = {}) {
+    if (skip) { log(`[${CONFIG.target}] 跳过 ${CONFIG.publicBaseUrl} 公网复查（DEMOX_SKIP_PUBLIC_CHECK=1：主源站账号切完后统一复查）`); return true; }
     for (const check of PUBLIC_CHECKS) {
       let passed = false;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -637,7 +658,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     await pointAlias(CONFIG.alias, version);
     log(`别名 ${CONFIG.alias}: v${current} → v${version}`);
     if (!(await publicCheck())) throw new Error('回滚后公网复查失败，请人工检查');
-    summary(`- 已回滚 production：v${current} → v${version}`);
+    summary(`- [${CONFIG.target}] 已回滚 production：v${current} → v${version}`);
     return { previous: current, version: String(version) };
   }
 
@@ -682,7 +703,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
       throw new Error(`v${version} 健康检查失败（${failures.join(', ')}），develop 已切回 v${developBefore}，production 未动`);
     }
     log(`别名 ${CONFIG.stagingAlias}: v${developBefore} → v${version}；production 仍是 v${pre.productionVersion}（未改动）`);
-    summary(`- develop → **v${version}**（包 \`${key}\` sha256 ${sha256}）；production 仍是 v${pre.productionVersion}。上线：action=promote version=${version}`);
+    output('version', version);
+    summary(`- [${CONFIG.target}] develop → **v${version}**（包 \`${key}\` sha256 ${sha256}）；production 仍是 v${pre.productionVersion}。上线：action=promote version=${version}`);
     return { version, developBefore, production: pre.productionVersion };
   }
 
@@ -703,7 +725,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
       await pointAlias(CONFIG.alias, previous);
       throw new Error(`公网复查失败，已自动切回 v${previous}`);
     }
-    summary(`- production：v${previous} → **v${v}**（回滚：action=rollback version=${previous}）`);
+    summary(`- [${CONFIG.target}] production：v${previous} → **v${v}**（回滚：action=rollback version=${previous}）`);
+    output('previous', previous); output('version', v);
     return { previous, version: v };
   }
 
@@ -802,7 +825,10 @@ async function cli(argv = process.argv.slice(2)) {
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
   if (accelerate) summary(`- COS 上传走全球加速：\`${cosUploadEndpoint({ accelerate })}\``);
-  const deployer = createDeployer({ ...(await createClients(process.env, { accelerate })), summary, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
+  const outputFile = process.env.GITHUB_OUTPUT;
+  const output = (k, v) => { if (outputFile && /^[a-z_]+$/.test(k) && /^[\w.$-]*$/.test(String(v))) fs.appendFileSync(outputFile, `${k}=${v}\n`); };
+  console.log(`发布目标：${CONFIG.target}（入口 ${CONFIG.entryMode}）`);
+  const deployer = createDeployer({ ...(await createClients(process.env, { accelerate })), summary, output, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
   if (command === 'plan') {
     const result = await deployer.plan();
     if (!result.ok) process.exitCode = 1;
