@@ -23,7 +23,7 @@ app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 
 4. `PublishVersion` → 新版本 N。
 5. 别名 `develop` 指向 N，经 develop 的公网 HTTPS 地址（仓库变量 `FUNCTION_API_DEVELOP_URL`）检查：`GET /health` 200、`GET /` 401、`OPTIONS /auth/login` 200/204（最多 4 轮，间隔 10 秒）。任一失败就把 develop 切回原版本并停，**production 不动**。不调用 `scf:Invoke`。
 6. `production` 别名指向 N。
-7. 公网复查 `https://api.demox.site/health`、`/`（3 轮，间隔 20 秒）。失败自动把 production 切回发布前的版本。
+7. 公网复查 `https://api.demox.site/health`（必须 200）、`/`（必须 401）。每个探测最多 3 次，间隔 5 秒，单次超时 15 秒；任何一次状态码命中原期望即通过，三次都失败才把 production 切回发布前的版本。不读返回体，不把 522、其它状态码或超时当成通过。
 8. 可选 `with_runtime`：同一个包更新 `demox-user-nodejs`。它没有别名（路由用 `$LATEST` 触发器地址调用），所以先发一个快照版本作为回滚点，更新后公网复查，失败就把快照版本的代码装回去。
 
 push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AUTO_DEPLOY=true` 时才自动发布。这个变量当前没有设置，所以合并到 master **不会**自动发布。要上线时手动按顺序：`stage`（只打包上传 COS）→ `deploy-develop`（只切 develop）→ 在 develop 上验证 → `promote`（只切 production）。`plan` / `deploy` / `rollback` 仍是手动入口。`concurrency: deploy-function-api`，同一时间只跑一个，不取消正在跑的发布。`ALERT analytics-rollup-5m` 的试打（含 `STALE_WATERMARK`、`CONFIG_MISSING`）只打 develop，不要打 production 或 `api.demox.site`。analytics-rollup 的迁移 024 由云帆用临时授权执行：`deploy-develop` 之前在 develop 库跑，`promote` 之前在 production 库跑，跑完撤权，权限 diff 为 0。运行时账号只加这两张表的 SELECT、INSERT、UPDATE。`promote` 到 production 之前确认该环境 `ANALYTICS_RAW_ENABLED=1` 且 `ANALYTICS_RAW_BUCKET_ID` 已配置，否则 `CONFIG_MISSING` 会每 5 分钟打一次 high。

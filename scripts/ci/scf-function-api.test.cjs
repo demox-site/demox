@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, validateStagedKey, validateSha256, releaseDeployDevelop, releasePromote } = require('./scf-function-api.cjs');
+const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, PUBLIC_CHECKS, PUBLIC_PROBE, validateStagedKey, validateSha256, releaseDeployDevelop, releasePromote } = require('./scf-function-api.cjs');
 const versions = require('./function-versions.cjs');
 
 // CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
@@ -573,6 +573,128 @@ test('promote: public check failure switches production back', async () => {
   const bad = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: fakeFetch({ prodStatus: { '/health': 502 } }), log: quiet, wait: async () => {} });
   await assert.rejects(bad.promote({ version: '4' }), /切回 v3/);
   assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+});
+
+// 公网探测按路径给出一串状态；耗尽后停在最后一项。响应体里故意放密钥，断言日志不会带上。
+const LEAK = 'cookie=demox_access=sekret token=ghp_abcdefghijklmnopqrstuvwxyz uid=uid-deadbeef';
+function scriptedProdFetch(prodSteps, advanceClock) {
+  const cursor = {};
+  const urls = [];
+  const fn = async (url, opts = {}) => {
+    if (advanceClock) advanceClock();
+    urls.push({ url, method: opts.method || 'GET', headers: opts.headers || {}, signal: opts.signal });
+    const u = new URL(url);
+    if (url.startsWith(DEV)) return { status: OK_STATUS[u.pathname], ok: true, text: async () => LEAK };
+    const steps = prodSteps[u.pathname] || [];
+    const i = cursor[u.pathname] || 0;
+    cursor[u.pathname] = i + 1;
+    const step = steps[Math.min(i, Math.max(steps.length - 1, 0))];
+    if (step instanceof Error) throw step;
+    return { status: step, ok: false, text: async () => LEAK, json: async () => ({ access_token: 'sekret', uid: 'uid-deadbeef' }) };
+  };
+  fn.urls = urls;
+  return fn;
+}
+function promoteHarness(s, prodSteps) {
+  const lines = [];
+  const waits = [];
+  const timers = [];
+  let clock = 0;
+  const fetchImpl = scriptedProdFetch(prodSteps, () => { clock += 80; });
+  const deployer = createDeployer({
+    developBaseUrl: DEV,
+    scf: s.api,
+    cos: getCos(),
+    fetchImpl,
+    log: (line) => lines.push(line),
+    wait: async (ms) => { waits.push(ms); },
+    now: () => clock,
+    setTimer: (fn, ms) => { timers.push(ms); return setTimeout(fn, ms); },
+    clearTimer: (id) => clearTimeout(id)
+  });
+  return { deployer, lines, waits, timers, urls: fetchImpl.urls };
+}
+function prodPaths(urls) {
+  return urls.filter((item) => item.url.startsWith(CONFIG.publicBaseUrl)).map((item) => new URL(item.url).pathname);
+}
+function assertNoSecrets(lines) {
+  const text = lines.join('\n');
+  assert.doesNotMatch(text, /sekret|demox_access|ghp_|uid-deadbeef|access_token|cookie=/i);
+}
+
+test('public probe expectations stay the original status codes', () => {
+  assert.deepEqual(PUBLIC_CHECKS.map((check) => [check.path, [...check.expect]]), [['/health', [200]], ['/', [401]]]);
+  assert.equal(PUBLIC_PROBE.attempts, 3);
+  assert.equal(PUBLIC_PROBE.gapMs, 5000);
+  assert.ok(PUBLIC_PROBE.timeoutMs >= 15000);
+});
+
+test('promote: a 522 then the original status passes without rollback', async () => {
+  const s = fakeScf();
+  const prep = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await prep.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  const leak = Object.assign(new Error(LEAK), { code: 'ECONNRESET' });
+  const h = promoteHarness(s, { '/health': [522, 200], '/': [leak, 401] });
+  const before = s.calls.length;
+  const result = await h.deployer.promote({ version: '4' });
+  assert.deepEqual(result, { previous: '3', version: '4' });
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '4');
+  const aliases = s.calls.slice(before).filter((call) => call.name === 'UpdateAlias').map((call) => `${call.params.Name}=${call.params.FunctionVersion}`);
+  assert.deepEqual(aliases, ['production=4']);
+  assert.deepEqual(prodPaths(h.urls), ['/health', '/health', '/', '/']);
+  assert.deepEqual(h.waits, [PUBLIC_PROBE.gapMs, PUBLIC_PROBE.gapMs]);
+  assert.deepEqual(h.timers, [PUBLIC_PROBE.timeoutMs, PUBLIC_PROBE.timeoutMs, PUBLIC_PROBE.timeoutMs, PUBLIC_PROBE.timeoutMs]);
+  assert.ok(h.urls.filter((item) => item.url.startsWith(CONFIG.publicBaseUrl)).every((item) => item.signal && typeof item.signal.aborted === 'boolean'));
+  assert.ok(h.urls.every((item) => !item.headers.cookie && !item.headers.Cookie && !item.headers.Authorization && !item.headers.authorization));
+  const text = h.lines.join('\n');
+  assert.match(text, /公网复查 GET \/health 第 1\/3 次: 522 80ms FAIL/);
+  assert.match(text, /公网复查 GET \/health 第 2\/3 次: 200 80ms OK/);
+  assert.match(text, /公网复查 GET \/ \(401\) 第 1\/3 次: ERR ECONNRESET 80ms FAIL/);
+  assert.match(text, /公网复查 GET \/ \(401\) 第 2\/3 次: 401 80ms OK/);
+  assert.doesNotMatch(text, /第 3\/3 次/);
+  assertNoSecrets(h.lines);
+});
+
+test('promote: three 522s fail the probe and roll production back', async () => {
+  const s = fakeScf();
+  const prep = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await prep.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  const h = promoteHarness(s, { '/health': [200], '/': [522, 522, 522] });
+  const before = s.calls.length;
+  await assert.rejects(h.deployer.promote({ version: '4' }), /公网复查失败，已自动切回 v3/);
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+  const aliases = s.calls.slice(before).filter((call) => call.name === 'UpdateAlias').map((call) => `${call.params.Name}=${call.params.FunctionVersion}`);
+  assert.deepEqual(aliases, ['production=4', 'production=3']);
+  assert.deepEqual(prodPaths(h.urls), ['/health', '/', '/', '/']);
+  assert.deepEqual(h.waits, [PUBLIC_PROBE.gapMs, PUBLIC_PROBE.gapMs]);
+  assert.deepEqual(h.timers, Array(4).fill(PUBLIC_PROBE.timeoutMs));
+  const text = h.lines.join('\n');
+  assert.match(text, /公网复查 GET \/health 第 1\/3 次: 200 80ms OK/);
+  assert.match(text, /公网复查 GET \/ \(401\) 第 1\/3 次: 522 80ms FAIL/);
+  assert.match(text, /公网复查 GET \/ \(401\) 第 2\/3 次: 522 80ms FAIL/);
+  assert.match(text, /公网复查 GET \/ \(401\) 第 3\/3 次: 522 80ms FAIL/);
+  assertNoSecrets(h.lines);
+});
+
+test('promote: a non-expected status still fails after retries', async () => {
+  const s = fakeScf();
+  const prep = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await prep.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  const wrongRoot = promoteHarness(s, { '/health': [200], '/': [522, 200, 200] });
+  await assert.rejects(wrongRoot.deployer.promote({ version: '4' }), /已自动切回 v3/);
+  assert.equal(s.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+  assert.match(wrongRoot.lines.join('\n'), /公网复查 GET \/ \(401\) 第 2\/3 次: 200 80ms FAIL/);
+  assertNoSecrets(wrongRoot.lines);
+
+  const s2 = fakeScf();
+  const prep2 = createDeployer({ developBaseUrl: DEV, scf: s2.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await prep2.deployDevelop({ key: KEY, sha256: PKG_SHA });
+  const wrongHealth = promoteHarness(s2, { '/health': [522, 401, 401], '/': [401] });
+  await assert.rejects(wrongHealth.deployer.promote({ version: '4' }), /已自动切回 v3/);
+  assert.equal(s2.aliases.find((a) => a.Name === 'production').FunctionVersion, '3');
+  assert.deepEqual(prodPaths(wrongHealth.urls), ['/health', '/health', '/health']);
+  assert.match(wrongHealth.lines.join('\n'), /公网复查 GET \/health 第 2\/3 次: 401 80ms FAIL/);
+  assert.doesNotMatch(wrongHealth.lines.join('\n'), /GET \/ \(401\)/);
 });
 
 // ---- app/runtime 门禁：包住 deploy-develop / promote，不改它们原来的动作 ----

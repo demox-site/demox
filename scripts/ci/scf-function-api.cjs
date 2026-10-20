@@ -10,7 +10,8 @@
  *   UpdateFunctionCode 也不带 Environment，所以环境变量由权限保证不变，不再靠读取比对。
  * - 先 PublishVersion 生成不可变版本，把别名 develop 指向 N，通过 develop 的公网 HTTPS 地址
  *   （FUNCTION_API_DEVELOP_URL）做健康检查；绝不调用 Invoke（CI 角色对 scf:Invoke 显式 Deny），
- *   通过后才把别名 production 指向新版本；公网复查失败自动切回上一个版本。
+ *   通过后才把别名 production 指向新版本。公网复查每个探测最多 3 次（间隔 5 秒，单次超时 15 秒），
+ *   三次都失败才自动切回上一个版本。
  * - 只有 api.demox.site 的所有入口和定时触发器都已绑定到别名 production 时才允许发布
  *   （否则更新 $LATEST 就等于直接切流量）。一次性迁移见 docs/function-api-ci.md。
  * - 任何输出都不包含密钥值、环境变量值或接口返回体。
@@ -89,6 +90,12 @@ const PUBLIC_CHECKS = Object.freeze([
   { name: 'GET /health', path: '/health', expect: [200] },
   { name: 'GET / (401)', path: '/', expect: [401] }
 ]);
+// 公网复查：每个探测单独重试。状态码门槛仍是上面的 expect，不把 522 / 5xx / 超时当成通过。
+const PUBLIC_PROBE = Object.freeze({
+  attempts: 3,
+  gapMs: 5000,
+  timeoutMs: 15000
+});
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -299,15 +306,53 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return hit ? String(hit.FunctionVersion) : null;
   }
 
-  async function publicCheck({ rounds = 3, gapMs = 20000 } = {}) {
-    for (let round = 0; round < rounds; round += 1) {
-      if (round) await wait(gapMs);
-      for (const check of PUBLIC_CHECKS) {
-        const code = await httpStatus(`${CONFIG.publicBaseUrl}${check.path}`);
-        const ok = check.expect.includes(code);
-        log(`  公网复查 #${round + 1} ${check.name}: ${code} ${ok ? 'OK' : 'FAIL'}`);
-        if (!ok) return false;
+  // 网络错误只留短错误码。error.message 可能带上 URL，不写进日志。
+  function publicProbeErrorStatus(error) {
+    const code = error && error.code;
+    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(code)) return `ERR ${code}`;
+    return 'ERR';
+  }
+
+  async function probeOnce(url, { method = 'GET', headers = {}, timeoutMs = 0 } = {}) {
+    const started = now();
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    const timer = controller ? setTimer(() => controller.abort(), timeoutMs) : null;
+    try {
+      const res = await fetchImpl(url, {
+        method,
+        headers,
+        redirect: 'manual',
+        ...(controller ? { signal: controller.signal } : {})
+      });
+      return { status: res.status, elapsedMs: Math.max(0, Math.round(now() - started)) };
+    } catch (error) {
+      const aborted = Boolean(controller && controller.signal.aborted)
+        || Boolean(error && (error.name === 'AbortError' || error.name === 'TimeoutError'));
+      return {
+        status: aborted ? 'TIMEOUT' : publicProbeErrorStatus(error),
+        elapsedMs: Math.max(0, Math.round(now() - started))
+      };
+    } finally {
+      if (timer !== null) clearTimer(timer);
+    }
+  }
+
+  /**
+   * production 切换后的公网复查。每个探测最多 attempts 次，间隔 gapMs，单次超时 timeoutMs。
+   * 任何一次状态码落在该探测原来的 expect 里即通过，不再打后续次数；三次都失败才返回 false。
+   * 日志一行：探测名、第几次、状态码、耗时。不打响应体、请求头、cookie、token 或 uid。
+   */
+  async function publicCheck({ attempts = PUBLIC_PROBE.attempts, gapMs = PUBLIC_PROBE.gapMs, timeoutMs = PUBLIC_PROBE.timeoutMs } = {}) {
+    for (const check of PUBLIC_CHECKS) {
+      let passed = false;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        if (attempt > 1) await wait(gapMs);
+        const { status, elapsedMs } = await probeOnce(`${CONFIG.publicBaseUrl}${check.path}`, { timeoutMs });
+        const ok = check.expect.includes(status);
+        log(`  公网复查 ${check.name} 第 ${attempt}/${attempts} 次: ${status} ${elapsedMs}ms ${ok ? 'OK' : 'FAIL'}`);
+        if (ok) { passed = true; break; }
       }
+      if (!passed) return false;
     }
     return true;
   }
@@ -834,4 +879,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };
+module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, PUBLIC_CHECKS, PUBLIC_PROBE, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };
