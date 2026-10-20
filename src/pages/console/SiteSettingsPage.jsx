@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button, useToast } from "@/components/ui";
-import { BarChart3, ExternalLink, Globe2, LockKeyhole, Upload } from "lucide-react";
+import { ExternalLink, Globe2, LockKeyhole, Upload } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "../home-translations";
 import {
@@ -145,18 +145,6 @@ export default function SiteSettingsPage() {
               disabled={!primary}
             >
               {t.copyLink}
-            </Button>
-            <Button
-              variant="outline"
-              className="stitch-action rounded-full px-5"
-              onClick={() =>
-                navigate(
-                  `/console/projects/${projectId}/sites/${website.websiteId || websiteId}/analytics`
-                )
-              }
-            >
-              <BarChart3 className="mr-2 h-4 w-4" />
-              {t.analyticsButton}
             </Button>
             <Button
               variant="outline"

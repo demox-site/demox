@@ -50,7 +50,8 @@ import {
   FolderKanban,
   ArrowLeft,
   Code2,
-  Database
+  Database,
+  Settings2
 } from "lucide-react";
 
 const navTexts = {
@@ -79,7 +80,10 @@ const navTexts = {
     noProjects: "暂无项目",
     logout: "退出登录",
     backHome: "返回首页",
-    backMainMenu: "返回主菜单"
+    backMainMenu: "返回主菜单",
+    groupSite: "站点",
+    siteSettings: "站点设置",
+    backSites: "返回站点列表"
   },
   en: {
     groupConsole: "Console",
@@ -106,7 +110,10 @@ const navTexts = {
     noProjects: "No projects",
     logout: "Log out",
     backHome: "Home",
-    backMainMenu: "Back to menu"
+    backMainMenu: "Back to menu",
+    groupSite: "Site",
+    siteSettings: "Site settings",
+    backSites: "Back to sites"
   }
 } as const;
 
@@ -271,11 +278,15 @@ export const ConsoleLayout: React.FC = () => {
     databasePath &&
       (location.pathname === databasePath || location.pathname.startsWith(`${databasePath}/`))
   );
+  const siteSettingsPath = inSiteWorkspace
+    ? `/console/projects/${currentProjectId}/sites/${currentWebsiteId}`
+    : "";
+  const inSiteSettings = Boolean(
+    siteSettingsPath &&
+      (location.pathname === siteSettingsPath || location.pathname === `${siteSettingsPath}/`)
+  );
   const onProjectSites = Boolean(
-    sitesPath &&
-      (location.pathname === sitesPath ||
-        location.pathname === `${sitesPath}/` ||
-        (inSiteWorkspace && !onProjectFunctions))
+    sitesPath && (location.pathname === sitesPath || location.pathname === `${sitesPath}/`)
   );
   const currentProject = projects.find((p) => p.id === currentProjectId || p.numericId === currentProjectId) || null;
   const currentSelectProjectId = currentProject?.id || currentProjectId;
@@ -309,6 +320,17 @@ export const ConsoleLayout: React.FC = () => {
       ]
     : [];
 
+  const siteNav: NavItem[] = inSiteSettings
+    ? [
+        {
+          key: "site-settings",
+          path: siteSettingsPath,
+          label: t.siteSettings,
+          icon: Settings2
+        }
+      ]
+    : [];
+
   const accountNav: NavItem[] = [
     {
       key: "settings",
@@ -330,6 +352,7 @@ export const ConsoleLayout: React.FC = () => {
 
   const isActive = (path: string, key = "") => {
     if (key === "sites") return onProjectSites;
+    if (key === "site-settings") return inSiteSettings;
     if (key === "functions") return onProjectFunctions;
     if (key === "database") return onProjectDatabase;
     if (path === `/console/projects/${currentProjectId}/sites`) {
@@ -425,7 +448,29 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarHeader>
 
         <SidebarContent>
-          {inProjectWorkspace ? (
+          {inSiteSettings ? (
+            <>
+              <SidebarGroup>
+                <SidebarGroupLabel>{t.groupSite}</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>{siteNav.map(renderItem)}</SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+
+              <SidebarGroup className="pt-5">
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {renderItem({
+                      key: "backSites",
+                      path: sitesPath,
+                      label: t.backSites,
+                      icon: ArrowLeft
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </>
+          ) : inProjectWorkspace ? (
             <>
               <SidebarGroup>
                 <SidebarGroupLabel>{t.groupProject}</SidebarGroupLabel>
