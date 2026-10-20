@@ -281,6 +281,8 @@ function customDomainAuthCookieHeader(hostname, token, maxAge) {
 }
 
 const { query, transaction, withConnection } = require('./shared/db.js');
+const { createProjectData, deleteProjectData } = require('./project-data.js');
+const projectData = createProjectData(query);
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
@@ -2231,6 +2233,13 @@ async function dispatchWebsiteRequest(event, context) {
       rollup_site_analytics: handleRollupSiteAnalytics,
       backfill_site_analytics_geo: handleBackfillSiteAnalyticsGeo,
       list_projects: handleListProjects,
+      list_project_tables: handleListProjectTables,
+      create_project_table: handleCreateProjectTable,
+      get_project_table: handleGetProjectTable,
+      delete_project_table: handleDeleteProjectTable,
+      list_project_rows: handleListProjectRows,
+      put_project_row: handlePutProjectRow,
+      delete_project_row: handleDeleteProjectRow,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
       archive_project: handleArchiveProject,
@@ -2335,6 +2344,20 @@ async function dispatchWebsiteRequest(event, context) {
       return await handleRemoveProjectCustomDomain(event);
     } else if (pathUrl.includes('/verify-project-custom-domain')) {
       return await handleVerifyProjectCustomDomain(event);
+    } else if (pathUrl.includes('/list-project-tables')) {
+      return await handleListProjectTables(event);
+    } else if (pathUrl.includes('/create-project-table')) {
+      return await handleCreateProjectTable(event);
+    } else if (pathUrl.includes('/get-project-table')) {
+      return await handleGetProjectTable(event);
+    } else if (pathUrl.includes('/delete-project-table')) {
+      return await handleDeleteProjectTable(event);
+    } else if (pathUrl.includes('/list-project-rows')) {
+      return await handleListProjectRows(event);
+    } else if (pathUrl.includes('/put-project-row')) {
+      return await handlePutProjectRow(event);
+    } else if (pathUrl.includes('/delete-project-row')) {
+      return await handleDeleteProjectRow(event);
     } else if (pathUrl.includes('/list-projects')) {
       return await handleListProjects(event);
     } else if (pathUrl.includes('/create-project')) {
@@ -4990,6 +5013,104 @@ async function handleArchiveProject(event) {
   }
 }
 
+const PROJECT_DATA_CODES = new Set(['bad_name', 'bad_schema', 'exists', 'quota', 'not_found', 'bad_row']);
+
+async function projectDataContext(event, mode) {
+  const userId = getUserId(event);
+  if (!userId) return { error: ok({ success: false, error: '未登录或token已过期' }) };
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return { error: ok({ success: false, message: '缺少 projectId' }) };
+  const allowed = mode === 'write'
+    ? await canUserWriteProject(userId, projectId)
+    : await canUserReadProject(userId, projectId);
+  if (!allowed) return { error: ok({ success: false, message: '项目不存在或无权限' }) };
+  return { projectId, body };
+}
+
+function projectDataFailure(error) {
+  if (error && PROJECT_DATA_CODES.has(error.code)) {
+    return ok({ success: false, code: error.code, message: error.message });
+  }
+  return ok({ success: false, message: '数据库操作失败' });
+}
+
+async function handleListProjectTables(event) {
+  const ctx = await projectDataContext(event, 'read');
+  if (ctx.error) return ctx.error;
+  try {
+    return ok({ success: true, tables: await projectData.listTables(ctx.projectId) });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleCreateProjectTable(event) {
+  const ctx = await projectDataContext(event, 'write');
+  if (ctx.error) return ctx.error;
+  try {
+    const table = await projectData.createTable(ctx.projectId, { name: ctx.body.name, columns: ctx.body.columns });
+    return ok({ success: true, table });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleGetProjectTable(event) {
+  const ctx = await projectDataContext(event, 'read');
+  if (ctx.error) return ctx.error;
+  try {
+    return ok({ success: true, table: await projectData.getTable(ctx.projectId, ctx.body.table || ctx.body.name) });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleDeleteProjectTable(event) {
+  const ctx = await projectDataContext(event, 'write');
+  if (ctx.error) return ctx.error;
+  try {
+    return ok({ success: true, ...(await projectData.deleteTable(ctx.projectId, ctx.body.table || ctx.body.name)) });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleListProjectRows(event) {
+  const ctx = await projectDataContext(event, 'read');
+  if (ctx.error) return ctx.error;
+  try {
+    const page = await projectData.listRows(ctx.projectId, ctx.body.table || ctx.body.name, {
+      limit: ctx.body.limit,
+      after: ctx.body.after
+    });
+    return ok({ success: true, ...page });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handlePutProjectRow(event) {
+  const ctx = await projectDataContext(event, 'write');
+  if (ctx.error) return ctx.error;
+  try {
+    const row = await projectData.putRow(ctx.projectId, ctx.body.table || ctx.body.name, ctx.body.values);
+    return ok({ success: true, ...row });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleDeleteProjectRow(event) {
+  const ctx = await projectDataContext(event, 'write');
+  if (ctx.error) return ctx.error;
+  try {
+    return ok({ success: true, ...(await projectData.deleteRow(ctx.projectId, ctx.body.table || ctx.body.name, ctx.body.pk)) });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
 async function handleDeleteProject(event) {
   const userId = getUserId(event);
   if (!userId) return ok({ success: false, error: '未登录或token已过期' });
@@ -5024,6 +5145,7 @@ async function handleDeleteProject(event) {
         return { success: false, code: 'PROJECT_NOT_EMPTY', message: '项目下仍有站点，请先移动或删除站点' };
       }
 
+      await deleteProjectData((sql, params) => conn.query(sql, params), id);
       await conn.query('DELETE FROM project_feishu_grants WHERE project_id = ?', [id]);
       try {
         await conn.query('DELETE FROM project_github_grants WHERE project_id = ?', [id]);
