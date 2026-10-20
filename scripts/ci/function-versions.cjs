@@ -486,7 +486,9 @@ function decideAppDeploy({ entry, aliases, versions, codeSha256, gitSha, aliasNa
     return stop('runtime-drift', `本地 runtime ${entry.runtimeVersion} 与线上 runtime ${live.runtime} 不同。runtime 发布需要云架构复核和 Chief 批准，这里不会自动发布。`);
   }
   if (appDiff === 0) {
-    return stop('already-published', `app 版本与代码指纹、配置指纹都与线上一致，不需要发布。`);
+    // 带上已发布的版本号（优先 develop：promote 只认 develop 当前指向的版本），双账号模式据此复用、继续发下一个账号。
+    const dev = parsed.find((item) => item.alias === 'develop' && item.meta && item.meta.sha256 === codeSha256);
+    return { ...stop('already-published', `app 版本与代码指纹、配置指纹都与线上一致，不需要发布。`), version: (dev || max).version, alias: (dev || max).alias };
   }
   const description = formatDescription({
     app: entry.appVersion,

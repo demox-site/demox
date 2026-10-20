@@ -197,7 +197,8 @@ jobs:
               # 一步到位会让两边 production 无人验证地一起切；双账号下只允许 stage → deploy-develop → promote。
               echo "::error::双账号模式不支持 action=deploy（含 push 自动发布）；请走 stage → deploy-develop → promote"; exit 1 ;;
             deploy-develop)
-              run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
+              # 磷 已有同一包的版本（例如之前单账号已发过）→ 复用其版本号，继续发易点。
+              DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
               run_target ek deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
               echo "- 上线：action=promote version=$(getout "$OUT_LIN" version) version_ek=$(getout "$OUT_EK" version)" >> "$GITHUB_STEP_SUMMARY" ;;
             promote)
