@@ -1,7 +1,7 @@
 name: Deploy to Demox (self-hosted)
 
 # 主站正式发布：push master 后构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
-# 鉴权用仓库 Secrets 里的 DEMOX_TOKEN。不要把 token 写进代码。
+# 鉴权用 GitHub Environment `www` 的 Secret DEMOX_TOKEN（环境密钥）。不要把 token 写进代码。
 on:
   push:
     branches: [master]
@@ -37,6 +37,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: www
     steps:
       - name: Checkout
         uses: actions/checkout@v5
