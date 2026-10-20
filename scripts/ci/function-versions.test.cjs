@@ -449,3 +449,15 @@ test('runtime-plan prints bootstrapped versions and placeholder still stops befo
   assert.match(runtimeOut, /Chief 批准/);
   assert.doesNotMatch(runtimeOut, /缺少凭证|AssumeRole/);
 });
+
+test('decideAppDeploy already-published carries the develop version number', () => {
+  const v = require('./function-versions.cjs');
+  const cfg = v.configFingerprint(entry().runtime);
+  const d = (sha) => v.formatDescription({ app: entry().appVersion, runtime: entry().runtimeVersion, git: GIT, sha256: sha, cfg });
+  const r = v.decideAppDeploy({ entry: entry(), aliases: [{ Name: 'develop', FunctionVersion: '18' }, { Name: 'production', FunctionVersion: '18' }],
+    versions: [{ Version: '18', Description: d(SHA_B) }], codeSha256: SHA_B, gitSha: GIT });
+  assert.equal(r.allow, false);
+  assert.equal(r.reason, 'already-published');
+  assert.equal(r.version, '18');
+  assert.equal(r.alias, 'develop');
+});

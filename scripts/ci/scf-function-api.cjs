@@ -733,7 +733,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, readReleaseState, uploadZip };
 }
 
-async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, runId = '' }) {
+async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, runId = '', reusePublished = false, output = () => {}, summary = () => {}, log = console.log }) {
   const entry = versions.deployEntry(manifest);
   versions.assertNotPlaceholder(entry);
   const state = await deployer.readReleaseState();
@@ -744,6 +744,14 @@ async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, r
     codeSha256: sha256,
     gitSha
   });
+  // 双账号模式（DEMOX_REUSE_PUBLISHED=1，只给先发的 磷 用）：同一包已发布 → 复用该版本号，不报错，让 workflow 继续发易点。
+  // 单账号模式不设此变量，行为不变（already-published 仍然停止）。
+  if (!decision.allow && decision.reason === 'already-published' && reusePublished && /^\d+$/.test(String(decision.version || ''))) {
+    log(`[${CONFIG.target}] 同一包已发布在 v${decision.version}（别名 ${decision.alias}），复用该版本，不重新发布`);
+    output('version', decision.version);
+    summary(`- [${CONFIG.target}] 复用已发布的 v${decision.version}（包 sha256 ${sha256}），未改函数`);
+    return { version: String(decision.version), reused: true };
+  }
   if (!decision.allow) {
     const error = new Error(decision.message);
     error.code = decision.reason;
@@ -866,7 +874,10 @@ async function cli(argv = process.argv.slice(2)) {
       key: argValue(argv, '--key'),
       sha256: argValue(argv, '--sha256'),
       gitSha: process.env.GITHUB_SHA || '',
-      runId: process.env.GITHUB_RUN_ID || ''
+      runId: process.env.GITHUB_RUN_ID || '',
+      reusePublished: ['1', 'true'].includes(String(process.env.DEMOX_REUSE_PUBLISHED || '').toLowerCase()),
+      output,
+      summary
     });
     return;
   }

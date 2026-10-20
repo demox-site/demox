@@ -833,3 +833,33 @@ test('publicCheck skip=true does not probe', async () => {
   assert.equal(await d.publicCheck({ skip: false, attempts: 1 }), false);
   assert.ok(calls >= 1);
 });
+
+// 双账号：磷 已发布同一包时复用版本号继续，单账号仍停。
+function samePkgScf() {
+  return fakeScf({
+    prodVersion: '4',
+    aliasVersions: { develop: '4', production: '3' },
+    descriptions: { '3': described('0.0.9', 'c'.repeat(64)), '4': described('0.1.0', PKG_SHA) }
+  });
+}
+test('releaseDeployDevelop: already-published stops in single-account mode', async () => {
+  const s = samePkgScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: PKG_SHA, gitSha: GIT }), /不需要发布/);
+  assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
+});
+test('releaseDeployDevelop: dual mode reuses the already-published develop version and writes nothing', async () => {
+  const s = samePkgScf();
+  const outputs = {};
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const r = await releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: PKG_SHA, gitSha: GIT, reusePublished: true, output: (k, v) => { outputs[k] = v; }, log: quiet });
+  assert.equal(r.version, '4');
+  assert.equal(r.reused, true);
+  assert.equal(outputs.version, '4');
+  assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
+});
+test('releaseDeployDevelop: dual mode does not bypass other gates (code-drift still stops)', async () => {
+  const s = samePkgScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  await assert.rejects(releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: 'd'.repeat(64), gitSha: GIT, reusePublished: true, log: quiet }), /不一致/);
+});
