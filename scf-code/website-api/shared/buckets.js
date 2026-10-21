@@ -16,6 +16,48 @@
 const { query } = require('./db.js');
 const { decrypt } = require('./crypto.js');
 
+// <biz-cloud-creds> —— 本块在 website-api/index.js、website-api/shared/buckets.js、
+// cert-renew/index.js、auth-api/index.cjs 中逐字相同（`demox functions push` 只上传入口文件，
+// 不能新增 shared 模块），由 scripts/biz-cloud-creds.test.mjs 校验。
+// K2 基座/业务拆分：业务函数用自身受限密钥 DEMOX_BIZ_TC_SECRET_ID/KEY[/SESSION_TOKEN]
+// （PLATFORM_SECRETS 密文存 EPX2UU43 env，平台池解密注入）访问 COS/EO/DNS/SES/CLS/SSL；
+// 基座不持有、不代签业务凭证。DEMOX_BIZ_CREDS_STRICT=1 时绝不回落旧 TENCENTCLOUD_*
+// （平台池发布必须开）；未开时保持现网行为（磷 v19 / 易点 v3 进程内执行）。K7 删回落。
+const BIZ_CREDS_LEGACY_KEYS = [
+  ['TENCENTCLOUD_SECRETID', 'TENCENTCLOUD_SECRETKEY', 'TENCENTCLOUD_SESSIONTOKEN'],
+  ['TENCENT_SECRET_ID', 'TENCENT_SECRET_KEY', null],
+  ['COS_SECRET_ID', 'COS_SECRET_KEY', 'COS_SESSION_TOKEN']
+];
+function bizCredsStrict(env = process.env) {
+  return String(env.DEMOX_BIZ_CREDS_STRICT || '') === '1';
+}
+function readBizCloudCreds(env = process.env) {
+  const id = env.DEMOX_BIZ_TC_SECRET_ID;
+  const key = env.DEMOX_BIZ_TC_SECRET_KEY;
+  if (id && key) {
+    return { secretId: String(id), secretKey: String(key), token: String(env.DEMOX_BIZ_TC_SESSION_TOKEN || ''), source: 'biz' };
+  }
+  if (id || key) throw new Error('DEMOX_BIZ_TC_SECRET_ID 与 DEMOX_BIZ_TC_SECRET_KEY 必须同时配置');
+  if (bizCredsStrict(env)) return null;
+  for (const [idKey, secretKey, tokenKey] of BIZ_CREDS_LEGACY_KEYS) {
+    if (env[idKey] && env[secretKey]) {
+      return { secretId: String(env[idKey]), secretKey: String(env[secretKey]), token: tokenKey ? String(env[tokenKey] || '') : '', source: 'legacy' };
+    }
+  }
+  return null;
+}
+function requireBizCloudCreds(env = process.env) {
+  const creds = readBizCloudCreds(env);
+  if (!creds) {
+    throw new Error(bizCredsStrict(env)
+      ? '缺少业务云凭证 DEMOX_BIZ_TC_SECRET_ID/KEY（STRICT 模式不回落基座凭证）'
+      : '缺少腾讯云 API 密钥');
+  }
+  return creds;
+}
+// </biz-cloud-creds>
+
+
 function rowToConfig(row) {
   if (!row) return null;
   return {
@@ -82,10 +124,11 @@ function resolveCreds(cfg) {
     secretId = decrypt(cfg.secretIdEnc);
     secretKey = decrypt(cfg.secretKeyEnc);
   } else {
-    // 生产走 SCF 运行角色注入的临时密钥；COS_SECRET_* 仅兼容本地/旧配置。
-    secretId = process.env.TENCENTCLOUD_SECRETID || process.env.COS_SECRET_ID;
-    secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.COS_SECRET_KEY;
-    securityToken = process.env.TENCENTCLOUD_SESSIONTOKEN || undefined;
+    // 业务函数自身受限密钥（DEMOX_BIZ_TC_*）；STRICT 未开时兼容旧 TENCENTCLOUD_*/COS_SECRET_*。
+    const creds = readBizCloudCreds();
+    secretId = creds ? creds.secretId : undefined;
+    secretKey = creds ? creds.secretKey : undefined;
+    securityToken = creds && creds.token ? creds.token : undefined;
   }
 
   return {

@@ -125,16 +125,13 @@ function platformSiteInProcess(processEnv = process.env) {
   return String(processEnv.FUNCTIONS_PLATFORM_SITE_MODE || '').trim().toLowerCase() !== 'user-runtime';
 }
 
-function mergeLiveCredentials(env = {}, websiteId, processEnv = process.env) {
-  if (platformSiteInProcess(processEnv)) return env;
-  if (String(websiteId || '') !== platformWebsiteId(processEnv)) return env;
-  const output = { ...env };
-  for (const key of LIVE_CREDENTIAL_KEYS) {
-    if (output[key] == null && typeof processEnv[key] === 'string' && processEnv[key]) {
-      output[key] = processEnv[key];
-    }
-  }
-  return output;
+/**
+ * K2：基座不再把自己的运行角色临时密钥借给业务函数（含 user-runtime 回滚路径）。
+ * 业务函数改用自身受限密钥 DEMOX_BIZ_TC_*（PLATFORM_SECRETS 密文，平台池注入）。
+ * 保留函数签名以免调用方改动；K7 删除。
+ */
+function mergeLiveCredentials(env = {}) {
+  return env;
 }
 
 async function seedPlatformSiteFunctions({ service, ownerId, websiteId, logger = console } = {}) {

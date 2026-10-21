@@ -215,7 +215,8 @@ test('user-pool dispatch never receives platform secrets', async () => {
     assert.equal(seen[0].env.PLAIN, 'ok');
     assert.equal(seen[0].env.JWT_SECRET, undefined);
     assert.equal(JSON.stringify(seen[0].env).includes(SECRET_VALUE), false);
-    assert.equal(seen[0].env.TENCENTCLOUD_SECRETID, 'gateway-temp-id');
+    // K2：基座不再把运行角色临时凭证借给业务函数（含 user-runtime 回滚路径）。
+    assert.equal(seen[0].env.TENCENTCLOUD_SECRETID, undefined);
     const userSite = await publish(service, { websiteId: 'site-a', slug: 'hello', routes: ['/hello'] });
     await service.invoke({
       functionId: userSite.functionId,

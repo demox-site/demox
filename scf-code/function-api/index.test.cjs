@@ -702,8 +702,9 @@ test('platform site does not receive runtime-role temp credentials by default', 
     TENCENTCLOUD_SESSIONTOKEN: 'token'
   };
   assert.deepEqual(mergeLiveCredentials({ A: '1' }, 'EPX2UU43', processEnv), { A: '1' });
+  // K2：user-runtime 回滚路径也不再借出基座运行角色凭证。
   const legacy = mergeLiveCredentials({ A: '1' }, 'EPX2UU43', { ...processEnv, FUNCTIONS_PLATFORM_SITE_MODE: 'user-runtime' });
-  assert.equal(legacy.TENCENTCLOUD_SECRETID, 'id');
+  assert.deepEqual(legacy, { A: '1' });
 });
 
 test('published platform function source runs for system prefixes (FUNCTIONS_PLATFORM_SITE_MODE=user-runtime rollback)', async () => {
