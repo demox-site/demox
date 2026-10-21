@@ -47,13 +47,11 @@ import {
   KeyRound,
   Gauge,
   ShieldCheck,
-  UploadCloud,
   FolderKanban,
   ArrowLeft,
-  UsersRound,
-  Settings2,
-  BarChart3,
-  Code2
+  Code2,
+  Database,
+  Settings2
 } from "lucide-react";
 
 const navTexts = {
@@ -63,9 +61,10 @@ const navTexts = {
     groupAccount: "账户",
     groupGlobal: "全局",
     projects: "项目",
-    deploy: "部署新站点",
-    sites: "我的站点",
-    members: "成员",
+    overview: "概览",
+    sites: "站点",
+    functions: "函数",
+    database: "数据库",
     projectSettings: "项目设置",
     usage: "用量套餐",
     tokens: "访问令牌",
@@ -85,8 +84,6 @@ const navTexts = {
     backMainMenu: "返回主菜单",
     groupSite: "站点",
     siteSettings: "站点设置",
-    siteFunctions: "云函数",
-    siteAnalytics: "访问分析",
     backSites: "返回站点列表"
   },
   en: {
@@ -95,9 +92,10 @@ const navTexts = {
     groupAccount: "Account",
     groupGlobal: "Global",
     projects: "Projects",
-    deploy: "Deploy New Site",
-    sites: "My Sites",
-    members: "Members",
+    overview: "Overview",
+    sites: "Sites",
+    functions: "Functions",
+    database: "Database",
     projectSettings: "Project Settings",
     usage: "Usage & Plan",
     tokens: "Access Tokens",
@@ -117,8 +115,6 @@ const navTexts = {
     backMainMenu: "Back to menu",
     groupSite: "Site",
     siteSettings: "Site settings",
-    siteFunctions: "Functions",
-    siteAnalytics: "Analytics",
     backSites: "Back to sites"
   }
 } as const;
@@ -231,17 +227,22 @@ export const ConsoleLayout: React.FC = () => {
   useEffect(() => {
     if (!isLoggedIn()) return;
     let alive = true;
-    websiteApi
-      .listProjects()
-      .then((res) => {
-        if (!alive || !res?.success) return;
-        setProjects((res.projects || []).map(normalizeProject).filter((p) => p.id));
-      })
-      .catch((error) => {
-        console.warn("Load console projects failed:", error);
-      });
+    const load = () => {
+      websiteApi
+        .listProjects()
+        .then((res) => {
+          if (!alive || !res?.success) return;
+          setProjects((res.projects || []).map(normalizeProject).filter((p) => p.id));
+        })
+        .catch((error) => {
+          console.warn("Load console projects failed:", error);
+        });
+    };
+    load();
+    window.addEventListener("demox-projects-changed", load);
     return () => {
       alive = false;
+      window.removeEventListener("demox-projects-changed", load);
     };
   }, [location.pathname]);
 
@@ -264,13 +265,38 @@ export const ConsoleLayout: React.FC = () => {
     /^\/console\/projects\/([^/]+)\/sites\/([^/]+)(?:\/([^/]+))?\/?$/
   );
   const projectMatch = location.pathname.match(
-    /^\/console\/projects\/([^/]+)\/(deploy|sites|members|settings)(?:\/|$)/
+    /^\/console\/projects\/([^/]+)\/(deploy|sites|functions|database|members|settings|overview)(?:\/|$)/
   );
   const currentProjectId = siteMatch?.[1] || projectMatch?.[1] || "";
   const currentProjectSection = projectMatch?.[2] || "sites";
   const currentWebsiteId = siteMatch?.[2] || "";
   const inSiteWorkspace = Boolean(currentProjectId && currentWebsiteId);
   const inProjectWorkspace = !!currentProjectId;
+  const overviewPath = currentProjectId ? `/console/projects/${currentProjectId}/overview` : "";
+  const sitesPath = currentProjectId ? `/console/projects/${currentProjectId}/sites` : "";
+  const functionsPath = currentProjectId ? `/console/projects/${currentProjectId}/functions` : "";
+  const databasePath = currentProjectId ? `/console/projects/${currentProjectId}/database` : "";
+  const projectSettingsPath = currentProjectId ? `/console/projects/${currentProjectId}/settings` : "";
+  const onProjectFunctions = Boolean(
+    functionsPath &&
+      (location.pathname === functionsPath ||
+        location.pathname.startsWith(`${functionsPath}/`) ||
+        /\/sites\/[^/]+\/functions(?:\/|$)/.test(location.pathname))
+  );
+  const onProjectDatabase = Boolean(
+    databasePath &&
+      (location.pathname === databasePath || location.pathname.startsWith(`${databasePath}/`))
+  );
+  const siteSettingsPath = inSiteWorkspace
+    ? `/console/projects/${currentProjectId}/sites/${currentWebsiteId}`
+    : "";
+  const inSiteSettings = Boolean(
+    siteSettingsPath &&
+      (location.pathname === siteSettingsPath || location.pathname === `${siteSettingsPath}/`)
+  );
+  const onProjectSites = Boolean(
+    sitesPath && (location.pathname === sitesPath || location.pathname === `${sitesPath}/`)
+  );
   const currentProject = projects.find((p) => p.id === currentProjectId || p.numericId === currentProjectId) || null;
   const currentSelectProjectId = currentProject?.id || currentProjectId;
 
@@ -283,48 +309,45 @@ export const ConsoleLayout: React.FC = () => {
   const projectNav: NavItem[] = currentProjectId
     ? [
         {
-          key: "deploy",
-          path: `/console/projects/${currentProjectId}/deploy`,
-          label: t.deploy,
-          icon: UploadCloud
+          key: "overview",
+          path: overviewPath,
+          label: t.overview,
+          icon: LayoutDashboard
         },
         {
           key: "sites",
-          path: `/console/projects/${currentProjectId}/sites`,
+          path: sitesPath,
           label: t.sites,
           icon: Globe
         },
         {
-          key: "members",
-          path: `/console/projects/${currentProjectId}/members`,
-          label: t.members,
-          icon: UsersRound
+          key: "functions",
+          path: functionsPath,
+          label: t.functions,
+          icon: Code2
+        },
+        {
+          key: "database",
+          path: databasePath,
+          label: t.database,
+          icon: Database
+        },
+        {
+          key: "project-settings",
+          path: projectSettingsPath,
+          label: t.projectSettings,
+          icon: Settings
         }
       ]
     : [];
 
-  const siteBasePath = inSiteWorkspace
-    ? `/console/projects/${currentProjectId}/sites/${currentWebsiteId}`
-    : "";
-  const siteNav: NavItem[] = inSiteWorkspace
+  const siteNav: NavItem[] = inSiteSettings
     ? [
         {
           key: "site-settings",
-          path: siteBasePath,
+          path: siteSettingsPath,
           label: t.siteSettings,
           icon: Settings2
-        },
-        {
-          key: "site-functions",
-          path: `${siteBasePath}/functions`,
-          label: t.siteFunctions,
-          icon: Code2
-        },
-        {
-          key: "site-analytics",
-          path: `${siteBasePath}/analytics`,
-          label: t.siteAnalytics,
-          icon: BarChart3
         }
       ]
     : [];
@@ -348,11 +371,14 @@ export const ConsoleLayout: React.FC = () => {
     { key: "gallery", path: "/console/admin/gallery", label: t.adminGallery }
   ];
 
-  const isActive = (path: string) => {
-    if (
-      path === siteBasePath ||
-      path === `/console/projects/${currentProjectId}/sites`
-    ) {
+  const isActive = (path: string, key = "") => {
+    if (key === "overview") return location.pathname === path || location.pathname === `${path}/`;
+    if (key === "project-settings") return location.pathname === path || location.pathname === `${path}/`;
+    if (key === "sites") return onProjectSites;
+    if (key === "site-settings") return inSiteSettings;
+    if (key === "functions") return onProjectFunctions;
+    if (key === "database") return onProjectDatabase;
+    if (path === `/console/projects/${currentProjectId}/sites`) {
       return location.pathname === path || location.pathname === `${path}/`;
     }
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
@@ -362,17 +388,23 @@ export const ConsoleLayout: React.FC = () => {
 
   const handleSwitchProject = (projectId: string) => {
     if (!projectId || projectId === currentProjectId) return;
-    if (inSiteWorkspace) {
-      navigate(`/console/projects/${projectId}/sites`);
-      return;
-    }
-    navigate(`/console/projects/${projectId}/${currentProjectSection}`);
+    const section = onProjectFunctions
+      ? "functions"
+      : onProjectDatabase
+        ? "database"
+        : currentProjectSection === "members" ||
+            currentProjectSection === "deploy" ||
+            currentProjectSection === "settings" ||
+            currentProjectSection === "overview"
+          ? currentProjectSection
+          : "sites";
+    navigate(`/console/projects/${projectId}/${section}`);
   };
 
   const renderItem = (item: NavItem) => {
     if (item.adminOnly && !isAdmin) return null;
     const Icon = item.icon;
-    const active = item.key === "backMainMenu" ? false : isActive(item.path);
+    const active = item.key === "backMainMenu" ? false : isActive(item.path, item.key);
     return (
       <SidebarMenuItem key={item.key}>
         <SidebarMenuButton
@@ -407,7 +439,7 @@ export const ConsoleLayout: React.FC = () => {
             {adminSubNav.map((s) => (
               <SidebarMenuSubItem key={s.key}>
                 <SidebarMenuSubButton
-                  isActive={isActive(s.path)}
+                  isActive={isActive(s.path, s.key)}
                   onClick={() => navigate(s.path)}
                   className="cursor-pointer"
                 >
@@ -440,7 +472,7 @@ export const ConsoleLayout: React.FC = () => {
         </SidebarHeader>
 
         <SidebarContent>
-          {inSiteWorkspace ? (
+          {inSiteSettings ? (
             <>
               <SidebarGroup>
                 <SidebarGroupLabel>{t.groupSite}</SidebarGroupLabel>
@@ -454,7 +486,7 @@ export const ConsoleLayout: React.FC = () => {
                   <SidebarMenu>
                     {renderItem({
                       key: "backSites",
-                      path: `/console/projects/${currentProjectId}/sites`,
+                      path: sitesPath,
                       label: t.backSites,
                       icon: ArrowLeft
                     })}

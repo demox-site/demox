@@ -37,9 +37,16 @@ import SitesPage from "./pages/console/SitesPage.jsx";
 import ProjectsPage from "./pages/console/ProjectsPage.jsx";
 import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
 import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
+import ProjectOverviewPage from "./pages/console/ProjectOverviewPage";
 import SettingsPage from "./pages/console/SettingsPage";
 import TokensPage from "./pages/console/TokensPage";
 import FunctionsPage from "./pages/console/FunctionsPage";
+import ProjectFunctionsPage from "./pages/console/ProjectFunctionsPage";
+import ProjectDatabaseLayout, {
+  ProjectDatabaseCreate,
+  ProjectDatabaseList,
+  ProjectDatabaseTable
+} from "./pages/console/ProjectDatabasePage";
 import UsagePage from "./pages/console/UsagePage";
 import SiteSettingsPage from "./pages/console/SiteSettingsPage.jsx";
 
@@ -162,6 +169,10 @@ const App: React.FC = () => {
                     <Route index element={<Navigate to="/console/projects" replace />} />
                     <Route path="projects" element={<ProjectsPage />} />
                     <Route
+                      path="projects/:projectId/overview"
+                      element={<ProjectOverviewPage />}
+                    />
+                    <Route
                       path="projects/:projectId/deploy"
                       element={<Home />}
                     />
@@ -169,6 +180,15 @@ const App: React.FC = () => {
                       path="projects/:projectId/sites"
                       element={<SitesPage />}
                     />
+                    <Route
+                      path="projects/:projectId/functions"
+                      element={<ProjectFunctionsPage />}
+                    />
+                    <Route path="projects/:projectId/database" element={<ProjectDatabaseLayout />}>
+                      <Route index element={<ProjectDatabaseList />} />
+                      <Route path="new" element={<ProjectDatabaseCreate />} />
+                      <Route path="tables/:tableName" element={<ProjectDatabaseTable />} />
+                    </Route>
                     <Route
                       path="projects/:projectId/sites/:websiteId/analytics"
                       element={<React.Suspense fallback={lazyFallback}><SiteAnalyticsPage /></React.Suspense>}

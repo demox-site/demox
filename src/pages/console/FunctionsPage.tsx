@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Badge,
   Button,
@@ -117,9 +117,9 @@ const DEFAULT_SOURCE = `module.exports = async function handler(request, env) {
 
 const texts = {
   zh: {
-    title: "云函数",
-    subtitle: "给这个站点加一段后端。页面里用 fetch 就能调用。",
-    back: "返回站点设置",
+    title: "函数",
+    subtitle: "这个站点上的函数。页面里用 fetch 就能调用。",
+    back: "返回函数",
     createTitle: "新建函数",
     createDesc: "创建后得到 v1，production 和 develop 都指向 v1。页面可以用 fetch('/api/函数标识') 调用它。",
     name: "函数名称",
@@ -201,8 +201,8 @@ const texts = {
   },
   en: {
     title: "Functions",
-    subtitle: "Add a backend to this site. Call it with fetch from the page.",
-    back: "Back to site settings",
+    subtitle: "Functions on this site. Call them with fetch from the page.",
+    back: "Back to functions",
     createTitle: "Create function",
     createDesc: "Creating it gives v1. production and develop both point at v1. Pages can call it with fetch('/api/slug').",
     name: "Name",
@@ -286,7 +286,10 @@ const texts = {
 
 export default function FunctionsPage() {
   const { projectId = "", websiteId = "" } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const requestedFunctionId = searchParams.get("fn") || "";
+  const appliedFunctionId = React.useRef("");
   const { language } = useLanguage();
   const t = texts[language === "en" ? "en" : "zh"];
   const locale = language === "en" ? "en" : "zh-CN";
@@ -365,6 +368,13 @@ export default function FunctionsPage() {
   useEffect(() => {
     if (websiteId) void load();
   }, [load, websiteId]);
+
+  useEffect(() => {
+    if (!requestedFunctionId || appliedFunctionId.current === requestedFunctionId) return;
+    if (!items.some((item) => item.functionId === requestedFunctionId)) return;
+    appliedFunctionId.current = requestedFunctionId;
+    setSelectedId(requestedFunctionId);
+  }, [items, requestedFunctionId]);
 
   const resetCreateForm = () => {
     setName("hello");
@@ -666,7 +676,7 @@ export default function FunctionsPage() {
           <div>
             <button
               type="button"
-              onClick={() => navigate(`/console/projects/${projectId}/sites/${websiteId}`)}
+              onClick={() => navigate(`/console/projects/${projectId}/functions`)}
               className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-[var(--stitch-muted)] transition-colors hover:text-[var(--stitch-ink)]"
             >
               <ArrowLeft className="h-4 w-4" />

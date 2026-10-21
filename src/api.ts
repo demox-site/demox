@@ -1158,6 +1158,54 @@ export const websiteApi = {
     );
   },
 
+  listProjectTables: async (projectId: string | number) => {
+    return request<{ success: boolean; tables?: ProjectTable[]; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/list-project-tables",
+      { method: "POST", body: { action: "list_project_tables", projectId } }
+    );
+  },
+
+  createProjectTable: async (data: { projectId: string | number; name: string; columns: ProjectColumn[] }) => {
+    return request<{ success: boolean; table?: ProjectTable; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/create-project-table",
+      { method: "POST", body: { action: "create_project_table", ...data } }
+    );
+  },
+
+  getProjectTable: async (data: { projectId: string | number; table: string }) => {
+    return request<{ success: boolean; table?: ProjectTable; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/get-project-table",
+      { method: "POST", body: { action: "get_project_table", ...data } }
+    );
+  },
+
+  listProjectRows: async (data: { projectId: string | number; table: string; limit?: number; after?: string | null }) => {
+    return request<{ success: boolean; rows?: ProjectRow[]; next?: string | null; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/list-project-rows",
+      { method: "POST", body: { action: "list_project_rows", ...data } }
+    );
+  },
+
+  putProjectRow: async (data: { projectId: string | number; table: string; values: Record<string, string | number | boolean | null> }) => {
+    return request<{ success: boolean; created?: boolean; pk?: string; values?: Record<string, string | number | boolean | null>; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/put-project-row",
+      { method: "POST", body: { action: "put_project_row", ...data } }
+    );
+  },
+
+  deleteProjectRow: async (data: { projectId: string | number; table: string; pk: string }) => {
+    return request<{ success: boolean; deleted?: string; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-project-row",
+      { method: "POST", body: { action: "delete_project_row", ...data } }
+    );
+  },
+
   // 移动站点到项目
   setWebsiteProject: async (data: { docId?: string | number; websiteId?: string; projectId?: string | number | null }) => {
     return request<{ success: boolean; project?: any; websiteId?: string; docId?: string; message?: string }>(
@@ -1535,6 +1583,24 @@ export function mapWebsiteRow(row: any): any {
     updatedAt: row.updated_at ? { $date: new Date(row.updated_at).getTime() } : undefined
   };
 }
+
+export type ProjectColumn = {
+  name: string;
+  type: "text" | "number" | "boolean";
+  primary?: boolean;
+};
+
+export type ProjectTable = {
+  name: string;
+  columns: ProjectColumn[];
+  rowCount?: number;
+};
+
+export type ProjectRow = {
+  pk: string;
+  values: Record<string, string | number | boolean | null>;
+  updatedAt?: string | null;
+};
 
 export type SiteFunction = {
   functionId: string;

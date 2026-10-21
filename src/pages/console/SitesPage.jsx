@@ -1,7 +1,7 @@
 import React from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { Button, Input } from "@/components/ui";
-import { Search, UploadCloud } from "lucide-react";
+import { Search, UploadCloud, UsersRound } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { translations } from "../home-translations";
 import { useAuth } from "../use-auth";
@@ -92,6 +92,14 @@ export default function SitesPage() {
           {roleLimits ? (
             <span className="font-mono text-sm text-[var(--stitch-muted)]">{quota}</span>
           ) : null}
+          <Button
+            variant="outline"
+            className="stitch-action rounded-full px-5"
+            onClick={() => navigate(`/console/projects/${currentProjectId}/members`)}
+          >
+            <UsersRound className="mr-2 h-4 w-4" />
+            {t.projectMembers}
+          </Button>
           <Button className="stitch-primary rounded-full px-5" onClick={goDeploy}>
             <UploadCloud className="mr-2 h-4 w-4" />
             {t.startDeploy}
