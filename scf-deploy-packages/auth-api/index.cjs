@@ -148,7 +148,7 @@ exports.main = async (event, context) => {
   }, null, 2));
 
   try {
-    // Database migrations are reachable only through a direct SCF Invoke payload.
+    // 旧的飞书建列 Invoke 不再改表，只返回迁移文件位置。
     if (event.internalMigration === 'feishu_identity') {
       return await handleFeishuIdentityMigration(event);
     }
@@ -1810,145 +1810,15 @@ async function handleUnbindFeishu(event) {
 }
 
 /**
- * 幂等补充飞书身份字段。只接受直接 SCF Invoke 的顶层标记，避免暴露公网迁移入口。
+ * 飞书身份列已经改为 SQL 迁移。直接 Invoke 不再改表。
  */
-async function handleFeishuIdentityMigration(event) {
-  const columnDefinitions = [
-    {
-      name: 'feishu_open_id',
-      ddl: "ADD COLUMN feishu_open_id VARCHAR(128) DEFAULT NULL COMMENT '飞书应用内用户唯一标识'"
-    },
-    {
-      name: 'feishu_union_id',
-      ddl: "ADD COLUMN feishu_union_id VARCHAR(128) DEFAULT NULL COMMENT '飞书开发者维度用户唯一标识'"
-    },
-    {
-      name: 'feishu_name',
-      ddl: "ADD COLUMN feishu_name VARCHAR(255) DEFAULT NULL COMMENT '飞书用户名称'"
-    },
-    {
-      name: 'feishu_tenant_key',
-      ddl: "ADD COLUMN feishu_tenant_key VARCHAR(128) DEFAULT NULL COMMENT '飞书租户唯一标识'"
-    },
-    {
-      name: 'feishu_email',
-      ddl: "ADD COLUMN feishu_email VARCHAR(255) DEFAULT NULL COMMENT '飞书认证邮箱'"
-    }
-  ];
-  const indexDefinitions = [
-    {
-      name: 'uniq_feishu_open_id',
-      column: 'feishu_open_id',
-      ddl: 'ADD UNIQUE KEY uniq_feishu_open_id (feishu_open_id)'
-    },
-    {
-      name: 'uniq_feishu_union_id',
-      column: 'feishu_union_id',
-      ddl: 'ADD UNIQUE KEY uniq_feishu_union_id (feishu_union_id)'
-    }
-  ];
-
-  const columnsBefore = await query(
-    `SELECT COLUMN_NAME
-     FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-       AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name', 'feishu_tenant_key', 'feishu_email')`
-  );
-  const indexesBefore = await query(
-    `SELECT DISTINCT INDEX_NAME
-     FROM information_schema.STATISTICS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-       AND INDEX_NAME IN ('uniq_feishu_open_id', 'uniq_feishu_union_id')`
-  );
-  const tableStats = await query(
-    `SELECT TABLE_ROWS
-     FROM information_schema.TABLES
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
-  );
-  if (tableStats.length === 0) {
-    throw new Error('目标数据库缺少 users 表');
-  }
-
-  const existingColumns = new Set(columnsBefore.map((row) => row.COLUMN_NAME));
-  const existingIndexes = new Set(indexesBefore.map((row) => row.INDEX_NAME));
-  const duplicateGroups = {};
-
-  for (const definition of indexDefinitions) {
-    if (existingColumns.has(definition.column) && !existingIndexes.has(definition.name)) {
-      const duplicates = await query(
-        `SELECT COUNT(*) AS count
-         FROM (
-           SELECT ${definition.column}
-           FROM users
-           WHERE ${definition.column} IS NOT NULL
-           GROUP BY ${definition.column}
-           HAVING COUNT(*) > 1
-         ) AS duplicate_groups`
-      );
-      duplicateGroups[definition.column] = Number(duplicates[0]?.count || 0);
-    } else {
-      duplicateGroups[definition.column] = 0;
-    }
-  }
-
-  if (Object.values(duplicateGroups).some((count) => count > 0)) {
-    return {
-      statusCode: 409,
-      headers: getCORSHeaders(),
-      body: JSON.stringify({
-        success: false,
-        error: '飞书身份字段存在重复值，无法安全建立唯一索引',
-        duplicateGroups
-      })
-    };
-  }
-
-  const missingColumns = columnDefinitions.filter((item) => !existingColumns.has(item.name));
-  const missingIndexes = indexDefinitions.filter((item) => !existingIndexes.has(item.name));
-  const alterClauses = [
-    ...missingColumns.map((item) => item.ddl),
-    ...missingIndexes.map((item) => item.ddl)
-  ];
-
-  if (event.dryRun !== true && alterClauses.length > 0) {
-    await query(`ALTER TABLE users\n  ${alterClauses.join(',\n  ')}`);
-  }
-
-  let verified = false;
-  if (event.dryRun !== true) {
-    const columnsAfter = await query(
-      `SELECT COLUMN_NAME
-       FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-         AND COLUMN_NAME IN ('feishu_open_id', 'feishu_union_id', 'feishu_name', 'feishu_tenant_key', 'feishu_email')`
-    );
-    const indexesAfter = await query(
-      `SELECT DISTINCT INDEX_NAME
-       FROM information_schema.STATISTICS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
-         AND INDEX_NAME IN ('uniq_feishu_open_id', 'uniq_feishu_union_id')`
-    );
-    const finalColumns = new Set(columnsAfter.map((row) => row.COLUMN_NAME));
-    const finalIndexes = new Set(indexesAfter.map((row) => row.INDEX_NAME));
-    verified = columnDefinitions.every((item) => finalColumns.has(item.name)) &&
-      indexDefinitions.every((item) => finalIndexes.has(item.name));
-    if (!verified) throw new Error('飞书身份数据库迁移后校验失败');
-  }
-
+async function handleFeishuIdentityMigration() {
   return {
-    statusCode: 200,
+    statusCode: 410,
     headers: getCORSHeaders(),
     body: JSON.stringify({
-      success: true,
-      dryRun: event.dryRun === true,
-      estimatedRows: Number(tableStats[0]?.TABLE_ROWS || 0),
-      changesRequired: alterClauses.length,
-      addedColumns: event.dryRun === true ? [] : missingColumns.map((item) => item.name),
-      addedIndexes: event.dryRun === true ? [] : missingIndexes.map((item) => item.name),
-      plannedColumns: missingColumns.map((item) => item.name),
-      plannedIndexes: missingIndexes.map((item) => item.name),
-      duplicateGroups,
-      verified
+      success: false,
+      error: '运行时不再修改 users 表。请执行 migrations/001_add_feishu_identity.sql 和 migrations/002_add_feishu_grant_identity.sql。'
     })
   };
 }
@@ -2229,12 +2099,10 @@ async function insertAuthCode({ code, userId, clientId, redirectUri, expiresAt, 
     );
   } catch (error) {
     if (!isMissingMysqlColumn(error)) throw error;
-    await query('ALTER TABLE oauth_auth_codes ADD COLUMN code_challenge VARCHAR(128) NULL');
-    await query(
-      `INSERT INTO oauth_auth_codes (code, user_id, client_id, redirect_uri, expires_at, scopes, code_challenge)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      params
-    );
+    const schemaError = new Error('oauth_auth_codes 缺少 code_challenge。请先执行 migrations/003_oauth_pkce.sql，运行时不会改表。');
+    schemaError.code = 'SCHEMA_MIGRATION_REQUIRED';
+    schemaError.cause = error;
+    throw schemaError;
   }
 }
 
@@ -2247,8 +2115,10 @@ async function loadAuthCode(code, clientId, redirectUri) {
     );
   } catch (error) {
     if (!isMissingMysqlColumn(error)) throw error;
-    await query('ALTER TABLE oauth_auth_codes ADD COLUMN code_challenge VARCHAR(128) NULL');
-    return loadAuthCode(code, clientId, redirectUri);
+    const schemaError = new Error('oauth_auth_codes 缺少 code_challenge。请先执行 migrations/003_oauth_pkce.sql，运行时不会改表。');
+    schemaError.code = 'SCHEMA_MIGRATION_REQUIRED';
+    schemaError.cause = error;
+    throw schemaError;
   }
 }
 

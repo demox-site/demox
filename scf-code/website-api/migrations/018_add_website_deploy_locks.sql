@@ -1,4 +1,4 @@
--- 站点级部署互斥锁（带 TTL）。代码中 ensureWebsiteDeployLocksTable() 也会幂等创建。
+-- 站点级部署互斥锁（带 TTL）。运行时不再建这张表。可重复执行。
 CREATE TABLE IF NOT EXISTS website_deploy_locks (
   website_id  VARCHAR(32) NOT NULL,
   lock_token  CHAR(36) NOT NULL,

@@ -5,8 +5,7 @@
 -- 走的是哪条管理员通道（via：admin_only 仅管理员接口 / override 用管理员身份操作别人的资源）、
 -- 结果（status_code、success）。target 只记 ID、角色这类字段，不记邮箱、token、密钥。
 --
--- website-api v13 在第一次写审计时也会 CREATE TABLE IF NOT EXISTS（ensureAdminAuditTable），
--- 本文件与之一致，可重复执行。发布时先执行本迁移，再切 website 别名。
+-- 运行时不再建这张表。本文件可重复执行。发布时先执行本迁移，再切 website 别名。
 -- 只追加，不更新、不删除；读接口 list_admin_audit 只读。
 CREATE TABLE IF NOT EXISTS admin_audit_log (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

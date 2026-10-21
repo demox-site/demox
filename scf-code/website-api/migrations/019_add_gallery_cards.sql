@@ -1,6 +1,5 @@
 -- 首页作品墙。后台可配置；公开接口只返回 enabled=1。
--- 生产环境可能不会执行包里的 SQL 文件，website-api 首次访问时也会
--- CREATE TABLE IF NOT EXISTS（ensureGalleryCardsTable）。本文件与那段 DDL 保持一致。
+-- 运行时不再建这张表。发布 website 之前先执行本文件。可重复执行。
 --
 -- title_en / caption_en 从第一天就有：英文首页在远程卡片替换内置卡片时
 -- 仍能用英文文案，没有英文则回退到 title / caption。

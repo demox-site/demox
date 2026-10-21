@@ -310,35 +310,10 @@ test('feishu schema migration cannot be triggered through the public request bod
   assert.equal(response.statusCode, 404);
 });
 
-test('direct SCF invoke applies and verifies the feishu schema migration', async () => {
-  let migrated = false;
-  let alterSql = '';
+test('direct SCF invoke refuses to change the feishu schema', async () => {
+  let queried = false;
   queryImpl = async (sql) => {
-    if (sql.includes('information_schema.COLUMNS')) {
-      return migrated
-        ? [
-            { COLUMN_NAME: 'feishu_open_id' },
-            { COLUMN_NAME: 'feishu_union_id' },
-            { COLUMN_NAME: 'feishu_name' },
-            { COLUMN_NAME: 'feishu_tenant_key' },
-            { COLUMN_NAME: 'feishu_email' }
-          ]
-        : [];
-    }
-    if (sql.includes('information_schema.STATISTICS')) {
-      return migrated
-        ? [
-            { INDEX_NAME: 'uniq_feishu_open_id' },
-            { INDEX_NAME: 'uniq_feishu_union_id' }
-          ]
-        : [];
-    }
-    if (sql.includes('information_schema.TABLES')) return [{ TABLE_ROWS: 12 }];
-    if (sql.startsWith('ALTER TABLE users')) {
-      alterSql = sql;
-      migrated = true;
-      return { affectedRows: 0 };
-    }
+    queried = true;
     throw new Error(`Unexpected query: ${sql}`);
   };
 
@@ -349,24 +324,11 @@ test('direct SCF invoke applies and verifies the feishu schema migration', async
   });
   const body = JSON.parse(response.body);
 
-  assert.equal(response.statusCode, 200);
-  assert.equal(body.success, true);
-  assert.equal(body.verified, true);
-  assert.equal(body.estimatedRows, 12);
-  assert.deepEqual(body.addedColumns, [
-    'feishu_open_id',
-    'feishu_union_id',
-    'feishu_name',
-    'feishu_tenant_key',
-    'feishu_email'
-  ]);
-  assert.deepEqual(body.addedIndexes, [
-    'uniq_feishu_open_id',
-    'uniq_feishu_union_id'
-  ]);
-  assert.match(alterSql, /ADD COLUMN feishu_open_id/);
-  assert.match(alterSql, /ADD COLUMN feishu_tenant_key/);
-  assert.match(alterSql, /ADD UNIQUE KEY uniq_feishu_union_id/);
+  assert.equal(response.statusCode, 410);
+  assert.equal(body.success, false);
+  assert.match(body.error, /001_add_feishu_identity\.sql/);
+  assert.match(body.error, /002_add_feishu_grant_identity\.sql/);
+  assert.equal(queried, false);
 });
 
 test('send-code fails closed when SES is not configured', async () => {

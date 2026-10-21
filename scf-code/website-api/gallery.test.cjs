@@ -18,7 +18,6 @@ Object.assign(process.env, {
 const cards = new Map();
 let role = 'admin';
 let failGallery = false;
-let ddl = '';
 
 function rowOf(id) {
   return cards.get(id) || null;
@@ -36,13 +35,8 @@ let queryImpl = async (sql, params = []) => {
     if (!role) return [];
     return [{ roles: JSON.stringify([role]), pro_expires_at: null }];
   }
-  if (compact.includes('CREATE TABLE IF NOT EXISTS admin_audit_log') || compact.includes('INSERT INTO admin_audit_log')) {
+  if (compact.includes('INSERT INTO admin_audit_log')) {
     return { affectedRows: 1 };
-  }
-  if (compact.includes('CREATE TABLE IF NOT EXISTS gallery_cards')) {
-    ddl = compact;
-    if (failGallery) throw Object.assign(new Error('db down'), { code: 'ECONNREFUSED' });
-    return { affectedRows: 0 };
   }
   if (failGallery && compact.includes('gallery_cards')) {
     throw Object.assign(new Error('db down'), { code: 'ECONNREFUSED' });
@@ -129,12 +123,14 @@ function json(res) {
   return JSON.parse(res.body);
 }
 
-test('migration 019 and runtime DDL both include bilingual columns', () => {
+test('migration 019 includes bilingual columns and runtime does not create the table', () => {
   const sql = fs.readFileSync(path.join(__dirname, 'migrations/019_add_gallery_cards.sql'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
   for (const column of ['title_en', 'caption_en', 'CREATE TABLE IF NOT EXISTS gallery_cards']) {
     assert.match(sql, new RegExp(column));
-    assert.match(gallery.GALLERY_CARDS_DDL, new RegExp(column));
   }
+  assert.equal(source.includes('CREATE TABLE IF NOT EXISTS gallery_cards'), false);
+  assert.equal(gallery.GALLERY_CARDS_DDL, undefined);
 });
 
 test('url and image must be https://*.demox.site', () => {
@@ -166,8 +162,6 @@ test('unauthenticated list_gallery_cards is 200 and enabled only', async () => {
   assert.equal(body.data[0].titleEn, 'Coffee');
   assert.equal(body.data[0].captionEn, 'Built with Demox');
   assert.equal(body.data[0].enabled, true);
-  assert.match(ddl, /title_en/);
-  assert.match(ddl, /caption_en/);
 });
 
 test('non-admin cannot save or reorder; invalid hosts are rejected and not stored', async () => {

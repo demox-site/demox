@@ -328,8 +328,7 @@ const {
   uploadObjectPrefix,
   uploadObjectKey,
   parseResultJson,
-  isDeployUploadExpired,
-  needsDeployUploadExpiryMigration
+  isDeployUploadExpired
 } = require('./shared/deploy-upload.js');
 const { scanZipEntries, createImsModerator, listBlockedPhrasesCatalog } = require('./shared/content-scan.js');
 const {
@@ -1890,26 +1889,8 @@ function buildSiteDisabledNotice({ ownerName, siteName, siteUrl, websiteId, reas
   };
 }
 
-let _disableReasonColumnEnsured = false;
 async function ensureWebsiteDisableReasonColumn() {
-  if (_disableReasonColumnEnsured) return;
-  try {
-    const cols = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
-         AND COLUMN_NAME IN ('disable_reason','disabled_at')`
-    );
-    const have = new Set((cols || []).map((row) => row.COLUMN_NAME));
-    if (!have.has('disable_reason')) {
-      await query("ALTER TABLE websites ADD COLUMN disable_reason VARCHAR(500) NULL");
-    }
-    if (!have.has('disabled_at')) {
-      await query('ALTER TABLE websites ADD COLUMN disabled_at TIMESTAMP NULL');
-    }
-  } catch (e) {
-    console.warn('ensureWebsiteDisableReasonColumn skipped:', e.message);
-  }
-  _disableReasonColumnEnsured = true;
+  // migrations/026_add_website_disable_columns.sql
 }
 
 async function createEdgeOnePurgeTask({ type, targets, method }) {
@@ -2474,48 +2455,8 @@ function defaultUserLimits() {
   };
 }
 
-let _roleQuotaColumnsEnsured = false;
-/** 幂等补齐 roles.project_limit / max_db_bytes，并给普通用户角色写上默认值。 */
-async function ensureRoleQuotaColumns() {
-  if (_roleQuotaColumnsEnsured) return;
-  try {
-    const cols = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roles'
-         AND COLUMN_NAME IN ('project_limit','max_db_bytes')`
-    );
-    const have = new Set((cols || []).map((row) => row.COLUMN_NAME || row.column_name));
-    if (!have.has('project_limit')) {
-      try {
-        await query('ALTER TABLE roles ADD COLUMN project_limit INT NULL COMMENT \'最大未归档自有项目数，NULL=不限\'');
-      } catch (e) {
-        if (!/Duplicate column/i.test(e.message || '')) console.warn('add project_limit:', e.message || e);
-      }
-    }
-    if (!have.has('max_db_bytes')) {
-      try {
-        await query('ALTER TABLE roles ADD COLUMN max_db_bytes BIGINT NULL COMMENT \'单项目数据库字节上限，NULL=不限\'');
-      } catch (e) {
-        if (!/Duplicate column/i.test(e.message || '')) console.warn('add max_db_bytes:', e.message || e);
-      }
-    }
-    try {
-      await query(
-        `UPDATE roles
-         SET project_limit = COALESCE(project_limit, ?),
-             max_db_bytes = COALESCE(max_db_bytes, ?)
-         WHERE id = 'user' OR name IN ('user', '普通用户')`,
-        [DEFAULT_PROJECT_LIMIT, DEFAULT_MAX_DB_BYTES]
-      );
-    } catch (e) {
-      console.warn('seed user role quotas:', e.message || e);
-    }
-  } catch (e) {
-    console.warn('ensureRoleQuotaColumns:', e.message || e);
-  } finally {
-    _roleQuotaColumnsEnsured = true;
-  }
-}
+/** roles.project_limit / max_db_bytes 由 migrations/027_add_role_quota_columns.sql 写入。 */
+async function ensureRoleQuotaColumns() {}
 
 /**
  * 从数据库获取用户角色配置
@@ -2572,149 +2513,28 @@ async function getUserLimits(userId) {
   }
 }
 
-/**
- * 幂等确保 websites 表存在用量列。
- * 冷启动后只检查一次；列已存在时仅一次轻量 information_schema 查询。
- * 未执行 008 迁移的历史库也能自动补列，避免部署写入失败。
- */
-let _usageColumnsEnsured = false;
 async function ensureUsageColumns() {
-  if (_usageColumnsEnsured) return;
-  try {
-    const cols = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
-         AND COLUMN_NAME IN ('file_count','storage_size','deployed_size')`
-    );
-    const have = new Set((cols || []).map((r) => r.COLUMN_NAME));
-    if (!have.has('file_count')) {
-      await query(`ALTER TABLE websites ADD COLUMN file_count INT DEFAULT NULL COMMENT '本次部署的文件数量（单次上传包）'`);
-    }
-    if (!have.has('storage_size')) {
-      await query(`ALTER TABLE websites ADD COLUMN storage_size BIGINT DEFAULT NULL COMMENT '本次部署的上传包体积(字节)'`);
-    }
-    if (!have.has('deployed_size')) {
-      await query(`ALTER TABLE websites ADD COLUMN deployed_size BIGINT DEFAULT NULL COMMENT '当前部署解压后文件体积(字节)'`);
-    }
-  } catch (e) {
-    // 列可能已存在（并发）或库不可用；写入时若仍缺列会再兜底。
-    console.warn('ensureUsageColumns 跳过:', e.message);
-  }
-  _usageColumnsEnsured = true;
+  // migrations/008_add_website_usage_columns.sql and migrations/025_add_website_deployed_size.sql
 }
 
-/**
- * 幂等确保 websites 表存在 seo_title / seo_description / og_image 列。
- * 冷启动后只检查一次；用于边缘函数在回源时向 <head> 注入 SEO meta。
- */
-let _seoColumnsEnsured = false;
 async function ensureSeoColumns() {
-  if (_seoColumnsEnsured) return;
-  try {
-    const cols = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
-         AND COLUMN_NAME IN ('seo_title','seo_description','og_image')`
-    );
-    const have = new Set((cols || []).map((r) => r.COLUMN_NAME));
-    if (!have.has('seo_title')) {
-      await query(`ALTER TABLE websites ADD COLUMN seo_title VARCHAR(255) NULL COMMENT 'SEO 标题，为空回退 name'`);
-    }
-    if (!have.has('seo_description')) {
-      await query(`ALTER TABLE websites ADD COLUMN seo_description VARCHAR(500) NULL COMMENT 'SEO 描述（meta description）'`);
-    }
-    if (!have.has('og_image')) {
-      await query(`ALTER TABLE websites ADD COLUMN og_image VARCHAR(500) NULL COMMENT 'OG 图片外链 URL'`);
-    }
-  } catch (e) {
-    console.warn('ensureSeoColumns 跳过:', e.message);
-  }
-  _seoColumnsEnsured = true;
+  // migrations/011_add_seo_columns.sql
 }
 
-/** Ensure the per-site watermark preference exists before reads or writes. */
-let _watermarkColumnEnsured = false;
 async function ensureWatermarkColumn() {
-  if (_watermarkColumnEnsured) return;
-  try {
-    const cols = await query(
-      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'websites'
-         AND COLUMN_NAME = 'hide_watermark'`
-    );
-    if (!cols.length) {
-      await query(
-        `ALTER TABLE websites ADD COLUMN hide_watermark TINYINT(1) NOT NULL DEFAULT 0
-         COMMENT 'Whether the hosted-page Demox watermark is hidden'`
-      );
-    }
-  } catch (e) {
-    console.warn('ensureWatermarkColumn skipped:', e.message);
-  }
-  _watermarkColumnEnsured = true;
+  // migrations/015_add_hide_watermark.sql
 }
 
-/** Ensure GitHub project grants can be stored before reads or writes. */
-let _githubGrantsTableEnsured = false;
 async function ensureGithubGrantsTable() {
-  if (_githubGrantsTableEnsured) return;
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS project_github_grants (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        project_id BIGINT NOT NULL,
-        principal_type VARCHAR(16) NOT NULL DEFAULT 'user',
-        key_type VARCHAR(32) NOT NULL DEFAULT 'github_id',
-        principal_key VARCHAR(255) NOT NULL,
-        github_login VARCHAR(255) DEFAULT NULL,
-        display_name VARCHAR(120) DEFAULT NULL,
-        avatar_url VARCHAR(512) DEFAULT NULL,
-        role VARCHAR(16) NOT NULL DEFAULT 'member',
-        created_by VARCHAR(64) NOT NULL,
-        active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_project_github_principal (project_id, principal_type, key_type, principal_key),
-        INDEX idx_project_github_principal (principal_type, key_type, principal_key, active),
-        INDEX idx_project_github_project (project_id, active, role)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
-    );
-  } catch (e) {
-    console.warn('ensureGithubGrantsTable skipped:', e.message);
-  }
-  _githubGrantsTableEnsured = true;
+  // migrations/016_add_project_github_grants.sql
 }
 
 let _customDomainsTableEnsured = false;
 async function ensureCustomDomainsTable() {
+  // Tables: migrations/017_add_custom_domains.sql
+  // Legacy row copy: migrations/029_backfill_custom_domain_routes.sql
   if (_customDomainsTableEnsured) return;
   try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS custom_domains (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        project_id BIGINT NOT NULL,
-        hostname VARCHAR(255) NOT NULL,
-        status VARCHAR(32) NOT NULL DEFAULT 'pending',
-        created_by VARCHAR(64) NOT NULL,
-        verified_at TIMESTAMP NULL DEFAULT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_custom_domain_hostname (hostname),
-        INDEX idx_custom_domains_project (project_id, created_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
-    );
-    await query(
-      `CREATE TABLE IF NOT EXISTS custom_domain_routes (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        custom_domain_id BIGINT NOT NULL,
-        label VARCHAR(63) NOT NULL DEFAULT '',
-        website_id BIGINT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_custom_domain_route (custom_domain_id, label),
-        INDEX idx_custom_domain_routes_website (website_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
-    );
     const legacy = await query(
       `SELECT COLUMN_NAME FROM information_schema.COLUMNS
        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'custom_domains' AND COLUMN_NAME = 'website_id'`
@@ -2726,78 +2546,21 @@ async function ensureCustomDomainsTable() {
       );
     }
   } catch (e) {
-    console.warn('ensureCustomDomainsTable skipped:', e.message);
+    console.warn('custom domain route backfill skipped:', e.message);
   }
   _customDomainsTableEnsured = true;
 }
 
-/**
- * 幂等确保 access_tokens 表存在（个人访问令牌）。
- */
-let _accessTokensTableEnsured = false;
 async function ensureAccessTokensTable() {
-  if (_accessTokensTableEnsured) return;
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS access_tokens (
-        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-        user_id      VARCHAR(64) NOT NULL COMMENT '所属用户ID',
-        name         VARCHAR(255) NOT NULL COMMENT '令牌名称（用户自取）',
-        jti          VARCHAR(64) NOT NULL COMMENT 'JWT ID，用于吊销查表',
-        prefix       VARCHAR(32) NOT NULL COMMENT '令牌前缀（展示用，不可还原）',
-        expires_at   TIMESTAMP NULL DEFAULT NULL COMMENT '过期时间',
-        last_used_at TIMESTAMP NULL DEFAULT NULL COMMENT '最近使用时间',
-        revoked_at   TIMESTAMP NULL DEFAULT NULL COMMENT '吊销时间',
-        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY uniq_access_tokens_jti (jti),
-        INDEX idx_access_tokens_user (user_id),
-        INDEX idx_access_tokens_prefix (prefix)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='个人访问令牌'`
-    );
-  } catch (e) {
-    console.warn('ensureAccessTokensTable 跳过:', e.message);
-  }
-  _accessTokensTableEnsured = true;
+  // migrations/009_add_access_tokens.sql
 }
 
-/**
- * 幂等确保 product_events 表存在（产品漏斗埋点）。
- */
-let _productEventsTableEnsured = false;
 async function ensureProductEventsTable() {
-  if (_productEventsTableEnsured) return;
-  try {
-    await query(
-      `CREATE TABLE IF NOT EXISTS product_events (
-        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-        event_name  VARCHAR(64) NOT NULL COMMENT '事件名',
-        visitor_id  VARCHAR(64) NOT NULL DEFAULT '' COMMENT '匿名访客ID',
-        page        VARCHAR(128) NOT NULL DEFAULT '' COMMENT '触发页面路径',
-        props       JSON NULL COMMENT '附加属性（JSON）',
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_product_events_name_time (event_name, created_at),
-        INDEX idx_product_events_visitor (visitor_id, created_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品漏斗埋点'`
-    );
-  } catch (e) {
-    console.warn('ensureProductEventsTable 跳过:', e.message);
-  }
-  _productEventsTableEnsured = true;
+  // migrations/010_add_product_events.sql
 }
-
-/**
- * 检查管理员权限
- */
-let _proExpiresColumnEnsured = false;
 
 async function ensureProExpiresColumn() {
-  if (_proExpiresColumnEnsured) return;
-  await ensureColumn(
-    'user_roles',
-    'pro_expires_at',
-    "ALTER TABLE user_roles ADD COLUMN pro_expires_at DATETIME DEFAULT NULL COMMENT '专业会员到期时间，NULL=永久'"
-  );
-  _proExpiresColumnEnsured = true;
+  // migrations/016_add_pro_expires_at.sql
 }
 
 async function getUserRoleIds(userId) {
@@ -3885,29 +3648,9 @@ function adminAuditOutcome(response) {
   return { statusCode, success };
 }
 
-let adminAuditTableReady = null;
 function ensureAdminAuditTable() {
-  if (!adminAuditTableReady) {
-    adminAuditTableReady = query(`CREATE TABLE IF NOT EXISTS admin_audit_log (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      operator_uid VARCHAR(64) NOT NULL,
-      auth_method VARCHAR(8) NOT NULL,
-      action VARCHAR(64) NOT NULL,
-      kind VARCHAR(8) NOT NULL DEFAULT 'write',
-      target VARCHAR(255) NOT NULL DEFAULT '',
-      via VARCHAR(64) NOT NULL DEFAULT 'admin_only',
-      status_code SMALLINT NOT NULL DEFAULT 0,
-      success TINYINT(1) NOT NULL DEFAULT 0,
-      created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-      INDEX idx_admin_audit_time (created_at),
-      INDEX idx_admin_audit_operator_time (operator_uid, created_at),
-      INDEX idx_admin_audit_action_time (action, created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员操作审计'`).catch((error) => {
-      adminAuditTableReady = null;
-      throw error;
-    });
-  }
-  return adminAuditTableReady;
+  // migrations/021_add_admin_audit_log.sql
+  return Promise.resolve();
 }
 
 function adminAuditSkipped(action) {
@@ -5101,6 +4844,13 @@ async function projectDataContext(event, mode) {
 function projectDataFailure(error) {
   if (error && PROJECT_DATA_CODES.has(error.code)) {
     return ok({ success: false, code: error.code, message: error.message });
+  }
+  if (error && (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_FIELD_ERROR')) {
+    return ok({
+      success: false,
+      code: 'schema',
+      message: '项目数据表还没有初始化，请先执行 migrations/028_add_project_data_tables.sql'
+    });
   }
   return ok({ success: false, message: '数据库操作失败' });
 }
@@ -7584,13 +7334,10 @@ const adminBi = createAdminBiService({
  * body: { range: 7 | 30 | 90 }
  */
 /**
- * 部署按天的日志回填（迁移 022 + seeds/022，Chief 2026-10-09 批准）。
- * box 没有数据库凭证、安全组也不开，所以和 021（admin_audit_log）一样，由已发布的 website 函数自己建表：
- * 管理员第一次打开看板（get_admin_bi）时，每个实例跑一次：
- *   1. CREATE TABLE IF NOT EXISTS deploy_daily_backfill（与 migrations/022 一致）；
- *   2. INSERT IGNORE 这 8 行（与 migrations/seeds/022 一致，主键 stat_date+source，已有的行不覆盖）。
- * 只碰 deploy_daily_backfill 这一张表。失败只记错误码，看板照常（退回只用站点记录补算），下次再试。
- * 数据只有按天汇总（UTC+8 日期、成功次数），fail / channel 为 NULL（未知），不含任何日志原文或用户信息。
+ * 部署按天的日志回填（迁移 022 + seeds/022）。
+ * 表由 migrations/022_add_deploy_daily_backfill.sql 建立，种子在 migrations/seeds/022。
+ * 管理员第一次打开看板时，本进程补写那 8 行（INSERT IGNORE，已有行不覆盖）。
+ * 不建表。表不存在或写入失败时只记错误码，看板照常，下次再试。
  */
 const DEPLOY_LOG_BACKFILL_ROWS = [
   // [stat_date, total, partial, covered_from(UTC), covered_until(UTC)]
@@ -7608,19 +7355,6 @@ let deployBackfillReady = null;
 function ensureDeployDailyBackfill() {
   if (!deployBackfillReady) {
     deployBackfillReady = (async () => {
-      await query(`CREATE TABLE IF NOT EXISTS deploy_daily_backfill (
-        stat_date     DATE NOT NULL COMMENT 'UTC+8 日期',
-        source        VARCHAR(16) NOT NULL DEFAULT 'log_backfill' COMMENT '数据来源；目前只有 log_backfill',
-        total         INT UNSIGNED NOT NULL COMMENT '当天成功部署次数（按请求去重）',
-        fail          INT UNSIGNED DEFAULT NULL COMMENT '失败次数；日志里认不出，NULL = 未知',
-        channel       VARCHAR(16) DEFAULT NULL COMMENT '渠道；日志里没有，NULL = 未知',
-        partial       TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = 这天只覆盖了一部分（日志开始那天 / 埋点开始那天）',
-        covered_from  DATETIME DEFAULT NULL COMMENT '这一行覆盖的起点（UTC）',
-        covered_until DATETIME DEFAULT NULL COMMENT '这一行覆盖的终点（UTC，不含）',
-        note          VARCHAR(255) DEFAULT NULL,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (stat_date, source)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署按天回填（埋点之前，只有总数）'`);
       const values = DEPLOY_LOG_BACKFILL_ROWS.map(() => "(?, 'log_backfill', ?, NULL, NULL, ?, ?, ?, ?)").join(', ');
       const params = DEPLOY_LOG_BACKFILL_ROWS.flatMap(([d, total, partial, from, until]) => [d, total, partial, from, until, DEPLOY_LOG_BACKFILL_NOTE]);
       await query(
@@ -7643,7 +7377,7 @@ async function handleGetAdminBi(event) {
   try {
     await ensureDeployDailyBackfill();
   } catch (e) {
-    console.warn('部署日志回填建表/写入失败:', (e && e.code) || 'ERROR');
+    console.warn('部署日志回填写入失败:', (e && e.code) || 'ERROR');
   }
   try {
     const data = await adminBi.get(event.body && event.body.range);
@@ -8323,28 +8057,9 @@ async function handleTrackSiteEvent(event) {
 }
 
 const SITE_REPORT_REASONS = new Set(['porn', 'illegal', 'violence', 'spam', 'ip', 'other']);
-let _siteReportsTableEnsured = false;
 
 async function ensureSiteReportsTable() {
-  if (_siteReportsTableEnsured) return;
-  await query(
-    `CREATE TABLE IF NOT EXISTS site_reports (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      website_id VARCHAR(32) NOT NULL,
-      reason VARCHAR(16) NOT NULL,
-      note VARCHAR(200) NOT NULL DEFAULT '',
-      page_url VARCHAR(1024) NOT NULL DEFAULT '',
-      host VARCHAR(255) NOT NULL DEFAULT '',
-      ip_hash CHAR(64) NOT NULL DEFAULT '',
-      user_agent VARCHAR(512) NOT NULL DEFAULT '',
-      status VARCHAR(16) NOT NULL DEFAULT 'open',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_reports_site_time (website_id, created_at),
-      INDEX idx_reports_ip_time (ip_hash, created_at),
-      INDEX idx_reports_status_time (status, created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
-  );
-  _siteReportsTableEnsured = true;
+  // migrations/020_add_site_reports.sql
 }
 
 async function handleReportSite(event) {
@@ -8606,18 +8321,6 @@ function normalizeAccessLogPageSize(input) {
   const n = Number.parseInt(String(input || '10'), 10);
   if (!Number.isFinite(n)) return 10;
   return Math.max(1, Math.min(n, 100));
-}
-
-async function ensureColumn(tableName, columnName, alterSql, steps = []) {
-  const rows = await query(
-    `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-    [tableName, columnName]
-  );
-  if (!Number(rows[0]?.c || 0)) {
-    await query(alterSql);
-    steps.push(`added ${tableName}.${columnName}`);
-  }
 }
 
 function listUtcDateKeys(days) {
@@ -10346,42 +10049,8 @@ async function handleSetDefaultBucket(event) {
 
 
 
-let _deployUploadSessionsEnsured = false;
-
 async function ensureDeployUploadSessionsTable() {
-  if (_deployUploadSessionsEnsured) return;
-  await query(
-    `CREATE TABLE IF NOT EXISTS deploy_upload_sessions (
-      upload_id     CHAR(36) NOT NULL,
-      user_id       VARCHAR(64) NOT NULL,
-      website_id    VARCHAR(32) NOT NULL,
-      file_name     VARCHAR(255) NOT NULL,
-      project_id    VARCHAR(64) DEFAULT NULL,
-      bucket_id     INT DEFAULT NULL,
-      total_size    BIGINT UNSIGNED NOT NULL,
-      chunk_size    INT UNSIGNED NOT NULL,
-      total_chunks  INT UNSIGNED NOT NULL,
-      sha256        CHAR(64) NOT NULL,
-      status        VARCHAR(16) NOT NULL DEFAULT 'UPLOADING',
-      result_json   LONGTEXT DEFAULT NULL,
-      error_message VARCHAR(500) DEFAULT NULL,
-      expires_at    DATETIME NOT NULL,
-      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (upload_id),
-      INDEX idx_deploy_upload_user_status (user_id, status, updated_at),
-      INDEX idx_deploy_upload_expires (expires_at, status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='部署分块上传会话'`
-  );
-  const expiryColumns = await query(
-    `SELECT DATA_TYPE, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deploy_upload_sessions'
-       AND COLUMN_NAME = 'expires_at' LIMIT 1`
-  );
-  if (needsDeployUploadExpiryMigration(expiryColumns[0])) {
-    await query('ALTER TABLE deploy_upload_sessions MODIFY COLUMN expires_at DATETIME NOT NULL');
-  }
-  _deployUploadSessionsEnsured = true;
+  // migrations/014_add_deploy_upload_sessions.sql
 }
 
 function deployUploadError(statusCode, code, message, extra = {}) {
@@ -10811,22 +10480,8 @@ async function handleUploadAndDeploy(event) {
 
 // 默认 3 分钟：长于单次部署（函数超时 120s），又不会让崩溃实例把站点锁太久。
 const DEPLOY_LOCK_TTL_SECONDS = Math.max(60, parseInt(process.env.DEPLOY_LOCK_TTL_SECONDS || '180', 10) || 180);
-let _deployLocksEnsured = false;
-
 async function ensureWebsiteDeployLocksTable() {
-  if (_deployLocksEnsured) return;
-  await query(
-    `CREATE TABLE IF NOT EXISTS website_deploy_locks (
-      website_id  VARCHAR(32) NOT NULL,
-      lock_token  CHAR(36) NOT NULL,
-      owner_id    VARCHAR(64) DEFAULT NULL,
-      expires_at  DATETIME NOT NULL,
-      created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (website_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站点部署互斥锁（带 TTL）'`
-  );
-  _deployLocksEnsured = true;
+  // migrations/018_add_website_deploy_locks.sql
 }
 
 class DeployInProgressError extends Error {
@@ -11362,34 +11017,12 @@ function getCacheHeaders(key) {
 
 // ── 首页作品墙（迁移 019_add_gallery_cards.sql）──────────────────────────────
 // 公开 list_gallery_cards 只返回 enabled=1。管理端 list/save/reorder 走 requireAdmin。
-// url / image 必须是 https://*.demox.site（含子域）。表由 ensureGalleryCardsTable
-// CREATE TABLE IF NOT EXISTS 保证，生产不一定会跑包里的 SQL 文件。
+// url / image 必须是 https://*.demox.site（含子域）。表由迁移 019 建立。
 // title_en / caption_en 第一天就在，英文首页不会在远程卡片替换内置卡片时丢文案。
 const GALLERY_PREVIEWS = new Set(['image', 'coffee', 'www', 'preview']);
-const GALLERY_CARDS_DDL = `CREATE TABLE IF NOT EXISTS gallery_cards (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
-  title VARCHAR(200) NOT NULL,
-  title_en VARCHAR(200) NOT NULL DEFAULT '',
-  url VARCHAR(512) NOT NULL,
-  href VARCHAR(512) NOT NULL DEFAULT '',
-  preview VARCHAR(16) NOT NULL DEFAULT 'image',
-  image VARCHAR(512) NOT NULL DEFAULT '',
-  caption VARCHAR(500) NOT NULL DEFAULT '',
-  caption_en VARCHAR(500) NOT NULL DEFAULT '',
-  row_num TINYINT NOT NULL,
-  sort_order INT NOT NULL DEFAULT 0,
-  enabled TINYINT(1) NOT NULL DEFAULT 1,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_gallery_row_order (row_num, sort_order),
-  INDEX idx_gallery_enabled (enabled, row_num, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='首页作品墙卡片'`;
 
-let galleryCardsTableReady = false;
 async function ensureGalleryCardsTable() {
-  if (galleryCardsTableReady) return;
-  await query(GALLERY_CARDS_DDL);
-  galleryCardsTableReady = true;
+  // migrations/019_add_gallery_cards.sql
 }
 
 function isDemoxHttpsUrl(value) {
@@ -11673,6 +11306,5 @@ exports._galleryForTest = {
   isDemoxHttpsUrl,
   parseGalleryCardInput,
   mapGalleryCard,
-  GALLERY_CARDS_DDL,
-  reset() { galleryCardsTableReady = false; }
+  reset() {}
 };

@@ -403,11 +403,10 @@ test('get_admin_bi: the only writes are the one-time deploy_daily_backfill ensur
   assert.equal(body.data.series.length, 7);
   // v14：BI 看板属于汇总类读，不再写管理员审计
   assert.deepEqual(seen.filter((sql) => /admin_audit_log/.test(sql)), [], 'no audit row for get_admin_bi');
-  // 唯一的写：迁移 022 的建表 + 8 行 INSERT IGNORE，只碰 deploy_daily_backfill
+  // 唯一的写：8 行 INSERT IGNORE，只碰 deploy_daily_backfill。表由迁移 022 建立。
   const writes = seen.filter((sql) => /\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|REPLACE|TRUNCATE)\b/i.test(sql));
-  assert.equal(writes.length, 2);
-  assert.match(writes[0], /^CREATE TABLE IF NOT EXISTS deploy_daily_backfill \(/);
-  assert.match(writes[1].trim(), /^INSERT IGNORE INTO deploy_daily_backfill\b/);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].trim(), /^INSERT IGNORE INTO deploy_daily_backfill\b/);
   for (const w of writes) {
     const tables = [...w.matchAll(/\b(?:TABLE(?: IF NOT EXISTS)?|INTO|UPDATE|FROM|JOIN)\s+`?(\w+)/gi)].map((m) => m[1]);
     assert.deepEqual([...new Set(tables)], ['deploy_daily_backfill'], w);
@@ -427,25 +426,24 @@ test('deploy backfill ensure failing does not break get_admin_bi and is retried 
   queryImpl = async (sql) => {
     seen.push(sql);
     if (sql.includes('FROM user_roles WHERE user_id')) return [{ roles: ['admin'] }];
-    if (fail && sql.includes('CREATE TABLE IF NOT EXISTS deploy_daily_backfill')) throw Object.assign(new Error('denied'), { code: 'ER_TABLEACCESS_DENIED_ERROR' });
+    if (fail && /INSERT IGNORE INTO deploy_daily_backfill/.test(sql)) throw Object.assign(new Error('denied'), { code: 'ER_TABLEACCESS_DENIED_ERROR' });
     return [];
   };
   const res = await call('get_admin_bi', { range: 7 });
   assert.equal(JSON.parse(res.body).success, true);
-  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 0);
+  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 1);
   fail = false;
   websiteApi._adminBiForTest.clear();
   await call('get_admin_bi', { range: 7 });
-  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 1);
+  assert.equal(seen.filter((q) => /INSERT IGNORE INTO deploy_daily_backfill/.test(q)).length, 2);
 });
 
-test('the inline ensure matches migration 022, seeds/022 and /workspace/v14/log-backfill.json', () => {
+test('runtime backfill rows match seeds/022 and index does not create the table', () => {
   const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-  const inline = src.slice(src.indexOf('CREATE TABLE IF NOT EXISTS deploy_daily_backfill'), src.indexOf("COMMENT='部署按天回填（埋点之前，只有总数）'`"));
   const mig = fs.readFileSync(path.join(__dirname, 'migrations/022_add_deploy_daily_backfill.sql'), 'utf8');
   const cols = (t) => [...t.matchAll(/^\s+(\w+)\s+(DATE|VARCHAR\(\d+\)|INT UNSIGNED|TINYINT\(1\)|DATETIME|TIMESTAMP)(?=\s)/gm)].map((m) => `${m[1]} ${m[2]}`);
   assert.equal(cols(mig).length, 10);
-  assert.deepEqual(cols(inline), cols(mig));
+  assert.equal(src.includes('CREATE TABLE IF NOT EXISTS deploy_daily_backfill'), false);
   const seed = fs.readFileSync(path.join(__dirname, 'migrations/seeds/022_seed_deploy_daily_backfill.sql'), 'utf8');
   const seedRows = [...seed.matchAll(/\('(\d{4}-\d{2}-\d{2})', 'log_backfill', (\d+), NULL, NULL, ([01]), '([^']+)', '([^']+)'/g)]
     .map((m) => [m[1], Number(m[2]), Number(m[3]), m[4], m[5]]);
