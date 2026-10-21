@@ -477,6 +477,8 @@ class FunctionService {
         context
       });
       const response = normalizeFunctionResponse(output, functionRecord.limits.maxResponseBytes);
+      // 只在平台池真正执行后标记。进程内软回落在进 execute 之前就抛出，不会带到这个头。
+      if (pool === 'platform') response.headers['x-demox-dispatch'] = 'platform';
       this.recordInvocation({ functionRecord, version, status, startedAt, requestBytes: request.bodyBytes, responseBytes: Buffer.byteLength(response.body), errorCode });
       return response;
     } catch (error) {

@@ -234,20 +234,63 @@ async function tryInvokeUserRoute(service, event = {}, context = {}) {
   }
 }
 
-async function invokePublishedSystemFunction(service, entry, event, context) {
-  if (!service || typeof service.invokeBySlug !== 'function') return null;
+// 系统函数先尝试已发布版本。进池前的软失败仍回落到进程内，但不再静默：
+// warn `platform publish fallback` 带 { code, slug, path }（code 优先用 error.code，否则用 statusCode）。
+// 响应头 x-demox-dispatch：
+//   platform          平台池已执行（由 service.invoke 在 pool===platform 时写上）
+//   fallback:<code>   软失败后的进程内回落，code 与 warn 相同
+//   in-process        没有尝试已发布函数（无 service / 无 slug）
+const DISPATCH_HEADER = 'x-demox-dispatch';
+
+function dispatchPath(event = {}) {
+  const raw = event.path || event.rawPath || event.requestContext?.http?.path || event.TriggerName || event.triggerName || '';
+  return String(raw).split('?')[0].slice(0, 256);
+}
+
+function fallbackToken(error) {
+  const fromCode = error?.code != null && String(error.code).trim() !== '' ? String(error.code).trim() : '';
+  const fromStatus = error?.statusCode != null && String(error.statusCode).trim() !== '' ? String(error.statusCode).trim() : '';
+  const raw = fromCode || fromStatus || 'UNKNOWN';
+  return /^[A-Za-z0-9._:-]{1,64}$/.test(raw) ? raw : 'UNKNOWN';
+}
+
+function isSoftPublishFallback(error) {
+  return isPlatformPoolFallback(error) || error?.statusCode === 404 || error?.code === 'FUNCTION_NOT_PUBLISHED' || error?.code === 'BUNDLE_MISSING';
+}
+
+function withDispatchHeader(response, dispatch) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) return response;
+  const headers = { ...(response.headers || {}) };
+  for (const key of Object.keys(headers)) {
+    if (String(key).toLowerCase() === DISPATCH_HEADER) delete headers[key];
+  }
+  headers[DISPATCH_HEADER] = dispatch;
+  return { ...response, headers };
+}
+
+async function invokePublishedSystemFunction(service, entry, event, context, logger) {
+  if (!service || typeof service.invokeBySlug !== 'function') {
+    return { response: null, dispatch: 'in-process' };
+  }
   const slug = systemFunctionSlug(entry);
-  if (!slug) return null;
+  if (!slug) return { response: null, dispatch: 'in-process' };
   try {
-    return responseFromInvoke(await service.invokeBySlug({
-      websiteId: platformWebsiteId(),
-      slug,
-      event,
-      context
-    }));
+    return {
+      response: responseFromInvoke(await service.invokeBySlug({
+        websiteId: platformWebsiteId(),
+        slug,
+        event,
+        context
+      })),
+      dispatch: null
+    };
   } catch (error) {
-    if (isPlatformPoolFallback(error) || error?.statusCode === 404 || error?.code === 'FUNCTION_NOT_PUBLISHED' || error?.code === 'BUNDLE_MISSING') {
-      return null;
+    if (isSoftPublishFallback(error)) {
+      const code = fallbackToken(error);
+      const fields = { code, slug, path: dispatchPath(event) };
+      if (Number.isInteger(error?.statusCode)) fields.statusCode = error.statusCode;
+      logger?.warn?.('platform publish fallback', fields);
+      return { response: null, dispatch: `fallback:${code}` };
     }
     throw error;
   }
@@ -306,10 +349,11 @@ function createPlatformHandler({
         resolvedUserHandler.service,
         systemEntry,
         scopedEvent,
-        context
+        context,
+        logger
       );
-      if (published) return published;
-      return resolvedSystemHandler(scopedEvent, context);
+      if (published.response) return published.response;
+      return withDispatchHeader(await resolvedSystemHandler(scopedEvent, context), published.dispatch);
     }
     if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
       const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
