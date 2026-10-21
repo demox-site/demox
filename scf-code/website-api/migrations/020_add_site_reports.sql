@@ -1,9 +1,7 @@
 -- Hosted-page abuse reports from the Demox watermark.
 --
--- Already exists in production: website-api creates this table itself
--- (CREATE TABLE IF NOT EXISTS in ensureSiteReportsTable, index.js) the first time
--- reports are used, live since website function v9 (2026-09-20). This file only
--- records the schema in git. It is idempotent and safe to run again.
+-- Hosted-page abuse reports. The table has been live since website function v9
+-- (2026-09-20). Runtime no longer creates it. This file is idempotent.
 --
 -- Numbering: written locally as 018_add_site_reports.sql; renumbered to 020 because
 -- 018 is add_website_deploy_locks (PR #4) and 019 is add_gallery_cards (admin gallery).

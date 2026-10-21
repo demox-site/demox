@@ -227,14 +227,12 @@ test('list_admin_audit rejects non-admins and degrades to empty when the table i
   assert.equal(limit, 50);
 });
 
-test('migration 021 and the inline DDL define the same columns', () => {
+test('migration 021 defines admin_audit_log and runtime does not create it', () => {
   const migration = fs.readFileSync(path.join(__dirname, 'migrations/021_add_admin_audit_log.sql'), 'utf8');
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-  const inline = source.slice(source.indexOf('CREATE TABLE IF NOT EXISTS admin_audit_log'), source.indexOf("COMMENT='管理员操作审计'`"));
   const cols = (text) => [...text.matchAll(/^\s+(\w+) (BIGINT|VARCHAR\(\d+\)|SMALLINT|TINYINT\(1\)|TIMESTAMP\(3\))/gm)].map((m) => `${m[1]} ${m[2]}`);
   assert.ok(cols(migration).length >= 10);
-  assert.deepEqual(cols(inline), cols(migration));
-  // 021 是 v13 的审计表；之后的迁移（022 部署回填）只能往后加号，seeds/ 目录不算迁移
+  assert.equal(source.includes('CREATE TABLE IF NOT EXISTS admin_audit_log'), false);
   const numbers = fs.readdirSync(path.join(__dirname, 'migrations')).filter((f) => /^\d{3}_.*\.sql$/.test(f)).map((f) => Number(f.slice(0, 3)));
   assert.ok(numbers.includes(21));
   assert.equal(numbers.filter((n) => n === 21).length, 1);

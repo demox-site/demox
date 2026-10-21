@@ -3,7 +3,7 @@
 -- PAT 本身是带 jti 声明的长效 JWT（与 JWT_SECRET 同密钥签名），
 -- 故 website-api 现有 getUserId/authenticate 无需改动即可解析；
 -- 吊销通过 jti 在 exports.main 中查表拦截。
--- 可重复执行；线上也可通过 website-api 的 migrate_access_tokens action 执行同等逻辑。
+-- 可重复执行。运行时不再建这张表。
 
 CREATE TABLE IF NOT EXISTS access_tokens (
   id           BIGINT AUTO_INCREMENT PRIMARY KEY,

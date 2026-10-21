@@ -4,7 +4,7 @@
 --   landing_view → example_click
 --   deploy_success → feedback_copy
 -- visitor_id 由前端 localStorage 生成，用于跨页面串联同一访客的漏斗路径。
--- 可重复执行；线上也可通过 website-api 的 migrate_product_events action 执行同等逻辑。
+-- 可重复执行。运行时不再建这张表。
 
 CREATE TABLE IF NOT EXISTS product_events (
   id          BIGINT AUTO_INCREMENT PRIMARY KEY,

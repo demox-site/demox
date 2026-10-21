@@ -1,7 +1,7 @@
 -- 站点用量统计：websites 表新增 file_count / storage_size 列。
 -- 部署时写入本次上传包的文件数与体积，供「用量与套餐」页聚合展示真实用量。
 -- 历史站点为 NULL，聚合时以 0 计；新部署/重部署会回填。
--- 可重复执行；线上也可通过 website-api 的 migrate_website_usage action 执行同等逻辑。
+-- 可重复执行。运行时不再补列。deployed_size 在 025。
 
 DROP PROCEDURE IF EXISTS demox_add_website_file_count;
 DELIMITER //

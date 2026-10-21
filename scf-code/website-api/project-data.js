@@ -13,27 +13,6 @@ const MAX_PK = 255;
 // 普通用户默认：每个项目数据库最多 100MB（角色 max_db_bytes 可覆盖；null=不限）
 const DEFAULT_MAX_DB_BYTES = 100 * 1024 * 1024;
 
-const TABLES_DDL = `CREATE TABLE IF NOT EXISTS project_tables (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  project_id BIGINT UNSIGNED NOT NULL,
-  name VARCHAR(64) NOT NULL,
-  columns_json JSON NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uniq_project_table_name (project_id, name),
-  KEY idx_project_tables_project (project_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
-
-const ROWS_DDL = `CREATE TABLE IF NOT EXISTS project_rows (
-  project_id BIGINT UNSIGNED NOT NULL,
-  table_id BIGINT UNSIGNED NOT NULL,
-  pk VARCHAR(255) NOT NULL,
-  doc JSON NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (project_id, table_id, pk),
-  KEY idx_project_rows_table (table_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
-
 function dataError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -135,16 +114,8 @@ function docByteLength(doc) {
 }
 
 function createProjectData(query) {
-  let ready = null;
-
   async function ensure() {
-    if (!ready) {
-      ready = Promise.all([query(TABLES_DDL), query(ROWS_DDL)]).catch((error) => {
-        ready = null;
-        throw error;
-      });
-    }
-    await ready;
+    // Tables are created by migrations/028_add_project_data_tables.sql.
   }
 
   async function getTableRow(projectId, name) {

@@ -1,6 +1,6 @@
--- 密码登录失败限速（按账号）。auth-api 首次用到时也会 CREATE TABLE IF NOT EXISTS，这里留一份给手工建表/审计。
+-- 密码登录失败限速（按账号）。运行时不再建表。发布前用本文件在库里建表。
 -- email_hash = sha256(规范化邮箱)，不存明文；时间字段是毫秒时间戳（BIGINT），不受会话时区影响。
--- 发布前请用本文件在生产库手工建表（云架构）；运行时 CREATE IF NOT EXISTS 只做兜底。
+-- 可重复执行。表不存在时登录限速会 fail-open，并尝试往 login_throttle_fail_open 记一行。
 CREATE TABLE IF NOT EXISTS login_throttle (
   email_hash CHAR(64) NOT NULL PRIMARY KEY,
   failures INT NOT NULL DEFAULT 0,

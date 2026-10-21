@@ -76,7 +76,7 @@ test('migration SQL creates both login_throttle and login_throttle_fail_open', (
   assert.match(sql, /\bop VARCHAR\(16\)/);
   assert.match(sql, /\bcode VARCHAR\(64\)/);
   assert.match(sql, /\bcreated_at_ms BIGINT/);
-  assert.equal(lib.CREATE_FAIL_OPEN_TABLE_SQL.includes('login_throttle_fail_open'), true);
+  assert.equal(lib.CREATE_FAIL_OPEN_TABLE_SQL, undefined);
 });
 
 test('reserve runs cleanup DELETE with 1% probability (ms window, not NOW()-INTERVAL)', async () => {
@@ -123,12 +123,18 @@ test('reserve runs cleanup DELETE with 1% probability (ms window, not NOW()-INTE
 // 真实 SQL：设置 LOGIN_THROTTLE_TEST_MYSQL=mysql://user:pass@host:port/db 才跑（CI 默认跳过）。
 const url = process.env.LOGIN_THROTTLE_TEST_MYSQL;
 test('real SQL: progressive wait, refusal during wait, window reset, clear, and no extra attempts under concurrency', { skip: !url && 'LOGIN_THROTTLE_TEST_MYSQL not set' }, async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
   const mysql = require('mysql2/promise');
   const pool = mysql.createPool({ uri: url, connectionLimit: 20 });
   const query = async (sql, params = []) => (await pool.execute(sql, params))[0];
   try {
     await query('DROP TABLE IF EXISTS login_throttle_fail_open');
     await query('DROP TABLE IF EXISTS login_throttle');
+    const migration = fs.readFileSync(path.join(__dirname, '../migrations/004_login_throttle.sql'), 'utf8');
+    for (const statement of migration.split(';').map((item) => item.trim()).filter((item) => /CREATE TABLE/i.test(item))) {
+      await query(statement);
+    }
     let t = 1_760_000_000_000;
     const th = lib.createLoginThrottle({ query, now: () => t, log: { error() {}, warn() {} }, random: () => 1 });
     const email = 'someone@example.com';

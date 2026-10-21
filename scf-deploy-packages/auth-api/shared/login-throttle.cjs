@@ -25,23 +25,6 @@ const WINDOW_MS = 15 * 60 * 1000;
 /** reserve 时约 1% 概率顺手清掉窗口外的旧行，避免随机邮箱把表撑大。 */
 const CLEANUP_PROBABILITY = 0.01;
 
-const CREATE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS login_throttle (
-  email_hash CHAR(64) NOT NULL PRIMARY KEY,
-  failures INT NOT NULL DEFAULT 0,
-  last_failed_at BIGINT NOT NULL DEFAULT 0,
-  locked_until BIGINT NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
-
-const CREATE_FAIL_OPEN_TABLE_SQL = `CREATE TABLE IF NOT EXISTS login_throttle_fail_open (
-  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  op VARCHAR(16) NOT NULL,
-  code VARCHAR(64) NOT NULL,
-  created_at_ms BIGINT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_created_at_ms (created_at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
-
 function emailKey(normalizedEmail) {
   return crypto.createHash('sha256').update(String(normalizedEmail || ''), 'utf8').digest('hex');
 }
@@ -75,23 +58,11 @@ function warnFailOpen(log, op, error) {
 }
 
 function createLoginThrottle({ query, now = () => Date.now(), log = console, random = Math.random } = {}) {
-  let ready = null;
-  function ensureTable() {
-    if (!ready) {
-      ready = Promise.all([
-        query(CREATE_TABLE_SQL),
-        query(CREATE_FAIL_OPEN_TABLE_SQL)
-      ]).then(() => undefined).catch((error) => { ready = null; throw error; });
-    }
-    return ready;
-  }
-
-  /** 旁表计数：不依赖日志。计数本身失败时只吞掉，不再递归 fail-open。 */
+  /** 旁表计数：不依赖日志。计数本身失败时只吞掉，不再递归 fail-open。表由 migrations/004_login_throttle.sql 建立。 */
   async function recordFailOpen(op, error) {
     const code = failOpenCode(error);
     warnFailOpen(log, op, error);
     try {
-      await ensureTable();
       await query(
         'INSERT INTO login_throttle_fail_open (op, code, created_at_ms) VALUES (?, ?, ?)',
         [op, code, now()]
@@ -122,7 +93,6 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console, ran
     const key = emailKey(normalizedEmail);
     const t = now();
     try {
-      await ensureTable();
       await maybeCleanup(t);
       await query('INSERT IGNORE INTO login_throttle (email_hash, failures, last_failed_at, locked_until) VALUES (?, 0, 0, 0)', [key]);
       // 注意 MySQL 单表 UPDATE 从左到右赋值、后面的表达式看到前面已改过的值：先算 locked_until（用旧的 failures），再改 failures。
@@ -158,7 +128,7 @@ function createLoginThrottle({ query, now = () => Date.now(), log = console, ran
     }
   }
 
-  return { reserve, clear, ensureTable, maybeCleanup, recordFailOpen };
+  return { reserve, clear, maybeCleanup, recordFailOpen };
 }
 
 module.exports = {
@@ -172,7 +142,5 @@ module.exports = {
   BASE_DELAY_MS,
   MAX_DELAY_MS,
   WINDOW_MS,
-  CLEANUP_PROBABILITY,
-  CREATE_TABLE_SQL,
-  CREATE_FAIL_OPEN_TABLE_SQL
+  CLEANUP_PROBABILITY
 };
