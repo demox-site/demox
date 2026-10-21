@@ -339,7 +339,10 @@ function isWwwSpaRoute(pathname) {
     normalized === '/console/functions'
   ) return true;
   if (/^\/console\/admin\/[^/]+$/.test(normalized)) return true;
-  if (/^\/console\/projects\/[^/]+\/(deploy|sites|members|settings)$/.test(normalized)) return true;
+  // 项目页：概览 / 部署 / 站点列表 / 函数 / 数据库 / 成员 / 设置
+  if (/^\/console\/projects\/[^/]+\/(overview|deploy|sites|functions|database|members|settings)$/.test(normalized)) return true;
+  // 项目数据库：建表、表详情（App.tsx 嵌套在 projects/:projectId/database 下）
+  if (/^\/console\/projects\/[^/]+\/database\/(new|tables\/[^/]+)$/.test(normalized)) return true;
   // 站点设置 / 站点分析 / 站点函数（App.tsx: projects/:projectId/sites/:websiteId[/analytics|/functions]）
   if (/^\/console\/projects\/[A-Za-z0-9_-]+\/sites\/[A-Za-z0-9_-]+(\/(analytics|functions))?$/.test(normalized)) return true;
   return WWW_SPA_ROUTES.includes(normalized);
