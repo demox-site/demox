@@ -9,6 +9,12 @@ const { isTimerEvent } = require('./function-events.js');
 const { routeMatches } = require('./system-router.js');
 const { mergeLiveCredentials, packageNameFor } = require('./platform-site.js');
 const {
+  cloudEnvFromCredentials,
+  createBusinessCredentialProvider,
+  credentialKind,
+  stripLongLivedBizKeys
+} = require('./business-credentials.js');
+const {
   decryptPlatformSecret,
   encryptPlatformSecret,
   isPlatformProject,
@@ -27,7 +33,7 @@ const {
 } = require('./errors.js');
 
 class FunctionService {
-  constructor({ repository, bundleStore, runtime, authenticate = null, publicBaseUrl = 'https://api.demox.site', clock = () => Date.now(), logger = console } = {}) {
+  constructor({ repository, bundleStore, runtime, authenticate = null, publicBaseUrl = 'https://api.demox.site', clock = () => Date.now(), logger = console, businessCredentials = null } = {}) {
     if (!repository || !bundleStore || !runtime) throw new TypeError('FunctionService 缺少 repository、bundleStore 或 runtime');
     this.repository = repository;
     this.bundleStore = bundleStore;
@@ -37,6 +43,10 @@ class FunctionService {
     this.clock = clock;
     this.logger = logger;
     this.rateBuckets = new Map();
+    this.businessCredentials = businessCredentials || createBusinessCredentialProvider({
+      clock: () => this.clock(),
+      logger: this.logger
+    });
   }
 
   async createFunction({ ownerId, websiteId, name, slug, limits, env, runtime, routes, triggers, timerName } = {}) {
@@ -187,12 +197,37 @@ class FunctionService {
         secrets[key] = decryptPlatformSecret(value);
       }
     }
-    return {
+    const output = stripLongLivedBizKeys({
       ...merged,
       ...secrets,
       SITE_ID: String(functionRecord.websiteId || ''),
       FUNCTION_SLUG: String(functionRecord.slug || '')
-    };
+    });
+    if (pool === 'platform' && isPlatformProject(functionRecord.websiteId)) {
+      const kind = credentialKind(functionRecord.slug);
+      if (kind) Object.assign(output, await this.invocationCloudEnv(functionRecord, kind));
+    }
+    return output;
+  }
+
+  /**
+   * 平台池业务函数拿会话策略临时凭证。cert-renew 拿角色凭证，不带会话策略。
+   * 失败时不回落到网关角色凭证，避免把 SSL 可用的密钥交给业务函数。
+   */
+  async invocationCloudEnv(functionRecord, kind) {
+    let cloud;
+    try {
+      cloud = await this.businessCredentials.credentialsFor({
+        kind,
+        slug: String(functionRecord.slug || ''),
+        functionId: functionRecord.functionId,
+        websiteId: functionRecord.websiteId,
+        sourceEnv: process.env
+      });
+    } catch (error) {
+      throw internalError('业务云凭证不可用', { code: error.code || 'BUSINESS_ROLE_ASSUME_FAILED' });
+    }
+    return cloudEnvFromCredentials(cloud, kind);
   }
 
   async readPlatformSecrets(functionId) {
@@ -205,6 +240,7 @@ class FunctionService {
     const secretKeys = [...Object.keys(assignment.secrets || {}), ...assignment.keep];
     if (!secretKeys.length) return {};
     if (!isPlatformProject(websiteId)) throw platformSecretForbidden();
+    assertAllowedEnv(Object.fromEntries(secretKeys.map((key) => [key, 'ok'])));
     const existing = assignment.keep.length ? await this.readPlatformSecrets(functionId) : {};
     const cipher = {};
     for (const key of assignment.keep) {
@@ -216,7 +252,6 @@ class FunctionService {
     for (const [key, value] of Object.entries(assignment.secrets || {})) {
       cipher[key] = encryptPlatformSecret(value);
     }
-    assertAllowedEnv(Object.fromEntries(Object.keys(cipher).map((key) => [key, 'ok'])));
     return cipher;
   }
 
@@ -554,6 +589,7 @@ const RESERVED_ENV_KEYS = new Set([
 const RESERVED_ENV_PREFIXES = [
   'FUNCTIONS_'
 ];
+const LONG_LIVED_BIZ_PREFIX = 'DEMOX_BIZ_';
 
 function platformSecretForbidden() {
   const error = forbidden('只有平台项目可以声明平台密钥');
@@ -584,6 +620,9 @@ function normalizeEnv(env) {
 
 function assertAllowedEnv(env) {
   for (const key of Object.keys(env || {})) {
+    if (key.startsWith(LONG_LIVED_BIZ_PREFIX)) {
+      throw badRequest(`不能写入长期业务云密钥: ${key}`, 'LONG_LIVED_BIZ_KEY');
+    }
     if (RESERVED_ENV_KEYS.has(key) || RESERVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       throw badRequest(`环境变量名保留给平台使用: ${key}`, 'RESERVED_ENV_KEY');
     }

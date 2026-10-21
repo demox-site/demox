@@ -47,7 +47,7 @@ function withEnv(extra, fn) {
   }
 }
 
-function serviceWith(runtime) {
+function serviceWith(runtime, extras = {}) {
   const repository = new InMemoryFunctionRepository();
   const bundleStore = new InMemoryBundleStore();
   const seen = [];
@@ -61,7 +61,8 @@ function serviceWith(runtime) {
     repository,
     bundleStore,
     runtime: recording,
-    publicBaseUrl: 'https://functions.test'
+    publicBaseUrl: 'https://functions.test',
+    ...extras
   });
   return { service, repository, bundleStore, seen };
 }
@@ -233,9 +234,30 @@ test('prefix switch defaults off and only the enabled prefix reaches the platfor
     FUNCTIONS_PLATFORM_SITE_MODE: undefined,
     FUNCTIONS_PLATFORM_RUNTIME_PREFIXES: undefined,
     TENCENTCLOUD_SECRETID: 'gateway-temp-id',
+    TENCENTCLOUD_SECRETKEY: 'gateway-temp-key',
+    TENCENTCLOUD_SESSIONTOKEN: 'gateway-temp-token',
     DEMOX_PLATFORM_WEBSITE_ID: undefined
   }, async () => {
-    const { service, seen } = serviceWith();
+    const cloudCalls = [];
+    const { service, seen } = serviceWith(undefined, {
+      businessCredentials: {
+        async credentialsFor(request) {
+          cloudCalls.push(`${request.kind}:${request.slug}`);
+          if (request.kind === 'certificate') {
+            return {
+              TENCENTCLOUD_SECRETID: 'gw-id',
+              TENCENTCLOUD_SECRETKEY: 'gw-key',
+              TENCENTCLOUD_SESSIONTOKEN: 'gw-token'
+            };
+          }
+          return {
+            TENCENTCLOUD_SECRETID: 'ses-id',
+            TENCENTCLOUD_SECRETKEY: 'ses-key',
+            TENCENTCLOUD_SESSIONTOKEN: 'ses-token'
+          };
+        }
+      }
+    });
     const auth = await publish(service, { websiteId: PLATFORM_ID, slug: 'auth', routes: ['/auth'] });
     const mcp = await publish(service, { websiteId: PLATFORM_ID, slug: 'mcp', routes: ['/mcp', '/deploy'] });
     await service.putFunctionEnv({
@@ -248,6 +270,7 @@ test('prefix switch defaults off and only the enabled prefix reaches the platfor
       (error) => error.code === 'PLATFORM_SITE_IN_PROCESS'
     );
     assert.equal(seen.length, 0);
+    assert.deepEqual(cloudCalls, []);
     assert.equal(platformDispatchPool({ websiteId: PLATFORM_ID }, { path: '/auth/login' }), 'in-process');
     process.env.FUNCTIONS_PLATFORM_RUNTIME_PREFIXES = '/mcp,/health,timer:monthly-renew';
     await assert.rejects(
@@ -265,7 +288,10 @@ test('prefix switch defaults off and only the enabled prefix reaches the platfor
     assert.equal(seen.length, 1);
     assert.equal(seen[0].pool, 'platform');
     assert.equal(seen[0].env.WEBSITE_API_URL, SECRET_VALUE);
-    assert.equal(seen[0].env.TENCENTCLOUD_SECRETID, undefined);
+    assert.equal(seen[0].env.TENCENTCLOUD_SECRETID, 'ses-id');
+    assert.equal(seen[0].env.TENCENTCLOUD_SECRETKEY, 'ses-key');
+    assert.equal(seen[0].env.TENCENTCLOUD_SESSIONTOKEN, 'ses-token');
+    assert.equal(Object.keys(seen[0].env).some((key) => key.startsWith('DEMOX_BIZ_')), false);
     const renew = await publish(service, {
       websiteId: PLATFORM_ID,
       slug: 'cert-renew',
@@ -277,6 +303,12 @@ test('prefix switch defaults off and only the enabled prefix reaches the platfor
       event: { Type: 'Timer', TriggerName: 'monthly-renew' }
     });
     assert.equal(seen[1].pool, 'platform');
+    assert.equal(seen[1].env.TENCENTCLOUD_SECRETID, 'gw-id');
+    assert.equal(seen[1].env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
+    assert.notEqual(seen[1].env.TENCENTCLOUD_SESSIONTOKEN, seen[0].env.TENCENTCLOUD_SESSIONTOKEN);
+    assert.deepEqual(cloudCalls, ['business:mcp', 'certificate:cert-renew']);
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gateway-temp-id');
+    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gateway-temp-token');
     assert.equal(seen.length, 2);
   });
 });
@@ -322,7 +354,16 @@ test('gateway admin alias changes do not call /auth or either runtime pool', asy
         }
       },
       authenticate: () => ({ userId: 'owner-1' }),
-      publicBaseUrl: 'https://functions.test'
+      publicBaseUrl: 'https://functions.test',
+      businessCredentials: {
+        async credentialsFor() {
+          return {
+            TENCENTCLOUD_SECRETID: 'ses-id',
+            TENCENTCLOUD_SECRETKEY: 'ses-key',
+            TENCENTCLOUD_SESSIONTOKEN: 'ses-token'
+          };
+        }
+      }
     });
     const handler = createPlatformHandler({
       userHandler,
@@ -453,6 +494,9 @@ test('platform pool spec keeps the user pool free of secrets and refuses apply',
   assert.equal(PLATFORM_POOL_SPEC.resources.cls.topic, 'SCF_logtopic_yorder');
   assert.equal(PLATFORM_POOL_SPEC.resources.mail.action, 'ses:SendEmail');
   assert.equal(PLATFORM_POOL_SPEC.switches.userPoolReceivesPlatformSecrets, false);
+  assert.equal(PLATFORM_POOL_SPEC.switches.businessSessionPolicy, 'cos-eo-dns-ses-cls');
+  assert.equal(PLATFORM_POOL_SPEC.switches.certificateCredentials, 'role-without-session-policy');
+  assert.equal(PLATFORM_POOL_SPEC.switches.longLivedBizKeys, false);
   const manifest = require('../../functions.json');
   const pool = manifest.functions.find((item) => item.name === 'demox-platform-nodejs');
   const user = manifest.functions.find((item) => item.name === 'demox-user-nodejs');
