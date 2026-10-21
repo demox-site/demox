@@ -36,7 +36,7 @@ const PLATFORM_POOL_SPEC = Object.freeze({
   camRole: Object.freeze({
     name: 'demox-platform-runtime-role',
     policyName: 'demox-platform-runtime-policy',
-    note: '只绑定到 demox-platform-nodejs。不要绑到 demox-user-nodejs，也不要复用网关角色 demox-runtime-role 的密钥。当前 worker 会清掉进程环境里的 TENCENTCLOUD_*，所以在打开前缀之前还要让平台池保留自己角色的临时密钥，并继续丢弃网关传来的同名变量。本 PR 不改用户池 worker。'
+    note: '只绑定到 demox-platform-nodejs，策略保持空。不要绑到 demox-user-nodejs。前缀打开后，auth / website / mcp 由网关 AssumeRole 到 demox-runtime-role，会话策略只含 COS、EO、DNS、SES、CLS，临时密钥只放进当次调用的环境变量。证书 SSL 继续用网关或 cert-renew 的角色凭证，不带会话策略，不交给业务函数。不建长期子用户，不写 DEMOX_BIZ_*。用户池 worker 不改。前缀开关默认空，进程内路径不签发临时凭证。'
   }),
   gateway: Object.freeze({
     secretKeyEnv: 'PLATFORM_SECRETS_KEY',
@@ -139,7 +139,10 @@ const PLATFORM_POOL_SPEC = Object.freeze({
     defaultMode: 'in-process',
     prefixSwitchDefault: 'off',
     userPoolReceivesPlatformSecrets: false,
-    deploy: false
+    deploy: false,
+    businessSessionPolicy: 'cos-eo-dns-ses-cls',
+    certificateCredentials: 'role-without-session-policy',
+    longLivedBizKeys: false
   })
 });
 

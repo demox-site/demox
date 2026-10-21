@@ -34,9 +34,10 @@ function createFunctionHttpHandler({
   runtime = createDefaultRuntime(),
   authenticate = null,
   publicBaseUrl = process.env.FUNCTION_PUBLIC_BASE_URL || 'https://api.demox.site',
-  logger = console
+  logger = console,
+  businessCredentials = null
 } = {}) {
-  const service = new FunctionService({ repository, bundleStore, runtime, authenticate, publicBaseUrl, logger });
+  const service = new FunctionService({ repository, bundleStore, runtime, authenticate, publicBaseUrl, logger, businessCredentials });
   const authenticateManagement = authenticate || lazyJwtAuthenticator();
 
   async function main(event = {}, context = {}) {
