@@ -281,8 +281,14 @@ function customDomainAuthCookieHeader(hostname, token, maxAge) {
 }
 
 const { query, transaction, withConnection } = require('./shared/db.js');
-const { createProjectData, deleteProjectData } = require('./project-data.js');
+const {
+  createProjectData,
+  deleteProjectData,
+  DEFAULT_MAX_DB_BYTES
+} = require('./project-data.js');
 const projectData = createProjectData(query);
+// 普通用户默认：最多 3 个未归档自有项目；角色 project_limit 可覆盖；null=不限
+const DEFAULT_PROJECT_LIMIT = 3;
 const { getUserId, authenticate, sign } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
@@ -2240,6 +2246,7 @@ async function dispatchWebsiteRequest(event, context) {
       list_project_rows: handleListProjectRows,
       put_project_row: handlePutProjectRow,
       delete_project_row: handleDeleteProjectRow,
+      get_project_db_usage: handleGetProjectDbUsage,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
       archive_project: handleArchiveProject,
@@ -2358,6 +2365,8 @@ async function dispatchWebsiteRequest(event, context) {
       return await handlePutProjectRow(event);
     } else if (pathUrl.includes('/delete-project-row')) {
       return await handleDeleteProjectRow(event);
+    } else if (pathUrl.includes('/get-project-db-usage')) {
+      return await handleGetProjectDbUsage(event);
     } else if (pathUrl.includes('/list-projects')) {
       return await handleListProjects(event);
     } else if (pathUrl.includes('/create-project')) {
@@ -2453,23 +2462,73 @@ async function dispatchWebsiteRequest(event, context) {
   }
 }
 
+function defaultUserLimits() {
+  return {
+    name: 'user',
+    priority: 10,
+    deployment_limit: 10,
+    max_file_size: 50 * 1024 * 1024,
+    max_file_count: 100,
+    project_limit: DEFAULT_PROJECT_LIMIT,
+    max_db_bytes: DEFAULT_MAX_DB_BYTES
+  };
+}
+
+let _roleQuotaColumnsEnsured = false;
+/** 幂等补齐 roles.project_limit / max_db_bytes，并给普通用户角色写上默认值。 */
+async function ensureRoleQuotaColumns() {
+  if (_roleQuotaColumnsEnsured) return;
+  try {
+    const cols = await query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roles'
+         AND COLUMN_NAME IN ('project_limit','max_db_bytes')`
+    );
+    const have = new Set((cols || []).map((row) => row.COLUMN_NAME || row.column_name));
+    if (!have.has('project_limit')) {
+      try {
+        await query('ALTER TABLE roles ADD COLUMN project_limit INT NULL COMMENT \'最大未归档自有项目数，NULL=不限\'');
+      } catch (e) {
+        if (!/Duplicate column/i.test(e.message || '')) console.warn('add project_limit:', e.message || e);
+      }
+    }
+    if (!have.has('max_db_bytes')) {
+      try {
+        await query('ALTER TABLE roles ADD COLUMN max_db_bytes BIGINT NULL COMMENT \'单项目数据库字节上限，NULL=不限\'');
+      } catch (e) {
+        if (!/Duplicate column/i.test(e.message || '')) console.warn('add max_db_bytes:', e.message || e);
+      }
+    }
+    try {
+      await query(
+        `UPDATE roles
+         SET project_limit = COALESCE(project_limit, ?),
+             max_db_bytes = COALESCE(max_db_bytes, ?)
+         WHERE id = 'user' OR name IN ('user', '普通用户')`,
+        [DEFAULT_PROJECT_LIMIT, DEFAULT_MAX_DB_BYTES]
+      );
+    } catch (e) {
+      console.warn('seed user role quotas:', e.message || e);
+    }
+  } catch (e) {
+    console.warn('ensureRoleQuotaColumns:', e.message || e);
+  } finally {
+    _roleQuotaColumnsEnsured = true;
+  }
+}
+
 /**
  * 从数据库获取用户角色配置
  */
 async function getUserLimits(userId) {
   try {
+    await ensureRoleQuotaColumns();
     // 1. 获取用户的角色
     const userRolesResult = await query('SELECT * FROM user_roles WHERE user_id = ?', [userId]);
 
     if (userRolesResult.length === 0) {
       // 没有角色配置，返回默认普通用户配置
-      return {
-        name: 'user',
-        priority: 10,
-        deployment_limit: 10,
-        max_file_size: 50 * 1024 * 1024,
-        max_file_count: 100
-      };
+      return defaultUserLimits();
     }
 
     const userRoles = effectiveRoleIds(userRolesResult[0].roles, userRolesResult[0].pro_expires_at);
@@ -2489,32 +2548,27 @@ async function getUserLimits(userId) {
 
     if (!highestRole) {
       // 没有匹配的角色，返回默认配置
-      return {
-        name: 'user',
-        priority: 10,
-        deployment_limit: 10,
-        max_file_size: 50 * 1024 * 1024,
-        max_file_count: 100
-      };
+      return defaultUserLimits();
     }
 
+    const isDefaultUserRole = highestRole.id === 'user' || highestRole.name === 'user' || highestRole.name === '普通用户';
     return {
       name: highestRole.name,
       priority: highestRole.priority,
       deployment_limit: highestRole.deployment_limit,
       max_file_size: highestRole.max_file_size || 50 * 1024 * 1024,
-      max_file_count: highestRole.max_file_count
+      max_file_count: highestRole.max_file_count,
+      project_limit: highestRole.project_limit == null
+        ? (isDefaultUserRole ? DEFAULT_PROJECT_LIMIT : null)
+        : Number(highestRole.project_limit),
+      max_db_bytes: highestRole.max_db_bytes == null
+        ? (isDefaultUserRole ? DEFAULT_MAX_DB_BYTES : null)
+        : Number(highestRole.max_db_bytes)
     };
   } catch (e) {
     console.error('获取用户角色配置失败:', e);
     // 返回默认配置
-    return {
-      name: 'user',
-      priority: 10,
-      deployment_limit: 10,
-      max_file_size: 50 * 1024 * 1024,
-      max_file_count: 100
-    };
+    return defaultUserLimits();
   }
 }
 
@@ -4924,6 +4978,22 @@ async function handleCreateProject(event) {
   const icon = body.icon ? String(body.icon).trim().slice(0, 64) : null;
 
   try {
+    const limits = await getUserLimits(userId);
+    if (limits.project_limit != null && Number(limits.project_limit) > 0) {
+      const countRows = await query(
+        'SELECT COUNT(*) AS n FROM projects WHERE user_id = ? AND archived = 0',
+        [userId]
+      );
+      const owned = Number(countRows[0] && countRows[0].n) || 0;
+      if (owned >= Number(limits.project_limit)) {
+        return ok({
+          success: false,
+          code: 'quota',
+          message: `已达到项目上限（${limits.project_limit} 个）。归档或删除现有项目后再试。`
+        });
+      }
+    }
+
     let slug = baseSlug;
     let suffix = 1;
     while (true) {
@@ -5039,7 +5109,23 @@ async function handleListProjectTables(event) {
   const ctx = await projectDataContext(event, 'read');
   if (ctx.error) return ctx.error;
   try {
-    return ok({ success: true, tables: await projectData.listTables(ctx.projectId) });
+    const userId = getUserId(event);
+    const limits = userId ? await getUserLimits(userId) : defaultUserLimits();
+    const usage = await projectData.getUsage(ctx.projectId, limits.max_db_bytes);
+    return ok({ success: true, tables: await projectData.listTables(ctx.projectId), usage });
+  } catch (error) {
+    return projectDataFailure(error);
+  }
+}
+
+async function handleGetProjectDbUsage(event) {
+  const ctx = await projectDataContext(event, 'read');
+  if (ctx.error) return ctx.error;
+  try {
+    const userId = getUserId(event);
+    const limits = userId ? await getUserLimits(userId) : defaultUserLimits();
+    const usage = await projectData.getUsage(ctx.projectId, limits.max_db_bytes);
+    return ok({ success: true, ...usage, projectId: String(ctx.projectId) });
   } catch (error) {
     return projectDataFailure(error);
   }
@@ -5094,7 +5180,14 @@ async function handlePutProjectRow(event) {
   const ctx = await projectDataContext(event, 'write');
   if (ctx.error) return ctx.error;
   try {
-    const row = await projectData.putRow(ctx.projectId, ctx.body.table || ctx.body.name, ctx.body.values);
+    const userId = getUserId(event);
+    const limits = userId ? await getUserLimits(userId) : defaultUserLimits();
+    const row = await projectData.putRow(
+      ctx.projectId,
+      ctx.body.table || ctx.body.name,
+      ctx.body.values,
+      { maxBytes: limits.max_db_bytes }
+    );
     return ok({ success: true, ...row });
   } catch (error) {
     return projectDataFailure(error);
@@ -6603,7 +6696,9 @@ async function handleGetUserOverview(event) {
       limits: {
         deployment_limit: limits.deployment_limit ?? null,
         max_file_count: limits.max_file_count ?? null,
-        max_file_size: limits.max_file_size ?? null
+        max_file_size: limits.max_file_size ?? null,
+        project_limit: limits.project_limit ?? null,
+        max_db_bytes: limits.max_db_bytes ?? null
       }
     },
     traffic: {
@@ -6933,6 +7028,7 @@ async function handleDeleteUserRole(event) {
 async function handleListRoleLimits(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
+  await ensureRoleQuotaColumns();
   const rows = await query('SELECT * FROM roles ORDER BY priority DESC');
   const list = rows.map((r) => ({
     _id: r.id || r.name,
@@ -6941,6 +7037,8 @@ async function handleListRoleLimits(event) {
     max_file_size: r.max_file_size,
     deployment_limit: r.deployment_limit,
     max_file_count: r.max_file_count,
+    project_limit: r.project_limit == null ? null : Number(r.project_limit),
+    max_db_bytes: r.max_db_bytes == null ? null : Number(r.max_db_bytes),
     allowed_extensions: typeof r.allowed_extensions === 'string'
       ? JSON.parse(r.allowed_extensions || 'null')
       : (r.allowed_extensions || null),
@@ -6954,6 +7052,7 @@ async function handleListRoleLimits(event) {
 async function handleSetRoleLimit(event) {
   const a = await requireAdmin(event);
   if (a.err) return a.err;
+  await ensureRoleQuotaColumns();
   const d = event.body || event;
   const id = String(d.id || d.name || '').trim();
   const name = String(d.name || d.id || '').trim();
@@ -6964,12 +7063,13 @@ async function handleSetRoleLimit(event) {
     : (d.allowed_extensions == null ? null : JSON.stringify(d.allowed_extensions));
 
   await query(
-    `INSERT INTO roles (id, name, priority, enabled, max_file_count, allowed_extensions, deployment_limit, max_file_size)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO roles (id, name, priority, enabled, max_file_count, allowed_extensions, deployment_limit, max_file_size, project_limit, max_db_bytes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        name = VALUES(name), priority = VALUES(priority), enabled = VALUES(enabled),
        max_file_count = VALUES(max_file_count), allowed_extensions = VALUES(allowed_extensions),
-       deployment_limit = VALUES(deployment_limit), max_file_size = VALUES(max_file_size)`,
+       deployment_limit = VALUES(deployment_limit), max_file_size = VALUES(max_file_size),
+       project_limit = VALUES(project_limit), max_db_bytes = VALUES(max_db_bytes)`,
     [
       id || name,
       name,
@@ -6978,7 +7078,9 @@ async function handleSetRoleLimit(event) {
       d.max_file_count == null ? null : Number(d.max_file_count),
       allowedExt,
       d.deployment_limit == null ? null : Number(d.deployment_limit),
-      d.max_file_size == null ? null : Number(d.max_file_size)
+      d.max_file_size == null ? null : Number(d.max_file_size),
+      d.project_limit == null ? null : Number(d.project_limit),
+      d.max_db_bytes == null ? null : Number(d.max_db_bytes)
     ]
   );
   return ok({ success: true });
@@ -7127,12 +7229,15 @@ async function handleGetRoleLimits(event) {
     `SELECT * FROM roles WHERE enabled = 1 AND (id IN (${placeholders}) OR name IN (${placeholders})) ORDER BY priority DESC`,
     [...names, ...names]
   );
+  await ensureRoleQuotaColumns();
   const data = rows.map((r) => ({
     name: r.name,
     priority: r.priority,
     max_file_size: r.max_file_size,
     deployment_limit: r.deployment_limit,
     max_file_count: r.max_file_count,
+    project_limit: r.project_limit == null ? null : Number(r.project_limit),
+    max_db_bytes: r.max_db_bytes == null ? null : Number(r.max_db_bytes),
     allowed_extensions: typeof r.allowed_extensions === 'string'
       ? JSON.parse(r.allowed_extensions || 'null')
       : (r.allowed_extensions || null),
@@ -7170,11 +7275,16 @@ async function handleGetUsage(event) {
        FROM websites WHERE user_id = ?`,
       [userId]
     );
+    const projectCountRows = await query(
+      'SELECT COUNT(*) AS n FROM projects WHERE user_id = ? AND archived = 0',
+      [userId]
+    );
     const r = (rows && rows[0]) || {};
     const usage = {
       deployments: Number(r.deployments || 0),
       files: Number(r.files || 0),
-      storage: Number(r.storage || 0)
+      storage: Number(r.storage || 0),
+      projects: Number(projectCountRows[0] && projectCountRows[0].n) || 0
     };
     const maxSite = {
       fileCount: Number(r.maxSiteFiles || 0),
@@ -7197,7 +7307,9 @@ async function handleGetUsage(event) {
         limits: {
           deployment_limit: limits.deployment_limit ?? null,
           max_file_count: limits.max_file_count ?? null,
-          max_file_size: limits.max_file_size ?? null
+          max_file_size: limits.max_file_size ?? null,
+          project_limit: limits.project_limit ?? null,
+          max_db_bytes: limits.max_db_bytes ?? null
         }
       }
     });
