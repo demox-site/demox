@@ -43,14 +43,19 @@ function memoryQuery() {
       });
       return { affectedRows: 1, insertId: nextId - 1 };
     }
+    if (text.startsWith('SELECT COALESCE(SUM(OCTET_LENGTH')) {
+      const matched = rows.filter((row) => row.project_id === params[0]);
+      const n = matched.reduce((sum, row) => sum + Buffer.byteLength(typeof row.doc === 'string' ? row.doc : JSON.stringify(row.doc)), 0);
+      return [{ n }];
+    }
+    if (text.includes('AND pk = ?') && text.startsWith('SELECT pk')) {
+      return rows.filter((row) => row.project_id === params[0] && row.table_id === params[1] && row.pk === params[2]).slice(0, 1);
+    }
     if (text.startsWith('SELECT pk, doc')) {
       const matched = rows
         .filter((row) => row.project_id === params[0] && row.table_id === params[1] && (params.length < 3 || row.pk > params[2]))
         .sort((a, b) => (a.pk < b.pk ? -1 : a.pk > b.pk ? 1 : 0));
       return matched;
-    }
-    if (text.startsWith('SELECT pk FROM project_rows')) {
-      return rows.filter((row) => row.project_id === params[0] && row.table_id === params[1] && row.pk === params[2]).slice(0, 1);
     }
     if (text.startsWith('UPDATE project_rows')) {
       const row = rows.find((item) => item.project_id === params[1] && item.table_id === params[2] && item.pk === params[3]);
@@ -168,4 +173,20 @@ test('deleting a project removes its tables and rows only', async () => {
   assert.equal((await data.listTables(7)).length, 0);
   assert.equal((await data.listTables(8)).length, 1);
   assert.equal((await data.listRows(8, 'notes')).rows[0].pk, 'b');
+});
+
+test('putRow rejects growth past the project database byte limit', async () => {
+  const db = memoryQuery();
+  const data = createProjectData(db.query);
+  await data.createTable(7, { name: 'notes', columns });
+  const first = await data.putRow(7, 'notes', { title: 'a', count: 1, open: true }, { maxBytes: 60 });
+  assert.equal(first.created, true);
+  await assert.rejects(
+    data.putRow(7, 'notes', { title: 'b', count: 2, open: false }, { maxBytes: 60 }),
+    (error) => error.code === 'quota'
+  );
+  const usage = await data.getUsage(7, 60);
+  assert.ok(usage.bytesUsed > 0);
+  assert.ok(usage.bytesUsed <= 60);
+  assert.equal(usage.bytesLimit, 60);
 });

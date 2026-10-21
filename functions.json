@@ -41,7 +41,7 @@
       "accountEnv": "TENCENTCLOUD_ACCOUNT_UIN",
       "layer": "platform",
       "releaseVia": "deploy-develop",
-      "appVersion": "0.1.11",
+      "appVersion": "0.1.12",
       "runtimeVersion": "0.1.0",
       "codePaths": [
         "scf-code/function-api",
