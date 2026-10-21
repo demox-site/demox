@@ -22,6 +22,8 @@ const unified = process.argv.includes("--unified");
 const disableLegacyTimers = process.argv.includes("--disable-legacy-timers");
 const functionName = "demox-function-api";
 const nodeRuntimeName = "demox-user-nodejs";
+// 平台池 demox-platform-nodejs 的定义在 functions.json 和 scripts/platform-runtime-pool.mjs。
+// 本脚本的 --apply 不创建它，也不改用户池的网络、角色或环境变量。
 const namespace = "demox";
 const region = "ap-guangzhou";
 const cosBucket = "demox-analytics-raw-1307257815";

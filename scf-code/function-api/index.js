@@ -21,6 +21,8 @@ const {
 const { readWebsiteScope, requireWebsiteId, isPlatformSite, publicSystemFunctions, platformWebsiteId } = require('./site-binding.js');
 const { isTimerEvent, timerNameOf } = require('./function-events.js');
 const { seedPlatformSiteFunctions, systemFunctionSlug } = require('./platform-site.js');
+const { isPlatformPoolFallback, USER_POOL_FUNCTION, PLATFORM_POOL_FUNCTION } = require('./platform-secrets.js');
+const { createPoolRoutingRuntime } = require('./platform-pool.js');
 
 function createDefaultRuntime({ logger = console, nodeInvoke = null } = {}) {
   return new NodejsFunctionRuntime({ invoke: nodeInvoke || createLocalNodeInvoker({ logger }), logger });
@@ -175,7 +177,8 @@ function isManagementPath(path) {
 
 // #42：平台站点函数被 service.invoke 拦下（PLATFORM_SITE_IN_PROCESS）时返回 null，让平台入口回落到进程内处理，而不是报错。
 function isPlatformInProcessError(error) {
-  return error?.code === 'PLATFORM_SITE_IN_PROCESS';
+  // 平台池没配好或缺解密密钥时也回落到进程内，不把请求送到用户池。
+  return isPlatformPoolFallback(error);
 }
 
 async function tryInvokeUserRoute(service, event = {}, context = {}) {
@@ -242,7 +245,7 @@ async function invokePublishedSystemFunction(service, entry, event, context) {
       context
     }));
   } catch (error) {
-    if (error?.statusCode === 404 || error?.code === 'FUNCTION_NOT_PUBLISHED' || error?.code === 'BUNDLE_MISSING') {
+    if (isPlatformPoolFallback(error) || error?.statusCode === 404 || error?.code === 'FUNCTION_NOT_PUBLISHED' || error?.code === 'BUNDLE_MISSING') {
       return null;
     }
     throw error;
@@ -494,6 +497,24 @@ function errorResponse(error, event) {
   };
 }
 
+function createPlatformPoolInvoker(logger = console) {
+  const mode = String(process.env.FUNCTIONS_PLATFORM_NODE_RUNTIME_MODE || '').trim().toLowerCase();
+  const name = String(process.env.FUNCTIONS_PLATFORM_NODE_RUNTIME || PLATFORM_POOL_FUNCTION).trim();
+  const url = String(process.env.FUNCTIONS_PLATFORM_NODE_RUNTIME_URL || '').trim();
+  if (!mode && !url) return null;
+  if (!name || name === USER_POOL_FUNCTION) return null;
+  if (mode === 'scf') {
+    return createScfNodeInvoker({
+      functionName: name,
+      namespace: process.env.FUNCTIONS_RUNTIME_NAMESPACE || 'demox',
+      logger
+    });
+  }
+  const secret = String(process.env.RUNTIME_INVOKE_SECRET || '').trim();
+  if (url && secret) return createHttpNodeInvoker({ url, secret, logger });
+  return null;
+}
+
 function createProductionNodeInvoker(logger = console) {
   const mode = String(process.env.FUNCTIONS_NODE_RUNTIME_MODE || '').trim().toLowerCase();
   if (mode === 'local') return createLocalNodeInvoker({ logger });
@@ -524,10 +545,14 @@ function createProductionHandler({ publicBaseUrl, logger = console, database, bu
     securityToken: process.env.TENCENTCLOUD_SESSIONTOKEN || process.env.COS_SESSION_TOKEN
   }));
   const nodeInvoke = createProductionNodeInvoker(logger);
+  const platformInvoke = createPlatformPoolInvoker(logger);
   return createFunctionHttpHandler({
     repository,
     bundleStore: productionBundleStore,
-    runtime: createDefaultRuntime({ logger, nodeInvoke }),
+    runtime: createPoolRoutingRuntime({
+      userRuntime: createDefaultRuntime({ logger, nodeInvoke }),
+      platformRuntime: platformInvoke ? createDefaultRuntime({ logger, nodeInvoke: platformInvoke }) : null
+    }),
     authenticate: createJwtAuthenticator(),
     publicBaseUrl: publicBaseUrl || process.env.FUNCTION_PUBLIC_BASE_URL,
     logger
