@@ -1,13 +1,21 @@
 'use strict';
 
 const { createFunctionId, isFunctionId, normalizeName, normalizeSlug } = require('./ids.js');
-const { requireWebsiteId, platformWebsiteId } = require('./site-binding.js');
+const { requireWebsiteId } = require('./site-binding.js');
 const { bundleKey, sha256 } = require('./bundle-store.js');
 const { normalizeLimits } = require('./limits.js');
 const { normalizeRuntime, defaultEntrypointFor, isAllowedEntrypoint } = require('./runtimes.js');
 const { isTimerEvent } = require('./function-events.js');
 const { routeMatches } = require('./system-router.js');
-const { mergeLiveCredentials, packageNameFor, platformSiteInProcess } = require('./platform-site.js');
+const { mergeLiveCredentials, packageNameFor } = require('./platform-site.js');
+const {
+  decryptPlatformSecret,
+  encryptPlatformSecret,
+  isPlatformProject,
+  parseEnvAssignment,
+  platformDispatchPool,
+  publicEnvView
+} = require('./platform-secrets.js');
 const { clientIpInfo } = require('./client-ip.js');
 const {
   badRequest,
@@ -43,6 +51,9 @@ class FunctionService {
     } catch (error) {
       throw badRequest(error.message, 'INVALID_FUNCTION_NAME');
     }
+    const assignment = splitPlainEnv(env, siteId);
+    const plainEnv = assertAllowedEnv(normalizeEnv(assignment.plain));
+    const cipher = await this.buildPlatformCipher(null, siteId, assignment);
     let record;
     try {
       record = await this.repository.createFunction({
@@ -56,13 +67,16 @@ class FunctionService {
         triggers: normalizeTriggers(triggers, timerName),
         timerName: normalizeTimerName(timerName),
         limits: normalizeLimits(limits, normalizedRuntime),
-        env: assertAllowedEnv(normalizeEnv(env))
+        env: plainEnv
       });
     } catch (error) {
       if (error?.code === 'ER_DUP_ENTRY' || /已存在|duplicate/i.test(error?.message || '')) {
         throw badRequest('该函数标识已存在', 'DUPLICATE_FUNCTION_SLUG');
       }
       throw error;
+    }
+    if (Object.keys(cipher).length && typeof this.repository.replaceFunctionSecrets === 'function') {
+      await this.repository.replaceFunctionSecrets(record.functionId, cipher);
     }
     return this.publicFunction(record);
   }
@@ -96,7 +110,9 @@ class FunctionService {
 
   async getFunctionEnv({ ownerId, functionId } = {}) {
     const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
-    return normalizeEnv(functionRecord.env);
+    const plain = normalizeEnv(functionRecord.env);
+    if (!isPlatformProject(functionRecord.websiteId)) return plain;
+    return publicEnvView(plain, await this.readPlatformSecrets(functionRecord.functionId));
   }
 
   async putFunctionEnv({ ownerId, functionId, env } = {}) {
@@ -104,7 +120,17 @@ class FunctionService {
     if (typeof this.repository.putFunctionEnv !== 'function') {
       throw internalError('当前存储不支持函数环境变量');
     }
-    return this.repository.putFunctionEnv(functionRecord.functionId, assertAllowedEnv(normalizeEnv(env)));
+    const assignment = splitPlainEnv(env, functionRecord.websiteId);
+    const plain = assertAllowedEnv(normalizeEnv(assignment.plain));
+    const cipher = await this.buildPlatformCipher(functionRecord.functionId, functionRecord.websiteId, assignment);
+    const stored = await this.repository.putFunctionEnv(functionRecord.functionId, plain);
+    if (typeof this.repository.replaceFunctionSecrets === 'function') {
+      await this.repository.replaceFunctionSecrets(functionRecord.functionId, cipher);
+    } else if (Object.keys(cipher).length) {
+      throw internalError('当前存储不支持平台密钥');
+    }
+    if (!isPlatformProject(functionRecord.websiteId)) return stored || plain;
+    return publicEnvView(plain, cipher);
   }
 
   async listAliases({ ownerId, functionId } = {}) {
@@ -142,19 +168,56 @@ class FunctionService {
     return aliases;
   }
 
-  async resolveRuntimeEnv(functionRecord) {
+  async resolveRuntimeEnv(functionRecord, { pool = 'user' } = {}) {
     const siteEnv = typeof this.repository.getWebsiteEnv === 'function'
       ? normalizeEnv(await this.repository.getWebsiteEnv(functionRecord.websiteId))
       : {};
-    const merged = mergeLiveCredentials({
+    const plain = {
       ...siteEnv,
       ...normalizeEnv(functionRecord.env)
-    }, functionRecord.websiteId);
+    };
+    // 用户池和 user-runtime 回滚都不解密平台密钥。网关临时密钥只在旧的 user-runtime 路径合并。
+    const merged = pool === 'platform'
+      ? plain
+      : mergeLiveCredentials(plain, functionRecord.websiteId);
+    const secrets = {};
+    if (pool === 'platform' && isPlatformProject(functionRecord.websiteId)) {
+      const cipher = await this.readPlatformSecrets(functionRecord.functionId);
+      for (const [key, value] of Object.entries(cipher)) {
+        secrets[key] = decryptPlatformSecret(value);
+      }
+    }
     return {
       ...merged,
+      ...secrets,
       SITE_ID: String(functionRecord.websiteId || ''),
       FUNCTION_SLUG: String(functionRecord.slug || '')
     };
+  }
+
+  async readPlatformSecrets(functionId) {
+    if (typeof this.repository.getFunctionSecrets !== 'function') return {};
+    const stored = await this.repository.getFunctionSecrets(functionId);
+    return stored && typeof stored === 'object' ? stored : {};
+  }
+
+  async buildPlatformCipher(functionId, websiteId, assignment) {
+    const secretKeys = [...Object.keys(assignment.secrets || {}), ...assignment.keep];
+    if (!secretKeys.length) return {};
+    if (!isPlatformProject(websiteId)) throw platformSecretForbidden();
+    const existing = assignment.keep.length ? await this.readPlatformSecrets(functionId) : {};
+    const cipher = {};
+    for (const key of assignment.keep) {
+      if (typeof existing[key] !== 'string' || !existing[key]) {
+        throw badRequest(`平台密钥没有现有值: ${key}`, 'PLATFORM_SECRET_MISSING');
+      }
+      cipher[key] = existing[key];
+    }
+    for (const [key, value] of Object.entries(assignment.secrets || {})) {
+      cipher[key] = encryptPlatformSecret(value);
+    }
+    assertAllowedEnv(Object.fromEntries(Object.keys(cipher).map((key) => [key, 'ok'])));
+    return cipher;
   }
 
   async createVersion({ ownerId, functionId, source, sourceBase64, entrypoint } = {}) {
@@ -328,8 +391,9 @@ class FunctionService {
     const functionRecord = await this.repository.getFunction(functionId);
     if (!functionRecord) throw notFound();
     if (functionRecord.status !== 'active') throw notFound('函数已停用');
-    if (platformSiteInProcess() && String(functionRecord.websiteId || '') === platformWebsiteId()) {
-      // 平台站点函数只在进程内跑，不发到共享的 user-nodejs；404 让系统路由回落到进程内。
+    const pool = platformDispatchPool(functionRecord, event || {});
+    if (pool === 'in-process') {
+      // 默认仍在进程内。前缀开关为空时走这里，不派发到任一运行时池。
       const error = notFound('平台站点函数在进程内执行');
       error.code = 'PLATFORM_SITE_IN_PROCESS';
       throw error;
@@ -358,6 +422,7 @@ class FunctionService {
     }
     if (sha256(source) !== version.sha256) throw internalError('函数代码校验失败', { code: 'BUNDLE_CHECKSUM_MISMATCH' });
 
+    const runtimeEnv = await this.resolveRuntimeEnv(functionRecord, { pool });
     const startedAt = this.clock();
     let output;
     let status = 'success';
@@ -367,12 +432,13 @@ class FunctionService {
       output = await this.runtime.execute({
         source,
         request: request.value,
-        env: await this.resolveRuntimeEnv(functionRecord),
+        env: runtimeEnv,
         limits: functionRecord.limits,
         runtime: functionRecord.runtime,
         entrypoint: version.entrypoint,
         packageName,
         callingConvention: packageName ? 'scf-event' : undefined,
+        pool,
         context
       });
       const response = normalizeFunctionResponse(output, functionRecord.limits.maxResponseBytes);
@@ -488,6 +554,19 @@ const RESERVED_ENV_KEYS = new Set([
 const RESERVED_ENV_PREFIXES = [
   'FUNCTIONS_'
 ];
+
+function platformSecretForbidden() {
+  const error = forbidden('只有平台项目可以声明平台密钥');
+  error.code = 'PLATFORM_SECRET_FORBIDDEN';
+  return error;
+}
+
+function splitPlainEnv(env, websiteId) {
+  const assignment = parseEnvAssignment(env);
+  const secretKeys = [...Object.keys(assignment.secrets), ...assignment.keep];
+  if (secretKeys.length && !isPlatformProject(websiteId)) throw platformSecretForbidden();
+  return assignment;
+}
 
 function normalizeEnv(env) {
   if (env === undefined || env === null) return {};

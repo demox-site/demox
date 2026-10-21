@@ -77,6 +77,7 @@ test('new and rewritten migrations are idempotent and do not drop or rename', ()
     'scf-code/website-api/migrations/029_backfill_custom_domain_routes.sql',
     'scf-code/function-api/migrations/003_add_runtime_routes.sql',
     'scf-code/function-api/migrations/005_add_website_binding.sql',
+    'scf-code/function-api/migrations/006_create_function_platform_secrets.sql',
     'scf-deploy-packages/auth-api/migrations/003_oauth_pkce.sql'
   ];
   for (const rel of files) {

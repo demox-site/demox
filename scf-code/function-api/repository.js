@@ -20,6 +20,7 @@ class InMemoryFunctionRepository {
     this.websiteEnvs = new Map();
     this.websiteOwners = new Map();
     this.aliases = new Map();
+    this.functionSecrets = new Map();
     this.nextVersionId = 1;
   }
 
@@ -180,6 +181,19 @@ class InMemoryFunctionRepository {
     record.env = { ...(env || {}) };
     record.updatedAt = new Date().toISOString();
     return clone(record.env);
+  }
+
+  async getFunctionSecrets(functionId) {
+    return clone(this.functionSecrets.get(functionId) || {});
+  }
+
+  async replaceFunctionSecrets(functionId, secrets) {
+    const stored = {};
+    for (const [key, value] of Object.entries(secrets || {})) {
+      if (typeof value === 'string') stored[key] = value;
+    }
+    this.functionSecrets.set(functionId, stored);
+    return clone(stored);
   }
 
   async recordInvocation(record) {
@@ -443,6 +457,34 @@ function createMysqlFunctionRepository({ query, transaction }) {
       );
       const record = await this.getFunction(functionId);
       return record ? record.env : null;
+    },
+
+    async getFunctionSecrets(functionId) {
+      const rows = await query(
+        'SELECT secrets_json FROM demox_function_platform_secrets WHERE function_id = ? LIMIT 1',
+        [functionId]
+      );
+      if (!rows.length) return {};
+      const parsed = parseJson(rows[0].secrets_json, {});
+      const output = {};
+      for (const [key, value] of Object.entries(parsed || {})) {
+        if (typeof value === 'string') output[key] = value;
+      }
+      return output;
+    },
+
+    async replaceFunctionSecrets(functionId, secrets) {
+      const stored = {};
+      for (const [key, value] of Object.entries(secrets || {})) {
+        if (typeof value === 'string') stored[key] = value;
+      }
+      await query(
+        `INSERT INTO demox_function_platform_secrets (function_id, secrets_json)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE secrets_json = VALUES(secrets_json), updated_at = CURRENT_TIMESTAMP`,
+        [functionId, JSON.stringify(stored)]
+      );
+      return this.getFunctionSecrets(functionId);
     },
 
     async recordInvocation(record) {
