@@ -9,7 +9,7 @@ import {
   Progress
 } from "@/components/ui";
 import { formatBytes } from "@/lib/utils";
-import { AlertCircle, Gauge, HardDrive, FileStack, FolderKanban, Rocket, Crown } from "lucide-react";
+import { AlertCircle, Gauge, HardDrive, FileStack, Rocket, Crown } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { ContactWebmaster } from "@/components/ContactWebmaster";
 
@@ -23,13 +23,11 @@ const texts = {
     storage: "存储空间",
     files: "文件数量",
     deployments: "部署次数",
-    projects: "项目数量",
-    dbPerProject: "单项目数据库",
     unlimited: "无限制",
     of: "/",
     perUpload: "单次上限",
     loading: "加载中...",
-    cumulativeHint: "文件数与体积为各站点单次部署的累计；对应上限为单次上传上限，进度按最大单站计算。普通用户默认最多 3 个项目，每个项目数据库最多 100MB。",
+    cumulativeHint: "文件数与体积为各站点单次部署的累计；对应上限为单次上传上限，进度按最大单站计算。",
     loadFailed: "用量加载失败，请稍后重试。",
     membershipLifetime: "永久会员",
     membershipRemaining: "剩余 {days} 天",
@@ -44,13 +42,11 @@ const texts = {
     storage: "Storage",
     files: "Files",
     deployments: "Deployments",
-    projects: "Projects",
-    dbPerProject: "DB per project",
     unlimited: "Unlimited",
     of: "of",
     perUpload: "per-upload",
     loading: "Loading...",
-    cumulativeHint: "File count and size are cumulative single-deploy figures across sites; their limits are per-upload caps, with progress based on the largest single site. Default free plan: 3 projects, 100MB database each.",
+    cumulativeHint: "File count and size are cumulative single-deploy figures across sites; their limits are per-upload caps, with progress based on the largest single site.",
     loadFailed: "Failed to load usage. Please retry later.",
     membershipLifetime: "Lifetime membership",
     membershipRemaining: "{days} days left",
@@ -67,14 +63,12 @@ interface UsageData {
     proExpiresAt: string | null;
     remainingDays: number | null;
   };
-  usage: { deployments: number; files: number; storage: number; projects?: number };
+  usage: { deployments: number; files: number; storage: number };
   maxSite: { fileCount: number; storageSize: number };
   limits: {
     deployment_limit: number | null;
     max_file_count: number | null;
     max_file_size: number | null;
-    project_limit?: number | null;
-    max_db_bytes?: number | null;
   };
 }
 
@@ -119,12 +113,6 @@ const UsagePage: React.FC = () => {
     ? `${deploymentsUsed} ${t.of} ${deploymentsLimit}`
     : `${deploymentsUsed} / ${t.unlimited}`;
 
-  const projectsUsed = usage?.projects ?? 0;
-  const projectsLimit = limits?.project_limit ?? null;
-  const projectsText = projectsLimit
-    ? `${projectsUsed} ${t.of} ${projectsLimit}`
-    : `${projectsUsed} / ${t.unlimited}`;
-
   // 文件数量 / 存储空间：上限是单次上传上限，进度按最大单站计算（真正受约束的比例）。
   const filesUsed = usage?.files ?? 0;
   const filesLimit = limits?.max_file_count ?? null;
@@ -135,9 +123,6 @@ const UsagePage: React.FC = () => {
   const storageLimit = limits?.max_file_size ?? null;
   const storageText = `${formatBytes(storageUsed)} · ${t.perUpload} ${storageLimit ? formatBytes(storageLimit) : t.unlimited}`;
   const storageProgress = pct(maxSite?.storageSize ?? 0, storageLimit);
-
-  const dbLimit = limits?.max_db_bytes ?? null;
-  const dbText = dbLimit ? formatBytes(dbLimit) : t.unlimited;
 
   const quotaRow = (
     icon: React.ReactNode,
@@ -215,18 +200,6 @@ const UsagePage: React.FC = () => {
             t.deployments,
             deploymentsText,
             pct(deploymentsUsed, deploymentsLimit)
-          )}
-          {quotaRow(
-            <FolderKanban className="w-4 h-4 text-[var(--stitch-muted)]" />,
-            t.projects,
-            projectsText,
-            pct(projectsUsed, projectsLimit)
-          )}
-          {quotaRow(
-            <HardDrive className="w-4 h-4 text-[var(--stitch-muted)]" />,
-            t.dbPerProject,
-            dbText,
-            0
           )}
           {quotaRow(
             <FileStack className="w-4 h-4 text-[var(--stitch-muted)]" />,
