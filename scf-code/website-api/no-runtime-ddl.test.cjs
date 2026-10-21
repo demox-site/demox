@@ -72,7 +72,6 @@ test('new and rewritten migrations are idempotent and do not drop or rename', ()
     'scf-code/website-api/migrations/016_add_pro_expires_at.sql',
     'scf-code/website-api/migrations/025_add_website_deployed_size.sql',
     'scf-code/website-api/migrations/026_add_website_disable_columns.sql',
-    'scf-code/website-api/migrations/027_add_role_quota_columns.sql',
     'scf-code/website-api/migrations/028_add_project_data_tables.sql',
     'scf-code/website-api/migrations/029_backfill_custom_domain_routes.sql',
     'scf-code/function-api/migrations/003_add_runtime_routes.sql',
@@ -88,10 +87,10 @@ test('new and rewritten migrations are idempotent and do not drop or rename', ()
   const projectData = fs.readFileSync(path.join(repoRoot, 'scf-code/website-api/migrations/028_add_project_data_tables.sql'), 'utf8');
   assert.match(projectData, /CREATE TABLE IF NOT EXISTS project_tables/);
   assert.match(projectData, /CREATE TABLE IF NOT EXISTS project_rows/);
-  const quotas = fs.readFileSync(path.join(repoRoot, 'scf-code/website-api/migrations/027_add_role_quota_columns.sql'), 'utf8');
-  assert.match(quotas, /project_limit/);
-  assert.match(quotas, /max_db_bytes/);
-  assert.match(quotas, /104857600/);
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, 'scf-code/website-api/migrations/027_add_role_quota_columns.sql')),
+    false
+  );
   const binding = fs.readFileSync(path.join(repoRoot, 'scf-code/function-api/migrations/005_add_website_binding.sql'), 'utf8');
   assert.equal(/DROP\s+INDEX/i.test(stripComments(binding)), false);
   assert.match(binding, /uq_demox_functions_website_slug/);

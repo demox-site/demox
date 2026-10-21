@@ -10,8 +10,6 @@ const MAX_COLUMNS = 32;
 const MAX_LIST = 100;
 const MAX_ROW_BYTES = 32 * 1024;
 const MAX_PK = 255;
-// 普通用户默认：每个项目数据库最多 100MB（角色 max_db_bytes 可覆盖；null=不限）
-const DEFAULT_MAX_DB_BYTES = 100 * 1024 * 1024;
 
 function dataError(code, message) {
   const error = new Error(message);
@@ -106,13 +104,6 @@ function publicRow(row) {
   };
 }
 
-function docByteLength(doc) {
-  if (doc == null) return 0;
-  if (Buffer.isBuffer(doc)) return doc.length;
-  if (typeof doc === 'string') return Buffer.byteLength(doc);
-  return Buffer.byteLength(JSON.stringify(doc));
-}
-
 function createProjectData(query) {
   async function ensure() {
     // Tables are created by migrations/028_add_project_data_tables.sql.
@@ -124,25 +115,6 @@ function createProjectData(query) {
       [projectId, name]
     );
     return rows[0] || null;
-  }
-
-  async function usageBytes(projectId) {
-    await ensure();
-    const rows = await query(
-      `SELECT COALESCE(SUM(OCTET_LENGTH(CAST(doc AS CHAR))), 0) AS n
-       FROM project_rows WHERE project_id = ?`,
-      [projectId]
-    );
-    return Number(rows[0] && rows[0].n) || 0;
-  }
-
-  async function getUsage(projectId, maxBytes) {
-    const bytesUsed = await usageBytes(projectId);
-    const bytesLimit = maxBytes == null ? null : Number(maxBytes);
-    return {
-      bytesUsed,
-      bytesLimit: Number.isFinite(bytesLimit) && bytesLimit > 0 ? bytesLimit : null
-    };
   }
 
   async function listTables(projectId) {
@@ -221,36 +193,26 @@ function createProjectData(query) {
     return { rows: page, next };
   }
 
-  async function putRow(projectId, name, values, { maxBytes } = {}) {
+  async function putRow(projectId, name, values) {
     await ensure();
     const table = await getTableRow(projectId, name);
     if (!table) throw dataError('not_found', '没有这张表');
     const columns = parseJson(table.columns_json, []);
     const row = normalizeRow(columns, values);
-    const newDoc = JSON.stringify(row.doc);
-    const newBytes = Buffer.byteLength(newDoc);
     const existing = await query(
-      'SELECT pk, doc FROM project_rows WHERE project_id = ? AND table_id = ? AND pk = ? LIMIT 1',
+      'SELECT pk FROM project_rows WHERE project_id = ? AND table_id = ? AND pk = ? LIMIT 1',
       [projectId, table.id, row.pk]
     );
-    const limit = maxBytes === undefined ? DEFAULT_MAX_DB_BYTES : maxBytes;
-    if (limit != null && Number(limit) > 0) {
-      const oldBytes = existing[0] ? docByteLength(existing[0].doc) : 0;
-      const used = await usageBytes(projectId);
-      if (used - oldBytes + newBytes > Number(limit)) {
-        throw dataError('quota', '这个项目的数据库已到容量上限');
-      }
-    }
     if (existing[0]) {
       await query(
         'UPDATE project_rows SET doc = ? WHERE project_id = ? AND table_id = ? AND pk = ?',
-        [newDoc, projectId, table.id, row.pk]
+        [JSON.stringify(row.doc), projectId, table.id, row.pk]
       );
       return { created: false, pk: row.pk, values: row.doc };
     }
     await query(
       'INSERT INTO project_rows (project_id, table_id, pk, doc) VALUES (?, ?, ?, ?)',
-      [projectId, table.id, row.pk, newDoc]
+      [projectId, table.id, row.pk, JSON.stringify(row.doc)]
     );
     return { created: true, pk: row.pk, values: row.doc };
   }
@@ -269,7 +231,7 @@ function createProjectData(query) {
     return { deleted: key };
   }
 
-  return { ensure, listTables, createTable, getTable, deleteTable, listRows, putRow, deleteRow, usageBytes, getUsage };
+  return { ensure, listTables, createTable, getTable, deleteTable, listRows, putRow, deleteRow };
 }
 
 async function deleteProjectData(exec, projectId) {
@@ -290,6 +252,5 @@ module.exports = {
   createProjectData,
   deleteProjectData,
   normalizeColumns,
-  NAME_RE,
-  DEFAULT_MAX_DB_BYTES
+  NAME_RE
 };
