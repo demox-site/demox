@@ -81,6 +81,8 @@ function authenticate(event) {
 
   try {
     const decoded = verify(token);
+    // 站点短期票据只用于这一台私有站点的边缘门，不能当成账号会话。
+    if (decoded && decoded.purpose === 'site_access') return null;
     return decoded;
   } catch (error) {
     console.error('Token验证失败:', error.message);

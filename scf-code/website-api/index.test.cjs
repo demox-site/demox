@@ -1279,6 +1279,130 @@ function siteResolveRow(websiteId, path) {
   };
 }
 
+test('issue_site_ticket mints a one-hour host-bound ticket and check_site_access accepts only that ticket', async () => {
+  const site = {
+    path: 'sites/private/index.html',
+    user_id: 'owner-1',
+    project_id: 42,
+    website_id: 'BOTCAMP1',
+    visibility: 'private'
+  };
+  let current = site;
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM websites w')) return [current];
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const account = sign({ userId: 'owner-1', email: 'owner@demox.example' });
+  const issued = JSON.parse((await main({
+    path: '/check-site-access',
+    httpMethod: 'POST',
+    headers: {},
+    body: {
+      action: 'issue_site_ticket',
+      token: account,
+      label: 'botcamp',
+      domain: 'demox.site',
+      host: 'botcamp.demox.site'
+    }
+  })).body);
+  assert.equal(issued.success, true, JSON.stringify(issued));
+  assert.equal(issued.allowed, true);
+  assert.equal(issued.role, 'owner');
+  assert.equal(issued.maxAge, 3600);
+  assert.notEqual(issued.ticket, account);
+  const claims = JSON.parse(Buffer.from(issued.ticket.split('.')[1], 'base64url').toString());
+  assert.equal(claims.purpose, 'site_access');
+  assert.equal(claims.userId, 'owner-1');
+  assert.equal(claims.websiteId, 'BOTCAMP1');
+  assert.equal(claims.host, 'botcamp.demox.site');
+  assert.equal(claims.exp - claims.iat, 3600);
+  assert.equal(claims.email, undefined);
+
+  const allowed = JSON.parse((await main({
+    path: '/check-site-access',
+    httpMethod: 'POST',
+    headers: {},
+    body: { action: 'check_site_access', token: issued.ticket, label: 'botcamp', domain: 'demox.site' }
+  })).body);
+  assert.equal(allowed.allowed, true, JSON.stringify(allowed));
+  assert.equal(allowed.role, 'owner');
+  assert.equal(allowed.cookieScope, undefined);
+
+  const otherHost = JSON.parse((await main({
+    path: '/check-site-access',
+    httpMethod: 'POST',
+    headers: {},
+    body: { action: 'check_site_access', token: issued.ticket, label: 'other', domain: 'demox.site' }
+  })).body);
+  assert.equal(otherHost.allowed, false);
+  assert.equal(otherHost.reason, 'site_ticket_mismatch');
+
+  current = { ...site, website_id: 'OTHER1' };
+  const otherSite = JSON.parse((await main({
+    path: '/check-site-access',
+    httpMethod: 'POST',
+    headers: {},
+    body: { action: 'check_site_access', token: issued.ticket, label: 'botcamp', domain: 'demox.site' }
+  })).body);
+  assert.equal(otherSite.allowed, false);
+  assert.equal(otherSite.reason, 'site_ticket_mismatch');
+
+  const listed = await main({
+    path: '/website/list',
+    httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${issued.ticket}` },
+    body: { action: 'list' }
+  });
+  assert.equal(listed.statusCode, 401);
+  assert.equal(JSON.parse(listed.body).error, '未登录或token已过期');
+});
+
+test('issue_site_ticket refuses custom domains, www, and a site ticket used as the account', async () => {
+  let queried = false;
+  queryImpl = async () => {
+    queried = true;
+    throw new Error('these hosts must not hit the database');
+  };
+  const account = sign({ userId: 'owner-1' });
+  for (const body of [
+    { host: 'www.example.co.uk', token: account },
+    { label: 'www', domain: 'demox.site', token: account },
+    { host: 'github.io', token: account }
+  ]) {
+    const refused = JSON.parse((await main({
+      path: '/check-site-access',
+      httpMethod: 'POST',
+      headers: {},
+      body: { action: 'issue_site_ticket', ...body }
+    })).body);
+    assert.equal(refused.allowed, false, JSON.stringify(body) + JSON.stringify(refused));
+    assert.equal(refused.ticket, undefined);
+    assert.equal(queried, false);
+  }
+
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM websites w')) {
+      return [{ path: 'x', user_id: 'owner-1', project_id: 42, website_id: 'BOTCAMP1', visibility: 'private' }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const ticket = sign({
+    purpose: 'site_access',
+    userId: 'owner-1',
+    websiteId: 'BOTCAMP1',
+    host: 'botcamp.demox.site'
+  }, 3600);
+  const replay = JSON.parse((await main({
+    path: '/check-site-access',
+    httpMethod: 'POST',
+    headers: {},
+    body: { action: 'issue_site_ticket', token: ticket, label: 'botcamp', domain: 'demox.site' }
+  })).body);
+  assert.equal(replay.allowed, false);
+  assert.equal(replay.loginRequired, true);
+  assert.equal(replay.ticket, undefined);
+});
+
 test('check_site_access refuses public-suffix hosts with cookieScope refuse before any database lookup', async () => {
   let queried = false;
   queryImpl = async () => {

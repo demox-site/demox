@@ -190,7 +190,10 @@ function verifyToken(event) {
   const token = extractToken(event);
   if (!token) return null;
   try {
-    return verify(token);
+    const decoded = verify(token);
+    // 站点短期票据只用于这一台私有站点的边缘门，不能调用 MCP。
+    if (decoded && decoded.purpose === 'site_access') return null;
+    return decoded;
   } catch (error) {
     console.error('Token 验证失败:', error.message);
     return null;

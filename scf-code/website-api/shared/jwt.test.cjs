@@ -53,6 +53,20 @@ test('用其他密钥签的 token 会被拒绝', () => {
   assert.throws(() => jwt.verify(forged), /Token无效/);
 });
 
+test('站点短期票据不能当成账号会话', () => {
+  const jwt = load(STRONG);
+  const ticket = jwt.sign({
+    purpose: 'site_access',
+    userId: 'u1',
+    websiteId: 'BOTCAMP1',
+    host: 'botcamp.demox.site'
+  }, 3600);
+  assert.equal(jwt.verify(ticket).purpose, 'site_access');
+  assert.equal(jwt.authenticate({ headers: { Authorization: `Bearer ${ticket}` } }), null);
+  const account = jwt.sign({ userId: 'u1' }, '5m');
+  assert.equal(jwt.authenticate({ headers: { Authorization: `Bearer ${account}` } }).userId, 'u1');
+});
+
 test('alg=none 的 token 会被拒绝', () => {
   const jwt = load(STRONG);
   const none = jsonwebtoken.sign({ userId: 'admin' }, null, { algorithm: 'none' });
