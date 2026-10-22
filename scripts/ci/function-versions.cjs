@@ -26,8 +26,8 @@ const BANNED_ACCOUNT_IDS = ['100021031865', '1307257815'];
 const CODE_IGNORE = /\.test\.(?:c?js|mjs)$|\.md$/;
 // api.demox.site 上的 website 路由在 demox-function-api 进程内执行打包进来的
 // scf-code/website-api（PLATFORM_SITE_IN_PROCESS）。单独 demox functions push
-// 改不到这条路径。website-api 的非测试代码因此算 function-api 的 app：不升 app
-// 时，同一 app 版本、不同包 sha256 会被 code-drift 拒绝发布。
+// 改不到这条路径。website 函数本身没有 app 版本门禁。包 sha256 和线上不同、
+// 清单基线又不高于线上时，发布版本写成 <基线>+<git 前 12 位>。
 
 function repoRoot() {
   return path.resolve(__dirname, '../..');
@@ -35,7 +35,7 @@ function repoRoot() {
 
 function parseSemver(input) {
   const text = String(input == null ? '' : input);
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text);
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/.exec(text);
   if (!match) {
     const error = new Error(`不是 semver：${text}`);
     error.code = 'bad-semver';
@@ -53,8 +53,23 @@ function parseSemver(input) {
     major: Number(match[1]),
     minor: Number(match[2]),
     patch: Number(match[3]),
-    pre
+    pre,
+    build: match[5] || null
   };
+}
+
+function semverCore(version) {
+  const parsed = parseSemver(version);
+  const core = `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+  return parsed.pre ? `${core}-${parsed.pre.join('.')}` : core;
+}
+
+function derivedAppVersion(manifestVersion, gitSha) {
+  const build = String(gitSha || '').toLowerCase().slice(0, 12);
+  if (!/^[0-9a-f]{12}$/.test(build)) {
+    throw Object.assign(new Error('git sha 必须是 40 位小写十六进制，才能生成发布版本。'), { code: 'bad-git' });
+  }
+  return `${semverCore(manifestVersion)}+${build}`;
 }
 
 function compareIdent(left, right) {
@@ -73,7 +88,7 @@ function compareSemver(left, right) {
   if (a.major !== b.major) return Math.sign(a.major - b.major);
   if (a.minor !== b.minor) return Math.sign(a.minor - b.minor);
   if (a.patch !== b.patch) return Math.sign(a.patch - b.patch);
-  if (!a.pre && !b.pre) return 0;
+  if (!a.pre && !b.pre) return compareBuild(a, b);
   if (!a.pre) return 1;
   if (!b.pre) return -1;
   const length = Math.max(a.pre.length, b.pre.length);
@@ -83,7 +98,15 @@ function compareSemver(left, right) {
     const diff = compareIdent(a.pre[index], b.pre[index]);
     if (diff) return diff;
   }
-  return 0;
+  return compareBuild(a, b);
+}
+
+function compareBuild(left, right) {
+  if (!left.build && !right.build) return 0;
+  if (!left.build) return -1;
+  if (!right.build) return 1;
+  if (left.build === right.build) return 0;
+  return left.build < right.build ? -1 : 1;
 }
 
 function isPlaceholderVersion(version) {
@@ -468,7 +491,15 @@ function decideAppDeploy({ entry, aliases, versions, codeSha256, gitSha, aliasNa
   if (!/^[0-9a-f]{64}$/.test(String(codeSha256 || ''))) {
     return stop('bad-sha', '代码 sha256 必须是 64 位小写十六进制。');
   }
-  const appDiff = compareSemver(entry.appVersion, live.app);
+  let manifestBase;
+  let liveBase;
+  try {
+    manifestBase = semverCore(entry.appVersion);
+    liveBase = semverCore(live.app);
+  } catch (error) {
+    return stop(error.code || 'bad-semver', error.message);
+  }
+  const appDiff = compareSemver(manifestBase, liveBase);
   const runtimeDiff = compareSemver(entry.runtimeVersion, live.runtime);
   if (appDiff < 0) {
     return stop('downgrade', `本地 app ${entry.appVersion} 低于线上 app ${live.app}，CI 不会降级。`);
@@ -476,28 +507,48 @@ function decideAppDeploy({ entry, aliases, versions, codeSha256, gitSha, aliasNa
   if (runtimeDiff < 0) {
     return stop('runtime-drift', `本地 runtime ${entry.runtimeVersion} 低于线上 runtime ${live.runtime}。已停止，不会降级 runtime。`);
   }
-  if (appDiff === 0 && codeSha256 !== live.sha256) {
-    return stop('code-drift', `app 版本同为 ${entry.appVersion}，但代码 sha256 与线上不一致。拒绝发布。`);
-  }
   if (localCfg !== live.cfg) {
     return stop('config-drift', `app 发布必须保持配置指纹不变（线上 ${live.cfg}，本地 ${localCfg}）。runtime 变更要走单独路径，本命令不会改配置。`);
   }
   if (runtimeDiff !== 0) {
     return stop('runtime-drift', `本地 runtime ${entry.runtimeVersion} 与线上 runtime ${live.runtime} 不同。runtime 发布需要云架构复核和 Chief 批准，这里不会自动发布。`);
   }
-  if (appDiff === 0) {
+  const dev = parsed.find((item) => item.alias === 'develop' && item.meta);
+  // production 上一次自动版本的 build 可能比 develop 上这份包的 build 更大。
+  // 比较最高版本会漏掉 develop 已经是同一份 sha256 的情况，重跑就会再发一版。
+  const developHasPackage = Boolean(dev
+    && dev.meta.sha256 === codeSha256
+    && dev.meta.cfg === localCfg
+    && compareSemver(dev.meta.runtime, entry.runtimeVersion) === 0
+    && semverCore(dev.meta.app) === manifestBase);
+  if (appDiff === 0 && (codeSha256 === live.sha256 || developHasPackage)) {
     // 带上已发布的版本号（优先 develop：promote 只认 develop 当前指向的版本），双账号模式据此复用、继续发下一个账号。
-    const dev = parsed.find((item) => item.alias === 'develop' && item.meta && item.meta.sha256 === codeSha256);
-    return { ...stop('already-published', `app 版本与代码指纹、配置指纹都与线上一致，不需要发布。`), version: (dev || max).version, alias: (dev || max).alias };
+    const devSame = developHasPackage
+      ? dev
+      : parsed.find((item) => item.alias === 'develop' && item.meta && item.meta.sha256 === codeSha256);
+    const matched = devSame || max;
+    return { ...stop('already-published', `app 版本与代码指纹、配置指纹都与线上一致，不需要发布。`), version: matched.version, alias: matched.alias };
+  }
+  let app = entry.appVersion;
+  let reason = 'app-upgrade';
+  let message = `允许发布 app ${live.app} → ${entry.appVersion}`;
+  if (appDiff === 0) {
+    try {
+      app = derivedAppVersion(entry.appVersion, gitSha);
+    } catch (error) {
+      return stop(error.code || 'bad-git', error.message);
+    }
+    reason = 'app-auto';
+    message = `清单仍是 ${manifestBase}，代码 sha256 与线上不同，发布版本写成 ${app}`;
   }
   const description = formatDescription({
-    app: entry.appVersion,
+    app,
     runtime: entry.runtimeVersion,
     git: gitSha,
     sha256: codeSha256,
     cfg: localCfg
   });
-  return { allow: true, reason: 'app-upgrade', message: `允许发布 app ${live.app} → ${entry.appVersion}`, description, live };
+  return { allow: true, reason, message, description, live };
 }
 
 function parseLiveVersion(versions, version) {
@@ -553,8 +604,8 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
     if (appCmp < 0) errors.push(`${baseFn.name} 的 app 从 ${baseFn.appVersion} 降到 ${headFn.appVersion}`);
     if (runtimeCmp < 0) errors.push(`${baseFn.name} 的 runtime 从 ${baseFn.runtimeVersion} 降到 ${headFn.runtimeVersion}`);
     const codeChanged = files.filter((file) => matchesPath(file, headFn.codePaths) && !isIgnoredCodeFile(file));
-    if (codeChanged.length && appCmp <= 0) {
-      errors.push(`${baseFn.name} 的代码变了但 app 仍是 ${headFn.appVersion}：${codeChanged.join(', ')}`);
+    if (codeChanged.length && appCmp === 0) {
+      warnings.push(`${baseFn.name} 的代码变了，清单仍是 ${headFn.appVersion}。master 发布会写成 ${headFn.appVersion}+<git 前 12 位>：${codeChanged.join(', ')}`);
     }
     let configChanged = false;
     try {
@@ -568,7 +619,10 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
       errors.push(`${headFn.name} ${error.message}`);
     }
     const runtimeChanged = files.filter((file) => matchesPath(file, headFn.runtimePaths));
-    if ((runtimeChanged.length || configChanged) && runtimeCmp <= 0) {
+    if (runtimeChanged.length && !configChanged && runtimeCmp === 0) {
+      warnings.push(`${baseFn.name} 的打包脚本变了，配置指纹未变，runtime 仍是 ${headFn.runtimeVersion}：${runtimeChanged.join(', ')}`);
+    }
+    if (configChanged && runtimeCmp <= 0) {
       if (seedEnvironmentNameCorrection(baseFn, headFn, {
         runtimeFilesChanged: runtimeChanged.length > 0,
         configChanged,
@@ -577,8 +631,7 @@ function evaluateChanges({ baseManifest, headManifest, changedFiles }) {
       })) {
         warnings.push(`${baseFn.name} 在 seed 占位期间只修正了 environmentNames，runtime 仍是 ${headFn.runtimeVersion}。真实版本留到元数据写入。`);
       } else {
-        const why = runtimeChanged.length ? runtimeChanged.join(', ') : 'runtime 配置';
-        errors.push(`${baseFn.name} 的 runtime 文件或配置变了但 runtime 仍是 ${headFn.runtimeVersion}：${why}`);
+        errors.push(`${baseFn.name} 的 runtime 配置变了但 runtime 仍是 ${headFn.runtimeVersion}`);
       }
     }
   }
@@ -644,6 +697,8 @@ module.exports = {
   buildReleaseRecord,
   changedFilesBetween,
   compareSemver,
+  derivedAppVersion,
+  semverCore,
   asyncInvokeRequests,
   configFingerprint,
   decideAppDeploy,

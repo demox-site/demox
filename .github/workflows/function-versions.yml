@@ -1,7 +1,7 @@
 name: Function versions
 
 # PR 检查，不发布。
-# 1. 清单里的平台函数：代码变了必须升 app，runtime 文件或配置变了必须升 runtime。
+# 1. 清单里的平台函数：代码变了不必手改 app（master 写成 基线+git 前 12 位）。runtime 配置变了必须升 runtime。只改打包脚本、指纹不变，给警告。
 # 2. #67 的 deploy-develop / promote 单测（scripts/ci/scf-function-api.test.cjs）。
 # 没有 environment，不读密钥，不切 SCF 别名。
 on:

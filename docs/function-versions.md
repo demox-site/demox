@@ -14,15 +14,15 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 
 ## 占位版本
 
-`demox-function-api` 的 `appVersion` 是 `0.1.21`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`；统一包代码 sha256 变了就必须升 app，不能停在同一个 app 版本。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。`0.1.5` 按目标分别读证书到期时间，并且在签发前复用已有证书。`0.1.6` 在没有 `ssl:DescribeCertificate` / `ssl:DescribeCertificates` 时仍能续期：api 读到期失败按已到期走已绑定证书，列表鉴权失败才签发，强制重试复用刚绑上的证书，并且只改写 `CERT_DOMAIN` 与 `CERT_SAN` 上的上传证书。`0.1.7` 把源站 by-ID 裁决（`handleResolveSiteById`）打进统一包。`runtime.asyncInvoke` 与 `0.1.6` 相同，不进指纹，runtime 仍是 `0.1.0`。`0.1.8` 给 analytics-rollup-5m 加水位、`initial_ms` 和永久缺口（迁移 024）。水位比 now 留出约 2 分钟，并多扫前一个小时，避免盖在 `HH:59:58`、数分钟后才出现的对象被丢掉；迟到对象记 `LATE_OBJECT`。成功一轮打 `HEARTBEAT analytics-rollup-5m`（水位、结清窗口数、处理数、迟到数、耗时档）。开跑时水位落后超过 30 分钟打 `STALE_WATERMARK`；原始日志没开或没有桶打 `CONFIG_MISSING`。COS `NoSuchKey` 是非错误跳过 `NOSUCHKEY`。迟到对象是 `INFO analytics-rollup-5m … code=LATE_OBJECT`。缺表打 `ALERT analytics-rollup-5m step=tables window=- code=CONFIG_MISSING` 后停止，不推进水位、不打 HEARTBEAT。缺口表有 `status`（`active` / `void`，默认 `active`）；试打行 `reason='test_fire'`、对象键 `test-fire:<YYYYMMDD>-<n>`，清理只 `UPDATE status='void'`。暂定周分类只数 `status='active' AND reason<>'test_fire'`。运行时不执行 CREATE。运行时账号只要这两张表的 SELECT、INSERT、UPDATE。云帆在每个环境发布前用临时授权在对应库跑迁移 024（先 develop 库，再 production 库），跑完撤权，权限 diff 为 0。promote 到 production 之前确认 `ANALYTICS_RAW_ENABLED=1` 且桶 id 已配置。命中 function-api 路径的 master 推送会自动 stage → deploy-develop → 冒烟 → promote → 再冒烟，中间没有停顿，所以 024 要在推送前在两个库都跑完。告警试打只在 develop 上做。`0.1.9` 在 website-api 里保留 `k2t-*` 标签，非生产边缘主机不能被注册成用户站点。`0.1.21` 给函数控制台补上调用记录、指标、更新和删除。
+`demox-function-api` 的 `appVersion` 是 `0.1.21`，`runtimeVersion` 仍是 `0.1.0`。`demox-user-nodejs` 的 app / runtime 仍是 `0.1.0`。线上 `develop` / `production` 已有 `demox-release`。清单基线可以不改：包 sha256 与线上不同时，CI 把发布版本写成 `<基线>+<git 前 12 位>`（例如 `0.1.21+c933e9593619`）。没有 `+` 的基线比任何带 build metadata 的同号版本旧，所以这次发布比线上当前基线新。显式把基线升到更高的 semver 仍按清单版本发布。`0.1.2` 把已经在 master 上的 website 公共后缀拒绝打进这份统一包：公开 API 跑的是包内的 website，不是单独 push 的 website 函数版本。`0.1.3` 带上 cert-renew 的 DNS-01 重试，以及定时器失败时让调用失败。`0.1.4` 把 DNS-01 重试的默认传播等待从 90s 降到 60s（`DNS_RETRY_PROPAGATION_MS` 仍可覆盖），让最坏情况落在现有 300s 超时内。`0.1.5` 按目标分别读证书到期时间，并且在签发前复用已有证书。`0.1.6` 在没有 `ssl:DescribeCertificate` / `ssl:DescribeCertificates` 时仍能续期：api 读到期失败按已到期走已绑定证书，列表鉴权失败才签发，强制重试复用刚绑上的证书，并且只改写 `CERT_DOMAIN` 与 `CERT_SAN` 上的上传证书。`0.1.7` 把源站 by-ID 裁决（`handleResolveSiteById`）打进统一包。`runtime.asyncInvoke` 与 `0.1.6` 相同，不进指纹，runtime 仍是 `0.1.0`。`0.1.8` 给 analytics-rollup-5m 加水位、`initial_ms` 和永久缺口（迁移 024）。水位比 now 留出约 2 分钟，并多扫前一个小时，避免盖在 `HH:59:58`、数分钟后才出现的对象被丢掉；迟到对象记 `LATE_OBJECT`。成功一轮打 `HEARTBEAT analytics-rollup-5m`（水位、结清窗口数、处理数、迟到数、耗时档）。开跑时水位落后超过 30 分钟打 `STALE_WATERMARK`；原始日志没开或没有桶打 `CONFIG_MISSING`。COS `NoSuchKey` 是非错误跳过 `NOSUCHKEY`。迟到对象是 `INFO analytics-rollup-5m … code=LATE_OBJECT`。缺表打 `ALERT analytics-rollup-5m step=tables window=- code=CONFIG_MISSING` 后停止，不推进水位、不打 HEARTBEAT。缺口表有 `status`（`active` / `void`，默认 `active`）；试打行 `reason='test_fire'`、对象键 `test-fire:<YYYYMMDD>-<n>`，清理只 `UPDATE status='void'`。暂定周分类只数 `status='active' AND reason<>'test_fire'`。运行时不执行 CREATE。运行时账号只要这两张表的 SELECT、INSERT、UPDATE。云帆在每个环境发布前用临时授权在对应库跑迁移 024（先 develop 库，再 production 库），跑完撤权，权限 diff 为 0。promote 到 production 之前确认 `ANALYTICS_RAW_ENABLED=1` 且桶 id 已配置。命中 function-api 路径的 master 推送会自动 stage → deploy-develop → 冒烟 → promote → 再冒烟，中间没有停顿，所以 024 要在推送前在两个库都跑完。告警试打只在 develop 上做。`0.1.9` 在 website-api 里保留 `k2t-*` 标签，非生产边缘主机不能被注册成用户站点。`0.1.21` 给函数控制台补上调用记录、指标、更新和删除。
 
 `runtime.asyncInvoke.retryNum` 固定为 `0`（`UpdateFunctionEventInvokeConfig`，qualifier `production` 和 `$LATEST`，`MsgTTL` 21600）。定时器是 SCF 异步调用，默认再重试 2 次；`monthly-renew` 每次重试都可能新签发一张 Let's Encrypt 证书。这项不进配置指纹，CI 的 app 发布不会调用这个接口，发布角色也没有改配置的权限。指纹保持 `0.1.0`。上线后续期之前要按上面两个 qualifier 各应用一次，本仓库的代码发布不会替线上关掉重试。这是函数级配置，`analytics-rollup-5m` 也不再自动重试。
 
 `deploy-develop` 和 `deploy` 看到占位版本（`0.0.0-placeholder`）就停，不会打云 API。
 
-`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote，再改代码就必须升版本。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。
+`seed: true` 只在清单第一次出现时放开「同一次 diff 里改了代码却没升版本」。清单进了 base 之后就去掉 seed 和 seedNote。之后改代码不必手改 app：PR 检查给警告，master 发布写成 `<基线>+<git 前 12 位>`。配置指纹变了仍必须升 runtime。占位期间如果只修正 `environmentNames`（入口、内存、超时、层、触发器都不动），版本保持 `0.0.0-placeholder`。
 
-`scf-code/website-api/**`（测试和 markdown 除外）要给 `demox-function-api` 升 app。公开的 `https://api.demox.site` 不执行 `demox functions push` 出去的 website 版本：默认不设 `FUNCTIONS_PLATFORM_SITE_MODE=user-runtime` 时，平台站点函数在 function-api 进程内执行，入口是打进统一包的 `scf-code/website-api/index.js`。只推 website 函数、不升 function-api 的 app，公开路径仍是上一份统一包里的旧代码；app 版本不变而包 sha256 变了，发布会因 code-drift 停住。`scf-code/function-api/**` 的代码变更同样要升 app。runtime 仍是 `0.1.0`。
+`scf-code/website-api/**`（测试和 markdown 除外）打进 `demox-function-api` 的统一包。公开的 `https://api.demox.site` 不执行 `demox functions push` 出去的 website 版本：默认不设 `FUNCTIONS_PLATFORM_SITE_MODE=user-runtime` 时，平台站点函数在 function-api 进程内执行，入口是打进统一包的 `scf-code/website-api/index.js`。单独的 website CLI 发布没有 app / sha256 门禁。公开路径要吃到新代码，走 function-api 发布：清单基线不变而包 sha256 变了时，版本写成 `<基线>+<git 前 12 位>`，不会停在 code-drift。`scf-code/function-api/**` 同样走这条规则。runtime 仍是 `0.1.0`。
 
 ## 第一次发布
 
@@ -39,14 +39,14 @@ Demox 自己的后端按三条轨道记账。这份清单只覆盖前两条里�
 这一次之后，缺元数据重新变成硬停：
 
 - 只有一个别名有 `demox-release`、另一个没有：`missing-metadata`，停，不覆盖。
-- 两个别名都有元数据：回到原来的升级规则（本地 app 必须更高；相同版本但 sha256 不同则失败；配置指纹必须相同；runtime 不能在这里变）。
+- 两个别名都有元数据：线上 app 的基线（去掉 `+build`）高于清单基线则拒绝。基线相同且代码 sha256 相同则不发布。基线相同但 sha256 不同则写成 `<清单基线>+<git 前 12 位>`。清单基线更高则按清单版本发布。配置指纹必须相同。runtime 不能在这里变。认不出 `demox-release`、一边有一边没有、或两个别名上较高版本的元数据不一致，都拒绝。
 - 目标版本描述里没有元数据时，`promote` 也不切 production。
 
 ## 发布怎么接 #67
 
 `.github/workflows/deploy-function-api.yml` 的 `deploy-develop`（`cos_key` + `expected_sha256`，只切 develop）和 `promote`（`version=N`，要过 `function-api-production`）还是原来的命令。门禁加在它们前面：
 
-1. 两个别名都还没有 `demox-release` 时，只允许上面的一次 bootstrap。两边都有元数据之后：本地 app 必须高于线上 app。相等但代码 sha256 不同，失败。本地更低，失败（CI 不降级）。
+1. 两个别名都还没有 `demox-release` 时，只允许上面的一次 bootstrap。两边都有元数据之后：比较清单基线（去掉 `+build`）和线上 app 的基线。线上基线更高，失败（CI 不降级）。基线相同且 sha256 相同，不发布。基线相同但 sha256 不同，发布版本写成 `<清单基线>+<git 前 12 位>`，描述里仍有这份 semver、git sha、代码 sha256 和配置指纹。清单基线更高，按清单版本发布。develop 已经是这份 sha256 时也不再发，即使 production 上一次自动版本的 build 排在它前面。
 2. app 发布必须让配置指纹保持不变。runtime 版本或指纹变了，停在这里，不自动改内存、超时、层、环境变量或触发器。
 3. 通过之后才走原来的动作：校验 COS 包 sha256，`UpdateFunctionCode`，`PublishVersion`，develop 健康检查。production 不动。
 4. Chief 在 `function-api-production` 里批准后，`promote` 把 production 指到**同一个**版本，并追加一条发布记录。版本描述里没有元数据时，promote 也不切。
@@ -69,7 +69,7 @@ demox-release app=0.2.0 runtime=0.1.0 git=<40位> sha256=<64位> cfg=<64位>
 
 ## 打包
 
-`scripts/package-unified-scf.mjs` 用 `scripts/ci/unified-scf-package-lock.json` 做 `npm ci`，zip 按路径排序、mtime 固定在纪元、权限只留 `0644` / `0755`。同一棵目录树打两次，sha256 相同。改这份 lock 或打包脚本是 runtime 变更。
+`scripts/package-unified-scf.mjs` 用 `scripts/ci/unified-scf-package-lock.json` 做 `npm ci`。zip 按码点排序后整段读入再 `append`（不用会并行 stat 的 `archiver.file`），mtime 固定在本地 1980-01-01 00:00:00，权限只留 `0644` / `0755`。同一份内容打两次，sha256 相同，和源文件 mtime、umask 无关。改这份 lock 或打包脚本不改配置指纹，PR 检查给警告，不要求升 runtime。配置指纹变了才必须升 runtime。
 
 ## 本地检查
 

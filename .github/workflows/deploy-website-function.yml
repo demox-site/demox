@@ -9,7 +9,8 @@ name: Deploy website function (Demox EPX2UU43 / slug website)
 # 注意：CLI 只推 index.js；node_modules 和 shared/ 在统一 SCF 包（function-api 发布）里，改了那些要走 deploy-function-api。
 # 公开 https://api.demox.site 也不跑这里推出去的版本。function-api 默认把平台站点函数留在进程内
 # （PLATFORM_SITE_IN_PROCESS），执行的是统一包里的 scf-code/website-api。要让公开路径吃到新代码，
-# 升 demox-function-api 的 appVersion，走 Deploy function-api：develop → 冒烟 → promote production。
+# 走 Deploy function-api。这条 CLI 发布没有 app / sha256 门禁。清单基线不变而统一包 sha256 变了时，
+# function-api 会把版本写成 <基线>+<git 前 12 位>。
 #
 # 凭证：暂时用仓库级 secret DEMOX_TOKEN（站点所有者的令牌，www 发布也在用）。
 # 日志规则：绝不打印令牌，也不打印 CLI / API 的原始输出。CLI 输出全部写进 $RUNNER_TEMP 下的文件，
