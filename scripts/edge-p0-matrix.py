@@ -544,8 +544,9 @@ def _const_str(name, text):
 
 def cors_spec(text):
     enabled = re.search(r"var CORS_ENABLED = (true|false);", text)
+    # 现网边缘文件没有这组常量。没有就是关闭：响应里不该出现 Access-Control-*。
     if not enabled:
-        raise SystemExit("missing CORS_ENABLED")
+        return {"enabled": False, "allow_headers": "", "expose_headers": ""}
     return {
         "enabled": enabled.group(1) == "true",
         "allow_headers": _const_str("ORIGIN_OPTIONS_CORS_ALLOW_HEADERS", text),
