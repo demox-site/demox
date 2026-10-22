@@ -13,7 +13,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle
-} from "@/components/ui";
+} from "@/components/ui/alert-dialog";
 import {
   unstable_HistoryRouter as BrowserRouter,
   Routes,
@@ -31,29 +31,32 @@ import {
   reloginDialogOpenChangeAction,
   reloginDialogLockHandlers
 } from "./lib/login-next";
-import { ConsoleLayout } from "./layouts/ConsoleLayout";
-import Home from "./pages/home.jsx";
-import SitesPage from "./pages/console/SitesPage.jsx";
-import ProjectsPage from "./pages/console/ProjectsPage.jsx";
-import ProjectMembersPage from "./pages/console/ProjectMembersPage.jsx";
-import ProjectSettingsPage from "./pages/console/ProjectSettingsPage";
-import ProjectOverviewPage from "./pages/console/ProjectOverviewPage";
-import SettingsPage from "./pages/console/SettingsPage";
-import TokensPage from "./pages/console/TokensPage";
-import FunctionsPage from "./pages/console/FunctionsPage";
-import ProjectFunctionsPage from "./pages/console/ProjectFunctionsPage";
-import ProjectDatabaseLayout, {
-  ProjectDatabaseCreate,
-  ProjectDatabaseList,
-  ProjectDatabaseTable
-} from "./pages/console/ProjectDatabasePage";
-import UsagePage from "./pages/console/UsagePage";
-import SiteSettingsPage from "./pages/console/SiteSettingsPage.jsx";
-
-// 管理后台和站点分析页带图表库（recharts），按需加载，不进 www 主包。
+// 控制台、部署页、图表页都不进首页主包。打开首页只下载营销页需要的脚本。
+const ConsoleLayout = React.lazy(() => import("./layouts/ConsoleLayout"));
+const Home = React.lazy(() => import("./pages/home.jsx"));
+const SitesPage = React.lazy(() => import("./pages/console/SitesPage.jsx"));
+const ProjectsPage = React.lazy(() => import("./pages/console/ProjectsPage.jsx"));
+const ProjectMembersPage = React.lazy(() => import("./pages/console/ProjectMembersPage.jsx"));
+const ProjectSettingsPage = React.lazy(() => import("./pages/console/ProjectSettingsPage"));
+const ProjectOverviewPage = React.lazy(() => import("./pages/console/ProjectOverviewPage"));
+const SettingsPage = React.lazy(() => import("./pages/console/SettingsPage"));
+const TokensPage = React.lazy(() => import("./pages/console/TokensPage"));
+const FunctionsPage = React.lazy(() => import("./pages/console/FunctionsPage"));
+const ProjectFunctionsPage = React.lazy(() => import("./pages/console/ProjectFunctionsPage"));
+const loadDatabasePage = () => import("./pages/console/ProjectDatabasePage");
+const ProjectDatabaseLayout = React.lazy(() => loadDatabasePage().then((mod) => ({ default: mod.default })));
+const ProjectDatabaseList = React.lazy(() => loadDatabasePage().then((mod) => ({ default: mod.ProjectDatabaseList })));
+const ProjectDatabaseCreate = React.lazy(() => loadDatabasePage().then((mod) => ({ default: mod.ProjectDatabaseCreate })));
+const ProjectDatabaseTable = React.lazy(() => loadDatabasePage().then((mod) => ({ default: mod.ProjectDatabaseTable })));
+const UsagePage = React.lazy(() => import("./pages/console/UsagePage"));
+const SiteSettingsPage = React.lazy(() => import("./pages/console/SiteSettingsPage.jsx"));
 const AdminDashboard = React.lazy(() => import("./pages/AdminDashboard"));
 const SiteAnalyticsPage = React.lazy(() => import("./pages/console/SiteAnalyticsPage"));
 const lazyFallback = <div className="min-h-[60vh]" />;
+
+function Deferred({ children }: { children: React.ReactNode }) {
+  return <React.Suspense fallback={lazyFallback}>{children}</React.Suspense>;
+}
 
 const history = createBrowserHistory();
 window._WEAPPS_HISTORY = history;
@@ -159,68 +162,68 @@ const App: React.FC = () => {
                       <Route
                         key={`zh-${key || "home"}`}
                         path={key ? `/zh/${key}` : "/zh"}
-                        element={<PageWrapper id={item.id} Page={item.component} />}
+                        element={<Deferred><PageWrapper id={item.id} Page={item.component} /></Deferred>}
                       />
                     );
                   })}
 
                   {/* 控制台：共享侧栏布局的嵌套路由 */}
-                  <Route path="/console" element={<ConsoleLayout />}>
+                  <Route path="/console" element={<Deferred><ConsoleLayout /></Deferred>}>
                     <Route index element={<Navigate to="/console/projects" replace />} />
-                    <Route path="projects" element={<ProjectsPage />} />
+                    <Route path="projects" element={<Deferred><ProjectsPage /></Deferred>} />
                     <Route
                       path="projects/:projectId/overview"
-                      element={<ProjectOverviewPage />}
+                      element={<Deferred><ProjectOverviewPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/deploy"
-                      element={<Home />}
+                      element={<Deferred><Home /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/sites"
-                      element={<SitesPage />}
+                      element={<Deferred><SitesPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/functions"
-                      element={<ProjectFunctionsPage />}
+                      element={<Deferred><ProjectFunctionsPage /></Deferred>}
                     />
-                    <Route path="projects/:projectId/database" element={<ProjectDatabaseLayout />}>
-                      <Route index element={<ProjectDatabaseList />} />
-                      <Route path="new" element={<ProjectDatabaseCreate />} />
-                      <Route path="tables/:tableName" element={<ProjectDatabaseTable />} />
+                    <Route path="projects/:projectId/database" element={<Deferred><ProjectDatabaseLayout /></Deferred>}>
+                      <Route index element={<Deferred><ProjectDatabaseList /></Deferred>} />
+                      <Route path="new" element={<Deferred><ProjectDatabaseCreate /></Deferred>} />
+                      <Route path="tables/:tableName" element={<Deferred><ProjectDatabaseTable /></Deferred>} />
                     </Route>
                     <Route
                       path="projects/:projectId/sites/:websiteId/analytics"
-                      element={<React.Suspense fallback={lazyFallback}><SiteAnalyticsPage /></React.Suspense>}
+                      element={<Deferred><SiteAnalyticsPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId/functions"
-                      element={<FunctionsPage />}
+                      element={<Deferred><FunctionsPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/sites/:websiteId"
-                      element={<SiteSettingsPage />}
+                      element={<Deferred><SiteSettingsPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/members"
-                      element={<ProjectMembersPage />}
+                      element={<Deferred><ProjectMembersPage /></Deferred>}
                     />
                     <Route
                       path="projects/:projectId/settings"
-                      element={<ProjectSettingsPage />}
+                      element={<Deferred><ProjectSettingsPage /></Deferred>}
                     />
                     <Route path="deploy" element={<Navigate to="/console/projects" replace />} />
                     <Route path="sites" element={<Navigate to="/console/projects" replace />} />
-                    <Route path="usage" element={<UsagePage />} />
-                    <Route path="tokens" element={<TokensPage />} />
+                    <Route path="usage" element={<Deferred><UsagePage /></Deferred>} />
+                    <Route path="tokens" element={<Deferred><TokensPage /></Deferred>} />
                     <Route path="functions" element={<Navigate to="/console/projects" replace />} />
-                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="settings" element={<Deferred><SettingsPage /></Deferred>} />
                     {/* 管理后台：真正的二级路由，section 决定展示哪个面板 */}
                     <Route
                       path="admin"
                       element={<Navigate to="dashboard" replace />}
                     />
-                    <Route path="admin/:section" element={<React.Suspense fallback={lazyFallback}><AdminDashboard /></React.Suspense>} />
+                    <Route path="admin/:section" element={<Deferred><AdminDashboard /></Deferred>} />
                   </Route>
 
                   {/* 旧地址兼容重定向 */}
@@ -251,7 +254,7 @@ const App: React.FC = () => {
                           key={item.id}
                           path={`/${item.id}`}
                           element={
-                            <PageWrapper id={item.id} Page={item.component} />
+                            <Deferred><PageWrapper id={item.id} Page={item.component} /></Deferred>
                           }
                         />
                       );

@@ -38,10 +38,12 @@ test("generates indexable static shells and noindex auth shells", async () => {
       .replace(/<[^>]+>/g, " ")
       .match(/\b[A-Za-z]{2,}\b/g) || [];
     assert.ok(englishWords.length >= 300, `expected 300+ English words in crawlable homepage, got ${englishWords.length}`);
-    assert.match(home, /<div id="root"><\/div>\s*<div data-crawlable-fallback-shell>\s*<main id="main" data-crawlable-fallback>/);
+    assert.match(home, /<div id="root"><\/div>\s*<div data-app-boot hidden>Demox<\/div>\s*<div data-crawlable-fallback-shell>\s*<main id="main" data-crawlable-fallback>/);
     assert.doesNotMatch(home, /<div id="root">\s*<main/);
     assert.doesNotMatch(home, /<noscript data-crawlable-fallback-shell>/);
+    assert.match(home, /html\.js \[data-crawlable-fallback-shell\] \{ display: none !important; \}/);
     assert.match(home, /#root:not\(:empty\)\s*~\s*\[data-crawlable-fallback-shell\]/);
+    assert.doesNotMatch(home, /gptengineer|cdn\.gpteng\.co/);
 
     const fallbackStyle = home.match(/<style data-seo="fallback-style">([\s\S]*?)<\/style>/)?.[1];
     const fallbackMarkup = home.match(/<main[^>]*data-crawlable-fallback[^>]*>([\s\S]*?)<\/main>/)?.[0];

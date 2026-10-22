@@ -29,10 +29,23 @@
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="/demox-logo.png" />
     <link rel="privacy-policy" href="https://www.demox.site/privacy" />
-    <link rel="preconnect" href="https://cdn.gpteng.co" crossorigin />
     <style data-seo="js-shell">
-      /* Hide the crawlable shell only after React fills #root. Keep it in the
-         raw HTML so non-JS graders can count the text. */
+      /* 不跑 JS 的抓取仍能读到壳里的正文。浏览器会先加上 html.js，
+         所以普通人从第一帧起就看不到这篇给 SEO 用的长文，只看到 boot，
+         直到 React 把真正的页面画进 #root。 */
+      html.js [data-crawlable-fallback-shell] { display: none !important; }
+      html.js [data-app-boot] {
+        display: flex !important;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        background: #f7f7f5;
+        color: #18181b;
+        font: 650 28px/1 ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: -0.04em;
+      }
+      html.dark.js [data-app-boot] { background: #09090b; color: #fafafa; }
+      #root:not(:empty) ~ [data-app-boot],
       #root:not(:empty) ~ [data-crawlable-fallback-shell] { display: none !important; }
     </style>
     <script data-seo="schema" type="application/ld+json">
@@ -127,6 +140,7 @@
     <script>
       // Apply the persisted/system theme before first paint to avoid a flash.
       (function () {
+        document.documentElement.classList.add("js");
         try {
           var saved = localStorage.getItem("app_theme");
           var theme = saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
@@ -155,6 +169,7 @@
 
   <body>
     <div id="root"></div>
+    <div data-app-boot hidden>Demox</div>
     <div data-crawlable-fallback-shell>
       <main id="main" data-crawlable-fallback>
         <header class="fallback-header">
@@ -187,8 +202,6 @@
         </section>
       </main>
     </div>
-    <!-- IMPORTANT: DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
-    <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

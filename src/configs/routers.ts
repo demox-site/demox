@@ -1,25 +1,40 @@
+import { lazy, type ComponentType } from "react";
 import CloudHostLanding from "../pages";
-import NotFoundPage from "../pages/404";
-import MemberPrice from "../pages/memberPrice";
-import LogPage from "../pages/log";
-import TermsPage from "../pages/terms";
-import PrivacyPage from "../pages/privacy";
-import LayoutDemo from "../pages/LayoutDemo";
-import { MCPLogin } from "../pages/MCPLogin";
-import { MCPAuthorize } from "../pages/MCPAuthorize";
-import { Docs } from "../pages/Docs";
-import { GithubCallback } from "../pages/GithubCallback";
-import { GithubLink } from "../pages/GithubLink";
-import { FeishuCallback } from "../pages/FeishuCallback";
-import { FeishuLink } from "../pages/FeishuLink";
-import { SiteAuth } from "../pages/SiteAuth";
-import AiStaticSiteGuide from "../pages/AiStaticSiteGuide";
-import ContentScanPage from "../pages/ContentScanPage";
-import WhenToUseDemox from "../pages/WhenToUseDemox";
-import DeployTroubleshooting from "../pages/DeployTroubleshooting";
-import HowDemoxHostsItself from "../pages/HowDemoxHostsItself";
-import IntentLanding from "../pages/IntentLanding";
 import { INTENT_LANDINGS } from "../content/intent-landings.mjs";
+
+// 首页留在主包里，标题和按钮可以跟入口脚本一起出来。
+// 其余页面按路由再拉，避免打开首页时先下载控制台、文档和全部落地页。
+function loadPage(
+  importer: () => Promise<Record<string, ComponentType<any> | undefined>>,
+  exportName = "default"
+) {
+  return lazy(() =>
+    importer().then((mod) => ({
+      default: (mod[exportName] ?? mod.default) as ComponentType<any>
+    }))
+  );
+}
+
+const MemberPrice = loadPage(() => import("../pages/memberPrice"));
+const Docs = loadPage(() => import("../pages/Docs"), "Docs");
+const ContentScanPage = loadPage(() => import("../pages/ContentScanPage"));
+const AiStaticSiteGuide = loadPage(() => import("../pages/AiStaticSiteGuide"));
+const WhenToUseDemox = loadPage(() => import("../pages/WhenToUseDemox"));
+const DeployTroubleshooting = loadPage(() => import("../pages/DeployTroubleshooting"));
+const HowDemoxHostsItself = loadPage(() => import("../pages/HowDemoxHostsItself"));
+const IntentLanding = loadPage(() => import("../pages/IntentLanding"));
+const LayoutDemo = loadPage(() => import("../pages/LayoutDemo"));
+const TermsPage = loadPage(() => import("../pages/terms"));
+const PrivacyPage = loadPage(() => import("../pages/privacy"));
+const LogPage = loadPage(() => import("../pages/log"));
+const MCPLogin = loadPage(() => import("../pages/MCPLogin"), "MCPLogin");
+const MCPAuthorize = loadPage(() => import("../pages/MCPAuthorize"), "MCPAuthorize");
+const GithubCallback = loadPage(() => import("../pages/GithubCallback"));
+const GithubLink = loadPage(() => import("../pages/GithubLink"));
+const FeishuCallback = loadPage(() => import("../pages/FeishuCallback"));
+const FeishuLink = loadPage(() => import("../pages/FeishuLink"));
+const SiteAuth = loadPage(() => import("../pages/SiteAuth"));
+const NotFoundPage = loadPage(() => import("../pages/404"));
 
 export const routers = [
   {

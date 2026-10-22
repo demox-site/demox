@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { authApi, loginThrottledUntil } from "../api";
 import { LoginThrottleNotice } from "@/components/LoginThrottleNotice";
-import { Button, Input, Label, useToast, Checkbox } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 
 interface EmailLoginFormProps {
   onLoginSuccess: () => void;

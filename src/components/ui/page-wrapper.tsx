@@ -12,7 +12,7 @@ export function PageWrapper({
   ...props
 }: {
   id: string;
-  Page: React.FunctionComponent<any>;
+  Page: React.ComponentType<any>;
 }) {
   const { language } = useLanguage();
   const isZh = language === 'zh';

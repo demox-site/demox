@@ -12,18 +12,18 @@ import { embeddedGateCopy, embeddedGateFormCopy } from "@/lib/embedded-gate-lang
 import { Github } from "lucide-react";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Button,
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
-  Input,
-  Label,
-  useToast,
-  Checkbox
-} from "@/components/ui";
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 
 interface AuthDialogProps {
   isOpen: boolean;

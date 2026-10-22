@@ -2,15 +2,21 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { userManager } from "../api";
 import { readLoginNext } from "../lib/login-next";
-import { AuthDialog } from "../components/AuthDialog";
 import { ExternalLink } from "lucide-react";
 
 import { useLanguage } from "../hooks/use-language";
 import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
 import { track } from "@/lib/track";
-import { HeroStage, GlobeStage, GalleryStage } from "@/components/marketing";
 import { TaskGuides } from "@/components/marketing/TaskGuides";
+
+// 编辑器、地球和画廊是首页下半屏。标题和按钮先出来，这三块再加载。
+const HeroStage = React.lazy(() => import("@/components/marketing/HeroStage"));
+const GlobeStage = React.lazy(() => import("@/components/marketing/GlobeStage"));
+const GalleryStage = React.lazy(() => import("@/components/marketing/GalleryStage"));
+const AuthDialog = React.lazy(() =>
+  import("@/components/AuthDialog").then((mod) => ({ default: mod.AuthDialog }))
+);
 
 const translations = {
   zh: {
@@ -144,15 +150,21 @@ const CloudHostLanding: React.FC = () => {
           </div>
         </div>
 
-        <HeroStage lang={lang} />
+        <React.Suspense fallback={<div className="min-h-[28rem]" />}>
+          <HeroStage lang={lang} />
+        </React.Suspense>
       </section>
 
       {/* Screen 2 — global edge nodes */}
-      <GlobeStage lang={lang} />
+      <React.Suspense fallback={<div className="min-h-[24rem]" />}>
+        <GlobeStage lang={lang} />
+      </React.Suspense>
 
       {/* Screen 3 — gallery wall (真实 + 示例) */}
       <div className="-mx-4 sm:-mx-6 lg:-mx-8">
-        <GalleryStage onUpload={openUpload} lang={lang} />
+        <React.Suspense fallback={<div className="min-h-[24rem]" />}>
+          <GalleryStage onUpload={openUpload} lang={lang} />
+        </React.Suspense>
       </div>
 
       {/* Intent guides (SEO) — grouped by publishing task */}
@@ -181,11 +193,15 @@ const CloudHostLanding: React.FC = () => {
         </div>
       </section>
 
-      <AuthDialog
-        isOpen={isLoginOpen}
-        onOpenChange={setIsLoginOpen}
-        onLoginSuccess={handleLoginSuccess}
-      />
+      {isLoginOpen ? (
+        <React.Suspense fallback={null}>
+          <AuthDialog
+            isOpen={isLoginOpen}
+            onOpenChange={setIsLoginOpen}
+            onLoginSuccess={handleLoginSuccess}
+          />
+        </React.Suspense>
+      ) : null}
     </MainLayout>
   );
 };
