@@ -92,7 +92,7 @@ if (argv.includes('--with-runtime')) {
 
 **判定：部分满足，不能勾掉。**
 
-- 已满足：`demox-function-api` 这条路径完成了 OIDC 化，权限收到最小集，两条写操作都要过 environment 人工批准，且分两步（develop → promote），production 有自动回滚。
+- 已满足：`demox-function-api` 这条路径完成了 OIDC 化，权限收到最小集。environment `function-api-production` 没有 required reviewers，只允许 master。发布分两步（develop → promote），production 有自动回滚。
 - 未满足：另外两条发布路径（www 静态、website 函数）仍是长期站点所有者令牌，其中 www 还是 merge 即上线。令牌无法限权、无法限时、无法按 environment 隔离。
 
 按「三条路径全部无长期令牌」作为这一项的完成口径，当前是 **1/3**。

@@ -20,6 +20,7 @@ on:
       - "scf-code/cert-renew/**"
       - "scf-deploy-packages/auth-api/**"
       - "scripts/package-unified-scf.mjs"
+      - "scripts/ci/unified-scf-package-lock.json"
       - "scripts/ci/scf-function-api.cjs"
       - "scripts/ci/function-api-release.cjs"
       - ".github/workflows/deploy-function-api.yml"
@@ -61,11 +62,12 @@ jobs:
           cache: "npm"
 
       - name: Install tooling
+        # 这个 job 有 id-token。忽略生命周期脚本，避免安装时读到 OIDC 请求令牌。
         run: |
           npm config set fetch-retries 5
-          npm install --legacy-peer-deps --no-audit --no-fund
-          npm ci --prefix scf-code/function-api --omit=dev --no-audit --no-fund
-          npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund
+          npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
+          npm ci --prefix scf-code/function-api --omit=dev --no-audit --no-fund --ignore-scripts
+          npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund --ignore-scripts
 
       - name: Unit tests (deploy script + function-api)
         if: github.event_name == 'push'

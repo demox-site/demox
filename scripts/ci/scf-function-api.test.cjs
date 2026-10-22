@@ -108,7 +108,15 @@ test('OIDC: exchanges the GitHub token via unsigned AssumeRoleWithWebIdentity', 
     return { ok: true, json: async () => ({ Response: { Credentials: { TmpSecretId: 'AKIDtmp', TmpSecretKey: 'k', Token: 't' }, Expiration: '2026-10-09T10:00:00Z' } }) };
   };
   const env = { TENCENTCLOUD_ROLE_ARN: 'qcs::cam::uin/1:roleName/demox-ci-deploy', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://gh.example/token?x=1', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'req', GITHUB_RUN_ID: '42' };
-  const c = await credentialsFromOidc(env, fetchImpl);
+  const logs = [];
+  const c = await credentialsFromOidc(env, fetchImpl, (line) => logs.push(line));
+  assert.deepEqual(logs, [
+    '::add-mask::req',
+    '::add-mask::id.token.jwt',
+    '::add-mask::AKIDtmp',
+    '::add-mask::k',
+    '::add-mask::t'
+  ]);
   assert.deepEqual([c.secretId, c.secretKey, c.token], ['AKIDtmp', 'k', 't']);
   assert.ok(seen[0].url.endsWith('&audience=sts.tencentcloudapi.com'));
   assert.equal(seen[1].opts.headers.Authorization, 'SKIP');
@@ -118,8 +126,8 @@ test('OIDC: exchanges the GitHub token via unsigned AssumeRoleWithWebIdentity', 
   assert.equal(body.RoleArn, env.TENCENTCLOUD_ROLE_ARN);
   const denied = async (url) => (url.startsWith('https://gh.example/') ? { ok: true, json: async () => ({ value: 'x' }) }
     : { ok: true, json: async () => ({ Response: { Error: { Code: 'UnauthorizedOperation', Message: 'no' } } }) });
-  await assert.rejects(credentialsFromOidc(env, denied), /UnauthorizedOperation/);
-  await assert.rejects(credentialsFromOidc({ TENCENTCLOUD_ROLE_ARN: 'x' }, denied), /id-token: write/);
+  await assert.rejects(credentialsFromOidc(env, denied, quiet), /UnauthorizedOperation/);
+  await assert.rejects(credentialsFromOidc({ TENCENTCLOUD_ROLE_ARN: 'x' }, denied, quiet), /id-token: write/);
 });
 
 

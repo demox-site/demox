@@ -115,18 +115,26 @@ function credentialsFromEnv(env = process.env) {
   return { secretId, secretKey, token, region: env.TENCENTCLOUD_REGION || CONFIG.region };
 }
 
-/** GitHub OIDC token → sts:AssumeRoleWithWebIdentity（该接口不签名）→ 临时密钥。不打印 token 和密钥。 */
-async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fetch) {
+/** 写到 stdout 的 GitHub 掩码。不能先过 redactor，否则掩掉的是占位符而不是凭证。 */
+function maskSecret(log, value) {
+  if (typeof value !== 'string' || value.length === 0) return;
+  log(`::add-mask::${value}`);
+}
+
+/** GitHub OIDC token → sts:AssumeRoleWithWebIdentity（该接口不签名）→ 临时密钥。先掩码再做别的输出。 */
+async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fetch, log = console.log) {
   const roleArn = env.TENCENTCLOUD_ROLE_ARN;
   if (!env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
     throw new Error('设置了 TENCENTCLOUD_ROLE_ARN，但拿不到 GitHub OIDC token（job 需要 permissions: id-token: write）');
   }
+  maskSecret(log, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
   const sep = env.ACTIONS_ID_TOKEN_REQUEST_URL.includes('?') ? '&' : '?';
   const idRes = await fetchImpl(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}${sep}audience=${encodeURIComponent(CONFIG.oidcAudience)}`, {
     headers: { Authorization: `bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` }
   });
   if (!idRes.ok) throw new Error(`获取 GitHub OIDC token 失败：HTTP ${idRes.status}`);
   const idToken = (await idRes.json()).value;
+  maskSecret(log, typeof idToken === 'string' ? idToken : '');
   const res = await fetchImpl('https://sts.tencentcloudapi.com/', {
     method: 'POST',
     headers: {
@@ -148,6 +156,9 @@ async function credentialsFromOidc(env = process.env, fetchImpl = globalThis.fet
   const body = (await res.json()).Response || {};
   if (body.Error) throw new Error(`AssumeRoleWithWebIdentity 失败：${body.Error.Code} ${body.Error.Message}`);
   const c = body.Credentials || {};
+  maskSecret(log, c.TmpSecretId);
+  maskSecret(log, c.TmpSecretKey);
+  maskSecret(log, c.Token);
   if (!c.TmpSecretId || !c.TmpSecretKey || !c.Token) throw new Error('AssumeRoleWithWebIdentity 没有返回临时密钥');
   return { secretId: c.TmpSecretId, secretKey: c.TmpSecretKey, token: c.Token, region: env.TENCENTCLOUD_REGION || CONFIG.region, expiration: body.Expiration };
 }
