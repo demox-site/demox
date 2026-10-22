@@ -565,6 +565,7 @@ test('an owner deletes an empty project and its collaboration data in one guarde
     if (sql.includes('FROM websites') && sql.includes('FOR UPDATE')) return [];
     if (sql.startsWith('DELETE FROM project_rows')) { deletionOrder.push('rows'); return { affectedRows: 0 }; }
     if (sql.startsWith('DELETE FROM project_tables')) { deletionOrder.push('tables'); return { affectedRows: 0 }; }
+    if (sql.startsWith('DELETE FROM project_db_credentials')) { deletionOrder.push('credentials'); return { affectedRows: 0 }; }
     if (sql.startsWith('DELETE FROM project_feishu_grants')) { deletionOrder.push('grants'); return { affectedRows: 2 }; }
     if (sql.startsWith('DELETE FROM project_invitations')) { deletionOrder.push('invitations'); return { affectedRows: 1 }; }
     if (sql.startsWith('DELETE FROM project_members')) { deletionOrder.push('members'); return { affectedRows: 3 }; }
@@ -579,7 +580,7 @@ test('an owner deletes an empty project and its collaboration data in one guarde
   const body = JSON.parse((await request('delete_project', { id: 42 }, 'project-owner')).body);
   assert.equal(body.success, true, JSON.stringify(body));
   assert.equal(body.deleted, true);
-  assert.deepEqual(deletionOrder, ['rows', 'tables', 'grants', 'invitations', 'members', 'project']);
+  assert.deepEqual(deletionOrder, ['rows', 'tables', 'credentials', 'grants', 'invitations', 'members', 'project']);
 });
 
 test('a platform admin can delete another owners empty project', async () => {
