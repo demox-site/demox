@@ -56,3 +56,13 @@ develop 冒烟失败只把两边的 develop 别名切回，production 不动。p
 environment `function-api-production` 没有 required reviewers，只允许 master。OIDC 的 sub 仍是 `repo:demox-site/demox:environment:function-api-production`。本仓库不改这个 environment。
 
 除冒烟用的 secret / variable 外，沿用已经在用的：`DEMOX_EK_ROLE_ARN`、`DEMOX_EK_COS_BUCKET`、`DEMOX_EK_COS_REGION`、`DEMOX_EK_COS_ACCELERATE`、`FUNCTION_API_DEVELOP_URL_EK`、`FUNCTION_API_DEVELOP_URL`、`DEMOX_COS_BUCKET`、`DEMOX_COS_REGION`、`DEMOX_COS_ACCELERATE`、`DEMOX_EK_ENABLED`。磷的角色 ARN 写在 workflow 里：`qcs::cam::uin/100021031865:roleName/demox-ci-deploy`。
+
+## website 函数
+
+`.github/workflows/deploy-website-function.yml` 在 master 上自动跑，路径只包括 `scf-code/website-api` 的运行时代码（`index.js`、`project-data.js`、`shared/` 里的非测试文件、锁文件）和 workflow 自己。测试和迁移不触发。
+
+`scripts/ci/website-function-release.cjs` 用 `demox functions push` 推 `./scf-code/website-api`（CLI 只上传 `index.js`），先把 develop 指到新版本，再把 production 指过去，然后对易点和磷的前门做同一套冒烟。失败时两个别名都切回，并开 issue，标题以「发布失败：website 冒烟未通过，已回滚别名」开头。
+
+公开 API 不执行这个别名。冒烟失败仍回滚这里的别名。
+
+`workflow_dispatch` 只接受回滚版本号。environment `website-function-production` 没有 required reviewers，只允许 master。令牌仍是 `DEMOX_TOKEN`，脚本先打 `::add-mask::`，CLI 原文不进日志。

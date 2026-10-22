@@ -9,14 +9,10 @@
 | 路径 | workflow | 触发 | 凭证 | 人工闸门 |
 |------|----------|------|------|----------|
 | 主站 www 静态资源 | `deploy.yml` | push master（`src/**`、`public/**` 等 paths）+ 手动 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
-| 平台站点 website 函数 | `deploy-website-function.yml` | 仅手动，限 master | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 需批准 |
+| 平台站点 website 函数 | `deploy-website-function.yml` | push master（只含函数源码和该 workflow）自动发布；手动只做回滚 | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 没有 required reviewers，只允许 master |
 | 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push master（路径命中）自动发布；手动只做回滚 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 没有 required reviewers，只允许 master |
 
-**结论**：三条路径里只有一条完成 OIDC 化。另两条仍是长期令牌，且 `deploy.yml` 是唯一「merge 即上线」的路径——没有 environment 审批。
-
-`deploy-website-function.yml` 文件头已经自己写了留办事项：
-
-> TODO：团队有了自己的部署令牌后，存成 environment `website-function-production` 的 secret，并删除仓库级 `DEMOX_TOKEN`。
+**结论**：三条路径里只有 function-api 完成 OIDC 化。www 和 website 函数仍用长期令牌 `DEMOX_TOKEN`。三条在 master 上都会按各自的路径自动发布。`function-api-production` 和 `website-function-production` 没有 required reviewers，只允许 master。www 没有 environment 审批。
 
 ## 2. `demox-ci-deploy` 实际调用面
 
