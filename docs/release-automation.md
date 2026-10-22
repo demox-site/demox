@@ -59,9 +59,9 @@ environment `function-api-production` 没有 required reviewers，只允许 mast
 
 ## website 函数
 
-`.github/workflows/deploy-website-function.yml` 在 master 上自动跑，路径只包括 `scf-code/website-api` 的运行时代码（`index.js`、`project-data.js`、`shared/` 里的非测试文件、锁文件）和 workflow 自己。测试和迁移不触发。
+`.github/workflows/deploy-website-function.yml` 在 master 上自动跑。路径是 `scf-code/website-api/**`、`scripts/ci/website-function-release.cjs` 和 workflow 自己。GitHub paths 不能排除子路径，所以 job 用 `scripts/ci/website-paths.py` 对比 `github.event.before`：只改了测试或 `migrations/` 时跳过发布。
 
-`scripts/ci/website-function-release.cjs` 用 `demox functions push` 推 `./scf-code/website-api`（CLI 只上传 `index.js`），先把 develop 指到新版本，再把 production 指过去，然后对易点和磷的前门做同一套冒烟。失败时两个别名都切回，并开 issue，标题以「发布失败：website 冒烟未通过，已回滚别名」开头。
+`scripts/ci/website-function-release.cjs` 用 `demox functions push` 推整个 `./scf-code/website-api` 目录，先把 develop 指到新版本，再把 production 指过去，然后对易点和磷的前门做同一套冒烟。失败时两个别名都切回，并开 issue，标题以「发布失败：website 冒烟未通过，已回滚别名」开头。
 
 公开 API 不执行这个别名。冒烟失败仍回滚这里的别名。
 

@@ -3,7 +3,7 @@
 
 /**
  * push master 时发布平台站点 EPX2UU43 的 website 函数。
- * CLI 只推 index.js。公开 API 仍跑 function-api 进程内的 website，不读这个别名。
+ * CLI 推整个 scf-code/website-api 目录。公开 API 仍跑 function-api 进程内的 website，不读这个别名。
  * 切到 production 之后仍对易点和磷的前门做同一套冒烟。失败把别名切回去，并开 issue。
  * workflow_dispatch 只做回滚。
  */
