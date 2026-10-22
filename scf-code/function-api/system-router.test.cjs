@@ -69,6 +69,12 @@ test('checked-in manifest preserves legacy website and MCP paths', () => {
   assert.equal(resolveSystemFunction({ path: '/login' }, manifest).name, 'demox-system-mcp');
   assert.equal(resolveSystemFunction({ path: '/delete' }, manifest).name, 'demox-system-mcp');
   assert.equal(resolveSystemFunction({ path: '/website/delete' }, manifest).name, 'demox-system-website');
+  assert.equal(resolveSystemFunction({ path: '/website/update-name' }, manifest).name, 'demox-system-website');
+  assert.equal(resolveSystemFunction({ path: '/website/update-tags' }, manifest).name, 'demox-system-website');
+  // 旧控制台把改名/改标签打到 /websites/*。这前缀归 MCP 的列表接口，必须先交给 website，不能被 /websites 吞掉。
+  assert.equal(resolveSystemFunction({ path: '/websites/update-name' }, manifest).name, 'demox-system-website');
+  assert.equal(resolveSystemFunction({ path: '/websites/update-tags' }, manifest).name, 'demox-system-website');
+  assert.equal(resolveSystemFunction({ path: '/websites/list-all' }, manifest).name, 'demox-system-mcp');
 });
 
 test('system router lazily loads handlers and dispatches timer events', async () => {

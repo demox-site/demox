@@ -20,7 +20,7 @@
     "entrypoint": "index.js",
     "handler": "main",
     "routePrefixes": [
-      "/website", "/upload", "/deploy-upload", "/list", "/list-all", "/update-name", "/update-tags",
+      "/website", "/websites/update-name", "/websites/update-tags", "/upload", "/deploy-upload", "/list", "/list-all", "/update-name", "/update-tags",
       "/set-subdomain", "/check-subdomain", "/clear-subdomain", "/update-visibility", "/update-watermark", "/update-seo",
       "/content-scan", "/resolve-subdomain", "/check-site-access", "/track-site-event", "/report-site", "/list-site-reports", "/update-site-report", "/analytics", "/site-stats",
       "/site-access-logs", "/bucket-stats", "/list-projects", "/create-project", "/update-project", "/archive-project",
