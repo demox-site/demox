@@ -133,10 +133,12 @@ test('platform SES role ARN is env-only and rejects demox-runtime-role', () => {
   assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: 'role/demox-platform-ses' }), '');
   assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: SES_ROLE_ARN }), SES_ROLE_ARN);
   const actions = policyActions(PLATFORM_SES_SESSION_POLICY);
-  assert.deepEqual(actions.sort(), ['ses:GetEmailTemplate', 'ses:SendEmail']);
+  assert.deepEqual(actions.sort(), ['ses:GetEmailIdentity', 'ses:GetEmailTemplate', 'ses:SendEmail']);
+  assert.deepEqual(PLATFORM_SES_SESSION_POLICY.statement.map((statement) => statement.resource), [['*']]);
   const text = JSON.stringify(PLATFORM_SES_SESSION_POLICY);
   assert.equal(/cos:|teo:|dnspod:|cls:|ssl:/i.test(text), false);
   assert.equal(text.includes('demox-runtime-role'), false);
+  assert.equal(text.includes('ap-hongkong'), false);
 });
 
 test('in-process send-code assumes demox-platform-ses and not demox-runtime-role', async () => {
@@ -177,10 +179,16 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
     assert.equal(first.statusCode, 200);
     assert.equal(first.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
     assert.equal(assumeCalls.length, 1);
+    assert.equal(assumeCalls[0].roleArn, 'qcs::cam::uin/100021031865:roleName/demox-platform-ses');
     assert.equal(assumeCalls[0].roleArn, SES_ROLE_ARN);
     assert.equal(assumeCalls[0].roleArn.includes('demox-runtime-role'), false);
     assert.notEqual(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
     assert.equal(assumeCalls[0].policy, PLATFORM_SES_SESSION_POLICY);
+    assert.deepEqual(
+      [...assumeCalls[0].policy.statement[0].action].sort(),
+      ['ses:GetEmailIdentity', 'ses:GetEmailTemplate', 'ses:SendEmail']
+    );
+    assert.deepEqual(assumeCalls[0].policy.statement[0].resource, ['*']);
     assert.equal(assumeCalls[0].token, 'gw-token');
     assert.equal(app.seen[1].creds.secretId, 'lin-ses-id');
     assert.equal(app.seen[1].creds.secretKey, 'lin-ses-key');

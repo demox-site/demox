@@ -13,27 +13,31 @@ const {
 /**
  * 平台验证码邮件的专用角色。和用户函数的 demox-runtime-role 分开。
  *
- * 谁签发：demox-function-api 网关（易点或磷上该函数自己的运行角色，只用来调 STS）。
- * 签给谁：只给进程内 /auth/send-code。临时密钥放进 AsyncLocalStorage，不写 process.env，
- * 不交给 website、mcp、用户函数、demox-user-nodejs，也不交给 demox-runtime-role 那条业务会话。
- * 角色：磷上的 demox-platform-ses。完整 ARN 由云帆写进网关环境变量 PLATFORM_SES_ROLE_ARN。
- * 代码不写死 ARN，也不在缺省时回落到 demox-runtime-role 或 TENCENTCLOUD_*。
- * CAM（信任策略、角色策略）由云帆维护：易点和磷的 demox-function-api 运行角色可以 AssumeRole，
- * 角色策略只有 SES（发信 + 读模板），没有 COS / EO / DNS。
+ * Assumer：demox-function-api 网关自己的运行角色，只用来调 STS。
+ * 签给谁：只给进程内 /auth/send-code。临时密钥放进 AsyncLocalStorage，不写 process.env。
+ * website、mcp、用户函数、demox-user-nodejs 和 demox-runtime-role 的业务会话都拿不到。
+ * Role：磷 demox-platform-ses。
+ * ARN：qcs::cam::uin/100021031865:roleName/demox-platform-ses
+ * 云帆已把该值写入易点和磷 demox-function-api 的 develop 与 production：PLATFORM_SES_ROLE_ARN。
+ * 代码仍只读这个环境变量，缺省时不回落到 demox-runtime-role 或 TENCENTCLOUD_*。
+ * 信任（CAM，云帆已配）：易点/磷的 demox-runtime-role（网关）和 demox-platform-runtime-role（平台池）。
+ * 用户池不能 Assume。本 PR 的代码路径只有进程内 auth 发信。
+ * 角色策略与下面的会话策略相同：ses:SendEmail、ses:GetEmailIdentity、ses:GetEmailTemplate，资源 *。
+ * 没有 COS / EO / DNS。
  */
 const PLATFORM_SES_ROLE_ENV = 'PLATFORM_SES_ROLE_ARN';
 const PLATFORM_SES_ROLE_NAME = 'demox-platform-ses';
 const PLATFORM_SES_ACCOUNT_UIN = '100021031865';
 const ROLE_ARN_PATTERN = /^qcs::cam::uin\/\d+:roleName\/[A-Za-z0-9+=,.@_-]{1,64}$/;
 
-/** 会话策略再收一层：只有香港 SES 的发信和读模板。有效权限 = 角色策略 ∩ 这份策略。 */
+/** AssumeRole 必须带上的会话策略。有效权限 = 角色策略 ∩ 这份策略。只有这三项 SES，资源 *。 */
 const PLATFORM_SES_SESSION_POLICY = deepFreeze({
   version: '2.0',
   statement: [
     {
       effect: 'allow',
-      action: ['ses:SendEmail', 'ses:GetEmailTemplate'],
-      resource: [`qcs::ses:ap-hongkong:uin/${PLATFORM_SES_ACCOUNT_UIN}:*`]
+      action: ['ses:SendEmail', 'ses:GetEmailIdentity', 'ses:GetEmailTemplate'],
+      resource: ['*']
     }
   ]
 });
