@@ -1705,20 +1705,33 @@ function providerFor(cfg) {
 }
 
 /**
+ * 腾讯云客户端凭证。进程内路径用 AssumeRole 放进 AsyncLocalStorage 的临时密钥，
+ * 不用网关自己的 TENCENTCLOUD_*。没有这份上下文时才读环境变量。
+ * COS_SECRET_* 只在没有临时凭证、也没有 TENCENTCLOUD_* 时兼容本地/旧配置。
+ */
+function tencentClientCredentials() {
+  const extra = {
+    secretId: process.env.COS_SECRET_ID || '',
+    secretKey: process.env.COS_SECRET_KEY || ''
+  };
+  try {
+    const { readTencentClientCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+    return readTencentClientCredentials(process.env, extra);
+  } catch {
+    return {
+      secretId: process.env.TENCENTCLOUD_SECRETID || process.env.TENCENT_SECRET_ID || extra.secretId,
+      secretKey: process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENT_SECRET_KEY || extra.secretKey,
+      token: process.env.TENCENTCLOUD_SESSIONTOKEN || ''
+    };
+  }
+}
+
+/**
  * 腾讯云 TC3-HMAC-SHA256 请求。这里不用引入完整 SDK，避免拉大 SCF 包体积。
- * 生产由 SCF 运行角色注入 TENCENTCLOUD_*；COS_SECRET_* 仅兼容本地/旧配置。
  * @param {{ service:string, host:string, version:string, action:string, payload:object, region?:string }} opts
  */
 async function callTencentCloudApi(opts) {
-  const secretId =
-    process.env.TENCENTCLOUD_SECRETID ||
-    process.env.TENCENT_SECRET_ID ||
-    process.env.COS_SECRET_ID;
-  const secretKey =
-    process.env.TENCENTCLOUD_SECRETKEY ||
-    process.env.TENCENT_SECRET_KEY ||
-    process.env.COS_SECRET_KEY;
-  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
+  const { secretId, secretKey, token } = tencentClientCredentials();
 
   if (!secretId || !secretKey) {
     throw new Error('缺少腾讯云 API 密钥');
@@ -11346,6 +11359,7 @@ exports._analyticsRollupForTest = {
 };
 exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => { deployBackfillReady = null; } };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
+exports._tencentCloudForTest = { tencentClientCredentials, callTencentCloudApi };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;
 exports._cookieDomainForTest = { cookieDomainScope, customDomainAuthCookieHeader };
 exports._galleryForTest = {

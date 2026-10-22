@@ -1441,8 +1441,9 @@ function createSesClient(credential) {
 
 /**
  * 发送邮件（使用腾讯云 SES 模板）
- * 进程内路径优先用网关放进 AsyncLocalStorage 的临时密钥（磷 demox-runtime-role）。
- * 没有这份上下文时才读进程环境变量（独立 auth 进程 / 平台池调用环境）。
+ * 进程内路径用网关放进 AsyncLocalStorage 的临时密钥（磷 demox-runtime-role），
+ * 不读网关进程的 TENCENTCLOUD_*。没有这份上下文时才读进程环境变量
+ * （独立 auth 进程 / 平台池调用环境）。
  */
 async function sendEmail(to, code, type) {
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {

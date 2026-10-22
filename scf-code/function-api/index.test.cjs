@@ -707,6 +707,18 @@ test('Node.js functions run outside the router process and can require jsonwebto
   assert.deepEqual(JSON.parse(invoked.body), { site: 'site-a', leaked: null, tokenOk: true });
 });
 
+function assumedBusinessCredentials() {
+  return {
+    async credentialsFor() {
+      return {
+        TENCENTCLOUD_SECRETID: 'assumed-id',
+        TENCENTCLOUD_SECRETKEY: 'assumed-key',
+        TENCENTCLOUD_SESSIONTOKEN: 'assumed-token'
+      };
+    }
+  };
+}
+
 async function publishPlatformAuth() {
   const app = makeApp();
   const created = JSON.parse((await app.handler(event('/functions', 'POST', {
@@ -730,7 +742,8 @@ async function publishPlatformAuth() {
       repository: app.repository,
       bundleStore: app.bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
-      publicBaseUrl: 'https://functions.test'
+      publicBaseUrl: 'https://functions.test',
+      businessCredentials: assumedBusinessCredentials()
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });
@@ -765,7 +778,8 @@ test('public custom-domain routes ignore a published website bundle and stay in 
         bundleStore: app.bundleStore,
         runtime,
         authenticate: () => ({ userId: 'user-1' }),
-        publicBaseUrl: 'https://functions.test'
+        publicBaseUrl: 'https://functions.test',
+        businessCredentials: assumedBusinessCredentials()
       }),
       systemRouterOptions: {
         loaders: {
@@ -915,7 +929,8 @@ test('custom site routes take over only when they are not system prefixes', asyn
       repository,
       bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
-      publicBaseUrl: 'https://functions.test'
+      publicBaseUrl: 'https://functions.test',
+      businessCredentials: assumedBusinessCredentials()
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });

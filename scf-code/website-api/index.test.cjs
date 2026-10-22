@@ -2612,6 +2612,68 @@ test('k2t- labels are reserved and never reach the database', async () => {
   assert.equal(queried, false);
 });
 
+test('callTencentCloudApi signs with assumed credentials instead of TENCENTCLOUD_*', async () => {
+  const https = require('https');
+  const { EventEmitter } = require('events');
+  const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+  const previous = {
+    id: process.env.TENCENTCLOUD_SECRETID,
+    key: process.env.TENCENTCLOUD_SECRETKEY,
+    token: process.env.TENCENTCLOUD_SESSIONTOKEN,
+    request: https.request
+  };
+  process.env.TENCENTCLOUD_SECRETID = 'ek-role-id';
+  process.env.TENCENTCLOUD_SECRETKEY = 'ek-role-key';
+  process.env.TENCENTCLOUD_SESSIONTOKEN = 'ek-role-token';
+  const signed = [];
+  https.request = (options, callback) => {
+    signed.push({
+      authorization: String(options.headers && options.headers.Authorization || ''),
+      token: String(options.headers && options.headers['X-TC-Token'] || '')
+    });
+    const response = new EventEmitter();
+    response.statusCode = 200;
+    response.setEncoding = () => {};
+    const request = new EventEmitter();
+    request.write = () => {};
+    request.end = () => {
+      callback(response);
+      response.emit('data', JSON.stringify({ Response: { RequestId: 'req-1' } }));
+      response.emit('end');
+    };
+    request.destroy = () => {};
+    request.setTimeout = () => {};
+    return request;
+  };
+  try {
+    await runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => websiteApi._tencentCloudForTest.callTencentCloudApi({
+      service: 'ses',
+      host: 'ses.tencentcloudapi.com',
+      version: '2020-10-02',
+      action: 'SendEmail',
+      region: 'ap-hongkong',
+      payload: { Destination: ['hidden'] }
+    }));
+  } finally {
+    https.request = previous.request;
+    if (previous.id === undefined) delete process.env.TENCENTCLOUD_SECRETID;
+    else process.env.TENCENTCLOUD_SECRETID = previous.id;
+    if (previous.key === undefined) delete process.env.TENCENTCLOUD_SECRETKEY;
+    else process.env.TENCENTCLOUD_SECRETKEY = previous.key;
+    if (previous.token === undefined) delete process.env.TENCENTCLOUD_SESSIONTOKEN;
+    else process.env.TENCENTCLOUD_SESSIONTOKEN = previous.token;
+  }
+  assert.equal(signed.length, 1);
+  assert.equal(signed[0].authorization.includes('lin-ses-id'), true);
+  assert.equal(signed[0].authorization.includes('ek-role'), false);
+  assert.equal(signed[0].token, 'lin-ses-token');
+  assert.equal(process.env.TENCENTCLOUD_SECRETID, previous.id);
+});
+
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();
