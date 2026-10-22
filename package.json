@@ -21,7 +21,7 @@
     "test:local-functions": "node --test scripts/local-unified-scf.test.mjs",
     "preview": "vite preview",
     "zip": "zip -r project.zip . -x \".git/*\" \"node_modules/*\" \".DS_Store\"",
-    "test:seo": "node --test scripts/generate-seo-pages.test.mjs src/lib/seo-shell-hold.test.mjs",
+    "test:seo": "node --test scripts/generate-seo-pages.test.mjs",
     "test:mobile-overflow": "node --experimental-websocket --test scripts/check-mobile-overflow.test.mjs",
     "p0:edge": "bash scripts/edge-p0-check.sh",
     "p0:edge:baseline": "python3 scripts/edge-p0-matrix.py baseline",

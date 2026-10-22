@@ -1,7 +1,6 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
-import { seoShellHoldMs } from "./lib/seo-shell-hold.mjs";
 
 const rootEl = document.getElementById("root")!;
 
@@ -31,14 +30,5 @@ if (import.meta.env.VITE_ADMIN_BI_DEMO === "1") {
     createRoot(rootEl).render(<App />);
   });
 } else {
-  // 首页先停在给 SEO 用的静态壳上，再交给 React。#root 仍为空时，
-  // index.html 里的壳保持可见；控制台和其他页面不等待。
-  const shell = document.querySelector("[data-crawlable-fallback-shell]");
-  const shellHoldMs = shell ? seoShellHoldMs(window.location.pathname) : 0;
-  if (shellHoldMs > 0) window.setTimeout(mountApp, shellHoldMs);
-  else mountApp();
-}
-
-function mountApp() {
   createRoot(rootEl).render(<App />);
 }

@@ -31,9 +31,8 @@
     <link rel="privacy-policy" href="https://www.demox.site/privacy" />
     <link rel="preconnect" href="https://cdn.gpteng.co" crossorigin />
     <style data-seo="js-shell">
-      /* Hide the crawlable shell only after React fills #root. The homepage
-         waits 3s before that paint so this static page stays up. Keep it in
-         the raw HTML so non-JS graders can count the text. */
+      /* Hide the crawlable shell only after React fills #root. Keep it in the
+         raw HTML so non-JS graders can count the text. */
       #root:not(:empty) ~ [data-crawlable-fallback-shell] { display: none !important; }
     </style>
     <script data-seo="schema" type="application/ld+json">

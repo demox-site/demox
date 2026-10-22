@@ -2147,6 +2147,9 @@ test('Host-routing EO sends a Host: www subrequest back to www and 423s; the all
   assert.equal(missing.response.status, 404);
   assert.match(missing.html, /Missing page/);
   assert.equal(missing.response.headers.get('x-demox-route'), 'origin-guard=internal');
+  const consolePage = await r.call('https://www.demox.site/console/projects', { headers: EDGE_INBOUND_HEADERS });
+  assert.equal(consolePage.response.status, 200);
+  assert.equal(consolePage.response.headers.get('x-demox-route'), 'origin-guard=internal');
 
   const signed = seen.filter(function (info) { return info.token; });
   assert.ok(signed.length >= 3);
@@ -2159,9 +2162,9 @@ test('Host-routing EO sends a Host: www subrequest back to www and 423s; the all
     assert.notEqual(routed.status, 423, info.href);
   }
   const indexFetches = signed.filter(function (info) { return info.href.endsWith('/index.html'); });
-  assert.ok(indexFetches.some(function (info) { return info.headers.get('range') === 'bytes=0-10'; }));
+  assert.ok(indexFetches.some(function (info) { return info.href.endsWith('/pricing/index.html') && info.headers.get('range') === 'bytes=0-10'; }));
   assert.ok(indexFetches.some(function (info) {
-    return info.headers.get('range') == null && info.headers.get('if-none-match') == null;
+    return info.href.endsWith('/dist/index.html') && info.headers.get('range') == null && info.headers.get('if-none-match') == null;
   }));
   const missingFetches = signed.filter(function (info) { return info.href.includes('/404.html'); });
   assert.ok(missingFetches.length >= 1);
@@ -2584,10 +2587,17 @@ test('SPA index.html and 404.html signed fetches omit range and if-* headers', a
   assert.equal(homeFetch.headers.get('if-none-match'), '"spa-etag"');
 
   const pricing = await r.call('https://www.demox.site/pricing', { headers: conditional });
-  assert.equal(pricing.response.status, 200);
-  assert.match(pricing.html, /Public body/);
-  assert.equal(pricing.html.includes('PARTIAL'), false);
-  const spaIndex = seen.filter((info) => info.href.endsWith('/index.html')).pop();
+  assert.equal(pricing.response.status, 206);
+  assert.equal(pricing.html, 'PARTIAL');
+  const pricingFetch = seen.filter((info) => info.href.endsWith('/pricing/index.html')).pop();
+  assert.equal(pricingFetch.headers.get('range'), 'bytes=0-10');
+  assert.equal(pricingFetch.headers.get('if-none-match'), '"spa-etag"');
+
+  const consolePage = await r.call('https://www.demox.site/console/projects', { headers: conditional });
+  assert.equal(consolePage.response.status, 200);
+  assert.match(consolePage.html, /Public body/);
+  assert.equal(consolePage.html.includes('PARTIAL'), false);
+  const spaIndex = seen.filter((info) => info.href.endsWith('/dist/index.html')).pop();
   assert.equal(spaIndex.headers.get('range'), null);
   assert.equal(spaIndex.headers.get('if-none-match'), null);
   assert.equal(spaIndex.headers.get('if-modified-since'), null);

@@ -370,6 +370,15 @@ function isWwwSpaRoute(pathname) {
   return WWW_SPA_ROUTES.includes(normalized);
 }
 
+// 这些路径在构建时写成「目录/index.html」。直接回源该对象，
+// 不要先请求无扩展名的目录前缀（COS 慢大约 3 秒）。
+function isWwwPrerenderedPath(pathname) {
+  const normalized = String(pathname || '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/zh' || normalized.indexOf('/zh/') === 0) return true;
+  if (normalized.indexOf('/console') === 0) return false;
+  return isWwwSpaRoute(normalized);
+}
+
 function getRequestCountry(req) {
   const candidates = [
     'eo-country-code',
@@ -2880,8 +2889,19 @@ async function handleRequest(req, event, ctx) {
 
   // 目录请求(根 / 或结尾 /)直接补 index.html，避免回源到「目录」让 COS 慢解析
   // index 文档(实测 www/ 比 www/index.html 慢 ~4s，且会触发回退二次 fetch)。
+  // 主站 SEO 页是 /pricing 这种无扩展名地址，对象实际在 pricing/index.html。
+  // 先请求目录前缀也会慢大约 3 秒，所以主站 GET/HEAD 直接取该目录的 index.html。
+  const isWwwHost = domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www';
+  const requestMethod = String(req.method || 'GET').toUpperCase();
   if (rest === '' || rest.endsWith('/')) {
     rest += 'index.html';
+  } else if (
+    isWwwHost &&
+    rest.indexOf('.') === -1 &&
+    (requestMethod === 'GET' || requestMethod === 'HEAD') &&
+    isWwwPrerenderedPath('/' + rest)
+  ) {
+    rest += '/index.html';
   }
 
   // 查路由表：demox.site 下 label 可能是站点默认域名(websiteId 小写)或自定义前缀；
@@ -2890,7 +2910,6 @@ async function handleRequest(req, event, ctx) {
   let { path, websiteId, origin, visibility, hideWatermark, seo, resolveState } = customResolved
     ? customResolved
     : await resolveSite(label, domain);
-  const isWwwHost = domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www';
   ctx.resolveState = resolveState || 'none';
 
   // 解析出错且没有任何可用兜底：可能是用户站点的 host 回 503（不是 404「站点未发布」）。

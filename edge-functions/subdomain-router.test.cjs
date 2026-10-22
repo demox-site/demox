@@ -323,6 +323,72 @@ test('P0: resolved user site homepage stays 200 and is not a Demox 404 shell', a
   assert.doesNotMatch(html, /页面不存在/);
 });
 
+test('www SEO paths fetch the directory index directly', async () => {
+  const { response, requests } = await handleSite('https://www.demox.site/pricing', {
+    resolve: {
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    },
+    originStatus: 404
+  });
+  assert.equal(response.status, 200);
+  const origin = requests.filter((href) => !href.includes('/resolve-subdomain') && !href.includes('/analytics-track'));
+  assert.deepEqual(origin.map((href) => new URL(href).pathname), [
+    '/sites/1985655011013808129/EPX2UU43/dist/pricing/index.html'
+  ]);
+});
+
+test('www nested SEO paths and assets keep their own objects', async () => {
+  const zh = await handleSite('https://www.demox.site/zh/pricing', {
+    resolve: {
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    },
+    originStatus: 404
+  });
+  assert.equal(zh.response.status, 200);
+  assert.ok(zh.requests.some((href) => href.endsWith('/dist/zh/pricing/index.html')));
+
+  const asset = await handleSite('https://www.demox.site/assets/app.js', {
+    resolve: {
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    },
+    originStatus: 404
+  });
+  assert.equal(asset.response.status, 404);
+  assert.ok(asset.requests.some((href) => href.endsWith('/dist/assets/app.js')));
+  assert.equal(asset.requests.some((href) => href.endsWith('/index.html')), false);
+});
+
+test('user sites do not rewrite extensionless routes to index.html', async () => {
+  const { requests } = await handleSite('https://coverage.demox.site/dashboard', {
+    resolve: {
+      success: true,
+      path: 'sites/demo/COVERAGE',
+      websiteId: 'COVERAGE',
+      origin: 'sites.demox.site',
+      visibility: 'public'
+    },
+    originStatus: 404
+  });
+  const origin = requests.filter((href) => href.includes('sites.demox.site'));
+  assert.match(origin[0], /\/dashboard$/);
+  assert.match(origin[1], /\/index\.html$/);
+});
+
 test('P0: www hardcoded fallback still 200 when resolve misses', async () => {
   const { response, html } = await handleSite('https://www.demox.site/', {
     resolve: { success: false, message: 'not found' }
