@@ -3,21 +3,32 @@
 
 /**
  * 发布失败时开一条 GitHub issue。
- * 标题写明阶段，正文 @启明，并打上 release-failure 标签。
- * GITHUB_TOKEN 先 ::add-mask::，不进后续日志。
+ * 标题和正文按失败类型写：版本门禁拒绝、部署失败、冒烟已回滚、冒烟回滚失败。
+ * 正文带阶段和运行链接。GITHUB_TOKEN 先 ::add-mask::，不进后续日志。
  */
 
 const { createRedactor, maskSecret } = require('./release-smoke.cjs');
 
 const LABEL = 'release-failure';
 
-function buildIssue({ stage, sha, runUrl, rollback }) {
-  const title = `发布失败：${stage}`.slice(0, 120);
+const FAILURE_KINDS = Object.freeze({
+  'version-gate': '版本门禁拒绝',
+  deploy: '部署失败',
+  'smoke-rolled-back': '冒烟未通过，已回滚',
+  'smoke-rollback-failed': '冒烟未通过，回滚失败'
+});
+
+function buildIssue({ component = 'function-api', stage, kind, reason, sha, runUrl, rollback }) {
+  const headline = FAILURE_KINDS[kind];
+  if (!headline) throw new Error('缺少失败类型');
+  const stageName = String(stage || '').trim() || '未知';
+  const title = `发布失败：${component} ${headline}（${stageName}）`.slice(0, 120);
   const body = [
     '@启明',
     '',
-    `自动发布在「${stage}」失败。`,
-    rollback || '已尝试回滚到上一版。',
+    `阶段：${stageName}`,
+    `原因：${String(reason || '').trim() || headline}`,
+    rollback || headline,
     '',
     `- 提交：${sha || '未知'}`,
     `- 运行：${runUrl || '未知'}`
@@ -61,6 +72,7 @@ async function openReleaseIssue({
   log = rawLog,
   secrets = [],
   stage,
+  kind,
   rollback
 } = {}) {
   maskSecret(rawLog, secrets, env.GITHUB_TOKEN);
@@ -71,18 +83,23 @@ async function openReleaseIssue({
   if (!token) throw new Error('缺少 GITHUB_TOKEN（job 需要 permissions: issues: write）');
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error('GITHUB_REPOSITORY 格式不正确');
   const stageName = String(stage || env.RELEASE_STAGE || '').trim();
+  const failureKind = String(kind || env.RELEASE_KIND || '').trim();
   if (!stageName) throw new Error('缺少发布阶段名称');
+  if (!FAILURE_KINDS[failureKind]) throw new Error('缺少失败类型');
   const api = String(env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, '');
   const issue = buildIssue({
+    component: String(env.RELEASE_COMPONENT || 'function-api').trim() || 'function-api',
     stage: stageName,
+    kind: failureKind,
+    reason: env.RELEASE_REASON,
     sha: String(env.GITHUB_SHA || '').slice(0, 12),
     runUrl: runUrlFromEnv(env),
-    rollback
+    rollback: rollback || env.RELEASE_ROLLBACK_NOTE
   });
   const labelRes = await github(fetchImpl, token, 'POST', `${api}/repos/${repo}/labels`, {
     name: LABEL,
     color: 'b60205',
-    description: '自动发布冒烟失败，需要启明看'
+    description: '自动发布失败，需要启明看'
   });
   if (labelRes.status !== 201 && labelRes.status !== 422) {
     throw new Error(`创建标签 ${LABEL} 失败：HTTP ${labelRes.status}`);
@@ -116,4 +133,4 @@ async function main(env = process.env) {
 
 if (require.main === module) main();
 
-module.exports = { LABEL, buildIssue, runUrlFromEnv, openReleaseIssue };
+module.exports = { LABEL, FAILURE_KINDS, buildIssue, runUrlFromEnv, openReleaseIssue };

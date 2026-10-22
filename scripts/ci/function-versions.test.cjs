@@ -64,7 +64,11 @@ test('semver: placeholder is below a real release, and CI can tell greater from 
   assert.ok(v.compareSemver('0.0.0', '0.0.1') < 0);
   assert.ok(v.compareSemver('0.1.0', '0.0.9') > 0);
   assert.ok(v.compareSemver('1.0.0-rc.1', '1.0.0') < 0);
-  assert.equal(v.compareSemver('1.2.3+build.4', '1.2.3'), 0);
+  assert.ok(v.compareSemver('1.2.3+build.4', '1.2.3') > 0);
+  assert.ok(v.compareSemver('0.1.21+38f44560bb01', '0.1.21') > 0);
+  assert.ok(v.compareSemver('0.1.22', '0.1.21+ffffffff') > 0);
+  assert.equal(v.derivedAppVersion('0.1.21', GIT), '0.1.21+38f44560bb01');
+  assert.equal(v.semverCore('0.1.21+38f44560bb01'), '0.1.21');
   assert.equal(v.isPlaceholderVersion('0.0.0-placeholder'), true);
   assert.equal(v.isPlaceholderVersion('0.1.0'), false);
   assert.throws(() => v.parseSemver('01.0.0'), /semver/);
@@ -96,7 +100,16 @@ test('app deploy: only a higher app with the same config fingerprint is allowed'
   assert.match(ok.description, /^demox-release app=0\.2\.0 runtime=0\.1\.0 /);
   assert.match(ok.description, new RegExp(`sha256=${SHA_B}`));
   assert.equal(decide({}, { app: '0.2.0', sha: SHA_B }).reason, 'already-published');
-  assert.equal(decide({}, { app: '0.2.0', sha: SHA_A }).reason, 'code-drift');
+  const auto = decide({}, { app: '0.2.0', sha: SHA_A });
+  assert.equal(auto.allow, true, auto.message);
+  assert.equal(auto.reason, 'app-auto');
+  assert.match(auto.description, /^demox-release app=0\.2\.0\+38f44560bb01 runtime=0\.1\.0 /);
+  assert.match(auto.description, new RegExp(`git=${GIT} sha256=${SHA_B}`));
+  const lowerBuild = decide({ appVersion: '0.1.21' }, { app: '0.1.21+ffffffff', sha: SHA_A });
+  assert.equal(lowerBuild.reason, 'app-auto');
+  assert.match(lowerBuild.description, /app=0\.1\.21\+38f44560bb01 /);
+  assert.equal(decide({ appVersion: '0.1.21' }, { app: '0.1.22', sha: SHA_A }).reason, 'downgrade');
+  assert.equal(decide({ appVersion: '0.1.21' }, { app: '0.1.22', sha: SHA_B }).reason, 'downgrade');
   assert.equal(decide({ appVersion: '0.1.0' }, { app: '0.2.0', sha: SHA_B }).reason, 'downgrade');
   assert.equal(decide({ runtimeVersion: '0.2.0' }).reason, 'runtime-drift');
   assert.equal(decide({ runtimeVersion: '0.0.1' }).reason, 'runtime-drift');
@@ -233,7 +246,7 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(v.validateManifest(poisoned).ok, false);
 });
 
-test('PR check: code without an app bump fails once the manifest exists on base', () => {
+test('PR check: code without an app bump warns once the manifest exists on base', () => {
   const manifest = v.loadManifest();
   const introduced = v.evaluateChanges({
     baseManifest: null,
@@ -247,8 +260,8 @@ test('PR check: code without an app bump fails once the manifest exists on base'
     headManifest: manifest,
     changedFiles: ['scf-code/website-api/index.js', 'scf-code/website-api/shared/db.js']
   });
-  assert.equal(websiteOnly.ok, false);
-  assert.match(websiteOnly.errors.join('\n'), /demox-function-api 的代码变了/);
+  assert.equal(websiteOnly.ok, true, websiteOnly.errors.join('\n'));
+  assert.match(websiteOnly.warnings.join('\n'), /demox-function-api 的代码变了/);
 
   const websiteBumped = structuredClone(manifest);
   websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.22';
@@ -264,8 +277,8 @@ test('PR check: code without an app bump fails once the manifest exists on base'
     headManifest: manifest,
     changedFiles: ['scf-code/function-api/index.js']
   });
-  assert.equal(code.ok, false);
-  assert.match(code.errors.join('\n'), /demox-function-api 的代码变了/);
+  assert.equal(code.ok, true, code.errors.join('\n'));
+  assert.match(code.warnings.join('\n'), /demox-function-api 的代码变了/);
 
   const testsOnly = v.evaluateChanges({
     baseManifest: manifest,
@@ -288,8 +301,8 @@ test('PR check: code without an app bump fails once the manifest exists on base'
     headManifest: manifest,
     changedFiles: ['scripts/package-unified-scf.mjs']
   });
-  assert.equal(runtimeFile.ok, false);
-  assert.match(runtimeFile.errors.join('\n'), /runtime 文件或配置变了/);
+  assert.equal(runtimeFile.ok, true, runtimeFile.errors.join('\n'));
+  assert.match(runtimeFile.warnings.join('\n'), /打包脚本变了/);
 
   const runtimeCfg = structuredClone(manifest);
   runtimeCfg.functions[0].runtime = { ...runtimeCfg.functions[0].runtime, memoryMB: 1024 };
@@ -302,8 +315,8 @@ test('PR check: code without an app bump fails once the manifest exists on base'
     headManifest: bumped,
     changedFiles: ['scf-code/function-api/runtime-nodejs.js']
   });
-  assert.equal(handler.ok, false);
-  assert.match(handler.errors.join('\n'), /demox-user-nodejs 的代码变了/);
+  assert.equal(handler.ok, true, handler.errors.join('\n'));
+  assert.match(handler.warnings.join('\n'), /demox-user-nodejs 的代码变了/);
 });
 
 test('seed placeholder may correct environment names without a runtime bump', () => {
@@ -459,5 +472,27 @@ test('decideAppDeploy already-published carries the develop version number', () 
   assert.equal(r.allow, false);
   assert.equal(r.reason, 'already-published');
   assert.equal(r.version, '18');
+  assert.equal(r.alias, 'develop');
+});
+
+test('equal code sha on develop is a no-op when production build metadata sorts higher', () => {
+  const cfg = v.configFingerprint(runtime());
+  const desc = (app, sha) => v.formatDescription({ app, runtime: '0.1.0', git: GIT, sha256: sha, cfg });
+  const r = v.decideAppDeploy({
+    entry: entry({ appVersion: '0.1.21', runtimeVersion: '0.1.0' }),
+    aliases: [
+      { Name: 'develop', FunctionVersion: '24' },
+      { Name: 'production', FunctionVersion: '23' }
+    ],
+    versions: [
+      { Version: '24', Description: desc('0.1.21+111111111111', SHA_B) },
+      { Version: '23', Description: desc('0.1.21+ffffffffffff', SHA_A) }
+    ],
+    codeSha256: SHA_B,
+    gitSha: GIT
+  });
+  assert.equal(r.allow, false);
+  assert.equal(r.reason, 'already-published');
+  assert.equal(r.version, '24');
   assert.equal(r.alias, 'develop');
 });
