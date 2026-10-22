@@ -5,15 +5,28 @@ name: Deploy function-api (SCF demox-function-api)
 # 由 release.yml 在 master 上调用，或手动回滚。stage → deploy-develop → develop 双账号冒烟 → promote → production 双账号冒烟。
 # 易点和磷都发。DEMOX_EK_ENABLED 不是 true 时失败，不会只发磷。
 # 冒烟或切换失败：已经动过的别名切回去，job 变红，并开 release-failure issue。
-# workflow_dispatch 只做回滚（磷 version + 易点 version_ek）。
+# 按 inputs.mode 分支，不看 github.event_name（被 workflow_call 调用时那是调用方的事件）。
+# workflow_dispatch 的 mode 只有 rollback（磷 version + 易点 version_ek）。
 # environment function-api-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
 # OIDC sub 仍是 repo:demox-site/demox:environment:function-api-production。
 # 凭证：不用任何腾讯云 secret。临时密钥 1 小时，只留在进程内存里。
 # 角色只能对 codename=demox 的函数换代码/发版本/切别名。健康检查走公网 HTTPS，不用 Invoke。
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: "release 发布；rollback 只回滚"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
+      mode:
+        description: "手动入口只回滚"
+        required: true
+        type: choice
+        options:
+          - rollback
+        default: rollback
       version:
         description: "回滚：磷的目标版本号（数字）"
         required: true
@@ -40,6 +53,10 @@ jobs:
     environment: function-api-production
     timeout-minutes: 50
     steps:
+      - name: Check mode
+        if: inputs.mode != 'release' && inputs.mode != 'rollback'
+        run: echo "::error::mode 必须是 release 或 rollback" && exit 1
+
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -58,14 +75,14 @@ jobs:
           npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund --ignore-scripts
 
       - name: Unit tests (deploy script + function-api)
-        if: github.event_name == 'push' || github.event_name == 'workflow_call'
+        if: inputs.mode == 'release'
         run: |
           node --test scripts/ci/scf-function-api.test.cjs scripts/ci/function-api-release.test.cjs
           node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
           npm test --prefix scf-code/function-api
 
       - name: Build unified package
-        if: github.event_name == 'push' || github.event_name == 'workflow_call'
+        if: inputs.mode == 'release'
         run: |
           node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
           node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
@@ -74,7 +91,7 @@ jobs:
             || { echo "::error::统一包缺少可执行的 scf_bootstrap"; exit 1; }
 
       - name: Release
-        if: github.event_name == 'push' || github.event_name == 'workflow_call'
+        if: inputs.mode == 'release'
         env:
           # 磷（UIN 100021031865）：备源站。入口是 SCF 自定义域名。
           LIN_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
@@ -101,7 +118,7 @@ jobs:
         run: node scripts/ci/function-api-release.cjs
 
       - name: Rollback
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.mode == 'rollback'
         env:
           LIN_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
           LIN_COS_BUCKET: ${{ vars.DEMOX_COS_BUCKET }}

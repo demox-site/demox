@@ -59,7 +59,7 @@ environment `function-api-production` 没有 required reviewers，只允许 mast
 
 ## website 函数
 
-`.github/workflows/deploy-website-function.yml` 在 master 上自动跑。路径是 `scf-code/website-api/**`、`scripts/ci/website-function-release.cjs` 和 workflow 自己。GitHub paths 不能排除子路径，所以 job 用 `scripts/ci/website-paths.py` 对比 `github.event.before`：只改了测试或 `migrations/` 时跳过发布。
+`.github/workflows/deploy-website-function.yml` 由 `release.yml` 调用。发布范围是 `scf-code/website-api/**`（测试和 `migrations/` 除外）、`scripts/ci/website-function-release.cjs` 和 workflow 自己。GitHub paths 不能排除子路径，排除做在 `release-changes.py` 调用的 `website-paths.py` 里。子 workflow 不再按调用方的 push 事件自己跳过。
 
 `scripts/ci/website-function-release.cjs` 用 `demox functions push` 推整个 `./scf-code/website-api` 目录，先把 develop 指到新版本，再把 production 指过去，然后对易点和磷的前门做同一套冒烟。失败时两个别名都切回，并开 issue，标题以「发布失败：website 冒烟未通过，已回滚别名」开头。
 
@@ -69,7 +69,7 @@ environment `function-api-production` 没有 required reviewers，只允许 mast
 
 ## 边缘函数
 
-`.github/workflows/deploy-edge.yml` 把 `edge-functions/subdomain-router.js` 写到 `ef-1281msyw`。push 到 master 是真写入。`workflow_dispatch` 的 `dry_run` 默认 true。`workflow_call` 的 `dry_run` 默认 false。
+`.github/workflows/deploy-edge.yml` 把 `edge-functions/subdomain-router.js` 写到 `ef-1281msyw`。`release.yml` 调用时 `dry_run` 是 false，是真写入。直接 `workflow_dispatch` 的 `dry_run` 默认 true。
 
 environment `edge-production` 没有 required reviewers，只允许 master。变量：
 
@@ -92,7 +92,11 @@ environment `edge-production` 没有 required reviewers，只允许 master。变
 
 `.github/workflows/release.yml` 是 master push 的自动发布入口。`deploy-function-api.yml`、`deploy-website-function.yml`、`deploy-edge.yml`、`deploy.yml` 不再监听 push，只剩 `workflow_call` 和手动入口，所以同一次推送不会发布两遍。
 
-顺序：function-api → website 函数 → 边缘函数 → www（发布、刷新缓存、再冒烟）。上一段失败，后面不跑。`scripts/ci/release-changes.py` 按路径跳过没改到的段，跳过不挡住后面改到的段。`workflow_dispatch` 四段都真跑。并发组 `release-master`，不取消正在跑的发布。
+顺序：function-api → website 函数 → 边缘函数 → www（发布、刷新缓存、再冒烟）。上一段失败，后面不跑。`scripts/ci/release-changes.py` 按路径跳过没改到的段，跳过不挡住后面改到的段。`workflow_dispatch` 四段都真跑，并给子 workflow 传 `mode=release`。function-api 和 website 按这个输入发布或回滚，不看 `github.event_name`。直接手动打开这两个子 workflow 时 `mode` 只有 `rollback`。并发组 `release-master`，不取消正在跑的发布。
+
+`changes` 只读内容和 Actions 运行记录。`id-token: write` 和 `issues: write` 写在 function-api、edge、www 各自的 job 上。website 用 `DEMOX_TOKEN`，这个 job 只有 `issues: write`。
+
+对比基准是 `github.event.before`。它是全零或缺失时，改用最近一次成功的 `release.yml` 的 head sha。两个都是 HEAD 的祖先时用更旧的那个，被并发取消的提交也会进 diff。都没有时用 `HEAD^`。website 段用 `website-paths.py`：`scf-code/website-api/**` 里的测试和 `migrations/` 不发布，`scripts/ci/website-function-release.cjs` 会发布。`release-smoke.cjs` 和 `open-release-issue.cjs` 的改动四段都跑。
 
 www 冒烟核对 `dist/index.html` 里的 `assets/*.js`。失败开 issue。静态文件没有自动换回上一版。
 

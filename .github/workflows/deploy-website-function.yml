@@ -2,7 +2,8 @@ name: Deploy website function (Demox EPX2UU43 / slug website)
 
 # 平台站点 EPX2UU43 上的 website 业务函数。
 # 由 release.yml 在 master 上调用，或手动回滚。路径过滤在 release.yml。
-# workflow_dispatch 只做回滚（数字 version）。
+# 按 inputs.mode 分支，不看 github.event_name（被 workflow_call 调用时那是调用方的事件）。
+# workflow_dispatch 的 mode 只有 rollback（数字 version）。
 # environment website-function-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
 # 切到 production 之后跑双账号冒烟（易点前门 + DEMOX_SMOKE_LIN_BASE）。
 # 失败把 develop 和 production 切回，job 变红，并开 release-failure issue。
@@ -11,8 +12,20 @@ name: Deploy website function (Demox EPX2UU43 / slug website)
 # 令牌只用 secret DEMOX_TOKEN，不进命令行参数。脚本先 ::add-mask::，CLI 输出不打印。
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: "release 发布；rollback 只回滚"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
+      mode:
+        description: "手动入口只回滚"
+        required: true
+        type: choice
+        options:
+          - rollback
+        default: rollback
       version:
         description: "回滚目标版本号（数字）"
         required: true
@@ -33,6 +46,10 @@ jobs:
     environment: website-function-production
     timeout-minutes: 30
     steps:
+      - name: Check mode
+        if: inputs.mode != 'release' && inputs.mode != 'rollback'
+        run: echo "::error::mode 必须是 release 或 rollback" && exit 1
+
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -42,7 +59,7 @@ jobs:
           node-version: "20"
 
       - name: Unit tests
-        if: github.event_name == 'push' || github.event_name == 'workflow_call'
+        if: inputs.mode == 'release'
         run: |
           set -euo pipefail
           node --test scripts/ci/website-function-release.test.cjs
@@ -55,7 +72,7 @@ jobs:
         run: npm install -g @demox-site/cli@1.1.6 --no-audit --no-fund > /dev/null
 
       - name: Release
-        if: github.event_name == 'push' || github.event_name == 'workflow_call'
+        if: inputs.mode == 'release'
         env:
           DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
           DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
@@ -68,7 +85,7 @@ jobs:
         run: node scripts/ci/website-function-release.cjs
 
       - name: Rollback
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.mode == 'rollback'
         env:
           DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
           DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}

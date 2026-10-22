@@ -48,7 +48,7 @@ jobs:
           node-version: "20"
 
       - name: Unit tests
-        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        if: inputs.dry_run == false
         run: |
           node --test scripts/ci/edge-deploy.test.cjs
           python3 scripts/ci/edge-private-probe.py --self-test

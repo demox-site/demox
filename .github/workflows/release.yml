@@ -3,7 +3,8 @@ name: Release master
 # push master 的唯一自动发布入口。按路径决定跑哪些段，顺序固定：
 # function-api → website 函数 → 边缘函数 → www（含刷新缓存和冒烟）。
 # 上一段失败，后面不跑。没改到的段跳过，不挡住后面改到的段。
-# workflow_dispatch 四段都真跑。
+# workflow_dispatch 四段都真跑，并给子 workflow 传 mode=release。
+# 子 workflow 按 mode 分支。手动打开子 workflow 时 mode 是 rollback，不会拿空版本去回滚。
 # 子 workflow 不再监听 push，避免同一次推送发布两遍。
 on:
   push:
@@ -15,8 +16,14 @@ on:
       - "scf-code/cert-renew/**"
       - "scf-deploy-packages/auth-api/**"
       - "scripts/package-unified-scf.mjs"
+      - "scripts/ci/unified-scf-package-lock.json"
       - "scripts/ci/scf-function-api.cjs"
       - "scripts/ci/function-api-release.cjs"
+      - "scripts/ci/website-function-release.cjs"
+      - "scripts/ci/release-smoke.cjs"
+      - "scripts/ci/open-release-issue.cjs"
+      - "scripts/ci/www-purge.cjs"
+      - "scripts/ci/www-bundle.cjs"
       - "scripts/ci/edge-deploy.cjs"
       - "scripts/ci/edge-private-probe.py"
       - "scripts/ci/edge-release-probes.sh"
@@ -46,11 +53,12 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
-  issues: write
 
 jobs:
   changes:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     outputs:
       function_api: ${{ steps.filter.outputs.function_api }}
@@ -61,29 +69,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Classify paths
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          RELEASE_BEFORE: ${{ github.event.before }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/ci/release-changes.py "$EVENT_NAME" >> "$GITHUB_OUTPUT"
 
   function-api:
     needs: changes
     if: needs.changes.outputs.function_api == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
     uses: ./.github/workflows/deploy-function-api.yml
+    with:
+      mode: release
     secrets: inherit
 
   website:
     needs: [changes, function-api]
     if: always() && !cancelled() && needs.changes.outputs.website == 'true' && (needs.function-api.result == 'success' || needs.function-api.result == 'skipped')
+    permissions:
+      contents: read
+      issues: write
     uses: ./.github/workflows/deploy-website-function.yml
+    with:
+      mode: release
     secrets: inherit
 
   edge:
     needs: [changes, function-api, website]
     if: always() && !cancelled() && needs.changes.outputs.edge == 'true' && (needs.function-api.result == 'success' || needs.function-api.result == 'skipped') && (needs.website.result == 'success' || needs.website.result == 'skipped')
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
     uses: ./.github/workflows/deploy-edge.yml
     with:
       dry_run: false
@@ -92,5 +117,9 @@ jobs:
   www:
     needs: [changes, function-api, website, edge]
     if: always() && !cancelled() && needs.changes.outputs.www == 'true' && (needs.function-api.result == 'success' || needs.function-api.result == 'skipped') && (needs.website.result == 'success' || needs.website.result == 'skipped') && (needs.edge.result == 'success' || needs.edge.result == 'skipped')
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
