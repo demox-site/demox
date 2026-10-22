@@ -60,7 +60,7 @@ api.demox.site 走 EdgeOne 源站组：**易点**（UIN 100052992193，主源站
   权限与 磷 289081060 v4 相同（只限 namespace/demox/function/demox-function-api，要求 codename=demox 标签；COS 只限 scf-deploy/ci/*）。
 - 顺序：磷（备）先、易点（主）后。stage 把同一个包（同一 key）传到两边的桶；deploy-develop 两边各发一个版本（版本号各自独立）；
   promote 需要 `version`（磷）+ `version_ek`（易点）：磷先切（不做公网复查）→ 易点切 → api.demox.site 公网复查（3 次重试）→
-  失败则易点自动切回、再把 磷 切回。rollback 同样两边都切。双账号下不允许 action=deploy（含 push 自动发布）。
+  失败则易点自动切回、再把 磷 切回。rollback 同样两边都切。双账号下 action=deploy（含 push 自动发布）在同一个 job 里按 stage → deploy-develop → promote 执行；develop 健康检查失败不会切 production。
 
 ### 易点一次性迁移（开 DEMOX_EK_ENABLED 之前必须做；CI 角色不能做，Create* 显式 Deny）
 

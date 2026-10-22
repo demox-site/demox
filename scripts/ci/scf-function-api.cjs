@@ -543,6 +543,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     const key = `${CONFIG.cosPrefix}demox-unified-scf-${String(sha).slice(0, 12)}-${hash.slice(0, 12)}.zip`;
     log(`stage：包 sha256:${hash} → cos://${CONFIG.cosBucket}/${key}`);
     await uploadZip(zipPath, key);
+    output('key', key);
+    output('sha256', hash);
     summary(`- stage 完成：\`cos://${CONFIG.cosBucket}/${key}\`（sha256 ${hash}），没有改任何函数`);
     return { key, sha256: hash };
   }
@@ -834,7 +836,7 @@ async function cli(argv = process.argv.slice(2)) {
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
   if (accelerate) summary(`- COS 上传走全球加速：\`${cosUploadEndpoint({ accelerate })}\``);
   const outputFile = process.env.GITHUB_OUTPUT;
-  const output = (k, v) => { if (outputFile && /^[a-z_]+$/.test(k) && /^[\w.$-]*$/.test(String(v))) fs.appendFileSync(outputFile, `${k}=${v}\n`); };
+  const output = (k, v) => { if (outputFile && /^[a-z_]+$/.test(k) && /^[\w./$-]*$/.test(String(v))) fs.appendFileSync(outputFile, `${k}=${v}\n`); };
   console.log(`发布目标：${CONFIG.target}（入口 ${CONFIG.entryMode}）`);
   const deployer = createDeployer({ ...(await createClients(process.env, { accelerate })), summary, output, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
   if (command === 'plan') {

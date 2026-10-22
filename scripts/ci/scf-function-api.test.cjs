@@ -320,9 +320,15 @@ test('upload: a hung part hits the totalTimeoutMs cap, aborts, no function write
 test('stage: uploads the package to COS and makes no SCF calls at all', async () => {
   const s = fakeScf();
   const cos = multipartCos({});
-  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: () => {}, wait: async () => {} });
+  const recorded = [];
+  const d = createDeployer({
+    developBaseUrl: DEV, scf: s.api, cos, fetchImpl: okFetch, log: () => {}, wait: async () => {},
+    output: (k, v) => recorded.push(`${k}=${v}`)
+  });
   const r = await d.stage({ zipPath: bigZip(12), sha: '892ca5dcbffe231365' });
   assert.match(r.key, /^scf-deploy\/ci\/demox-unified-scf-892ca5dcbffe-[0-9a-f]{12}\.zip$/);
+  assert.match(r.sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(recorded, [`key=${r.key}`, `sha256=${r.sha256}`]);
   assert.equal(s.calls.length, 0, 'no SCF API calls');
   assert.ok(cos.calls.some((c) => c[0] === 'complete'));
 });
