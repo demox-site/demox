@@ -95,6 +95,31 @@ test('creates, versions, publishes and invokes a function through one shared han
   const sourceResponse = await handler(event(`/functions/${created.functionId}/source`, 'GET'));
   assert.equal(sourceResponse.statusCode, 200);
   assert.equal(JSON.parse(sourceResponse.body).source, source);
+
+  const invocations = JSON.parse((await handler(event(`/functions/${created.functionId}/invocations`, 'GET'))).body);
+  assert.equal(invocations.invocations.length, 2);
+  assert.equal(invocations.invocations[0].status, 'success');
+  assert.equal(invocations.invocations[0].version, 1);
+
+  const stats = JSON.parse((await handler(event(`/functions/${created.functionId}/stats?range=15min`, 'GET'))).body);
+  assert.equal(stats.range, '15min');
+  assert.equal(stats.success, 2);
+  assert.ok(stats.series.length >= 1);
+
+  const updated = JSON.parse((await handler(event(`/functions/${created.functionId}`, 'PATCH', {
+    name: 'Hello renamed',
+    routes: ['/webhooks/hello'],
+    timerName: 'hello-timer'
+  }))).body).function;
+  assert.equal(updated.name, 'Hello renamed');
+  assert.deepEqual(updated.routes, ['/webhooks/hello']);
+  assert.equal(updated.timerName, 'hello-timer');
+  assert.ok(updated.triggers.includes('timer'));
+
+  const removed = JSON.parse((await handler(event(`/functions/${created.functionId}`, 'DELETE', {}))).body);
+  assert.equal(removed.deleted, true);
+  const gone = await handler(event(`/functions/${created.functionId}/invocations`, 'GET'));
+  assert.equal(gone.statusCode, 404);
 });
 
 test('function environment variables are injected and cannot use reserved platform keys', async () => {

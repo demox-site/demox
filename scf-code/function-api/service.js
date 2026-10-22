@@ -564,8 +564,78 @@ class FunctionService {
       durationMs: Math.max(0, this.clock() - record.startedAt),
       requestBytes: record.requestBytes,
       responseBytes: record.responseBytes,
-      errorCode: record.errorCode
+      errorCode: record.errorCode,
+      createdAt: new Date(this.clock()).toISOString()
     })).catch((error) => this.logger.warn?.('记录函数调用失败:', error.message));
+  }
+
+  async listInvocations({ ownerId, functionId, limit, since, status } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    if (typeof this.repository.listInvocations !== 'function') return [];
+    const rows = await this.repository.listInvocations(functionRecord.functionId, { limit, since, status });
+    return rows.map(publicInvocation);
+  }
+
+  async invocationStats({ ownerId, functionId, range } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    const window = invocationWindow(range);
+    const start = this.clock() - window.ms;
+    const rows = typeof this.repository.listInvocations === 'function'
+      ? await this.repository.listInvocations(functionRecord.functionId, { limit: 2000, since: new Date(start).toISOString() })
+      : [];
+    return summarizeInvocations(rows, window, start, this.clock());
+  }
+
+  async updateFunction({ ownerId, functionId, name, routes, triggers, timerName, limits } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    if (typeof this.repository.updateFunctionSpec !== 'function') {
+      throw internalError('当前存储不支持修改函数');
+    }
+    let normalizedName = functionRecord.name;
+    if (name != null && String(name).trim()) {
+      try {
+        normalizedName = normalizeName(name);
+      } catch (error) {
+        throw badRequest(error.message, 'INVALID_FUNCTION_NAME');
+      }
+    }
+    const nextTimer = timerName !== undefined ? normalizeTimerName(timerName) : functionRecord.timerName;
+    const nextRoutes = routes !== undefined ? normalizeRoutes(routes) : functionRecord.routes;
+    const nextTriggers = triggers !== undefined || timerName !== undefined
+      ? normalizeTriggers(triggers === undefined ? functionRecord.triggers : triggers, nextTimer)
+      : functionRecord.triggers;
+    try {
+      const updated = await this.repository.updateFunctionSpec(functionRecord.functionId, {
+        name: normalizedName,
+        routes: nextRoutes,
+        triggers: nextTriggers,
+        timerName: nextTimer,
+        limits
+      });
+      if (!updated) throw notFound();
+      return this.publicFunction(updated, await this.aliasesFor(updated));
+    } catch (error) {
+      if (error?.code === 'ER_DUP_ENTRY' || /duplicate/i.test(error?.message || '')) {
+        throw badRequest('定时触发名称已存在', 'DUPLICATE_TIMER_NAME');
+      }
+      throw error;
+    }
+  }
+
+  async deleteFunction({ ownerId, functionId } = {}) {
+    const functionRecord = await this.getOwnedFunction(requireOwnerId(ownerId), functionId);
+    if (typeof this.repository.deleteFunction !== 'function') throw internalError('当前存储不支持删除函数');
+    const removed = await this.repository.deleteFunction(functionRecord.functionId);
+    if (!removed) throw notFound();
+    for (const version of removed.versions || []) {
+      if (!version.bundleKey || typeof this.bundleStore.delete !== 'function') continue;
+      try {
+        await this.bundleStore.delete(version.bundleKey);
+      } catch {
+        // 元数据已经删掉。代码对象删不掉时不把删除说成失败。
+      }
+    }
+    return { functionId: functionRecord.functionId, deleted: true };
   }
 }
 
@@ -775,6 +845,77 @@ function normalizeFunctionResponse(output, maxResponseBytes) {
   }
   if (!safeHeaders['content-type']) safeHeaders['content-type'] = 'text/plain; charset=utf-8';
   return { statusCode: status, headers: safeHeaders, body, isBase64Encoded: false };
+}
+
+const INVOCATION_WINDOWS = Object.freeze({
+  '15min': { name: '15min', ms: 15 * 60 * 1000, bucketSeconds: 60 },
+  '1hr': { name: '1hr', ms: 60 * 60 * 1000, bucketSeconds: 300 },
+  '3hr': { name: '3hr', ms: 3 * 60 * 60 * 1000, bucketSeconds: 900 },
+  '1day': { name: '1day', ms: 24 * 60 * 60 * 1000, bucketSeconds: 3600 }
+});
+
+function invocationWindow(range) {
+  return INVOCATION_WINDOWS[String(range || '')] || INVOCATION_WINDOWS['1hr'];
+}
+
+function publicInvocation(row) {
+  return {
+    id: row.id ?? null,
+    version: Number(row.version || 0),
+    status: row.status === 'error' ? 'error' : 'success',
+    durationMs: Number(row.durationMs || 0),
+    requestBytes: Number(row.requestBytes || 0),
+    responseBytes: Number(row.responseBytes || 0),
+    errorCode: row.errorCode || null,
+    createdAt: row.createdAt || null
+  };
+}
+
+function summarizeInvocations(rows, window, startMs, endMs) {
+  const bucketMs = window.bucketSeconds * 1000;
+  const start = Math.floor(startMs / bucketMs) * bucketMs;
+  const buckets = new Map();
+  for (let time = start; time <= endMs; time += bucketMs) {
+    buckets.set(time, { bucket: new Date(time).toISOString(), success: 0, error: 0, durationTotal: 0, count: 0 });
+  }
+  let success = 0;
+  let error = 0;
+  let durationTotal = 0;
+  for (const row of rows) {
+    const time = new Date(row.createdAt || 0).getTime();
+    if (!Number.isFinite(time)) continue;
+    const key = Math.floor(time / bucketMs) * bucketMs;
+    const slot = buckets.get(key) || { bucket: new Date(key).toISOString(), success: 0, error: 0, durationTotal: 0, count: 0 };
+    const failed = row.status === 'error';
+    if (failed) {
+      slot.error += 1;
+      error += 1;
+    } else {
+      slot.success += 1;
+      success += 1;
+    }
+    const duration = Number(row.durationMs || 0);
+    slot.durationTotal += duration;
+    slot.count += 1;
+    durationTotal += duration;
+    buckets.set(key, slot);
+  }
+  const total = success + error;
+  return {
+    range: window.name,
+    success,
+    error,
+    total,
+    avgDurationMs: total ? Math.round(durationTotal / total) : 0,
+    series: [...buckets.values()]
+      .sort((a, b) => a.bucket.localeCompare(b.bucket))
+      .map((item) => ({
+        bucket: item.bucket,
+        success: item.success,
+        error: item.error,
+        avgDurationMs: item.count ? Math.round(item.durationTotal / item.count) : 0
+      }))
+  };
 }
 
 const DEFAULT_ALIASES = Object.freeze(['production', 'develop']);

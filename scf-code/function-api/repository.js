@@ -197,8 +197,39 @@ class InMemoryFunctionRepository {
   }
 
   async recordInvocation(record) {
-    this.usage.push(clone(record));
+    this.usage.push(clone({
+      ...record,
+      id: this.usage.length + 1,
+      createdAt: record.createdAt || new Date().toISOString()
+    }));
     if (this.usage.length > 10_000) this.usage.splice(0, this.usage.length - 10_000);
+  }
+
+  async listInvocations(functionId, options = {}) {
+    const since = invocationSince(options.since);
+    const status = invocationStatus(options.status);
+    const limit = clampInvocationLimit(options.limit);
+    return this.usage
+      .filter((item) => item.functionId === functionId)
+      .filter((item) => !since || new Date(item.createdAt || 0).getTime() >= since)
+      .filter((item) => !status || item.status === status)
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+      .slice(0, limit)
+      .map(clone);
+  }
+
+  async deleteFunction(functionId) {
+    const record = this.functions.get(functionId);
+    if (!record) return null;
+    const versions = await this.listVersions(functionId);
+    this.functions.delete(functionId);
+    for (const version of versions) this.versions.delete(`${functionId}:${version.version}`);
+    for (const key of [...this.aliases.keys()]) {
+      if (key.startsWith(`${functionId}:`)) this.aliases.delete(key);
+    }
+    this.functionSecrets.delete(functionId);
+    this.usage = this.usage.filter((item) => item.functionId !== functionId);
+    return { functionId, versions };
   }
 
   async getWebsiteEnv(websiteId) {
@@ -555,6 +586,48 @@ function createMysqlFunctionRepository({ query, transaction }) {
         ]
       );
       return this.getFunction(functionId);
+    },
+
+    async listInvocations(functionId, options = {}) {
+      const since = invocationSince(options.since);
+      const status = invocationStatus(options.status);
+      const limit = clampInvocationLimit(options.limit);
+      const where = ['function_id = ?'];
+      const params = [functionId];
+      if (since) {
+        where.push('created_at >= ?');
+        params.push(new Date(since));
+      }
+      if (status) {
+        where.push('status = ?');
+        params.push(status);
+      }
+      const rows = await query(
+        `SELECT id, function_id, version, owner_user_id, status, duration_ms,
+                request_bytes, response_bytes, error_code, created_at
+           FROM demox_function_invocations
+          WHERE ${where.join(' AND ')}
+          ORDER BY id DESC
+          LIMIT ${limit}`,
+        params
+      );
+      return rows.map(mapInvocationRow);
+    },
+
+    async deleteFunction(functionId) {
+      const current = await this.getFunction(functionId);
+      if (!current) return null;
+      const versions = await this.listVersions(functionId);
+      await query('DELETE FROM demox_function_aliases WHERE function_id = ?', [functionId]);
+      await query('DELETE FROM demox_function_invocations WHERE function_id = ?', [functionId]);
+      try {
+        await query('DELETE FROM demox_function_platform_secrets WHERE function_id = ?', [functionId]);
+      } catch (error) {
+        if (error?.code !== 'ER_NO_SUCH_TABLE') throw error;
+      }
+      await query('DELETE FROM demox_function_versions WHERE function_id = ?', [functionId]);
+      await query('DELETE FROM demox_functions WHERE function_id = ?', [functionId]);
+      return { functionId, versions };
     }
   };
 }
@@ -596,6 +669,38 @@ function mapFunctionRow(row) {
     allowedOutboundHosts: parseJson(row.allowed_outbound_hosts_json, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function clampInvocationLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 100;
+  return Math.min(500, Math.max(1, Math.floor(parsed)));
+}
+
+function invocationSince(value) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function invocationStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  return status === 'success' || status === 'error' ? status : '';
+}
+
+function mapInvocationRow(row) {
+  return {
+    id: row.id,
+    functionId: row.function_id,
+    version: Number(row.version),
+    ownerId: String(row.owner_user_id),
+    status: row.status,
+    durationMs: Number(row.duration_ms || 0),
+    requestBytes: Number(row.request_bytes || 0),
+    responseBytes: Number(row.response_bytes || 0),
+    errorCode: row.error_code || null,
+    createdAt: row.created_at
   };
 }
 

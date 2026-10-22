@@ -159,6 +159,40 @@ function createFunctionHttpHandler({
         });
         return jsonResponse(200, { success: true, alias });
       }
+      if (isInvocationListRoute(path, action, method)) {
+        const invocations = await service.listInvocations({
+          ownerId: user.userId,
+          functionId,
+          limit: body.limit || queryValue(event, 'limit'),
+          since: body.since || queryValue(event, 'since'),
+          status: body.status || queryValue(event, 'status')
+        });
+        return jsonResponse(200, { success: true, functionId, invocations });
+      }
+      if (isInvocationStatsRoute(path, action, method)) {
+        const stats = await service.invocationStats({
+          ownerId: user.userId,
+          functionId,
+          range: body.range || queryValue(event, 'range')
+        });
+        return jsonResponse(200, { success: true, functionId, ...stats });
+      }
+      if (isUpdateFunctionRoute(path, action, method)) {
+        const updated = await service.updateFunction({
+          ownerId: user.userId,
+          functionId,
+          name: body.name,
+          routes: body.routes,
+          triggers: body.triggers,
+          timerName: body.timerName !== undefined ? body.timerName : body.timer_name,
+          limits: body.limits
+        });
+        return jsonResponse(200, { success: true, function: updated });
+      }
+      if (isDeleteFunctionRoute(path, action, method)) {
+        const deleted = await service.deleteFunction({ ownerId: user.userId, functionId });
+        return jsonResponse(200, { success: true, ...deleted });
+      }
       throw badRequest('无法识别的函数接口', 'UNKNOWN_FUNCTION_ROUTE');
     } catch (error) {
       // User code errors may contain secrets; keep them out of platform logs.
@@ -499,6 +533,28 @@ function aliasNameFromPath(path) {
 
 function isSourceRoute(path, action, method) {
   return action === 'get_function_source' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/source$/.test(path) && method === 'GET');
+}
+
+function isInvocationListRoute(path, action, method) {
+  return action === 'list_function_invocations' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/invocations$/.test(path) && method === 'GET');
+}
+
+function isInvocationStatsRoute(path, action, method) {
+  return action === 'function_invocation_stats' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}\/stats$/.test(path) && method === 'GET');
+}
+
+function isUpdateFunctionRoute(path, action, method) {
+  return action === 'update_function' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}$/.test(path) && method === 'PATCH');
+}
+
+function isDeleteFunctionRoute(path, action, method) {
+  return action === 'delete_function' || (/^\/functions\/fn_[A-Za-z0-9_-]{8,32}$/.test(path) && method === 'DELETE');
+}
+
+function queryValue(event, key) {
+  const query = event.queryStringParameters || {};
+  const value = query[key];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 async function getManagementUser(authenticate, event) {

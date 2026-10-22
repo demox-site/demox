@@ -5,6 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+function readFunctionsUi() {
+  const dir = path.join(__dirname, '../../src/pages/console/functions');
+  return fs.readdirSync(dir)
+    .filter((name) => name.endsWith('.ts') || name.endsWith('.tsx'))
+    .map((name) => fs.readFileSync(path.join(dir, name), 'utf8'))
+    .join('\n');
+}
+
 test('console functions page saves and loads per-function env and aliases', () => {
   const api = fs.readFileSync(path.join(__dirname, '../../src/api.ts'), 'utf8');
   assert.match(api, /getFunctionEnv:\s*\(functionId:\s*string\)/);
@@ -12,7 +20,7 @@ test('console functions page saves and loads per-function env and aliases', () =
   assert.match(api, /listAliases:\s*\(functionId:\s*string\)/);
   assert.match(api, /setAlias:\s*\(functionId:\s*string,\s*alias:\s*string,\s*version:\s*number\)/);
 
-  const page = fs.readFileSync(path.join(__dirname, '../../src/pages/console/FunctionsPage.tsx'), 'utf8');
+  const page = readFunctionsUi();
   assert.match(page, /functionsApi\.getFunctionEnv\(selected\.functionId\)/);
   assert.match(page, /functionsApi\.putFunctionEnv\(selected\.functionId,\s*env\)/);
   assert.match(page, /functionsApi\.setAlias/);
