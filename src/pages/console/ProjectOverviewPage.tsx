@@ -77,13 +77,14 @@ export default function ProjectOverviewPage() {
       .filter((site) => site.websiteId);
     setSites(rows);
 
+    const scopeIds = [...new Set([projectId, ...rows.map((site) => site.websiteId)].filter(Boolean))];
     const listed = await Promise.all(
-      rows.map(async (site) => {
+      scopeIds.map(async (scopeId) => {
         try {
-          const result = await functionsApi.list(site.websiteId);
+          const result = await functionsApi.list(scopeId);
           return { count: (result.functions || []).length, error: false };
         } catch {
-          return { count: 0, error: true };
+          return { count: 0, error: scopeId === projectId };
         }
       })
     );

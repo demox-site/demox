@@ -1603,6 +1603,35 @@ export type ProjectRow = {
   updatedAt?: string | null;
 };
 
+export type FunctionInvocation = {
+  id?: number | null;
+  version: number;
+  status: "success" | "error";
+  durationMs: number;
+  requestBytes: number;
+  responseBytes: number;
+  errorCode?: string | null;
+  createdAt?: string | null;
+};
+
+export type FunctionStatsRange = "15min" | "1hr" | "3hr" | "1day";
+
+export type FunctionStats = {
+  range: FunctionStatsRange | string;
+  success: number;
+  error: number;
+  total: number;
+  avgDurationMs: number;
+  series: Array<{ bucket: string; success: number; error: number; avgDurationMs: number }>;
+};
+
+export type FunctionInvokeOptions = {
+  method?: string;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
+  alias?: string;
+};
+
 export type SiteFunction = {
   functionId: string;
   kind?: "user" | "system" | "site";
@@ -1715,15 +1744,60 @@ export const functionsApi = {
     `/functions/${functionId}/source${version ? `?version=${encodeURIComponent(String(version))}` : ""}`,
     { method: "GET" }
   ),
-  invoke: async (functionId: string, payload: unknown) => {
+  listInvocations: (functionId: string, query?: { limit?: number; since?: string; status?: string }) => {
+    const params = new URLSearchParams();
+    if (query?.limit) params.set("limit", String(query.limit));
+    if (query?.since) params.set("since", query.since);
+    if (query?.status && query.status !== "all") params.set("status", query.status);
+    const suffix = params.toString();
+    return request<{ success: boolean; functionId: string; invocations: FunctionInvocation[] }>(
+      FUNCTIONS_API_URL,
+      `/functions/${functionId}/invocations${suffix ? `?${suffix}` : ""}`,
+      { method: "GET" }
+    );
+  },
+  invocationStats: (functionId: string, range: FunctionStatsRange) => request<{
+    success: boolean;
+    functionId: string;
+  } & FunctionStats>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}/stats?range=${encodeURIComponent(range)}`,
+    { method: "GET" }
+  ),
+  update: (functionId: string, body: {
+    name?: string;
+    routes?: string[];
+    triggers?: string[];
+    timerName?: string | null;
+  }) => request<{ success: boolean; function: SiteFunction }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}`,
+    { method: "PATCH", body }
+  ),
+  remove: (functionId: string) => request<{ success: boolean; functionId: string; deleted: boolean }>(
+    FUNCTIONS_API_URL,
+    `/functions/${functionId}`,
+    { method: "DELETE" }
+  ),
+  invoke: async (functionId: string, payload: unknown, options?: FunctionInvokeOptions) => {
     const token = tokenManager.get();
-    const response = await fetch(`${FUNCTIONS_API_URL}/functions/${functionId}/invoke`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify(payload ?? {})
+    const params = new URLSearchParams();
+    if (options?.alias) params.set("alias", options.alias);
+    for (const [key, value] of Object.entries(options?.query || {})) {
+      if (value !== "") params.set(key, value);
+    }
+    const suffix = params.toString();
+    const method = String(options?.method || "POST").toUpperCase();
+    const headers: Record<string, string> = { ...(options?.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const hasBody = method !== "GET" && method !== "HEAD";
+    if (hasBody && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+      headers["Content-Type"] = "application/json";
+    }
+    const response = await fetch(`${FUNCTIONS_API_URL}/functions/${functionId}/invoke${suffix ? `?${suffix}` : ""}`, {
+      method,
+      headers,
+      body: hasBody ? JSON.stringify(payload ?? {}) : undefined
     });
     const text = await response.text();
     try {
