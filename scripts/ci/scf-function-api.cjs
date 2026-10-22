@@ -769,7 +769,27 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
   return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, rollbackDevelop, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, readReleaseState, uploadZip };
 }
 
+const VERSION_GATE_REASONS = new Set([
+  'missing-alias', 'missing-metadata', 'alias-drift', 'bad-runtime', 'bad-git', 'bad-sha', 'bad-semver',
+  'downgrade', 'runtime-drift', 'config-drift', 'placeholder', 'already-published', 'no-entry'
+]);
+
+function noteVersionGate(output, error) {
+  if (!error || !VERSION_GATE_REASONS.has(error.code)) return;
+  output('failure_kind', 'version-gate');
+  output('failure_reason', error.code);
+}
+
 async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, runId = '', reusePublished = false, output = () => {}, summary = () => {}, log = console.log }) {
+  try {
+    return await releaseDeployDevelopInner(deployer, { manifest, key, sha256, gitSha, runId, reusePublished, output, summary, log });
+  } catch (error) {
+    noteVersionGate(output, error);
+    throw error;
+  }
+}
+
+async function releaseDeployDevelopInner(deployer, { manifest, key, sha256, gitSha, runId = '', reusePublished = false, output = () => {}, summary = () => {}, log = console.log }) {
   const entry = versions.deployEntry(manifest);
   versions.assertNotPlaceholder(entry);
   const state = await deployer.readReleaseState();
@@ -804,7 +824,16 @@ async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, r
   return deployer.deployDevelop({ key, sha256, sha: gitSha, runId, description: decision.description });
 }
 
-async function releasePromote(deployer, { version, approver, at = new Date().toISOString(), releaseLog = '', summary = () => {}, log = console.log }) {
+async function releasePromote(deployer, { version, approver, at = new Date().toISOString(), releaseLog = '', summary = () => {}, output = () => {}, log = console.log }) {
+  try {
+    return await releasePromoteInner({ deployer, version, approver, at, releaseLog, summary, log });
+  } catch (error) {
+    noteVersionGate(output, error);
+    throw error;
+  }
+}
+
+async function releasePromoteInner({ deployer, version, approver, at, releaseLog, summary, log }) {
   if (!/^\d+$/.test(String(version || ''))) throw new Error('promote 需要 --version <数字>');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(String(approver || ''))) {
     throw Object.assign(new Error('promote 需要批准人（RELEASE_APPROVER 或 GITHUB_ACTOR）。已停止，不会切换 production。'), { code: 'bad-approver' });
@@ -930,7 +959,8 @@ async function cli(argv = process.argv.slice(2)) {
       version: argValue(argv, '--version'),
       approver: process.env.RELEASE_APPROVER || process.env.GITHUB_ACTOR || '',
       releaseLog: process.env.RELEASE_LOG || '',
-      summary
+      summary,
+      output
     });
     return;
   }
@@ -964,4 +994,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { validateStagedKey, validateSha256, acceptGithubOutput, CONFIG, HEALTH_CHECKS, PUBLIC_CHECKS, PUBLIC_PROBE, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };
+module.exports = { validateStagedKey, validateSha256, acceptGithubOutput, CONFIG, HEALTH_CHECKS, PUBLIC_CHECKS, PUBLIC_PROBE, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote, VERSION_GATE_REASONS };

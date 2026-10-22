@@ -882,10 +882,33 @@ test('releaseDeployDevelop: dual mode reuses the already-published develop versi
   assert.equal(outputs.production, '3');
   assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
 });
-test('releaseDeployDevelop: dual mode does not bypass other gates (code-drift still stops)', async () => {
+test('releaseDeployDevelop: same manifest and a new package sha publishes an auto version', async () => {
+  const body = Buffer.from('different-package');
+  const codeSha = crypto.createHash('sha256').update(body).digest('hex');
+  const s = samePkgScf();
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(body), fetchImpl: okFetch, log: quiet, wait: async () => {} });
+  const result = await releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: codeSha, gitSha: GIT, reusePublished: true, log: quiet });
+  assert.equal(result.version, '5');
+  const published = s.calls.find((c) => c.name === 'PublishVersion').params.Description;
+  assert.equal(published, described('0.1.0+38f44560bb01', codeSha));
+  assert.match(published, new RegExp(`git=${GIT} sha256=${codeSha} cfg=`));
+});
+test('releaseDeployDevelop: dual mode does not bypass a downgrade', async () => {
   const s = samePkgScf();
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
-  await assert.rejects(releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: 'd'.repeat(64), gitSha: GIT, reusePublished: true, log: quiet }), /不一致/);
+  const outputs = {};
+  await assert.rejects(releaseDeployDevelop(d, {
+    manifest: releaseManifest('0.0.9'),
+    key: KEY,
+    sha256: 'd'.repeat(64),
+    gitSha: GIT,
+    reusePublished: true,
+    log: quiet,
+    output: (name, value) => { outputs[name] = value; }
+  }), /不会降级/);
+  assert.equal(outputs.failure_kind, 'version-gate');
+  assert.equal(outputs.failure_reason, 'downgrade');
+  assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
 });
 
 test('rollback-develop moves only the develop alias', async () => {

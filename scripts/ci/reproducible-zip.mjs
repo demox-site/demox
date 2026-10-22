@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 /** 统一包只允许 lockfile 安装。不要改回 npm install。 */
@@ -15,21 +15,34 @@ export function zipMode(name, mode = 0) {
   return (mode & 0o111) ? 0o755 : 0o644;
 }
 
+function byCodePoint(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 export async function listZipFiles(directory, relative = "") {
   const entries = await readdir(path.join(directory, relative), { withFileTypes: true });
   const files = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.sort((a, b) => byCodePoint(a.name, b.name))) {
     const child = path.join(relative, entry.name);
     if (entry.isDirectory()) files.push(...await listZipFiles(directory, child));
     else if (entry.isFile()) files.push(child);
   }
-  return files.sort((a, b) => a.split(path.sep).join("/").localeCompare(b.split(path.sep).join("/")));
+  return files.sort((a, b) => byCodePoint(a.split(path.sep).join("/"), b.split(path.sep).join("/")));
 }
 
-/** 稳定文件顺序、纪元 mtime、归一化权限。同一目录树打两次，sha256 相同。 */
+/** ZIP 的 DOS 时间用本地年月日。用本地 1980-01-01 00:00:00，换时区也不会改字节。 */
+function zipDate() {
+  return new Date(1980, 0, 1, 0, 0, 0);
+}
+
+/** 稳定文件顺序、固定 mtime、归一化权限。同一目录树打两次，sha256 相同。
+ * archiver.file 会并行 stat，完成顺序不稳定，同样的内容会打出不同 sha256。
+ * 这里按码点顺序读入字节再 append，不把 stat 完成顺序写进包。符号链接不进包。 */
 export async function writeDeterministicZip(stageDir, zipPath) {
   const archiver = (await import("archiver")).default;
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const archive = archiver("zip", { zlib: { level: 9 }, statConcurrency: 1 });
   const output = createWriteStream(zipPath);
   const completion = new Promise((resolve, reject) => {
     output.on("close", resolve);
@@ -39,12 +52,14 @@ export async function writeDeterministicZip(stageDir, zipPath) {
   archive.pipe(output);
   const skip = path.resolve(zipPath);
   const files = await listZipFiles(stageDir);
+  const storedDate = zipDate();
   for (const relative of files) {
     const name = relative.split(path.sep).join("/");
     const absolute = path.join(stageDir, relative);
     if (path.resolve(absolute) === skip) continue;
     const fileStat = await stat(absolute);
-    archive.file(absolute, { name, date: new Date(0), mode: zipMode(name, fileStat.mode) });
+    const body = await readFile(absolute);
+    archive.append(body, { name, date: storedDate, mode: zipMode(name, fileStat.mode) });
   }
   await archive.finalize();
   await completion;

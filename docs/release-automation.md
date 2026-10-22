@@ -49,7 +49,7 @@ Variables：
 
 顺序：磷先、易点后。两边 stage 的 COS key 和 sha256 必须相同，然后 `deploy-develop`，对两个 develop 地址冒烟，再 `promote`，对易点 `https://api.demox.site`（或 `DEMOX_SMOKE_EK_BASE`）和磷 `DEMOX_SMOKE_LIN_BASE` 再冒烟。`DEMOX_EK_ENABLED` 不是 `true` 时 job 失败，不会只发磷。
 
-develop 冒烟失败只把两边的 develop 别名切回，production 不动。promote 或 production 冒烟失败把两边的 production 别名切回上一版。然后开 issue，标题以「发布失败：function-api 冒烟未通过，已回滚别名」开头。
+develop 冒烟失败只把两边的 develop 别名切回，production 不动。promote 或 production 冒烟失败把两边的 production 别名切回上一版。失败 issue 的标题按实际结果写，并在正文里写阶段和运行链接：版本门禁拒绝（没有回滚）、部署失败、冒烟未通过且回滚完成、冒烟未通过且回滚失败。版本门禁拒绝不会写成「已回滚」。
 
 `workflow_dispatch` 只接受回滚：磷 `version`、易点 `version_ek`。
 
