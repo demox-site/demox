@@ -37,7 +37,7 @@ Secrets（建议放在会跑冒烟的 environment 上：`function-api-production
 Variables：
 
 - `DEMOX_SMOKE_LIN_BASE`：磷 production 的 https 根地址。
-- `DEMOX_SMOKE_WEBSITE_ID`：这个测试账号已经拥有的站点 ID。冒烟每次覆盖发布它，避免把部署额度打满。
+- `DEMOX_SMOKE_WEBSITE_ID`：公开冒烟站点 `WL4KMR0N`。冒烟每次覆盖发布它。不要设成 `jbagdduf`，那个站点只给边缘语言探针读取，发布脚本会拒绝。
 - `DEMOX_SMOKE_EK_BASE`：可选。
 - `DEMOX_SMOKE_WWW_MIRROR_URL`：可选，sites.demox.site 上 www 的 index。
 

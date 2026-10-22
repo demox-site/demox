@@ -83,6 +83,9 @@ test('config names the two accounts and refuses a missing secret', () => {
   assert.equal(config.accounts[1].base, 'https://lin-backup.example');
   assert.throws(() => readSmokeConfig(env({ DEMOX_SMOKE_PASSWORD: '' })), /DEMOX_SMOKE_PASSWORD/);
   assert.throws(() => readSmokeConfig(env({ DEMOX_SMOKE_LIN_BASE: '' })), /DEMOX_SMOKE_LIN_BASE/);
+  assert.equal(readSmokeConfig(env({ DEMOX_SMOKE_WEBSITE_ID: 'WL4KMR0N' })).websiteId, 'WL4KMR0N');
+  assert.throws(() => readSmokeConfig(env({ DEMOX_SMOKE_WEBSITE_ID: 'jbagdduf' })), /jbagdduf/);
+  assert.throws(() => readSmokeConfig(env({ DEMOX_SMOKE_WEBSITE_ID: 'JBAGDDUF' })), /jbagdduf/);
 });
 
 test('bundle names come from the homepage, not from a hardcoded file', () => {

@@ -45,6 +45,9 @@ function readSmokeConfig(env) {
   const password = mustEnv(env, 'DEMOX_SMOKE_PASSWORD');
   const websiteId = mustEnv(env, 'DEMOX_SMOKE_WEBSITE_ID');
   if (!/^[A-Za-z0-9]{4,32}$/.test(websiteId)) throw new Error('DEMOX_SMOKE_WEBSITE_ID 格式不正确');
+  if (websiteId.toLowerCase() === 'jbagdduf') {
+    throw new Error('DEMOX_SMOKE_WEBSITE_ID 不能是 jbagdduf，那个站点只供边缘语言探针读取');
+  }
   if (email.length > 200 || password.length > 200) throw new Error('测试账号凭证过长');
   const linBase = parseHttpsBase(mustEnv(env, 'DEMOX_SMOKE_LIN_BASE'), 'DEMOX_SMOKE_LIN_BASE');
   const ekRaw = String(env.DEMOX_SMOKE_EK_BASE || '').trim() || EK_DEFAULT_BASE;
