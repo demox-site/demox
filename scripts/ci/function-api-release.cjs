@@ -40,6 +40,11 @@ function requireReleaseEnv(env) {
   }
 }
 
+function sanitizeApprover(value) {
+  const cleaned = String(value || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 81);
+  return cleaned || 'cursor';
+}
+
 function targetEnv(env, target) {
   const lin = target === 'lin';
   return {
@@ -51,7 +56,7 @@ function targetEnv(env, target) {
     DEMOX_COS_ACCELERATE: lin ? (env.LIN_COS_ACCELERATE || '') : (env.EK_COS_ACCELERATE || ''),
     FUNCTION_API_DEVELOP_URL: lin ? env.LIN_DEVELOP_URL : env.EK_DEVELOP_URL,
     TENCENTCLOUD_REGION: env.TENCENTCLOUD_REGION || 'ap-guangzhou',
-    RELEASE_APPROVER: env.GITHUB_ACTOR || env.RELEASE_APPROVER || ''
+    RELEASE_APPROVER: sanitizeApprover(env.GITHUB_ACTOR || env.RELEASE_APPROVER || '')
   };
 }
 
@@ -229,4 +234,4 @@ async function main(env = process.env) {
 
 if (require.main === module) main();
 
-module.exports = { releaseFunctionApi, rollbackRelease, requireReleaseEnv };
+module.exports = { releaseFunctionApi, rollbackRelease, requireReleaseEnv, sanitizeApprover };

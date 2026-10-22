@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { releaseFunctionApi, rollbackRelease } = require('./function-api-release.cjs');
+const { releaseFunctionApi, rollbackRelease, sanitizeApprover } = require('./function-api-release.cjs');
 
 function releaseEnv(extra = {}) {
   return {
@@ -41,6 +41,12 @@ function fakeSpawn(scripted) {
   fn.calls = calls;
   return fn;
 }
+
+test('promote approver drops characters the release record rejects', () => {
+  assert.equal(sanitizeApprover('cursor[bot]'), 'cursorbot');
+  assert.equal(sanitizeApprover(''), 'cursor');
+  assert.equal(sanitizeApprover('ci'), 'ci');
+});
 
 test('release refuses to start when the backup account is disabled', async () => {
   const spawn = fakeSpawn([]);
