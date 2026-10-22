@@ -3,8 +3,10 @@
  *
  * 登录门 iframe 由边缘函数拼出来，目前没有语言参数，页内标题又写死中文，
  * 表单却跟着 localStorage / 浏览器，中英会混在同一屏。
- * `lang=zh|en` 或 `/zh/site-auth` 定死这一页的语言，并且盖过 www 上记住的 app_language。
+ * `lang=zh|en` 定死这一页的语言，并且盖过 www 上记住的 app_language。
  * 边缘函数要在 iframe 地址上带上 lang；这一侧先认这个参数。
+ * 路径以 `/zh/` 开头时也固定中文。线上入口是已在白名单里的 `/site-auth?lang=`，
+ * 不另挂 `/zh/site-auth`：边缘把 `/zh/*` 当成预渲染页。
  */
 
 /**

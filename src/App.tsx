@@ -23,7 +23,6 @@ import {
 import { HelmetProvider } from "react-helmet-async";
 import { PageWrapper } from "./components/ui/page-wrapper";
 import { routers } from "./configs/routers";
-import { SiteAuth } from "./pages/SiteAuth";
 import { ZH_PAIRED_ROUTES } from "./content/zh-routes.mjs";
 import { createBrowserHistory } from "history";
 import { authApi, tokenManager } from "./api";
@@ -240,10 +239,6 @@ const App: React.FC = () => {
                   <Route
                     path="/docs"
                     element={<Navigate to="/doc" replace />}
-                  />
-                  <Route
-                    path="/zh/site-auth"
-                    element={<PageWrapper id="site-auth" Page={SiteAuth} />}
                   />
 
                   {routers
