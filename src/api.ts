@@ -728,20 +728,21 @@ export const websiteApi = {
     );
   },
 
-  // 更新网站名称
+  // 更新网站名称。必须走 /website/*：/websites/* 是 MCP 的列表入口，
+  // 改名请求会被当成 list 返回 success，数据库里的名称不会变。
   updateName: async (docId: string, name: string) => {
     return request<{ success: boolean; message: string; name: string }>(
       WEBSITE_API_URL,
-      "/websites/update-name",
+      "/website/update-name",
       { method: "POST", body: { action: "update_name", docId, name } }
     );
   },
 
-  // 更新网站标签
+  // 更新网站标签。与改名相同，不能走 /websites/*。
   updateTags: async (docId: string, tags: string[]) => {
     return request<{ success: boolean; message: string; tags: string[] }>(
       WEBSITE_API_URL,
-      "/websites/update-tags",
+      "/website/update-tags",
       { method: "POST", body: { action: "update_tags", docId, tags } }
     );
   },

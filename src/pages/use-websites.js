@@ -114,10 +114,12 @@ export function useWebsites({ t, handleAuthError, projectId }) {
     }
     try {
       const res = await websiteApi.updateName(website._id, name);
-      if (res && res.success) {
+      // 列表接口也返回 success，但没有 name。只认改名结果，避免把误路由的列表当成已保存。
+      if (res && res.success && typeof res.name === "string" && res.name.trim()) {
+        const savedName = res.name.trim();
         setWebsites((prev) =>
           prev.map((w) =>
-            w._id === website._id ? { ...w, name, updatedAt: Date.now() } : w
+            w._id === website._id ? { ...w, name: savedName, updatedAt: Date.now() } : w
           )
         );
         cancelEditName();
@@ -157,10 +159,11 @@ export function useWebsites({ t, handleAuthError, projectId }) {
     }
     try {
       const res = await websiteApi.updateTags(website._id, tags);
-      if (res && res.success) {
+      if (res && res.success && Array.isArray(res.tags)) {
+        const savedTags = res.tags;
         setWebsites((prev) =>
           prev.map((w) =>
-            w._id === website._id ? { ...w, tags, updatedAt: Date.now() } : w
+            w._id === website._id ? { ...w, tags: savedTags, updatedAt: Date.now() } : w
           )
         );
         cancelEditTags();

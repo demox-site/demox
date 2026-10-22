@@ -251,6 +251,16 @@ function isDeployRequest(path, requestData) {
   return path.includes('deploy') || action === 'deploy' || DEPLOY_ACTIONS.has(action);
 }
 
+// 控制台旧地址是 /websites/update-name 和 /websites/update-tags。
+// /websites 前缀归 MCP，若落进下面的列表分支，会丢掉 docId/name，只回一份 success 的列表。
+function siteSettingsProxyPath(path, requestData) {
+  const action = String(requestData?.action || '').trim();
+  const value = String(path || '');
+  if (action === 'update_name' || value.includes('/update-name')) return '/update-name';
+  if (action === 'update_tags' || value.includes('/update-tags')) return '/update-tags';
+  return '';
+}
+
 async function proxy(url, data, token) {
   if (backendInvoker) {
     const result = await backendInvoker(url, data, token);
@@ -312,6 +322,14 @@ exports.main = async (event) => {
       console.log('[MCP API] 部署请求，用户:', user.userId);
       const token = extractToken(event);
       return proxy(`${websiteApiUrl()}/upload`, deployPayload, token);
+    }
+
+    if (method === 'POST') {
+      const settingsPath = siteSettingsProxyPath(path, requestData);
+      if (settingsPath) {
+        if (!verifyToken(event)) return unauthorized();
+        return proxy(`${websiteApiUrl()}${settingsPath}`, requestData, extractToken(event));
+      }
     }
 
     if (method === 'POST' && (path.includes('websites') || requestData.action === 'list')) {
@@ -393,5 +411,5 @@ exports.main = async (event) => {
 };
 
 exports.setBackendInvoker = setBackendInvoker;
-exports.__private = { normalizeDeployPayload, isDeployRequest, normalizeWebsiteApiUrl, websiteApiUrl, normalizeAuthApiUrl, authApiUrl };
+exports.__private = { normalizeDeployPayload, isDeployRequest, siteSettingsProxyPath, normalizeWebsiteApiUrl, websiteApiUrl, normalizeAuthApiUrl, authApiUrl };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };

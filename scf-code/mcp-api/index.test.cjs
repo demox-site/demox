@@ -254,6 +254,52 @@ test('reads WEBSITE_API_URL at point of use for upload / list / delete', async (
   }
 });
 
+test('rename and tag updates on /websites are forwarded instead of listed', async () => {
+  const calls = [];
+  api.setBackendInvoker(async (url, data) => {
+    calls.push({ url, data });
+    return { statusCode: 200, body: JSON.stringify({ success: true, name: data.name, tags: data.tags }) };
+  });
+  const auth = { Authorization: `Bearer ${sign({ userId: 'user-1' })}` };
+
+  const rename = await api.main({
+    httpMethod: 'POST',
+    path: '/websites/update-name',
+    headers: auth,
+    body: JSON.stringify({ action: 'update_name', docId: '42', name: 'Launch page' })
+  });
+  assert.equal(rename.statusCode, 200);
+  assert.equal(calls[0].url, 'https://website.example.test/website/update-name');
+  assert.deepEqual(calls[0].data, { action: 'update_name', docId: '42', name: 'Launch page' });
+
+  const tags = await api.main({
+    httpMethod: 'POST',
+    path: '/websites/update-tags',
+    headers: auth,
+    body: JSON.stringify({ action: 'update_tags', docId: '42', tags: ['launch'] })
+  });
+  assert.equal(tags.statusCode, 200);
+  assert.equal(calls[1].url, 'https://website.example.test/website/update-tags');
+  assert.deepEqual(calls[1].data, { action: 'update_tags', docId: '42', tags: ['launch'] });
+
+  const anonymous = await api.main({
+    httpMethod: 'POST',
+    path: '/websites/update-name',
+    body: JSON.stringify({ action: 'update_name', docId: '42', name: 'Launch page' })
+  });
+  assert.equal(anonymous.statusCode, 401);
+  assert.equal(calls.length, 2);
+
+  await api.main({
+    httpMethod: 'POST',
+    path: '/websites',
+    headers: auth,
+    body: JSON.stringify({ action: 'list' })
+  });
+  assert.equal(calls[2].url, 'https://website.example.test/website/list');
+  assert.deepEqual(calls[2].data, { action: 'list' });
+});
+
 test('mcp request logs never carry the bearer token or email (v13)', async () => {
   const before = logGuard.lines.length;
   const token = sign({ userId: 'u-mail', email: 'mcp.user@example.com' });
