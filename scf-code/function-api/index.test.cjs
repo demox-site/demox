@@ -482,6 +482,107 @@ test('in-process MCP delete reaches system-website even when WEBSITE_API_URL is 
   }
 });
 
+test('in-process MCP auth routes reach system-auth when AUTH_API_URL is a bare host (no self-loop)', async () => {
+  process.env.WEBSITE_API_URL = process.env.WEBSITE_API_URL || 'https://website.example.test';
+  process.env.JWT_SECRET = process.env.JWT_SECRET || randomTestSecret();
+  const previousAuth = process.env.AUTH_API_URL;
+  const previousMode = process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  delete process.env.FUNCTIONS_PLATFORM_SITE_MODE;
+  if (!process.env.AUTH_API_URL) process.env.AUTH_API_URL = 'https://auth.example.test';
+  const realMcp = require('../mcp-api/index.js');
+  const missing = {
+    login: '缺少必要参数: email 和 password',
+    login_code: '缺少必要参数: email 和 code',
+    send_code: '缺少必要参数: email',
+    register: '缺少必要参数: email 和 password'
+  };
+  const authCalls = [];
+  let mcpCalls = 0;
+  let userCalls = 0;
+  const handler = createPlatformHandler({
+    systemRouterOptions: {
+      loaders: {
+        'demox-system-auth': () => ({
+          main: async (request) => {
+            authCalls.push({ path: request.path, action: request.body && request.body.action });
+            const action = request.body && request.body.action;
+            const message = missing[action];
+            if (request.path !== '/auth' || !message) {
+              return { statusCode: 404, body: JSON.stringify({ error: '接口不存在' }) };
+            }
+            const body = request.body || {};
+            const absent = action === 'send_code' ? !body.email
+              : action === 'login_code' ? !body.email || !body.code
+              : !body.email || !body.password;
+            if (!absent) return { statusCode: 200, body: JSON.stringify({ success: true }) };
+            return { statusCode: 400, body: JSON.stringify({ error: message }) };
+          }
+        }),
+        'demox-system-mcp': () => ({
+          main: async (request, context) => {
+            mcpCalls += 1;
+            if (mcpCalls > 1) throw new Error('MCP 请求绕回了 system-mcp');
+            return realMcp.main(request, context);
+          }
+        }),
+        'demox-system-website': () => ({ main: async () => ({ statusCode: 200, body: '{}' }) }),
+        'demox-system-cert-renew': () => ({ main: async () => ({ statusCode: 204, body: '' }) })
+      }
+    },
+    userHandler: async () => {
+      userCalls += 1;
+      return { statusCode: 401, body: JSON.stringify({ error: '需要登录' }) };
+    }
+  });
+  const routes = [
+    ['/login', missing.login],
+    ['/login-code', missing.login_code],
+    ['/send-code', missing.send_code],
+    ['/register', missing.register]
+  ];
+  try {
+    const baseline = new Map();
+    for (const value of [
+      'https://api.demox.site/auth',
+      'https://api.demox.site/auth/',
+      'https://host.tencentscf.com',
+      'https://host.tencentscf.com/'
+    ]) {
+      process.env.AUTH_API_URL = value;
+      for (const [path, message] of routes) {
+        authCalls.length = 0;
+        mcpCalls = 0;
+        userCalls = 0;
+        const response = await handler(event(path, 'POST', {}));
+        const payload = JSON.parse(response.body);
+        assert.equal(response.statusCode, 400, `${value} ${path}`);
+        assert.equal(payload.error, message, `${value} ${path}`);
+        assert.equal(mcpCalls, 1, `${value} ${path}`);
+        assert.equal(userCalls, 0, `${value} ${path}`);
+        assert.equal(authCalls.length, 1, `${value} ${path}`);
+        assert.equal(authCalls[0].path, '/auth', `${value} ${path}`);
+        const signature = `${response.statusCode}:${payload.error}`;
+        if (!baseline.has(path)) baseline.set(path, signature);
+        else assert.equal(signature, baseline.get(path), `${value} ${path}`);
+      }
+    }
+    process.env.AUTH_API_URL = 'https://host.tencentscf.com';
+    authCalls.length = 0;
+    mcpCalls = 0;
+    userCalls = 0;
+    const me = await handler(event('/me', 'POST', {}));
+    assert.equal(me.statusCode, 401);
+    assert.equal(JSON.parse(me.body).error.message, '未登录');
+    assert.equal(authCalls.length, 0);
+    assert.equal(mcpCalls, 1);
+    assert.equal(userCalls, 0);
+  } finally {
+    if (previousAuth === undefined) delete process.env.AUTH_API_URL;
+    else process.env.AUTH_API_URL = previousAuth;
+    if (previousMode !== undefined) process.env.FUNCTIONS_PLATFORM_SITE_MODE = previousMode;
+  }
+});
+
 test('site-scoped paths dispatch to the same backends as /auth /website /deploy', async () => {
   const calls = [];
   const handler = createPlatformHandler({

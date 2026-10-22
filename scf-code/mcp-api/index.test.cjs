@@ -142,6 +142,91 @@ test('normalizes WEBSITE_API_URL so MCP never targets system-mcp routes', () => 
   assert.equal(normalizeWebsiteApiUrl(' https://x.tencentscf.com/release '), 'https://x.tencentscf.com/release/website');
 });
 
+test('normalizes AUTH_API_URL so a bare host becomes /auth and an existing /auth is kept', () => {
+  const { normalizeAuthApiUrl } = api.__private;
+  assert.equal(normalizeAuthApiUrl('https://host.tencentscf.com'), 'https://host.tencentscf.com/auth');
+  assert.equal(normalizeAuthApiUrl('https://host.tencentscf.com/'), 'https://host.tencentscf.com/auth');
+  assert.equal(normalizeAuthApiUrl('https://host.tencentscf.com///'), 'https://host.tencentscf.com/auth');
+  assert.equal(normalizeAuthApiUrl('https://api.demox.site/auth'), 'https://api.demox.site/auth');
+  assert.equal(normalizeAuthApiUrl('https://api.demox.site/auth/'), 'https://api.demox.site/auth');
+  assert.equal(normalizeAuthApiUrl(' https://api.demox.site/auth/ '), 'https://api.demox.site/auth');
+  assert.equal(normalizeAuthApiUrl('https://api.demox.site/auth/login'), 'https://api.demox.site/auth/login');
+  assert.equal(normalizeAuthApiUrl('https://api.demox.site/auth/login/'), 'https://api.demox.site/auth/login');
+  assert.equal(normalizeAuthApiUrl('https://x.tencentscf.com/release'), 'https://x.tencentscf.com/release');
+  assert.equal(normalizeAuthApiUrl('https://x.tencentscf.com/release/'), 'https://x.tencentscf.com/release');
+  assert.equal(normalizeAuthApiUrl('https://host.tencentscf.com?x=1'), 'https://host.tencentscf.com/auth');
+  assert.equal(new URL(normalizeAuthApiUrl('https://host.tencentscf.com')).pathname, '/auth');
+  assert.equal(new URL(normalizeAuthApiUrl('https://api.demox.site/auth/')).pathname, '/auth');
+});
+
+const AUTH_MISSING = {
+  '/login': { action: 'login', error: '缺少必要参数: email 和 password' },
+  '/login-code': { action: 'login_code', error: '缺少必要参数: email 和 code' },
+  '/send-code': { action: 'send_code', error: '缺少必要参数: email' },
+  '/register': { action: 'register', error: '缺少必要参数: email 和 password' }
+};
+
+function authMissingMessage(data) {
+  if (data.action === 'send_code') return data.email ? null : AUTH_MISSING['/send-code'].error;
+  if (data.action === 'login_code') return data.email && data.code ? null : AUTH_MISSING['/login-code'].error;
+  if (data.action === 'login' || data.action === 'register') {
+    return data.email && data.password ? null : AUTH_MISSING[data.action === 'login' ? '/login' : '/register'].error;
+  }
+  return null;
+}
+
+test('reads AUTH_API_URL at point of use and empty auth posts keep the auth missing-param messages', async () => {
+  const previous = process.env.AUTH_API_URL;
+  const calls = [];
+  api.setBackendInvoker(async (url, data) => {
+    calls.push({ url, data, pathname: new URL(url).pathname });
+    const message = authMissingMessage(data);
+    if (message) return { statusCode: 400, body: JSON.stringify({ error: message }) };
+    return { statusCode: 200, body: JSON.stringify({ success: true }) };
+  });
+  try {
+    for (const [value, expected] of [
+      ['https://host.tencentscf.com', 'https://host.tencentscf.com/auth'],
+      ['https://host.tencentscf.com/', 'https://host.tencentscf.com/auth'],
+      ['https://api.demox.site/auth', 'https://api.demox.site/auth'],
+      ['https://api.demox.site/auth/', 'https://api.demox.site/auth']
+    ]) {
+      process.env.AUTH_API_URL = value;
+      calls.length = 0;
+      const bodies = [];
+      for (const path of Object.keys(AUTH_MISSING)) {
+        const result = await api.main({ httpMethod: 'POST', path, body: '{}' });
+        assert.equal(result.statusCode, 400, `${value} ${path}`);
+        bodies.push(JSON.parse(result.body).error);
+      }
+      assert.deepEqual(bodies, Object.values(AUTH_MISSING).map((item) => item.error), value);
+      assert.deepEqual(calls.map((call) => call.url), Array(4).fill(expected), value);
+      assert.deepEqual(calls.map((call) => call.pathname), Array(4).fill('/auth'), value);
+      assert.deepEqual(calls.map((call) => call.data.action), Object.values(AUTH_MISSING).map((item) => item.action), value);
+    }
+  } finally {
+    process.env.AUTH_API_URL = previous;
+  }
+});
+
+test('/me without a token stays 401 and does not call the auth backend', async () => {
+  const previous = process.env.AUTH_API_URL;
+  process.env.AUTH_API_URL = 'https://host.tencentscf.com';
+  let calls = 0;
+  api.setBackendInvoker(async () => {
+    calls += 1;
+    return { statusCode: 200, body: '{}' };
+  });
+  try {
+    const result = await api.main({ httpMethod: 'POST', path: '/me', body: '{}' });
+    assert.equal(result.statusCode, 401);
+    assert.equal(JSON.parse(result.body).error.message, '未登录');
+    assert.equal(calls, 0);
+  } finally {
+    process.env.AUTH_API_URL = previous;
+  }
+});
+
 test('reads WEBSITE_API_URL at point of use for upload / list / delete', async () => {
   const previous = process.env.WEBSITE_API_URL;
   const calls = [];
