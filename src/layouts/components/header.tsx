@@ -2,7 +2,9 @@ import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { pairedRouteKey, enPathFor, zhPathFor } from "@/content/zh-routes.mjs";
 import { authApi, userManager } from "@/api";
-import { AuthDialog } from "@/components/AuthDialog";
+const AuthDialog = React.lazy(() =>
+  import("@/components/AuthDialog").then((mod) => ({ default: mod.AuthDialog }))
+);
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useLanguage } from "@/hooks/use-language";
 import { BrandLogo } from "@/components/BrandLogo";
@@ -372,11 +374,15 @@ export const MainHeader: React.FC = () => {
         )}
       </nav>
 
-      <AuthDialog
-        isOpen={isLoginOpen}
-        onOpenChange={setIsLoginOpen}
-        onLoginSuccess={handleLoginSuccess}
-      />
+      {isLoginOpen ? (
+        <React.Suspense fallback={null}>
+          <AuthDialog
+            isOpen={isLoginOpen}
+            onOpenChange={setIsLoginOpen}
+            onLoginSuccess={handleLoginSuccess}
+          />
+        </React.Suspense>
+      ) : null}
     </>
   );
 };
