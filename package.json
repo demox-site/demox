@@ -25,7 +25,7 @@
     "test:mobile-overflow": "node --experimental-websocket --test scripts/check-mobile-overflow.test.mjs",
     "p0:edge": "bash scripts/edge-p0-check.sh",
     "p0:edge:baseline": "python3 scripts/edge-p0-matrix.py baseline",
-    "test:edge-router": "node --test edge-functions/subdomain-router.test.cjs edge-functions/subdomain-router.origin-guard.test.cjs edge-functions/subdomain-router.cookie.test.cjs scf-code/website-api/shared/cookie-domain-policy.test.cjs src/lib/auth-cookie.test.mjs",
+    "test:edge-router": "node --test edge-functions/live-sha.test.cjs edge-functions/subdomain-router.test.cjs edge-functions/subdomain-router.origin-guard.test.cjs edge-functions/subdomain-router.cookie.test.cjs scf-code/website-api/shared/cookie-domain-policy.test.cjs src/lib/auth-cookie.test.mjs",
     "test:i18n": "node --test scripts/check-hardcoded-cjk.test.mjs",
     "test:admin-audit": "node --test scf-code/website-api/admin-audit.test.cjs scf-code/website-api/revoke-refresh-token.test.cjs scf-code/website-api/team-admin-grant.test.cjs",
     "test:changelog": "node --test src/content/changelog.test.mjs",
