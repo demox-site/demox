@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { isZhPath } from "@/content/zh-routes.mjs";
+import { pageLanguageIsExplicit, readPageLanguage } from "@/lib/embedded-gate-language";
 
 export type Language = "zh" | "en";
 
@@ -19,34 +19,18 @@ export const LanguageProvider: React.FC<React.PropsWithChildren> = ({
   children,
 }) => {
   const [language, setLanguage] = useState<Language>(() => {
-    // 0. /zh/ 下的页面固定中文，首帧就是中文（静态 HTML 也是中文），不会先英后中闪一下
-    if (typeof window !== "undefined" && isZhPath(window.location.pathname)) {
-      return "zh";
-    }
-    // 1. 尝试从 localStorage 获取
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === "zh" || saved === "en") {
-      return saved;
-    }
-
-    // 2. 尝试从浏览器获取
-    if (typeof navigator !== "undefined") {
-      const browserLang = navigator.language.toLowerCase();
-      if (browserLang.startsWith("zh")) {
-        return "zh";
-      }
-    }
-    
-    // 3. 默认英文 (作为国际化产品通常的默认值，或者也可以默认中文，这里我选择英文作为兜底，因为中文已经在上面检测了)
-    // 不过考虑到之前页面默认是 zh，如果用户浏览器不是中文也不是英文（比如法语），回退到 zh 还是 en？
-    // 之前的代码硬编码是 zh。
-    // 如果浏览器是 en-US -> en
-    // 如果浏览器是 zh-CN -> zh
-    // 如果浏览器是 fr-FR -> en (通常)
-    return "en"; 
+    if (typeof window === "undefined") return "en";
+    // lang=zh|en 和 /zh/ 路径优先于记住的语言，嵌入式登录门整页只走一种语言。
+    return readPageLanguage({
+      pathname: window.location.pathname,
+      search: window.location.search,
+      stored: localStorage.getItem(STORAGE_KEY),
+      navigatorLanguage: navigator.language
+    });
   });
 
   useEffect(() => {
+    if (typeof window !== "undefined" && pageLanguageIsExplicit(window.location.search)) return;
     localStorage.setItem(STORAGE_KEY, language);
   }, [language]);
 

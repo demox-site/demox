@@ -8,6 +8,7 @@ import {
   readEmbeddedLoginMode,
   writeEmbeddedLoginMode
 } from "@/lib/embedded-login-mode";
+import { embeddedGateCopy, embeddedGateFormCopy } from "@/lib/embedded-gate-language";
 import { Github } from "lucide-react";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
@@ -135,7 +136,6 @@ export function AuthDialog({
 }: AuthDialogProps) {
   const { toast } = useToast();
   const { language } = useLanguage();
-  const t = translations[language] || translations.zh;
   const [throttleUntil, setThrottleUntil] = useState<number | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -148,6 +148,10 @@ export function AuthDialog({
   const [countdown, setCountdown] = useState(0);
   const [feishuReady, setFeishuReady] = useState(false);
   const isSiteGate = presentation === "site-gate";
+  const t = {
+    ...(translations[language] || translations.zh),
+    ...(isSiteGate ? embeddedGateFormCopy(embeddedGateCopy(language)) : null)
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -305,17 +309,17 @@ export function AuthDialog({
       <DialogContent
         className={
           isSiteGate
-            ? "max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[425px] overflow-y-auto rounded-2xl border-white/15 bg-background/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
+            ? "max-h-[calc(100dvh-4.5rem)] w-[calc(100%-2rem)] max-w-[400px] gap-3 overflow-y-auto rounded-[12px] border border-[#e5e5e3] !bg-[#ffffff] p-4 !text-[#111111] shadow-[0_1px_2px_rgba(17,17,17,0.06)] sm:rounded-[12px] sm:p-5"
             : "sm:max-w-[425px]"
         }
-        overlayClassName={isSiteGate ? "bg-black/15" : undefined}
+        overlayClassName={isSiteGate ? "bg-transparent" : undefined}
         showClose={!isSiteGate}
         onEscapeKeyDown={isSiteGate ? (event) => event.preventDefault() : undefined}
         onPointerDownOutside={isSiteGate ? (event) => event.preventDefault() : undefined}
       >
-        <DialogHeader>
-          <DialogTitle>{title ?? t.title}</DialogTitle>
-          <DialogDescription>{description ?? t.description}</DialogDescription>
+        <DialogHeader className={isSiteGate ? "space-y-1 text-left sm:text-left" : undefined}>
+          <DialogTitle className={isSiteGate ? "text-left text-[#111111]" : undefined}>{title ?? t.title}</DialogTitle>
+          <DialogDescription className={isSiteGate ? "text-left text-[#6b6b6b]" : undefined}>{description ?? t.description}</DialogDescription>
         </DialogHeader>
         <iframe
           name={LOGIN_FORM_SINK_NAME}
@@ -328,14 +332,15 @@ export function AuthDialog({
           {...loginFormSubmitTarget()}
           onSubmit={handleSubmit}
           noValidate
-          className="space-y-4"
+          className={isSiteGate ? "space-y-3" : "space-y-4"}
         >
           <div className="space-y-2">
-            <Label htmlFor="email">{t.email}</Label>
+            <Label htmlFor="email" className={isSiteGate ? "text-[#111111]" : undefined}>{t.email}</Label>
             <Input
               id="email"
               type="email"
               placeholder="name@example.com"
+              className={isSiteGate ? "border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] placeholder:!text-[#6b6b6b]" : undefined}
               value={email}
               onChange={(e) => {
                 setEmail(e.target.value);
@@ -346,7 +351,7 @@ export function AuthDialog({
 
           {loginMode === "code" ? (
             <div className="space-y-2">
-              <Label htmlFor="code">{t.code}</Label>
+              <Label htmlFor="code" className={isSiteGate ? "text-[#111111]" : undefined}>{t.code}</Label>
               <div className="flex gap-2">
                 <Input
                   id="code"
@@ -356,7 +361,7 @@ export function AuthDialog({
                   onChange={(e) =>
                     setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
                   }
-                  className="flex-1"
+                  className={isSiteGate ? "flex-1 border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] placeholder:!text-[#6b6b6b]" : "flex-1"}
                   maxLength={6}
                 />
                 <Button
@@ -364,7 +369,7 @@ export function AuthDialog({
                   variant="outline"
                   onClick={handleSendCode}
                   disabled={countdown > 0 || loading}
-                  className="shrink-0"
+                  className={isSiteGate ? "shrink-0 !border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] hover:!bg-[#f7f7f5]" : "shrink-0"}
                 >
                   {countdown > 0 ? `${countdown}s` : t.sendCode}
                 </Button>
@@ -372,43 +377,50 @@ export function AuthDialog({
             </div>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="password">{t.password}</Label>
+              <Label htmlFor="password" className={isSiteGate ? "text-[#111111]" : undefined}>{t.password}</Label>
               <Input
                 id="password"
                 type="password"
                 placeholder={t.passwordPlaceholder}
+                className={isSiteGate ? "border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] placeholder:!text-[#6b6b6b]" : undefined}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
           )}
 
-          <div className="flex items-start gap-2 text-xs text-muted-foreground">
+          <div className={isSiteGate ? "flex items-start gap-2 text-xs text-[#6b6b6b]" : "flex items-start gap-2 text-xs text-muted-foreground"}>
             <Checkbox
               id="agree"
               checked={agreed}
               onCheckedChange={(checked) => setAgreed(checked as boolean)}
-              className="mt-[2px]"
+              className={isSiteGate ? "mt-[2px] border-[#e5e5e3] data-[state=checked]:border-[#111111] data-[state=checked]:bg-[#111111] data-[state=checked]:text-[#ffffff]" : "mt-[2px]"}
             />
             <label htmlFor="agree" className="leading-relaxed">
-              {t.agreePrefix}{" "}
-              <a
-                href="/terms"
-                target={isSiteGate ? "_blank" : undefined}
-                rel={isSiteGate ? "noopener noreferrer" : undefined}
-                className="underline underline-offset-4 hover:text-foreground"
-              >
-                {t.terms}
-              </a>{" "}
-              {t.and}{" "}
-              <a
-                href="/privacy"
-                target={isSiteGate ? "_blank" : undefined}
-                rel={isSiteGate ? "noopener noreferrer" : undefined}
-                className="underline underline-offset-4 hover:text-foreground"
-              >
-                {t.privacy}
-              </a>
+              {isSiteGate ? (
+                language === "en" ? (
+                  <>
+                    {t.agreePrefix}{" "}
+                    <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-[#111111]">{t.terms}</a>
+                    {" "}{t.and}{" "}
+                    <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-[#111111]">{t.privacy}</a>
+                  </>
+                ) : (
+                  <>
+                    {t.agreePrefix}
+                    <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-[#111111]">{t.terms}</a>
+                    {t.and}
+                    <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-[#111111]">{t.privacy}</a>
+                  </>
+                )
+              ) : (
+                <>
+                  {t.agreePrefix}{" "}
+                  <a href="/terms" className="underline underline-offset-4 hover:text-foreground">{t.terms}</a>
+                  {" "}{t.and}{" "}
+                  <a href="/privacy" className="underline underline-offset-4 hover:text-foreground">{t.privacy}</a>
+                </>
+              )}
             </label>
           </div>
 
@@ -416,14 +428,18 @@ export function AuthDialog({
             <LoginThrottleNotice until={throttleUntil} lang={language === "en" ? "en" : "zh"} onDone={() => setThrottleUntil(null)} />
           ) : null}
 
-          <Button type="submit" className="w-full" disabled={loading || (loginMode === "password" && !!throttleUntil)}>
+          <Button
+            type="submit"
+            className={isSiteGate ? "w-full !bg-[#111111] !text-[#ffffff] hover:!bg-[#111111] hover:!opacity-90" : "w-full"}
+            disabled={loading || (loginMode === "password" && !!throttleUntil)}
+          >
             {loading ? t.processing : loginMode === "code" ? t.loginOrSignup : t.login}
           </Button>
 
-          <div className="flex items-center gap-3 py-1">
-            <div className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">{t.or}</span>
-            <div className="h-px flex-1 bg-border" />
+          <div className={isSiteGate ? "flex items-center gap-3" : "flex items-center gap-3 py-1"}>
+            <div className={isSiteGate ? "h-px flex-1 bg-[#e5e5e3]" : "h-px flex-1 bg-border"} />
+            <span className={isSiteGate ? "text-xs text-[#6b6b6b]" : "text-xs text-muted-foreground"}>{t.or}</span>
+            <div className={isSiteGate ? "h-px flex-1 bg-[#e5e5e3]" : "h-px flex-1 bg-border"} />
           </div>
 
           <Button
@@ -448,7 +464,7 @@ export function AuthDialog({
                 });
               }
             }}
-            className="w-full"
+            className={isSiteGate ? "w-full !border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] hover:!bg-[#f7f7f5]" : "w-full"}
           >
             <Github className="w-4 h-4 mr-2" />
             {t.github}
@@ -460,18 +476,18 @@ export function AuthDialog({
               variant="outline"
               disabled={loading}
               onClick={handleFeishuLogin}
-              className="w-full"
+              className={isSiteGate ? "w-full !border-[#e5e5e3] !bg-[#ffffff] !text-[#111111] hover:!bg-[#f7f7f5]" : "w-full"}
             >
               <FeishuIcon className="w-4 h-4 mr-2" />
               {t.feishu}
             </Button>
           )}
 
-          <div className="text-center text-sm">
+          <div className={isSiteGate ? "text-left text-sm" : "text-center text-sm"}>
             <Button
               type="button"
               variant="link"
-              className="p-0 h-auto"
+              className={isSiteGate ? "h-auto p-0 !text-[#111111] hover:!text-[#111111]" : "p-0 h-auto"}
               onClick={() => selectLoginMode(loginMode === "code" ? "password" : "code")}
             >
               {loginMode === "code" ? t.usePassword : t.useCode}
