@@ -229,6 +229,11 @@ function validateStagedKey(key) {
   return k;
 }
 
+/** GITHUB_OUTPUT 的键可以带数字（sha256），值只允许路径和十六进制，避免换行注入。 */
+function acceptGithubOutput(key, value) {
+  return /^[a-z][a-z0-9_]*$/.test(String(key)) && /^[\w./$-]+$/.test(String(value));
+}
+
 /** 期望的 sha256：必须是 64 位小写十六进制。 */
 function validateSha256(value) {
   const v = String(value == null ? '' : value);
@@ -836,7 +841,7 @@ async function cli(argv = process.argv.slice(2)) {
   const summary = (line) => { if (summaryFile) fs.appendFileSync(summaryFile, `${line}\n`); };
   if (accelerate) summary(`- COS 上传走全球加速：\`${cosUploadEndpoint({ accelerate })}\``);
   const outputFile = process.env.GITHUB_OUTPUT;
-  const output = (k, v) => { if (outputFile && /^[a-z_]+$/.test(k) && /^[\w./$-]*$/.test(String(v))) fs.appendFileSync(outputFile, `${k}=${v}\n`); };
+  const output = (k, v) => { if (outputFile && acceptGithubOutput(k, v)) fs.appendFileSync(outputFile, `${k}=${v}\n`); };
   console.log(`发布目标：${CONFIG.target}（入口 ${CONFIG.entryMode}）`);
   const deployer = createDeployer({ ...(await createClients(process.env, { accelerate })), summary, output, developBaseUrl: process.env.FUNCTION_API_DEVELOP_URL || '' });
   if (command === 'plan') {
@@ -918,4 +923,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { validateStagedKey, validateSha256, CONFIG, HEALTH_CHECKS, PUBLIC_CHECKS, PUBLIC_PROBE, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };
+module.exports = { validateStagedKey, validateSha256, acceptGithubOutput, CONFIG, HEALTH_CHECKS, PUBLIC_CHECKS, PUBLIC_PROBE, UPLOAD, isStraySocketError, validateCosTarget, parseCosAccelerate, cosClientOptions, cosUploadEndpoint, checkPreconditions, createDeployer, credentialsFromEnv, credentialsFromOidc, releaseDeployDevelop, releasePromote };

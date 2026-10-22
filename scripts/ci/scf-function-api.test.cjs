@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, PUBLIC_CHECKS, PUBLIC_PROBE, validateStagedKey, validateSha256, releaseDeployDevelop, releasePromote } = require('./scf-function-api.cjs');
+const { checkPreconditions, createDeployer, credentialsFromOidc, CONFIG, UPLOAD, PUBLIC_CHECKS, PUBLIC_PROBE, validateStagedKey, validateSha256, acceptGithubOutput, releaseDeployDevelop, releasePromote } = require('./scf-function-api.cjs');
 const versions = require('./function-versions.cjs');
 
 // CI 角色对这些接口是显式 Deny；脚本一次都不能调用。
@@ -516,6 +516,14 @@ test('validateStagedKey: only scf-deploy/ci/<name>.zip', () => {
 test('validateSha256: 64 lowercase hex only', () => {
   assert.equal(validateSha256(PKG_SHA), PKG_SHA);
   for (const bad of ['', 'abc', PKG_SHA.toUpperCase(), PKG_SHA + '0', PKG_SHA.slice(1) + 'g']) assert.throws(() => validateSha256(bad));
+});
+
+test('github output accepts sha256 keys and rejects injection', () => {
+  assert.equal(acceptGithubOutput('sha256', PKG_SHA), true);
+  assert.equal(acceptGithubOutput('key', 'scf-deploy/ci/demox-unified-scf-2edc04ad161f-2053400e5b6c.zip'), true);
+  assert.equal(acceptGithubOutput('sha256', ''), false);
+  assert.equal(acceptGithubOutput('sha256', PKG_SHA + '\nkey=evil'), false);
+  assert.equal(acceptGithubOutput('SHA', PKG_SHA), false);
 });
 
 test('deploy-develop: sha256 mismatch → hard error before any SCF write', async () => {
