@@ -16,7 +16,7 @@ const context = vm.createContext({
   addEventListener: () => {},
   fetch: async () => { throw new Error('Unexpected fetch'); }
 });
-vm.runInContext(`${source}\nglobalThis.__testHooks = { withDemoxBadge, rewriteOrigin, isWwwSpaRoute, buildOriginUrl };`, context);
+vm.runInContext(`${source}\nglobalThis.__testHooks = { withDemoxBadge, rewriteOrigin, isWwwSpaRoute, buildOriginUrl, WWW_ZH_ENGLISH_ONLY_PATHS, wwwZhEnglishOnlyLocation };`, context);
 
 async function render(hideWatermark) {
   return context.__testHooks.withDemoxBadge(
@@ -236,7 +236,7 @@ test('router passes resolved SEO into the hosted HTML response', async () => {
   assert.match(html, /<main>Live<\/main>/);
 });
 
-async function handleSite(url, { resolve = null, originStatus = 200, originBody = '<!doctype html><html><body><main>Live site</main></body></html>' } = {}) {
+async function handleSite(url, { resolve = null, originStatus = 200, originBody = '<!doctype html><html><body><main>Live site</main></body></html>', method = 'GET' } = {}) {
   const requests = [];
   const routerContext = vm.createContext({
     URL,
@@ -265,7 +265,7 @@ async function handleSite(url, { resolve = null, originStatus = 200, originBody 
   });
   vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
   const response = await routerContext.__testHooks.handle(
-    new Request(url, { headers: { Accept: 'text/html' } }),
+    new Request(url, { method, headers: { Accept: 'text/html' } }),
     { waitUntil: () => {}, passThroughOnException: () => {} }
   );
   return { response, requests, html: await response.text() };
@@ -407,6 +407,141 @@ test('www console deep links still fall back to the SPA shell', async () => {
     '/sites/1985655011013808129/EPX2UU43/dist/console/projects/PROJECT1/overview',
     '/sites/1985655011013808129/EPX2UU43/dist/index.html'
   ]);
+});
+
+const WWW_RESOLVE = {
+  success: true,
+  path: 'sites/1985655011013808129/EPX2UU43/dist',
+  websiteId: 'EPX2UU43',
+  origin: 'sites.demox.site',
+  visibility: 'public',
+  hideWatermark: true
+};
+
+test('www /zh paths without a Chinese page 302 to the English path', async () => {
+  const slugs = context.__testHooks.WWW_ZH_ENGLISH_ONLY_PATHS;
+  assert.ok(slugs.length >= 10);
+  for (const slug of slugs) {
+    const plain = await handleSite('https://www.demox.site/zh/' + slug, { resolve: WWW_RESOLVE, originStatus: 404 });
+    assert.equal(plain.response.status, 302, slug);
+    assert.equal(plain.response.headers.get('location'), '/' + slug);
+    assert.equal(plain.requests.length, 0, slug + ' must not touch origin');
+
+    const slash = await handleSite('https://www.demox.site/zh/' + slug + '/', { resolve: WWW_RESOLVE, originStatus: 404 });
+    assert.equal(slash.response.status, 302, slug + '/');
+    assert.equal(slash.response.headers.get('location'), '/' + slug);
+
+    const head = await handleSite('https://www.demox.site/zh/' + slug + '?utm=1', {
+      resolve: WWW_RESOLVE,
+      method: 'HEAD'
+    });
+    assert.equal(head.response.status, 302, 'HEAD ' + slug);
+    assert.equal(head.response.headers.get('location'), '/' + slug + '?utm=1');
+    assert.equal(head.requests.length, 0);
+  }
+});
+
+test('www Chinese pages and the /zh home stay 200', async () => {
+  for (const path of ['/zh', '/zh/', '/zh/pricing', '/zh/free-static-site-hosting']) {
+    const { response, requests } = await handleSite('https://www.demox.site' + path, {
+      resolve: WWW_RESOLVE,
+      originStatus: 404
+    });
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get('location'), null, path);
+    const normalized = path.replace(/\/+$/, '') || '/zh';
+    const suffix = normalized === '/zh' ? '/zh/index.html' : normalized + '/index.html';
+    const origin = requests.filter((href) => href.includes('sites.demox.site'));
+    assert.deepEqual(origin.map((href) => new URL(href).pathname), [
+      '/sites/1985655011013808129/EPX2UU43/dist' + suffix
+    ], path);
+  }
+});
+
+test('unknown /zh paths and auth routes stay 404', async () => {
+  const requests = [];
+  const routerContext = vm.createContext({
+    URL,
+    Request,
+    Response,
+    Headers,
+    console,
+    env: { DEMOX_API_URL: 'https://api.test', DEMOX_HOME_URL: 'https://www.demox.site' },
+    caches: { default: { match: async () => null, put: async () => {} } },
+    addEventListener: () => {},
+    fetch: async (input) => {
+      const href = String(input && input.url ? input.url : input);
+      requests.push(href);
+      if (href.includes('/resolve-subdomain')) {
+        return new Response(JSON.stringify(WWW_RESOLVE), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return new Response('Missing', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { handle };`, routerContext);
+  for (const path of ['/zh/xyz', '/zh/doc/extra', '/zh/layout-demo', '/zh/github-callback']) {
+    const before = requests.length;
+    const response = await routerContext.__testHooks.handle(
+      new Request('https://www.demox.site' + path, { headers: { Accept: 'text/html' } }),
+      { waitUntil: () => {}, passThroughOnException: () => {} }
+    );
+    const html = await response.text();
+    assert.equal(response.status, 404, path);
+    assert.equal(response.headers.get('location'), null, path);
+    assert.doesNotMatch(html, /站点未发布/);
+    const seen = requests.slice(before);
+    assert.ok(seen.some((href) => href.endsWith(path.replace(/\/+$/, '') + '/index.html')), path);
+  }
+});
+
+test('english-only /zh redirect does not apply to POST or user sites', async () => {
+  const posted = await handleSite('https://www.demox.site/zh/doc', {
+    resolve: WWW_RESOLVE,
+    originStatus: 404,
+    method: 'POST'
+  });
+  assert.notEqual(posted.response.status, 302);
+  assert.equal(posted.response.headers.get('location'), null);
+  assert.ok(posted.requests.some((href) => href.includes('/zh/doc')));
+
+  const user = await handleSite('https://coverage.demox.site/zh/doc', {
+    resolve: {
+      success: true,
+      path: 'sites/demo/COVERAGE',
+      websiteId: 'COVERAGE',
+      origin: 'sites.demox.site',
+      visibility: 'public'
+    },
+    originStatus: 404
+  });
+  assert.notEqual(user.response.status, 302);
+  assert.equal(user.response.headers.get('location'), null);
+  const origin = user.requests.filter((href) => href.includes('sites.demox.site'));
+  assert.match(origin[0], /\/zh\/doc$/);
+});
+
+test('zh english-only list matches built pages with no Chinese pair, plus /docs', async () => {
+  const { PUBLIC_PAGES, NOINDEX_ROUTES } = await import('../scripts/generate-seo-pages.mjs');
+  const { ZH_PAIRED_ROUTES } = await import('../src/content/zh-routes.mjs');
+  const paired = new Set(ZH_PAIRED_ROUTES);
+  const fromBuild = Object.keys(PUBLIC_PAGES).filter((key) => key && key !== 'index' && !paired.has(key));
+  const actual = context.__testHooks.WWW_ZH_ENGLISH_ONLY_PATHS;
+  assert.deepEqual([...actual].sort(), [...fromBuild, 'docs'].sort());
+  assert.match(appSource, /path="\/docs"[\s\S]{0,80}Navigate to="\/doc"/);
+  for (const route of NOINDEX_ROUTES) {
+    assert.equal(actual.includes(route), false, route);
+    assert.equal(context.__testHooks.wwwZhEnglishOnlyLocation('/zh/' + route), '');
+  }
+  for (const key of ZH_PAIRED_ROUTES) {
+    const path = key ? '/zh/' + key : '/zh';
+    assert.equal(context.__testHooks.wwwZhEnglishOnlyLocation(path), '', path);
+    assert.equal(context.__testHooks.wwwZhEnglishOnlyLocation(path + '/'), '', path + '/');
+  }
+  assert.equal(context.__testHooks.wwwZhEnglishOnlyLocation('/zh/xyz'), '');
+  assert.equal(context.__testHooks.wwwZhEnglishOnlyLocation('/zh/doc/extra'), '');
 });
 
 test('P0: www hardcoded fallback still 200 when resolve misses', async () => {
