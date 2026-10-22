@@ -406,6 +406,11 @@ test('the EdgeOne allowlist covers every current Demox client route', () => {
   assert.deepEqual(missing, []);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/settings'), true);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/sites'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/overview'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/functions'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/database'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/database/new'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/database/tables/users'), true);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/PROJECT1/sites/SITE1/analytics'), true);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/admin/dashboard'), true);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/not-real'), false);
@@ -1030,6 +1035,7 @@ test('handle: www keeps its existing path (no 503 mapping, no retry, no route he
   assert.equal(routeOf(response), null);
 });
 
+// 本发布切片不含 K2 源站守卫。sites.demox.site 解析失败仍按线上 3dea4e0 透传，不改成 503。
 test('handle: platform hosts (sites.demox.site = www origin) keep passthrough when resolve errors', async () => {
   const r = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
   const { response } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
@@ -1126,11 +1132,17 @@ test('www site settings / functions deep links get the SPA fallback', () => {
   assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/'), true);
   assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/functions'), true);
   assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/analytics'), true);
+  assert.equal(ok('/console/projects/PROJECT1/overview'), true);
+  assert.equal(ok('/console/projects/PROJECT1/functions'), true);
+  assert.equal(ok('/console/projects/PROJECT1/database'), true);
+  assert.equal(ok('/console/projects/PROJECT1/database/new'), true);
+  assert.equal(ok('/console/projects/PROJECT1/database/tables/users'), true);
   assert.equal(ok('/console/functions'), true);
   // 仍然 404
   assert.equal(ok('/console/projects/PROJECT1'), false);
   assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/nope'), false);
   assert.equal(ok('/console/projects/PROJECT1/sites/SITE1/functions/x'), false);
+  assert.equal(ok('/console/projects/PROJECT1/database/tables/users/extra'), false);
   assert.equal(ok('/nonexist'), false);
   // ID 段只允许 [A-Za-z0-9_-]+
   assert.equal(ok('/console/projects/../sites/x'), false);
@@ -1145,15 +1157,15 @@ test('www site settings / functions deep links get the SPA fallback', () => {
 
 // 漂移检查：App.tsx 里 /console 下的每条子路由（含 :param）都必须被 isWwwSpaRoute 放行，
 // 否则直接打开深链接会在 www 上 404。
-// 有意排除：index 路由（就是 /console 本身，已单独放行）；目前没有其他排除项，
-// 如需新增排除请写进 INTENTIONALLY_EXCLUDED 并说明原因。
-const INTENTIONALLY_EXCLUDED = new Set([]);
+// 有意排除：index 路由（就是 /console 本身，已单独放行）；
+// database 下的相对 path（new / tables/:tableName）拼成 /console/new 会错，改用完整路径单独断言。
+const INTENTIONALLY_EXCLUDED = new Set(['new', 'tables/:tableName']);
 test('every App.tsx /console route (including params) is matched by isWwwSpaRoute', () => {
   const start = appSource.indexOf('<Route path="/console"');
   assert.ok(start >= 0, 'console route block not found in App.tsx');
-  // console 的子路由都是自闭合 <Route ... />，第一个 </Route> 就是 /console 的闭合标签
-  const end = appSource.indexOf('</Route>', start);
-  assert.ok(end > start, 'console route block not closed');
+  // 嵌套 <Route>（如 database）会提前出现 </Route>，不能再用第一个闭合标签截块
+  const end = appSource.indexOf('{/* 旧地址兼容重定向 */}', start);
+  assert.ok(end > start, 'console route block end marker not found');
   const block = appSource.slice(start, end);
   const children = [...block.matchAll(/path="([^"]+)"/g)].map((x) => x[1]).filter((p) => p !== '/console');
   assert.ok(children.length >= 10, `expected console child routes, got ${children.length}`);
@@ -1162,4 +1174,6 @@ test('every App.tsx /console route (including params) is matched by isWwwSpaRout
     .map((p) => '/console/' + p.replace(/:[A-Za-z]+/g, 'SAMPLE1'))
     .filter((url) => !context.__testHooks.isWwwSpaRoute(url));
   assert.deepEqual(missing, []);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/SAMPLE1/database/new'), true);
+  assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/SAMPLE1/database/tables/SAMPLE1'), true);
 });
