@@ -285,7 +285,7 @@ test('banned, private, and owner-mismatch origin paths are the same 403 and do n
     assert.equal(response.status, 403);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.match(html, /无法访问/);
-    assert.doesNotMatch(html, /此站点已被停用|举报|私有|需要重新验证|登录后查看|Public body/);
+    assert.doesNotMatch(html, /此站点已被停用|举报|私有|需要重新验证|登录后查看|Sign in to view|Public body/);
     assert.equal(r.calls.origin.length, before);
   }
   assert.equal(pages[0], pages[1]);
@@ -547,7 +547,7 @@ test('subdomain and custom-domain traffic keep the old resolver, including stale
     })
   });
   const gate = await officialPrivate.visit('https://priv8.demox.site/');
-  assert.match(gate.html, /登录后查看/);
+  assert.match(gate.html, /Sign in to view/);
   assert.doesNotMatch(gate.html, /需要重新验证/);
   assert.equal(officialPrivate.calls.origin.length, 0);
   assert.equal(officialPrivate.calls.resolve.some((payload) => payload.websiteId), false);
