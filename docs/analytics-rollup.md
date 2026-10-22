@@ -4,7 +4,7 @@
 
 迁移文件：`scf-code/website-api/migrations/024_add_analytics_rollup_watermark.sql`。运行时不执行这个文件，也不执行任何 CREATE。公开 API 走打进统一包的 `index.js`。
 
-合并到 master **不会**自动发布。仓库变量 `FUNCTION_API_AUTO_DEPLOY` 没有设置；`Deploy function-api` 的 push 触发因此不会跑。上线是手动的：`stage`（只打包上传 COS）→ `deploy-develop`（只切 develop）→ 在 develop 上验证 → `promote`（只切 production）。
+命中 `deploy-function-api.yml` 路径的 master 推送会自动发布：`stage` → `deploy-develop` → develop 冒烟 → `promote` → production 冒烟。中间没有人工停顿。024 必须在这次推送之前已经在 develop 库和 production 库都跑完。
 
 云帆在每个环境发布之前，用临时授权在对应的库上跑 024：先 develop 库（在 `deploy-develop` 之前），再 production 库（在 `promote` 之前）。顺序是授权 → 执行 → 撤权，权限 diff 为 0。024 在某个库上跑完，才能把函数发到那个环境。
 
