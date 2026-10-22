@@ -383,8 +383,7 @@ for (const withCookie of [false, true]) {
 
 test('static origin and passthrough fetches keep the pre-#49 call shape (original request object)', () => {
   // 三次发布失败都出在这条路径上（17:18 重建 Request、17:52 Host、18:04 POST）。
-  // 密钥未配置时用户站点仍是 originFetch(..., req)。源站守卫新增的三条 fetch 只能是剥令牌之后的回源。
-  // www 在有签名槽时多一条 404.html：fetch(missingUrl, signed)，用的是新 Headers，不是入站 req。
+  // 现网文件没有 K2 源站守卫。fetch() 必须仍是 #49 之前的原样调用，不能多出剥令牌后的新 Request。
   assert.match(source, /originFetch\(buildOriginUrl\(req, originPath, u\.search, originHost\), req\)/);
   assert.match(source, /originFetch\(buildOriginUrl\(req, `\/\$\{sitePath\}\/index\.html`, '', originHost\), \{ method: 'GET' \}\)/);
   assert.match(source, /fetch\(buildOriginUrl\(req, `\/\$\{sitePath\}\/404\.html`, '', originHost\), \{ method: 'GET' \}\)/);
@@ -407,12 +406,8 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
     if (cursor < preLines.length && line === preLines[cursor]) cursor += 1;
     else extras.push(line);
   }
-  assert.deepEqual(extras, [
-    'const custom404 = await fetch(missingUrl, signed);',
-    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
-    "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
-    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');"
-  ]);
+  // 现网文件与 release/edge-3dea4e0@172095b 一致，fetch() 行就是 #49 之前那一组，没有 K2 源站守卫多出来的调用。
+  assert.deepEqual(extras, []);
 });
 
 

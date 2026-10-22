@@ -1236,14 +1236,13 @@ test('handle: www keeps its existing path (no 503 mapping, no retry, no route he
   assert.equal(routeOf(response), null);
 });
 
-test('handle: origin hosts fail closed when by-id resolve errors and do not passthrough', async () => {
+test('handle: live router does not apply the K2 by-id fail-closed guard on origin hosts', async () => {
   const r = makeRouter({ resolver: () => { throw new TypeError('network error'); } });
-  const { response, html } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
-  assert.equal(response.status, 503);
-  assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  assert.match(html, /暂时无法访问/);
-  assert.equal(r.calls.origin.length, 0, 'resolve error must not fetch the origin object');
-  assert.ok(r.calls.resolve.some((payload) => payload.websiteId === 'EPX2UU43' && payload.uid === 'x'));
+  const { response } = await r.visit('https://sites.demox.site/sites/x/EPX2UU43/dist/index.html');
+  // 现网没有 by-id 源站守卫。sites.demox.site 不会因为解析失败变成 503，也不会按 websiteId 拦截。
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-demox-route'), null);
+  assert.equal(r.calls.resolve.some((payload) => payload && payload.websiteId === 'EPX2UU43'), false);
 });
 
 test('route header: hit / miss / stale are reported on site responses', async () => {
