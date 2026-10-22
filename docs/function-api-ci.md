@@ -6,9 +6,9 @@ app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 
 
 ## 凭证：GitHub OIDC → CAM 角色（没有长期密钥）
 
-- workflow 不读任何腾讯云 secret。job 带 `permissions: id-token: write`，并且在 GitHub environment **`function-api-production`** 里（只允许 `master`，需要 PhosAQy 批准），脚本用 GitHub OIDC token 调 `sts:AssumeRoleWithWebIdentity` 扮演 `qcs::cam::uin/100021031865:roleName/demox-ci-deploy`，拿 1 小时临时密钥，只留在进程内存里。
+- workflow 不读任何腾讯云 secret。job 带 `permissions: id-token: write` 和 `issues: write`，并且在 GitHub environment **`function-api-production`** 里（只允许 `master`，没有 required reviewers），脚本用 GitHub OIDC token 调 `sts:AssumeRoleWithWebIdentity` 扮演 `qcs::cam::uin/100021031865:roleName/demox-ci-deploy`，拿 1 小时临时密钥，只留在进程内存里。本仓库不改这个 environment。
 - CAM 身份提供商 `github-actions`（`https://token.actions.githubusercontent.com`，客户端 ID `sts.tencentcloudapi.com`，公钥自动轮转）。
-- 角色信任条件：`oidc:sub = repo:demox-site/demox:environment:function-api-production`。不在这个 environment 里的 job（别的分支、PR、没批准的 run）都换不到密钥。
+- 角色信任条件：`oidc:sub = repo:demox-site/demox:environment:function-api-production`。不在这个 environment 里的 job（别的分支、PR）都换不到密钥。
 - 权限策略 `demox-ci-deploy-policy`：只允许对带标签 `codename=demox` 的函数 `UpdateFunctionCode` / `PublishVersion` / `UpdateAlias` / 只读列表接口、读 `api.demox.site` 域名配置、往 `scf-deploy/ci/*` 上传包；显式 Deny `scf:Invoke`、`tag:*`、`GetFunction`、`UpdateFunctionConfiguration`、`UpdateFunction`、`scf:Create*` / `scf:Delete*`、触发器、域名修改、`cam:*`、`sts:*`。
 - `scf:Invoke` 是操作级接口，标签条件管不住（实测对无标签函数也能调用），所以策略 v2 去掉了 Invoke 并显式 Deny；健康检查只走公网 HTTPS。策略 v1（含 Invoke）保留为非默认版本，可 `SetDefaultPolicyVersion --VersionId 1` 恢复。
 - 三条发布路径的凭证现状、角色实际调用面、keep / 收窄清单见 [ci-cam-inventory.md](ci-cam-inventory.md)（2026-10-17 盘点）。该文不授权发布。
@@ -26,11 +26,11 @@ app / runtime 版本线、占位 semver，以及「线上没有 `demox-release` 
 7. 公网复查 `https://api.demox.site/health`（必须 200）、`/`（必须 401）。每个探测最多 3 次，间隔 5 秒，单次超时 15 秒；任何一次状态码命中原期望即通过，三次都失败才把 production 切回发布前的版本。不读返回体，不把 522、其它状态码或超时当成通过。
 8. 可选 `with_runtime`：同一个包更新 `demox-user-nodejs`。它没有别名（路由用 `$LATEST` 触发器地址调用），所以先发一个快照版本作为回滚点，更新后公网复查，失败就把快照版本的代码装回去。
 
-push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AUTO_DEPLOY=true` 时才自动发布。这个变量当前没有设置，所以合并到 master **不会**自动发布。要上线时手动按顺序：`stage`（只打包上传 COS）→ `deploy-develop`（只切 develop）→ 在 develop 上验证 → `promote`（只切 production）。`plan` / `deploy` / `rollback` 仍是手动入口。`concurrency: deploy-function-api`，同一时间只跑一个，不取消正在跑的发布。`ALERT analytics-rollup-5m` 的试打（含 `STALE_WATERMARK`、`CONFIG_MISSING`）只打 develop，不要打 production 或 `api.demox.site`。analytics-rollup 的迁移 024 由云帆用临时授权执行：`deploy-develop` 之前在 develop 库跑，`promote` 之前在 production 库跑，跑完撤权，权限 diff 为 0。运行时账号只加这两张表的 SELECT、INSERT、UPDATE。`promote` 到 production 之前确认该环境 `ANALYTICS_RAW_ENABLED=1` 且 `ANALYTICS_RAW_BUCKET_ID` 已配置，否则 `CONFIG_MISSING` 会每 5 分钟打一次 high。
+push 到 master 且路径命中时，`scripts/ci/function-api-release.cjs` 自动走完：`stage`（只打包上传 COS）→ `deploy-develop`（只切 develop）→ 双账号 develop 冒烟 → `promote`（只切 production）→ 双账号 production 冒烟。没有 `FUNCTION_API_AUTO_DEPLOY` 开关。`workflow_dispatch` 只保留回滚。`concurrency: deploy-function-api`，同一时间只跑一个，不取消正在跑的发布。冒烟或切换失败时，已经动过的别名切回去，job 变红，并开一条 `release-failure` issue（正文 @启明）。详见 [release-automation.md](release-automation.md)。`ALERT analytics-rollup-5m` 的试打（含 `STALE_WATERMARK`、`CONFIG_MISSING`）只打 develop，不要打 production 或 `api.demox.site`。analytics-rollup 的迁移 024 由云帆用临时授权执行，跑完撤权，权限 diff 为 0。自动发布在同一个 job 里从 develop 切到 production，所以 024 要在这次推送之前已经在 develop 库和 production 库都跑完。运行时账号只加这两张表的 SELECT、INSERT、UPDATE。推送之前确认该环境 `ANALYTICS_RAW_ENABLED=1` 且 `ANALYTICS_RAW_BUCKET_ID` 已配置，否则 `CONFIG_MISSING` 会每 5 分钟打一次 high。
 
 ## 回滚
 
-- Actions → **Deploy function-api** → Run workflow → `action=rollback`，`version=<上一个版本号>`。每次发布的 Summary 里写着上一个版本号。脚本先把 develop 指向目标版本、经 develop 地址做健康检查，通过后再切 production。
+- Actions → **Deploy function-api** → Run workflow → 填磷的 `version` 和易点的 `version_ek`。手动入口只做回滚。脚本先把 develop 指向目标版本、经 develop 地址做健康检查，通过后再切 production。磷跳过 `api.demox.site` 复查。
 - 应急（不经 CI）：`tccli scf UpdateAlias --region ap-guangzhou --Namespace demox --FunctionName demox-function-api --Name production --FunctionVersion <N>`。
 - 环境变量从不被 CI 改动，所以回滚只涉及代码版本。
 
@@ -52,15 +52,13 @@ push 到 master（相关目录有改动）只有在仓库变量 `FUNCTION_API_AU
 api.demox.site 走 EdgeOne 源站组：**易点**（UIN 100052992193，主源站 og-3wbc6x4y03bk，入口是 demox-function-api 的 HTTP 触发器）
 和 **磷**（UIN 100021031865，备源站 og-3wbc6yrrll1l，入口是 SCF 自定义域名）。之前 CI 只发 磷，主源站代码会漂移。
 
-- 开关：仓库变量 `DEMOX_EK_ENABLED=true`。不设时 workflow 与改动前完全一样（只发 磷）。
+- 开关：仓库变量 `DEMOX_EK_ENABLED` 必须是 `true`。自动发布缺这个值就失败，不会只发磷。
 - 易点 变量（都不是密钥）：`DEMOX_EK_ROLE_ARN`（qcs::cam::uin/100052992193:roleName/demox-ci-deploy）、
   `DEMOX_EK_COS_BUCKET`（demox-deploy-gz-1490780430）、`DEMOX_EK_COS_REGION`（ap-guangzhou）、
   `DEMOX_EK_COS_ACCELERATE`（桶开了全球加速后再设 true）、`FUNCTION_API_DEVELOP_URL_EK`（易点 develop 别名的 HTTP 触发器地址）。
 - 易点 角色 demox-ci-deploy：信任同一 GitHub OIDC（sub=repo:demox-site/demox:environment:function-api-production），
   权限与 磷 289081060 v4 相同（只限 namespace/demox/function/demox-function-api，要求 codename=demox 标签；COS 只限 scf-deploy/ci/*）。
-- 顺序：磷（备）先、易点（主）后。stage 把同一个包（同一 key）传到两边的桶；deploy-develop 两边各发一个版本（版本号各自独立）；
-  promote 需要 `version`（磷）+ `version_ek`（易点）：磷先切（不做公网复查）→ 易点切 → api.demox.site 公网复查（3 次重试）→
-  失败则易点自动切回、再把 磷 切回。rollback 同样两边都切。双账号下 action=deploy（含 push 自动发布）在同一个 job 里按 stage → deploy-develop → promote 执行；develop 健康检查失败不会切 production。
+- 顺序：磷（备）先、易点（主）后。stage 把同一个包（同一 key、同一 sha256）传到两边的桶；deploy-develop 两边各发一个版本（版本号各自独立，磷可复用已发布的同一包）。develop 冒烟打 `FUNCTION_API_DEVELOP_URL_EK` 和 `FUNCTION_API_DEVELOP_URL`。通过后 promote：磷先切（`DEMOX_SKIP_PUBLIC_CHECK=1`，不写发布记录）→ 易点切（写 `docs/function-releases.jsonl`）→ 再对 `https://api.demox.site` 和 `DEMOX_SMOKE_LIN_BASE` 做双账号冒烟。develop 冒烟失败只把两边 develop 切回，production 不动。promote 或 production 冒烟失败把两边 production 切回上一版。手动回滚仍要磷的 `version` 和易点的 `version_ek`。push 不再调用单账号 `action=deploy`：`scripts/ci/function-api-release.cjs` 在同一次任务里走完 stage → develop 冒烟 → promote → production 冒烟。
 
 ### 易点一次性迁移（开 DEMOX_EK_ENABLED 之前必须做；CI 角色不能做，Create* 显式 Deny）
 

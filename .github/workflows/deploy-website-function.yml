@@ -1,31 +1,29 @@
 name: Deploy website function (Demox EPX2UU43 / slug website)
 
-# 平台站点 EPX2UU43 上的 website 业务函数（scf-code/website-api/index.js）发布与回滚。
-# 只能手动触发（workflow_dispatch），只能在 master 上跑，job 在 environment website-function-production 里（需要 PhosAQy 批准）。
-# 流程：跑 website-api 单元测试 → 记下当前别名 → demox functions push（生成新版本，别名不动）
-#      → develop 指向新版本 → 公网冒烟（正在服务的 production 路径；不调用 CLI invoke）
-#      → production 指向新版本 → 公网冒烟（失败自动切回原版本）。
-# 回滚：action=rollback，version=目标版本号，直接把 production（和 develop）切过去，然后冒烟。
-# 注意：CLI 只推 index.js；node_modules 和 shared/ 在统一 SCF 包（function-api 发布）里，改了那些要走 deploy-function-api。
-# 公开 https://api.demox.site 也不跑这里推出去的版本。function-api 默认把平台站点函数留在进程内
-# （PLATFORM_SITE_IN_PROCESS），执行的是统一包里的 scf-code/website-api。要让公开路径吃到新代码，
-# 升 demox-function-api 的 appVersion，走 Deploy function-api：develop → 冒烟 → promote production。
-#
-# 凭证：暂时用仓库级 secret DEMOX_TOKEN（站点所有者的令牌，www 发布也在用）。
-# 日志规则：绝不打印令牌，也不打印 CLI / API 的原始输出。CLI 输出全部写进 $RUNNER_TEMP 下的文件，
-#          只从里面提取版本号；冒烟只打印 HTTP 状态码和 success 字段。
-# TODO：团队有了自己的部署令牌后，存成 environment website-function-production 的 secret，并删除仓库级 DEMOX_TOKEN。
+# 平台站点 EPX2UU43 上的 website 业务函数。
+# push 到 master，且 website-api（不含测试和 migrations）、发布脚本或本 workflow 有改动时，自动推送并切别名。
+# workflow_dispatch 只做回滚（数字 version）。
+# environment website-function-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
+# 切到 production 之后跑双账号冒烟（易点前门 + DEMOX_SMOKE_LIN_BASE）。
+# 失败把 develop 和 production 切回，job 变红，并开 release-failure issue。
+# CLI 推整个 scf-code/website-api 目录。公开 https://api.demox.site 跑的是 function-api 进程内的 website，不读这里的别名。
+# 冒烟仍打两个前门；失败一样回滚这个函数的别名。
+# 令牌只用 secret DEMOX_TOKEN，不进命令行参数。脚本先 ::add-mask::，CLI 输出不打印。
 on:
+  push:
+    branches: [master]
+    paths:
+      # GitHub paths 不能排除子路径。测试和 migrations 由 website-paths.py 跳过发布。
+      - "scf-code/website-api/**"
+      - "scripts/ci/website-function-release.cjs"
+      - "scripts/ci/website-paths.py"
+      - ".github/workflows/deploy-website-function.yml"
   workflow_dispatch:
     inputs:
-      action:
-        description: "deploy = 推送 master 上的 website-api 并切别名；rollback = 把别名切回指定版本"
-        type: choice
-        options: [deploy, rollback]
-        default: deploy
       version:
-        description: "rollback 的目标版本号（数字）"
-        required: false
+        description: "回滚目标版本号（数字）"
+        required: true
+        type: string
 
 concurrency:
   group: deploy-website-function
@@ -33,144 +31,73 @@ concurrency:
 
 permissions:
   contents: read
-
-env:
-  WEBSITE_ID: EPX2UU43
-  FN_SLUG: website
-  API_BASE: https://api.demox.site
+  issues: write
 
 jobs:
   website-function:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     environment: website-function-production
-    timeout-minutes: 20
-    env:
-      ACTION: ${{ inputs.action }}
-      ROLLBACK_VERSION: ${{ inputs.version }}
+    timeout-minutes: 30
     steps:
-      - name: Guard (master only)
-        run: |
-          if [ "${GITHUB_REF}" != "refs/heads/master" ]; then echo "::error::只能在 master 上运行"; exit 1; fi
-          case "${ACTION}" in deploy|rollback) ;; *) echo "::error::未知 action"; exit 1 ;; esac
-          if [ "${ACTION}" = "rollback" ] && ! [[ "${ROLLBACK_VERSION}" =~ ^[0-9]+$ ]]; then
-            echo "::error::rollback 需要数字 version"; exit 1
-          fi
-
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Scope
+        id: scope
+        if: github.event_name == 'push'
+        env:
+          RELEASE_BASE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base="${RELEASE_BASE:-}"
+          if [[ "$base" =~ ^[0-9a-f]{40}$ && "$base" != 0000000000000000000000000000000000000000 ]]; then
+            git fetch --depth=1 origin "$base" || true
+          fi
+          python3 scripts/ci/website-paths.py
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "20"
 
-      - name: Unit tests (website-api)
-        if: env.ACTION == 'deploy'
+      - name: Unit tests
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
+          node --test scripts/ci/website-function-release.test.cjs
+          python3 scripts/ci/website-paths.py --self-test
           npm config set fetch-retries 5
           npm ci --prefix scf-code/website-api --no-audit --no-fund
           node --test scf-code/website-api/*.test.cjs scf-code/website-api/shared/*.test.cjs
 
       - name: Install Demox CLI
+        if: github.event_name != 'push' || steps.scope.outputs.release == 'true'
         run: npm install -g @demox-site/cli@1.1.6 --no-audit --no-fund > /dev/null
 
-      - name: Helpers
-        run: |
-          cat > "$RUNNER_TEMP/demox-helpers.sh" <<'SH'
-          # 所有 CLI 输出都进文件，从不打印。失败时只报命令名和退出码。
-          LOG="$RUNNER_TEMP/demox-cli.log"
-          # 失败时只报一个大类（不打印原文），方便判断是令牌问题还是别的。
-          category() { local t; t=$(sed -e 's/\x1b\[[0-9;]*m//g' "$LOG"); case "$t" in
-            *认证失败*|*401*|*未登录*|*过期*) echo "auth（令牌无效/过期）";;
-            *403*|*没有权限*|*无权*|*forbidden*|*Forbidden*) echo "forbidden（令牌不是站点所有者）";;
-            *413*|*过大*|*too\ large*) echo "too_large";;
-            *) echo "other";; esac; }
-          quiet() { local name="$1"; shift; if "$@" > "$LOG" 2>&1; then return 0; else local rc=$?; echo "::error::${name} 失败（退出码 ${rc}，类别 $(category)，CLI 输出已隐藏）"; return "$rc"; fi; }
-          strip() { sed -e 's/\x1b\[[0-9;]*m//g' "$LOG"; }
-          # 从 functions list 的输出里取 slug=website 那一块的某个别名版本号
-          alias_version() { strip | awk -v slug="$FN_SLUG" -v a="$1" '
-            /Slug: /{cur=($2==slug)}
-            cur && /别名: /{n=split($0,p,/[ ,]+/); for(i=1;i<=n;i++){ if (index(p[i], a"->v")==1){ sub(a"->v","",p[i]); print p[i]; exit } } }'; }
-          # 注意：CLI 1.1.6 里「--version N」会被当成全局的「显示 CLI 版本」并以 0 退出，什么都不改；必须写成 --version=N。
-          # 改完再读一遍别名，确认真的指过去了。
-          set_alias() {
-            quiet "alias set $1" demox functions alias set "$1" --id "$WEBSITE_ID" --slug "$FN_SLUG" --version="$2"
-            quiet "functions list" demox functions list --id "$WEBSITE_ID"
-            local now; now=$(alias_version "$1")
-            if [ "$now" != "$2" ]; then echo "::error::$1 没有指到 v$2（现在 v${now:-?}）"; return 1; fi
-            echo "$1 -> v$2"
-          }
-          # 公网冒烟：只打印状态码和 success。label 用来区分翻转前/后，不打印响应体。
-          smoke() {
-            local url="$1" label="${2:-}" code ok
-            local tag="smoke"
-            if [ -n "$label" ]; then tag="smoke ${label}"; fi
-            code=$(curl -sS -o "$RUNNER_TEMP/smoke.json" -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' \
-              -d '{"action":"resolve_subdomain","subdomain":"www"}' --max-time 20 || echo 000)
-            ok=$(node -e "try{const d=require(process.argv[1]);process.stdout.write(String(d.success===true&&d.websiteId===process.argv[2]))}catch{process.stdout.write('false')}" "$RUNNER_TEMP/smoke.json" "$WEBSITE_ID")
-            echo "${tag} resolve_subdomain: HTTP ${code} success=${ok}"
-            [ "$code" = "200" ] && [ "$ok" = "true" ] || return 1
-            code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" -H 'Content-Type: application/json' -d '{"action":"list"}' --max-time 20 || echo 000)
-            echo "${tag} unauthenticated list: HTTP ${code} (expect 401)"
-            [ "$code" = "401" ]
-          }
-          # website 是平台站点函数。CLI functions invoke 打到 /{id}/{alias}/api/website，
-          # develop 和 production 都是 HTTP 404、error=PLATFORM_SITE_IN_PROCESS（平台站点函数在进程内执行）。
-          # 2026-10-14 实测：POST /EPX2UU43/develop/website、/EPX2UU43/production/website、
-          # /website/resolve-subdomain 的 resolve_subdomain 都是 HTTP 200，正文一致；未登录 list 都是 401。
-          # /{id}/{env}/website 由系统路由在进程内执行，URL 里的 env 不会选中函数别名，
-          # 所以 develop 公网地址不能验收刚切过去的 develop 版本。
-          # 翻转 production 之前，对正在服务流量的两条公网路径做与上线后相同的 smoke()。
-          # 失败只把 develop 切回，production 不动。
-          smoke_develop() {
-            smoke "${API_BASE}/${WEBSITE_ID}/production/${FN_SLUG}" "pre-flip production" \
-              && smoke "${API_BASE}/${FN_SLUG}/resolve-subdomain" "pre-flip resolve-subdomain"
-          }
-          SH
-
-      - name: ${{ env.ACTION }}
+      - name: Release
+        if: github.event_name == 'push' && steps.scope.outputs.release == 'true'
         env:
           DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${DEMOX_TOKEN:-}" ]; then echo "::error::缺少 DEMOX_TOKEN secret"; exit 1; fi
-          source "$RUNNER_TEMP/demox-helpers.sh"
+          DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
+          DEMOX_SMOKE_LIN_BASE: ${{ vars.DEMOX_SMOKE_LIN_BASE }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ vars.DEMOX_SMOKE_WEBSITE_ID }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ vars.DEMOX_SMOKE_WWW_MIRROR_URL }}
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/website-function-release.cjs
 
-          quiet "functions list" demox functions list --id "$WEBSITE_ID"
-          PREV_PROD=$(alias_version production); PREV_DEV=$(alias_version develop)
-          [[ "$PREV_PROD" =~ ^[0-9]+$ ]] && [[ "$PREV_DEV" =~ ^[0-9]+$ ]] || { echo "::error::读不到当前别名"; exit 1; }
-          echo "before: production -> v${PREV_PROD}, develop -> v${PREV_DEV}"
-          echo "## website function ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- before: production v${PREV_PROD}, develop v${PREV_DEV}" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$ACTION" = "deploy" ]; then
-            quiet "functions push" demox functions push ./scf-code/website-api --id "$WEBSITE_ID" --slug "$FN_SLUG"
-            TARGET=$(strip | sed -n 's/.*版本: \([0-9][0-9]*\).*/\1/p' | tail -1)
-            [[ "$TARGET" =~ ^[0-9]+$ ]] || { echo "::error::读不到新版本号"; exit 1; }
-            echo "pushed: v${TARGET} (commit ${GITHUB_SHA::7})"
-            echo "- pushed v${TARGET} from ${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            TARGET="$ROLLBACK_VERSION"
-          fi
-
-          set_alias develop "$TARGET"
-          sleep 5
-          if ! smoke_develop; then
-            echo "::error::翻转 production 前的公网冒烟失败（打的是正在服务的公网路径，不是 develop 别名）；production 未改动；develop 切回 v${PREV_DEV}"
-            set_alias develop "$PREV_DEV"
-            exit 1
-          fi
-
-          set_alias production "$TARGET"
-          sleep 5
-          if ! smoke "${API_BASE}/${WEBSITE_ID}/production/${FN_SLUG}" "production" || ! smoke "${API_BASE}/${FN_SLUG}/resolve-subdomain" "resolve-subdomain"; then
-            echo "::error::production 冒烟失败，自动切回 v${PREV_PROD}"
-            set_alias production "$PREV_PROD"
-            set_alias develop "$PREV_DEV"
-            echo "- production smoke FAILED, rolled back to v${PREV_PROD}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "- now: production v${TARGET}, develop v${TARGET}; rollback: action=rollback version=${PREV_PROD}" >> "$GITHUB_STEP_SUMMARY"
-          rm -f "$LOG" "$RUNNER_TEMP/smoke.json"
+      - name: Rollback
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
+          DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
+          DEMOX_SMOKE_LIN_BASE: ${{ vars.DEMOX_SMOKE_LIN_BASE }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ vars.DEMOX_SMOKE_WEBSITE_ID }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ vars.DEMOX_SMOKE_WWW_MIRROR_URL }}
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROLLBACK_VERSION: ${{ inputs.version }}
+        run: node scripts/ci/website-function-release.cjs rollback
