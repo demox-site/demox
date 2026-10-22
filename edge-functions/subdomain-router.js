@@ -379,6 +379,31 @@ function isWwwPrerenderedPath(pathname) {
   return isWwwSpaRoute(normalized);
 }
 
+// 有英文预渲染页、没有对应 /zh/<path>/index.html 的路径。
+// 名单 = PUBLIC_PAGES 里不成对的页面，加上 /docs（App.tsx 客户端别名，跳到 /doc）。
+// /zh、/zh/pricing 和意图页有中文页，不在这里。未知名（/zh/xyz）也不在这里，继续 404。
+var WWW_ZH_ENGLISH_ONLY_PATHS = [
+  'doc',
+  'docs',
+  'terms',
+  'privacy',
+  'log',
+  'content-scan',
+  'ai-static-site-deployment',
+  'when-to-use-demox',
+  'deploy-troubleshooting',
+  'how-demox-hosts-itself'
+];
+
+function wwwZhEnglishOnlyLocation(pathname) {
+  const normalized = String(pathname || '/').replace(/\/+$/, '') || '/';
+  if (normalized.indexOf('/zh/') !== 0) return '';
+  const slug = normalized.slice(4);
+  if (!slug || slug.indexOf('/') !== -1 || slug.indexOf('.') !== -1) return '';
+  if (WWW_ZH_ENGLISH_ONLY_PATHS.indexOf(slug) === -1) return '';
+  return '/' + slug;
+}
+
 function getRequestCountry(req) {
   const candidates = [
     'eo-country-code',
@@ -2893,6 +2918,19 @@ async function handleRequest(req, event, ctx) {
   // 先请求目录前缀也会慢大约 3 秒，所以主站 GET/HEAD 直接取该目录的 index.html。
   const isWwwHost = domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www';
   const requestMethod = String(req.method || 'GET').toUpperCase();
+  // 没有中文预渲染页的 /zh/<path>：直接 302 到英文页，避免去取不存在的对象再 404。
+  if (isWwwHost && (requestMethod === 'GET' || requestMethod === 'HEAD')) {
+    const englishPath = wwwZhEnglishOnlyLocation(u.pathname);
+    if (englishPath) {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: englishPath + (u.search || ''),
+          'Cache-Control': 'no-cache'
+        }
+      });
+    }
+  }
   if (rest === '' || rest.endsWith('/')) {
     rest += 'index.html';
   } else if (
