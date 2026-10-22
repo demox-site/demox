@@ -208,6 +208,7 @@ jobs:
               STAGED_SHA256=$(getout "$OUT_LIN" sha256)
               [ -n "$STAGED_KEY" ] && [ "$STAGED_KEY" = "$(getout "$OUT_EK" key)" ] && [ "$STAGED_SHA256" = "$(getout "$OUT_EK" sha256)" ] \
                 || { echo "::error::两边 stage 的包 key 或 sha256 不一致"; exit 1; }
+              [[ "$STAGED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::stage 没有写出 64 位 sha256（当前：${STAGED_SHA256:-空}）"; exit 1; }
               DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
               run_target ek deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
               LIN_VER=$(getout "$OUT_LIN" version)
