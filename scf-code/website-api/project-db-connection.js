@@ -34,20 +34,13 @@ function parseBasicAuth(event) {
   return { username, password };
 }
 
-function createProjectDbConnection({ query, resolveProjectId, encrypt, decrypt }) {
-  async function ensure() {
-    await query(
-      `CREATE TABLE IF NOT EXISTS project_db_credentials (
-        project_id BIGINT UNSIGNED NOT NULL,
-        password_enc TEXT NOT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (project_id)
-      )`
-    );
-  }
+function missingTable(error) {
+  const text = `${error && error.code ? error.code : ''} ${error && error.message ? error.message : ''}`;
+  return /ER_NO_SUCH_TABLE|doesn't exist|does not exist/i.test(text);
+}
 
+function createProjectDbConnection({ query, resolveProjectId, encrypt, decrypt }) {
   async function issue(projectId) {
-    await ensure();
     const existing = await query(
       'SELECT password_enc FROM project_db_credentials WHERE project_id = ? LIMIT 1',
       [projectId]
@@ -78,11 +71,16 @@ function createProjectDbConnection({ query, resolveProjectId, encrypt, decrypt }
     if (parsed.error) return { error: 'denied' };
     const projectId = await resolveProjectId(parsed.username);
     if (!projectId) return { error: 'denied' };
-    await ensure();
-    const rows = await query(
-      'SELECT password_enc FROM project_db_credentials WHERE project_id = ? LIMIT 1',
-      [projectId]
-    );
+    let rows;
+    try {
+      rows = await query(
+        'SELECT password_enc FROM project_db_credentials WHERE project_id = ? LIMIT 1',
+        [projectId]
+      );
+    } catch (error) {
+      if (missingTable(error)) return { error: 'denied' };
+      throw error;
+    }
     if (!rows[0]) return { error: 'denied' };
     let stored;
     try {
@@ -94,7 +92,7 @@ function createProjectDbConnection({ query, resolveProjectId, encrypt, decrypt }
     return { projectId, username: parsed.username };
   }
 
-  return { ensure, issue, authenticateBasic };
+  return { issue, authenticateBasic };
 }
 
 module.exports = {

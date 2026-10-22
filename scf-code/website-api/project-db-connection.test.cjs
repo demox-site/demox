@@ -10,7 +10,6 @@ function memoryQuery() {
   const rows = [];
   const query = async (sql, params = []) => {
     const text = sql.replace(/\s+/g, ' ').trim();
-    if (text.startsWith('CREATE TABLE')) return { affectedRows: 0 };
     if (text.startsWith('SELECT password_enc')) {
       return rows.filter((row) => row.project_id === params[0]).slice(0, 1);
     }
@@ -62,4 +61,16 @@ test('issue returns the same password, and basic auth only opens that project', 
 
   const missing = await api.authenticateBasic({ headers: { Authorization: 'Bearer session' } });
   assert.equal(missing, null);
+});
+
+test('a missing credentials table denies basic auth and leaves issuing to the caller', async () => {
+  const query = async () => {
+    const error = new Error("Table 'demox.project_db_credentials' doesn't exist");
+    error.code = 'ER_NO_SUCH_TABLE';
+    throw error;
+  };
+  const api = connection({ query });
+  const denied = await api.authenticateBasic({ headers: { Authorization: encodeBasic('alpha', 'secret') } });
+  assert.equal(denied.error, 'denied');
+  await assert.rejects(() => api.issue(7), /doesn't exist/);
 });

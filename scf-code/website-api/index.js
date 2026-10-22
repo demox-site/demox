@@ -4849,7 +4849,7 @@ async function handleGetProjectDbConnection(event) {
     const username = keyRows[0] && keyRows[0].project_key ? String(keyRows[0].project_key) : String(body.projectId || projectId);
     return ok({ success: true, username, password });
   } catch (error) {
-    if (error && /ENCRYPTION_KEY/.test(error.message || '')) {
+    if (error && (/ENCRYPTION_KEY/.test(error.message || '') || error.code === 'ER_NO_SUCH_TABLE' || /doesn't exist|does not exist/i.test(error.message || ''))) {
       return ok({ success: false, code: 'unavailable', message: '连接密码还不能签发' });
     }
     return projectDataFailure(error);
