@@ -60,6 +60,22 @@ test('release refuses to start when the backup account is disabled', async () =>
   fs.unlinkSync(zip);
 });
 
+test('release stops before deploy-develop when stage omits a sha256', async () => {
+  const zip = path.join(os.tmpdir(), `fapi-nosha-${process.pid}.zip`);
+  fs.writeFileSync(zip, 'zip');
+  const calls = [];
+  const spawnOrdered = async (script, args, env) => {
+    calls.push({ script, args, env });
+    return { code: 0, outputs: { cos_key: 'scf-deploy/ci/pkg.zip', sha256: '' } };
+  };
+  await assert.rejects(
+    () => releaseFunctionApi({ env: releaseEnv({ zip }), spawn: spawnOrdered }),
+    /64 位 sha256/
+  );
+  assert.equal(calls.some((call) => call.args[0] === 'deploy-develop'), false);
+  fs.unlinkSync(zip);
+});
+
 test('release stages, smokes develop, promotes, then smokes production on both accounts', async () => {
   const zip = path.join(os.tmpdir(), `fapi-ok-${process.pid}.zip`);
   fs.writeFileSync(zip, 'zip');
