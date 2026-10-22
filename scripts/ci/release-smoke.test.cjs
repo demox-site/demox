@@ -47,10 +47,21 @@ function fakeFetch(routes) {
   return fn;
 }
 
+function isSendCode(url, opts) {
+  if (!opts || opts.method !== 'POST') return false;
+  const path = new URL(url).pathname;
+  return path === '/auth/send-code' || path === '/send-code';
+}
+
 function happyRoutes({ adminStatus = 403, health = 200, siteMarker = true } = {}) {
   const html = '<!doctype html><script src="/assets/index-abc123.js"></script>';
   return [
     { match: (url) => url.endsWith('/health'), status: health, body: '{"status":"ok"}' },
+    {
+      match: (url, opts) => isSendCode(url, opts),
+      status: 200,
+      body: JSON.stringify({ success: true, message: '验证码已发送，请查收邮件' })
+    },
     { match: (url) => url === 'https://www.example/' || url === 'https://www.example', status: 200, body: html },
     { match: (url) => url.includes('/assets/index-abc123.js'), status: 200, body: 'console.log(1)' },
     {
@@ -123,6 +134,14 @@ test('happy path smokes both accounts and masks the password before any other lo
   assert.equal(text.includes(TOKEN), false);
   const deploys = fetchImpl.calls.filter((call) => call.url.endsWith('/deploy'));
   assert.equal(deploys.length, 2);
+  const sendCodes = fetchImpl.calls.filter((call) => isSendCode(call.url, call));
+  assert.equal(sendCodes.length, 4);
+  for (const call of sendCodes) {
+    const body = JSON.parse(call.body);
+    assert.equal(body.email, EMAIL);
+    assert.equal(body.action, 'send_code');
+    assert.equal(body.type, 'login');
+  }
   const login = fetchImpl.calls.find((call) => call.url.endsWith('/auth/login'));
   assert.equal(JSON.parse(login.body).password, PASSWORD);
   assert.match(text, /易点/);
@@ -159,6 +178,116 @@ test('homepage without the expected bundle fails', async () => {
     }),
     /www/
   );
+});
+
+test('易点 send-code 5xx fails before the other route and before login', async () => {
+  const sink = { lines: [] };
+  const fetchImpl = fakeFetch([
+    {
+      match: (url, opts) => opts.method === 'POST' && new URL(url).pathname === '/auth/send-code' && url.startsWith('https://api.demox.site'),
+      status: 502,
+      body: JSON.stringify({ error: '验证码邮件发送失败，请稍后重试' })
+    },
+    ...happyRoutes()
+  ]);
+  await assert.rejects(
+    () => runSmoke({
+      env: env(),
+      fetchImpl,
+      rawLog: (line) => sink.lines.push(line),
+      log: (line) => sink.lines.push(line),
+      secrets: [],
+      wait: async () => {}
+    }),
+    /易点 POST \/auth\/send-code/
+  );
+  const text = visible(sink.lines);
+  assert.equal(text.includes(EMAIL), false);
+  assert.equal(text.includes('验证码邮件发送失败'), false);
+  assert.equal(fetchImpl.calls.some((call) => new URL(call.url).pathname === '/send-code'), false);
+  assert.equal(fetchImpl.calls.some((call) => call.url.endsWith('/auth/login')), false);
+});
+
+test('send-code without a success flag fails', async () => {
+  const fetchImpl = fakeFetch([
+    {
+      match: (url, opts) => opts.method === 'POST' && new URL(url).pathname === '/auth/send-code',
+      status: 200,
+      body: JSON.stringify({ message: 'ok' })
+    },
+    ...happyRoutes()
+  ]);
+  await assert.rejects(
+    () => runSmoke({ env: env(), fetchImpl, rawLog: () => {}, log: () => {}, secrets: [], wait: async () => {} }),
+    /success=false/
+  );
+});
+
+test('send-code 5xx fails even when the body looks rate-limited', async () => {
+  const fetchImpl = fakeFetch([
+    {
+      match: (url, opts) => opts.method === 'POST' && new URL(url).pathname === '/auth/send-code',
+      status: 502,
+      body: JSON.stringify({ error: '发送过于频繁' })
+    },
+    ...happyRoutes()
+  ]);
+  await assert.rejects(
+    () => runSmoke({ env: env(), fetchImpl, rawLog: () => {}, log: () => {}, secrets: [], wait: async () => {} }),
+    /5xx/
+  );
+});
+
+test('429 and other rate-limit bodies pass with a warning and still mask the email', async () => {
+  const sink = { lines: [] };
+  const fetchImpl = fakeFetch([
+    {
+      match: (url, opts) => isSendCode(url, opts),
+      status: 429,
+      body: JSON.stringify({ error: '发送过于频繁，请1分钟后重试' })
+    },
+    ...happyRoutes()
+  ]);
+  const result = await runSmoke({
+    env: env(),
+    fetchImpl,
+    rawLog: (line) => sink.lines.push(line),
+    log: (line) => sink.lines.push(line),
+    secrets: [],
+    wait: async () => {}
+  });
+  assert.deepEqual(result.accounts, ['ek', 'lin']);
+  const sendCodes = fetchImpl.calls.filter((call) => isSendCode(call.url, call));
+  assert.equal(sendCodes.length, 4);
+  const text = visible(sink.lines);
+  assert.match(text, /警告/);
+  assert.match(text, /限流/);
+  assert.equal(text.includes(EMAIL), false);
+  assert.equal(text.includes('发送过于频繁'), false);
+});
+
+test('a 200 whose body is a rate-limit message passes as a warning', async () => {
+  const sink = { lines: [] };
+  const fetchImpl = fakeFetch([
+    {
+      match: (url, opts) => isSendCode(url, opts) && new URL(url).pathname === '/auth/send-code',
+      status: 200,
+      body: JSON.stringify({ code: 'RATE_LIMITED', message: 'too many requests' })
+    },
+    ...happyRoutes()
+  ]);
+  await runSmoke({
+    env: env(),
+    fetchImpl,
+    rawLog: (line) => sink.lines.push(line),
+    log: (line) => sink.lines.push(line),
+    secrets: [],
+    wait: async () => {}
+  });
+  const text = visible(sink.lines);
+  assert.match(text, /警告/);
+  assert.equal(text.includes(EMAIL), false);
+  assert.equal(text.includes('too many requests'), false);
 });
 
 test('published site must contain this run marker', async () => {
