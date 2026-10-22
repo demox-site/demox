@@ -549,6 +549,7 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     log(`stage：包 sha256:${hash} → cos://${CONFIG.cosBucket}/${key}`);
     await uploadZip(zipPath, key);
     output('key', key);
+    output('cos_key', key);
     output('sha256', hash);
     summary(`- stage 完成：\`cos://${CONFIG.cosBucket}/${key}\`（sha256 ${hash}），没有改任何函数`);
     return { key, sha256: hash };
@@ -669,6 +670,20 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     return { previous: current, version: String(version) };
   }
 
+  /** 只把 develop 指回指定版本。不碰 production。 */
+  async function rollbackDevelop({ version }) {
+    if (!/^\d+$/.test(String(version || ''))) throw new Error('rollback-develop 需要 --version <数字>');
+    const pre = await plan();
+    if (!pre.ok) throw new Error('前置条件不满足，未做任何修改');
+    await pointAlias(CONFIG.stagingAlias, version);
+    const failures = await healthCheckDevelop(version);
+    if (failures.length) {
+      throw new Error(`develop 切回 v${version} 后健康检查失败（${failures.join(', ')}）；production 仍是 v${pre.productionVersion}`);
+    }
+    summary(`- [${CONFIG.target}] develop 已切回 v${version}；production 仍是 v${pre.productionVersion}`);
+    return { version: String(version), production: pre.productionVersion };
+  }
+
   /**
    * 下载 COS 上已有的部署包（stage 产出），算 sha256 与期望值严格比对。
    * 不一致直接报错；此时还没有任何 SCF 写操作。只用 getObject。
@@ -711,6 +726,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     }
     log(`别名 ${CONFIG.stagingAlias}: v${developBefore} → v${version}；production 仍是 v${pre.productionVersion}（未改动）`);
     output('version', version);
+    if (developBefore) output('develop_previous', developBefore);
+    output('production', pre.productionVersion);
     summary(`- [${CONFIG.target}] develop → **v${version}**（包 \`${key}\` sha256 ${sha256}）；production 仍是 v${pre.productionVersion}。上线：action=promote version=${version}`);
     return { version, developBefore, production: pre.productionVersion };
   }
@@ -725,6 +742,8 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
     const dev = await aliasVersion(CONFIG.stagingAlias);
     if (dev !== v) throw new Error(`develop 当前是 v${dev}，不是 v${v}；只能 promote 已在 develop 上验证的版本`);
     if ((await versionStatus(CONFIG.functionName, v)) !== 'Active') throw new Error(`v${v} 不存在或不是 Active`);
+    output('previous', previous);
+    output('version', v);
     if (previous === v) { log(`production 已是 v${v}，不用切`); return { previous, version: v }; }
     await pointAlias(CONFIG.alias, v);
     log(`别名 ${CONFIG.alias}: v${previous} → v${v}`);
@@ -733,11 +752,10 @@ function createDeployer({ scf, cos = null, fetchImpl = globalThis.fetch, log = c
       throw new Error(`公网复查失败，已自动切回 v${previous}`);
     }
     summary(`- [${CONFIG.target}] production：v${previous} → **v${v}**（回滚：action=rollback version=${previous}）`);
-    output('previous', previous); output('version', v);
     return { previous, version: v };
   }
 
-  return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, readReleaseState, uploadZip };
+  return { verifyStagedZip, deployDevelop, promote, plan, stage, deploy, rollback, rollbackDevelop, deployRuntime, restoreRuntime, healthCheckDevelop, publicCheck, readState, readReleaseState, uploadZip };
 }
 
 async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, runId = '', reusePublished = false, output = () => {}, summary = () => {}, log = console.log }) {
@@ -755,9 +773,17 @@ async function releaseDeployDevelop(deployer, { manifest, key, sha256, gitSha, r
   // 单账号模式不设此变量，行为不变（already-published 仍然停止）。
   if (!decision.allow && decision.reason === 'already-published' && reusePublished && /^\d+$/.test(String(decision.version || ''))) {
     log(`[${CONFIG.target}] 同一包已发布在 v${decision.version}（别名 ${decision.alias}），复用该版本，不重新发布`);
+    const aliasVersion = (name) => {
+      const found = state.aliases.find((item) => item.Name === name);
+      return found ? String(found.FunctionVersion) : '';
+    };
     output('version', decision.version);
+    const developNow = aliasVersion(CONFIG.stagingAlias);
+    const productionNow = aliasVersion(CONFIG.alias);
+    if (developNow) output('develop_previous', developNow);
+    if (productionNow) output('production', productionNow);
     summary(`- [${CONFIG.target}] 复用已发布的 v${decision.version}（包 sha256 ${sha256}），未改函数`);
-    return { version: String(decision.version), reused: true };
+    return { version: String(decision.version), reused: true, developPrevious: developNow, production: productionNow };
   }
   if (!decision.allow) {
     const error = new Error(decision.message);
@@ -901,7 +927,11 @@ async function cli(argv = process.argv.slice(2)) {
     await deployer.rollback({ version: argValue(argv, '--version') });
     return;
   }
-  throw new Error('用法: scf-function-api.cjs plan | runtime-plan | stage --zip <zip> | deploy --zip <zip> | deploy-develop --key <scf-deploy/ci/x.zip> --sha256 <hex> | promote --version <N> | rollback --version <N>');
+  if (command === 'rollback-develop') {
+    await deployer.rollbackDevelop({ version: argValue(argv, '--version') });
+    return;
+  }
+  throw new Error('用法: scf-function-api.cjs plan | runtime-plan | stage --zip <zip> | deploy --zip <zip> | deploy-develop --key <scf-deploy/ci/x.zip> --sha256 <hex> | promote --version <N> | rollback --version <N> | rollback-develop --version <N>');
 }
 
 // 超时放弃的分片请求，底层 socket 之后还可能报 EPIPE/ECONNRESET；它已经被重试替代，不能让它把整个进程打死。

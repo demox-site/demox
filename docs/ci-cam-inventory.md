@@ -10,7 +10,7 @@
 |------|----------|------|------|----------|
 | 主站 www 静态资源 | `deploy.yml` | push master（`src/**`、`public/**` 等 paths）+ 手动 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
 | 平台站点 website 函数 | `deploy-website-function.yml` | 仅手动，限 master | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 需批准 |
-| 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push（须 `FUNCTION_API_AUTO_DEPLOY=true`，当前未设）+ 手动 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 需批准 + 只允许 master |
+| 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push master（路径命中）自动发布；手动只做回滚 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 没有 required reviewers，只允许 master |
 
 **结论**：三条路径里只有一条完成 OIDC 化。另两条仍是长期令牌，且 `deploy.yml` 是唯一「merge 即上线」的路径——没有 environment 审批。
 
@@ -74,7 +74,7 @@ if (argv.includes('--with-runtime')) {
 - SCF 读：`ListVersionByFunction`、`ListTriggers`、`ListAliases`、`GetCustomDomain`
 - SCF 写：`UpdateFunctionCode`、`PublishVersion`、`UpdateAlias`
 - COS：`scf-deploy/ci/*` 的 Put / 分片 / Get
-- OIDC 信任：`sub = repo:demox-site/demox:environment:function-api-production`，配合 environment 只允许 master + 人工批准
+- OIDC 信任：`sub = repo:demox-site/demox:environment:function-api-production`。environment `function-api-production` 没有 required reviewers，只允许 master
 - 密钥有效期 1 小时、只留进程内存、不落盘
 
 ### 收窄（按优先级）

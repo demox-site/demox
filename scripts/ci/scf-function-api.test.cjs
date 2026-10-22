@@ -328,7 +328,7 @@ test('stage: uploads the package to COS and makes no SCF calls at all', async ()
   const r = await d.stage({ zipPath: bigZip(12), sha: '892ca5dcbffe231365' });
   assert.match(r.key, /^scf-deploy\/ci\/demox-unified-scf-892ca5dcbffe-[0-9a-f]{12}\.zip$/);
   assert.match(r.sha256, /^[0-9a-f]{64}$/);
-  assert.deepEqual(recorded, [`key=${r.key}`, `sha256=${r.sha256}`]);
+  assert.deepEqual(recorded, [`key=${r.key}`, `cos_key=${r.key}`, `sha256=${r.sha256}`]);
   assert.equal(s.calls.length, 0, 'no SCF API calls');
   assert.ok(cos.calls.some((c) => c[0] === 'complete'));
 });
@@ -870,10 +870,22 @@ test('releaseDeployDevelop: dual mode reuses the already-published develop versi
   assert.equal(r.version, '4');
   assert.equal(r.reused, true);
   assert.equal(outputs.version, '4');
+  assert.equal(outputs.develop_previous, '4');
+  assert.equal(outputs.production, '3');
   assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
 });
 test('releaseDeployDevelop: dual mode does not bypass other gates (code-drift still stops)', async () => {
   const s = samePkgScf();
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
   await assert.rejects(releaseDeployDevelop(d, { manifest: releaseManifest('0.1.0'), key: KEY, sha256: 'd'.repeat(64), gitSha: GIT, reusePublished: true, log: quiet }), /不一致/);
+});
+
+test('rollback-develop moves only the develop alias', async () => {
+  const s = fakeScf({ prodVersion: '3', aliasVersions: { production: '3', develop: '4' } });
+  const d = createDeployer({ developBaseUrl: DEV, scf: s.api, fetchImpl: fakeFetch(), log: quiet, wait: async () => {}, summary: () => {} });
+  const result = await d.rollbackDevelop({ version: '3' });
+  assert.equal(result.production, '3');
+  assert.equal(result.version, '3');
+  const updates = s.calls.filter((call) => call.name === 'UpdateAlias').map((call) => `${call.params.Name}=${call.params.FunctionVersion}`);
+  assert.deepEqual(updates, ['develop=3']);
 });

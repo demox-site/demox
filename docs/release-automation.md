@@ -42,3 +42,17 @@ Variables：
 - `DEMOX_SMOKE_WWW_MIRROR_URL`：可选，sites.demox.site 上 www 的 index。
 
 失败 issue 使用 job 自带的 `GITHUB_TOKEN`（`issues: write`）。标签 `release-failure` 由脚本在第一次失败时创建。不需要单独的 issue token。
+
+## function-api
+
+`.github/workflows/deploy-function-api.yml` 在 master 上、路径命中时自动跑 `scripts/ci/function-api-release.cjs`。
+
+顺序：磷先、易点后。两边 stage 的 COS key 和 sha256 必须相同，然后 `deploy-develop`，对两个 develop 地址冒烟，再 `promote`，对易点 `https://api.demox.site`（或 `DEMOX_SMOKE_EK_BASE`）和磷 `DEMOX_SMOKE_LIN_BASE` 再冒烟。`DEMOX_EK_ENABLED` 不是 `true` 时 job 失败，不会只发磷。
+
+develop 冒烟失败只把两边的 develop 别名切回，production 不动。promote 或 production 冒烟失败把两边的 production 别名切回上一版。然后开 issue，标题以「发布失败：function-api 冒烟未通过，已回滚别名」开头。
+
+`workflow_dispatch` 只接受回滚：磷 `version`、易点 `version_ek`。
+
+environment `function-api-production` 没有 required reviewers，只允许 master。OIDC 的 sub 仍是 `repo:demox-site/demox:environment:function-api-production`。本仓库不改这个 environment。
+
+除冒烟用的 secret / variable 外，沿用已经在用的：`DEMOX_EK_ROLE_ARN`、`DEMOX_EK_COS_BUCKET`、`DEMOX_EK_COS_REGION`、`DEMOX_EK_COS_ACCELERATE`、`FUNCTION_API_DEVELOP_URL_EK`、`FUNCTION_API_DEVELOP_URL`、`DEMOX_COS_BUCKET`、`DEMOX_COS_REGION`、`DEMOX_COS_ACCELERATE`、`DEMOX_EK_ENABLED`。磷的角色 ARN 写在 workflow 里：`qcs::cam::uin/100021031865:roleName/demox-ci-deploy`。

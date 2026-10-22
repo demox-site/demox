@@ -2,24 +2,14 @@ name: Deploy function-api (SCF demox-function-api)
 
 # 统一 SCF 路由 demox-function-api（ap-guangzhou / namespace demox）的发布。
 # 只更新代码：不改函数环境变量（里面有 JWT_SECRET 等），也不改内存、超时、VPC。
-# 流程：打包 → 上传 COS → UpdateFunctionCode → PublishVersion → 对新版本做健康检查
-#      → develop 别名指向新版本 → 经 develop 公网 HTTPS 地址健康检查（不用 Invoke）
-#      → production 别名指向新版本 → api.demox.site 公网复查
-#        （每个探测最多 3 次、间隔 5 秒、单次超时 15 秒；三次都失败才自动切回上一个版本）。
-# 前置：api.demox.site 和定时触发器必须已经绑定到别名 production（一次性迁移见 docs/function-api-ci.md），
-#      否则脚本在任何写操作之前就退出。
-# 凭证：不用任何腾讯云 secret。job 在 environment function-api-production（只允许 master，需要 PhosAQy 批准）里，
-#      用 GitHub OIDC 扮演 CAM 角色 demox-ci-deploy（信任条件 sub=repo:demox-site/demox:environment:function-api-production），
-#      拿 1 小时临时密钥。角色只能对 codename=demox 的函数换代码/发版本/切别名，GetFunction、UpdateFunctionConfiguration、
-#      Invoke、打标签、Create*/Delete*、触发器、域名、cam/sts 都是显式 Deny。
-# 分两步发布：action=deploy-develop（cos_key + expected_sha256，只切 develop）→ 人工验证 → action=promote version=N（只切 production）。
-# app/runtime 门禁见 docs/function-versions.md：两边别名都没有 demox-release 时，deploy-develop 可以做一次 bootstrap（只写版本描述，不改配置，不切 production）。之后只要还有一边缺元数据，deploy-develop 就停。
-# 本 workflow 不更新 demox-user-nodejs，也没有 runtime 开关。回滚仍只切别名。
-# 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
-# 双账号（vars.DEMOX_EK_ENABLED=true，REQ-7 双发 2026-10-20）：磷（备源站）先、易点（主源站）后；stage/deploy-develop/promote/rollback 两边都做；
-# api.demox.site 公网复查只在易点切完后做一次；易点失败 → 易点脚本自动切回，workflow 再把磷切回。易点用角色 vars.DEMOX_EK_ROLE_ARN（同样的 OIDC sub 条件）。
-# action=deploy（含 push 自动发布）在双账号下不直接调用单账号 deploy：同一个 job 里按 stage → deploy-develop → promote 走完。
-# develop 健康检查失败不会切 production。
+# push 到 master（路径命中）自动：stage → deploy-develop → develop 双账号冒烟 → promote → production 双账号冒烟。
+# 易点和磷都发。DEMOX_EK_ENABLED 不是 true 时失败，不会只发磷。
+# 冒烟或切换失败：已经动过的别名切回去，job 变红，并开 release-failure issue。
+# workflow_dispatch 只做回滚（磷 version + 易点 version_ek）。
+# environment function-api-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
+# OIDC sub 仍是 repo:demox-site/demox:environment:function-api-production。
+# 凭证：不用任何腾讯云 secret。临时密钥 1 小时，只留在进程内存里。
+# 角色只能对 codename=demox 的函数换代码/发版本/切别名。健康检查走公网 HTTPS，不用 Invoke。
 on:
   push:
     branches: [master]
@@ -31,42 +21,18 @@ on:
       - "scf-deploy-packages/auth-api/**"
       - "scripts/package-unified-scf.mjs"
       - "scripts/ci/scf-function-api.cjs"
+      - "scripts/ci/function-api-release.cjs"
       - ".github/workflows/deploy-function-api.yml"
   workflow_dispatch:
     inputs:
-      action:
-        description: "plan = 只读检查；stage = 只打包并上传 COS（不改任何函数）；deploy = 发布当前分支；rollback = 把 production 切回指定版本"
-        type: choice
-        options: [plan, stage, deploy, deploy-develop, promote, rollback]
-        default: plan
       version:
-        description: "rollback / promote 的目标版本号（数字；磷）"
-        required: false
+        description: "回滚：磷的目标版本号（数字）"
+        required: true
+        type: string
       version_ek:
-        description: "双账号（vars.DEMOX_EK_ENABLED=true）时易点的 rollback / promote 目标版本号（数字）"
-        required: false
-        default: ""
-      cos_key:
-        description: "deploy-develop：COS 上已有部署包的 key（只接受 scf-deploy/ci/<文件名>.zip，一般是 stage 的输出）"
-        required: false
-        default: ""
-      expected_sha256:
-        description: "deploy-develop：部署包期望的 sha256（64 位小写十六进制）；下载后不一致就在改函数之前失败"
-        required: false
-        default: ""
-      cos_bucket:
-        description: "部署包 COS 桶（<name>-<appid>）；空 = vars.DEMOX_COS_BUCKET，再空 = 成都老桶"
-        required: false
-        default: ""
-      cos_region:
-        description: "部署包 COS 地域（如 ap-guangzhou）；空 = vars.DEMOX_COS_REGION，再空 = ap-chengdu"
-        required: false
-        default: ""
-      cos_accelerate:
-        description: "上传部署包是否走 COS 全球加速域名（只影响上传，函数仍从原地域拉包）；auto = vars.DEMOX_COS_ACCELERATE，再空 = 关。开之前桶要先开启全球加速"
-        type: choice
-        options: [auto, "true", "false"]
-        default: auto
+        description: "回滚：易点的目标版本号（数字）"
+        required: true
+        type: string
 
 # 同一时间只跑一个，且不取消正在进行的发布（切一半被取消比排队更危险）。
 concurrency:
@@ -76,23 +42,20 @@ concurrency:
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 jobs:
   function-api:
-    # push 触发只有在仓库变量 FUNCTION_API_AUTO_DEPLOY=true 时才发布；手动触发总是可用。
-    if: github.event_name == 'workflow_dispatch' || vars.FUNCTION_API_AUTO_DEPLOY == 'true'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    # 需要人工批准；只有在这个 environment 里 OIDC token 的 sub 才能通过 demox-ci-deploy 的信任策略。
     environment: function-api-production
     timeout-minutes: 50
-    env:
-      ACTION: ${{ github.event_name == 'push' && 'deploy' || inputs.action }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "20"
           cache: "npm"
@@ -105,14 +68,14 @@ jobs:
           npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund
 
       - name: Unit tests (deploy script + function-api)
-        if: env.ACTION == 'deploy' || env.ACTION == 'stage'
+        if: github.event_name == 'push'
         run: |
-          node --test scripts/ci/scf-function-api.test.cjs
+          node --test scripts/ci/scf-function-api.test.cjs scripts/ci/function-api-release.test.cjs
           node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
           npm test --prefix scf-code/function-api
 
       - name: Build unified package
-        if: env.ACTION == 'deploy' || env.ACTION == 'stage'
+        if: github.event_name == 'push'
         run: |
           node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
           node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
@@ -120,134 +83,48 @@ jobs:
           unzip -Z .artifacts/unified-scf/demox-unified-scf.zip | grep -E '^-rwx.* scf_bootstrap$' \
             || { echo "::error::统一包缺少可执行的 scf_bootstrap"; exit 1; }
 
-      - name: ${{ env.ACTION }}
+      - name: Release
+        if: github.event_name == 'push'
         env:
-          # 磷（UIN 100021031865）：api.demox.site 备源站 og-3wbc6yrrll1l；入口是 SCF 自定义域名。
+          # 磷（UIN 100021031865）：备源站。入口是 SCF 自定义域名。
           LIN_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
-          # 易点（UIN 100052992193）：api.demox.site 主源站 og-3wbc6x4y03bk；入口是函数 HTTP 触发器。
-          # 角色/桶/develop 地址全部来自仓库变量（不是密钥）；DEMOX_EK_ENABLED!=true 时完全不碰易点（与改动前行为一致）。
+          LIN_COS_BUCKET: ${{ vars.DEMOX_COS_BUCKET }}
+          LIN_COS_REGION: ${{ vars.DEMOX_COS_REGION }}
+          LIN_COS_ACCELERATE: ${{ vars.DEMOX_COS_ACCELERATE }}
+          LIN_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
+          # 易点（UIN 100052992193）：主源站。入口是函数 HTTP 触发器。
           EK_ENABLED: ${{ vars.DEMOX_EK_ENABLED }}
           EK_ROLE_ARN: ${{ vars.DEMOX_EK_ROLE_ARN }}
           EK_COS_BUCKET: ${{ vars.DEMOX_EK_COS_BUCKET }}
           EK_COS_REGION: ${{ vars.DEMOX_EK_COS_REGION }}
-          EK_COS_ACCELERATE: ${{ (inputs.cos_accelerate == 'true' || inputs.cos_accelerate == 'false') && inputs.cos_accelerate || vars.DEMOX_EK_COS_ACCELERATE }}
+          EK_COS_ACCELERATE: ${{ vars.DEMOX_EK_COS_ACCELERATE }}
           EK_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL_EK }}
-          EK_VERSION: ${{ inputs.version_ek }}
           TENCENTCLOUD_REGION: ap-guangzhou
-          # 别名 develop 的公网 HTTPS 地址（一次性迁移时建好），健康检查只走它，不用 scf:Invoke。
-          LIN_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
-          ROLLBACK_VERSION: ${{ inputs.version }}
-          STAGED_KEY: ${{ inputs.cos_key }}
-          STAGED_SHA256: ${{ inputs.expected_sha256 }}
-          LIN_COS_BUCKET: ${{ inputs.cos_bucket || vars.DEMOX_COS_BUCKET }}
-          LIN_COS_REGION: ${{ inputs.cos_region || vars.DEMOX_COS_REGION }}
-          # 默认关；push 触发没有 inputs，走仓库变量。
-          LIN_COS_ACCELERATE: ${{ (inputs.cos_accelerate == 'true' || inputs.cos_accelerate == 'false') && inputs.cos_accelerate || vars.DEMOX_COS_ACCELERATE }}
-          # promote 成功后把一行发布记录追加到工作区的 jsonl，并写进 step summary。不 push。
-          RELEASE_APPROVER: ${{ github.actor }}
           RELEASE_LOG: docs/function-releases.jsonl
-        run: |
-          set -euo pipefail
-          # cursor[bot] 含方括号，promote 的批准人只接受字母数字。去掉非法字符，空了再用 cursor。
-          RELEASE_APPROVER=$(printf '%s' "${RELEASE_APPROVER:-}" | tr -cd 'A-Za-z0-9._-')
-          [ -n "$RELEASE_APPROVER" ] || RELEASE_APPROVER=cursor
-          export RELEASE_APPROVER
-          echo "## function-api ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
-          ZIP=.artifacts/unified-scf/demox-unified-scf.zip
-          OUT_LIN=$(mktemp); OUT_EK=$(mktemp)
-          # 对一个账号跑一次脚本：target=lin|ek，其余参数原样传给 scf-function-api.cjs。
-          run_target() {
-            local t="$1"; shift
-            if [ "$t" = lin ]; then
-              TENCENTCLOUD_ROLE_ARN="$LIN_ROLE_ARN" DEMOX_TARGET=lin DEMOX_ENTRY_MODE=custom-domain \
-              DEMOX_COS_BUCKET="$LIN_COS_BUCKET" DEMOX_COS_REGION="$LIN_COS_REGION" DEMOX_COS_ACCELERATE="$LIN_COS_ACCELERATE" \
-              FUNCTION_API_DEVELOP_URL="$LIN_DEVELOP_URL" GITHUB_OUTPUT="$OUT_LIN" \
-                node scripts/ci/scf-function-api.cjs "$@"
-            else
-              TENCENTCLOUD_ROLE_ARN="$EK_ROLE_ARN" DEMOX_TARGET=ek DEMOX_ENTRY_MODE=http-trigger \
-              DEMOX_COS_BUCKET="$EK_COS_BUCKET" DEMOX_COS_REGION="$EK_COS_REGION" DEMOX_COS_ACCELERATE="$EK_COS_ACCELERATE" \
-              FUNCTION_API_DEVELOP_URL="$EK_DEVELOP_URL" GITHUB_OUTPUT="$OUT_EK" \
-                node scripts/ci/scf-function-api.cjs "$@"
-            fi
-          }
-          getout() { sed -n "s/^$2=//p" "$1" | tail -1; }
-          num() { [[ "${1:-}" =~ ^[0-9]+$ ]] || { echo "::error::$2 必须是数字（当前：'${1:-}'）"; exit 1; }; }
+          DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
+          DEMOX_SMOKE_LIN_BASE: ${{ vars.DEMOX_SMOKE_LIN_BASE }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ vars.DEMOX_SMOKE_WEBSITE_ID }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ vars.DEMOX_SMOKE_WWW_MIRROR_URL }}
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/function-api-release.cjs
 
-          if [ "${EK_ENABLED:-}" != "true" ]; then
-            # 单账号（改动前行为）：只发 磷。
-            echo "::notice::DEMOX_EK_ENABLED!=true：只发 磷（易点不动）"
-            case "$ACTION" in
-              plan)     run_target lin plan ;;
-              stage)    run_target lin stage --zip "$ZIP" ;;
-              deploy)   run_target lin deploy --zip "$ZIP" ;;
-              deploy-develop) run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256" ;;
-              promote)  run_target lin promote --version "$ROLLBACK_VERSION" ;;
-              rollback) run_target lin rollback --version "$ROLLBACK_VERSION" ;;
-              *) echo "::error::未知 action: $ACTION"; exit 1 ;;
-            esac
-            exit 0
-          fi
-
-          # 双账号：先 磷（备源站）再 易点（主源站）。磷 出错就停，不碰易点。
-          # 版本号两边各自独立：version = 磷，version_ek = 易点。
-          [ -n "$EK_ROLE_ARN" ] && [ -n "$EK_COS_BUCKET" ] && [ -n "$EK_COS_REGION" ] || { echo "::error::DEMOX_EK_ENABLED=true 但 DEMOX_EK_ROLE_ARN / DEMOX_EK_COS_BUCKET / DEMOX_EK_COS_REGION 没配齐"; exit 1; }
-          echo "- 双账号发布：磷（备）→ 易点（主）" >> "$GITHUB_STEP_SUMMARY"
-          case "$ACTION" in
-            plan)
-              rc=0; run_target lin plan || rc=1; run_target ek plan || rc=1; exit $rc ;;
-            stage)
-              # 同一个 zip、同一个 key 传到两边的桶；deploy-develop 两边用同一个 cos_key + expected_sha256。
-              run_target lin stage --zip "$ZIP"
-              run_target ek stage --zip "$ZIP" ;;
-            deploy)
-              # 单次 deploy 会跳过 develop 健康检查。这里按 stage → develop → promote 走完。
-              # develop 失败停在这里，production 不动。易点 promote 复查失败会把磷切回。
-              run_target lin stage --zip "$ZIP"
-              run_target ek stage --zip "$ZIP"
-              STAGED_KEY=$(getout "$OUT_LIN" key)
-              STAGED_SHA256=$(getout "$OUT_LIN" sha256)
-              [ -n "$STAGED_KEY" ] && [ "$STAGED_KEY" = "$(getout "$OUT_EK" key)" ] && [ "$STAGED_SHA256" = "$(getout "$OUT_EK" sha256)" ] \
-                || { echo "::error::两边 stage 的包 key 或 sha256 不一致"; exit 1; }
-              [[ "$STAGED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::stage 没有写出 64 位 sha256（当前：${STAGED_SHA256:-空}）"; exit 1; }
-              DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
-              run_target ek deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
-              LIN_VER=$(getout "$OUT_LIN" version)
-              EK_VER=$(getout "$OUT_EK" version)
-              num "$LIN_VER" version
-              num "$EK_VER" version_ek
-              echo "- 双账号 deploy：磷 v${LIN_VER}，易点 v${EK_VER}" >> "$GITHUB_STEP_SUMMARY"
-              DEMOX_SKIP_PUBLIC_CHECK=1 RELEASE_LOG= run_target lin promote --version "$LIN_VER"
-              LIN_PREV=$(getout "$OUT_LIN" previous)
-              if ! run_target ek promote --version "$EK_VER"; then
-                if [ -n "$LIN_PREV" ]; then
-                  echo "::error::易点 promote/复查失败（易点已自动切回）；把 磷 也切回 v$LIN_PREV"
-                  DEMOX_SKIP_PUBLIC_CHECK=1 run_target lin rollback --version "$LIN_PREV" \
-                    || echo "::error::磷 自动回滚失败，请人工 action=rollback version=$LIN_PREV"
-                fi
-                exit 1
-              fi ;;
-            deploy-develop)
-              # 磷 已有同一包的版本（例如之前单账号已发过）→ 复用其版本号，继续发易点。
-              DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
-              run_target ek deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
-              echo "- 上线：action=promote version=$(getout "$OUT_LIN" version) version_ek=$(getout "$OUT_EK" version)" >> "$GITHUB_STEP_SUMMARY" ;;
-            promote)
-              num "$ROLLBACK_VERSION" version; num "$EK_VERSION" version_ek
-              # 1) 磷（备）先切，不做 api.demox.site 复查（流量主要走易点，复查结果说明不了磷）。不写发布记录。
-              DEMOX_SKIP_PUBLIC_CHECK=1 RELEASE_LOG= run_target lin promote --version "$ROLLBACK_VERSION"
-              LIN_PREV=$(getout "$OUT_LIN" previous)
-              # 2) 易点（主）再切，切完做 api.demox.site 公网复查（#99 的 3 次重试）；失败脚本自动把易点切回。
-              if ! run_target ek promote --version "$EK_VERSION"; then
-                if [ -n "$LIN_PREV" ]; then
-                  echo "::error::易点 promote/复查失败（易点已自动切回）；把 磷 也切回 v$LIN_PREV"
-                  DEMOX_SKIP_PUBLIC_CHECK=1 run_target lin rollback --version "$LIN_PREV" \
-                    || echo "::error::磷 自动回滚失败，请人工 action=rollback version=$LIN_PREV"
-                fi
-                exit 1
-              fi ;;
-            rollback)
-              num "$ROLLBACK_VERSION" version; num "$EK_VERSION" version_ek
-              DEMOX_SKIP_PUBLIC_CHECK=1 run_target lin rollback --version "$ROLLBACK_VERSION"
-              run_target ek rollback --version "$EK_VERSION" ;;
-            *) echo "::error::未知 action: $ACTION"; exit 1 ;;
-          esac
+      - name: Rollback
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          LIN_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy
+          LIN_COS_BUCKET: ${{ vars.DEMOX_COS_BUCKET }}
+          LIN_COS_REGION: ${{ vars.DEMOX_COS_REGION }}
+          LIN_COS_ACCELERATE: ${{ vars.DEMOX_COS_ACCELERATE }}
+          LIN_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL }}
+          EK_ENABLED: ${{ vars.DEMOX_EK_ENABLED }}
+          EK_ROLE_ARN: ${{ vars.DEMOX_EK_ROLE_ARN }}
+          EK_COS_BUCKET: ${{ vars.DEMOX_EK_COS_BUCKET }}
+          EK_COS_REGION: ${{ vars.DEMOX_EK_COS_REGION }}
+          EK_COS_ACCELERATE: ${{ vars.DEMOX_EK_COS_ACCELERATE }}
+          EK_DEVELOP_URL: ${{ vars.FUNCTION_API_DEVELOP_URL_EK }}
+          TENCENTCLOUD_REGION: ap-guangzhou
+          ROLLBACK_VERSION: ${{ inputs.version }}
+          EK_VERSION: ${{ inputs.version_ek }}
+        run: node scripts/ci/function-api-release.cjs rollback
