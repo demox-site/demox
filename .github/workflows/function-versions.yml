@@ -41,6 +41,9 @@ jobs:
       - name: deploy-develop and promote unit tests
         run: node --test scripts/ci/scf-function-api.test.cjs
 
+      - name: Release smoke and failure issue
+        run: node --test scripts/ci/release-smoke.test.cjs scripts/ci/open-release-issue.test.cjs
+
       - name: Version rules and reproducible zip
         run: node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
 
