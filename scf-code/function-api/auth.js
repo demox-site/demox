@@ -17,6 +17,8 @@ function createJwtAuthenticator({ secret = process.env.JWT_SECRET, algorithms = 
     if (!token) throw unauthorized();
     try {
       const payload = jwt.verify(token, secret, { algorithms });
+      // 站点短期票据只用于这一台私有站点的边缘门，不能管理函数。
+      if (payload && payload.purpose === 'site_access') throw unauthorized('登录凭证无效或已过期');
       const userId = payload.userId ?? payload.user_id ?? payload.sub;
       if (userId === undefined || userId === null || userId === '') throw unauthorized();
       return { ...payload, userId: String(userId) };

@@ -13,7 +13,7 @@
 
 ## 私有站点登录 cookie
 
-- `*.demox.site` 上的私有站点暂时不认账号 cookie。边缘返回「需要重新验证」（页面 503，其它请求 401），不回源，不调 check-site-access。站点级短期票据另做。
+- `*.demox.site` 上的私有站点不认账号 cookie。未登录时边缘显示登录门，不回源。登录成功后 website-api 签发一张一小时、绑主机和站点的 `demox_site` 票据，边缘只把它写成 **host-only** cookie（不写 `Domain=`）。票据不能当账号会话。自定义域不走这张票据。
 - 自定义域名上的私有站点仍走登录门。登录成功只写 **host-only** 的 `demox_access`（HttpOnly、Secure、SameSite=Lax），**不写 `Domain=`**。`www.example.co.uk` 的登录态不会带到 `example.co.uk` 或其它子域。
 - `check-site-access` 对自定义域返回 `cookieScope`：`host-only` 或 `refuse`。公共后缀是 `refuse`，边缘不写 cookie。边缘单文件带不了公共后缀表，所以这道拒绝在 website-api。
 - `/api/*` 转发用户函数前会去掉 `demox_access`。静态回源保持原来的 `fetch(req)`，不改头。

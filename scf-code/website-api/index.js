@@ -283,7 +283,7 @@ function customDomainAuthCookieHeader(hostname, token, maxAge) {
 const { query, transaction, withConnection } = require('./shared/db.js');
 const { createProjectData, deleteProjectData } = require('./project-data.js');
 const projectData = createProjectData(query);
-const { getUserId, authenticate, sign } = require('./shared/jwt.js');
+const { getUserId, authenticate, sign, verify, extractToken } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
@@ -2201,6 +2201,7 @@ async function dispatchWebsiteRequest(event, context) {
       verify_project_custom_domain: handleVerifyProjectCustomDomain,
       list_blocked_phrases: handleListBlockedPhrases,
       check_site_access: handleCheckSiteAccess,
+      issue_site_ticket: handleIssueSiteTicket,
       track_site_event: handleTrackSiteEvent,
       report_site: handleReportSite,
       list_site_reports: handleListSiteReports,
@@ -7623,9 +7624,141 @@ async function handleResolveSubdomain(event) {
   }
 }
 
+// *.demox.site 私有站点的边缘门不保存账号 JWT。登录成功后只签发这张
+// host-only 短期票据：绑一台主机、一个站点、一个用户，一小时过期。
+const SITE_ACCESS_PURPOSE = 'site_access';
+const SITE_ACCESS_TICKET_TTL_SECONDS = 60 * 60;
+
+function officialPrivateHost(label, suffix) {
+  const hostLabel = String(label || '').trim().toLowerCase();
+  const domain = normalizeOfficialDomain(suffix);
+  if (!domain || !hostLabel || hostLabel === 'www' || hostLabel.includes('.')) return '';
+  return hostLabel + '.' + domain;
+}
+
+function readSiteAccessTicket(token) {
+  if (!token || typeof token !== 'string' || token.length > 4096) return null;
+  let decoded;
+  try {
+    decoded = verify(token);
+  } catch (e) {
+    return null;
+  }
+  if (!decoded || decoded.purpose !== SITE_ACCESS_PURPOSE) return null;
+  const userId = String(decoded.userId || '').trim();
+  const websiteId = String(decoded.websiteId || '').trim();
+  const host = normalizeDomainValue(decoded.host);
+  if (!userId || !websiteId || !host || host.includes('..')) return null;
+  return { userId, websiteId, host };
+}
+
+function signSiteAccessTicket(userId, websiteId, host) {
+  return sign({
+    purpose: SITE_ACCESS_PURPOSE,
+    userId: String(userId),
+    websiteId: String(websiteId),
+    host: String(host)
+  }, SITE_ACCESS_TICKET_TTL_SECONDS);
+}
+
+async function grantPrivateSiteAccess(event, site, user, extra) {
+  const visibility = normalizeVisibility(site.visibility);
+  const fields = extra || {};
+  if (!user || !user.userId) {
+    return ok({
+      success: true,
+      allowed: false,
+      visibility,
+      loginRequired: true,
+      reason: 'login_required'
+    });
+  }
+  if (String(user.userId) === String(site.user_id)) {
+    return ok({ success: true, allowed: true, visibility, role: 'owner', ...fields });
+  }
+  const isAdmin = await checkAdmin(user.userId);
+  if (isAdmin) {
+    markAdminAction(event, user.userId, 'override');
+    return ok({ success: true, allowed: true, visibility, role: 'platform_admin', ...fields });
+  }
+  if (site.project_id) {
+    const role = await getProjectRoleForUser(user.userId, site.project_id);
+    if (role) {
+      return ok({ success: true, allowed: true, visibility, role, ...fields });
+    }
+  }
+  return ok({
+    success: true,
+    allowed: false,
+    visibility,
+    loginRequired: false,
+    reason: 'forbidden'
+  });
+}
+
+/**
+ * 边缘函数调用：用账号令牌换一张 *.demox.site 私有站点短期票据。
+ * 票据不是账号会话。自定义域不走这里。
+ */
+async function handleIssueSiteTicket(event) {
+  const body = event.body || event;
+  let label = String(body.label || body.subdomain || '').trim().toLowerCase();
+  let domain = body.domain || body.subdomainDomain || body.subdomain_domain;
+  if (body.host && !label) {
+    const parsed = parseOfficialHost(body.host);
+    if (parsed) {
+      label = parsed.label;
+      domain = parsed.domain;
+    }
+  }
+  const suffix = normalizeOfficialDomain(domain);
+  const host = officialPrivateHost(label, suffix);
+  const requestedHost = body.host ? normalizeDomainValue(body.host) : '';
+  if (!host || (requestedHost && requestedHost !== host)) {
+    return ok({ success: true, allowed: false, loginRequired: false, reason: 'official_host_required' });
+  }
+  const user = authenticate(event);
+  if (!user || !user.userId) {
+    return ok({ success: true, allowed: false, loginRequired: true, reason: 'login_required' });
+  }
+  try {
+    const site = await resolveSiteMetadataByLabel(label, suffix);
+    if (!site || !site.path) {
+      return ok({ success: true, allowed: false, reason: 'not_found' });
+    }
+    const visibility = normalizeVisibility(site.visibility);
+    if (visibility === VISIBILITY_DISABLED) {
+      return ok({ success: true, allowed: false, visibility, reason: 'disabled' });
+    }
+    if (visibility !== VISIBILITY_PRIVATE) {
+      return ok({ success: true, allowed: false, visibility, reason: 'not_private' });
+    }
+    const websiteId = String(site.website_id || '').trim();
+    if (!websiteId) {
+      return ok({ success: true, allowed: false, reason: 'not_found' });
+    }
+    const decision = await grantPrivateSiteAccess(event, site, user);
+    const decisionBody = JSON.parse(decision.body);
+    if (!decisionBody.allowed) return decision;
+    const ticket = signSiteAccessTicket(user.userId, websiteId, host);
+    return ok({
+      success: true,
+      allowed: true,
+      visibility,
+      role: decisionBody.role,
+      ticket,
+      maxAge: SITE_ACCESS_TICKET_TTL_SECONDS
+    });
+  } catch (error) {
+    console.error('签发站点票据失败:', error.message);
+    return ok({ success: false, allowed: false, message: error.message });
+  }
+}
+
 /**
  * 边缘函数调用：检查当前 token 是否可访问 label 对应站点。
  * public 永远允许；private 仅站点 owner、平台 admin 或项目成员可访问。
+ * *.demox.site 的边缘门提交的是站点短期票据，不是账号 JWT。
  */
 async function handleCheckSiteAccess(event) {
   const body = event.body || event;
@@ -7672,42 +7805,27 @@ async function handleCheckSiteAccess(event) {
       return ok({ success: true, allowed: true, visibility });
     }
 
-    const user = authenticate(event);
-    if (!user || !user.userId) {
-      return ok({
-        success: true,
-        allowed: false,
-        visibility,
-        loginRequired: true,
-        reason: 'login_required'
-      });
-    }
-
     const scopeField = customCookieScope ? { cookieScope: customCookieScope } : {};
-    if (String(user.userId) === String(site.user_id)) {
-      return ok({ success: true, allowed: true, visibility, role: 'owner', ...scopeField });
-    }
-
-    const isAdmin = await checkAdmin(user.userId);
-    if (isAdmin) {
-      markAdminAction(event, user.userId, 'override');
-      return ok({ success: true, allowed: true, visibility, role: 'platform_admin', ...scopeField });
-    }
-
-    if (site.project_id) {
-      const role = await getProjectRoleForUser(user.userId, site.project_id);
-      if (role) {
-        return ok({ success: true, allowed: true, visibility, role, ...scopeField });
+    const ticket = readSiteAccessTicket(extractToken(event));
+    if (ticket) {
+      const expectedHost = officialPrivateHost(label, suffix);
+      const siteId = String(site.website_id || '');
+      if (
+        !expectedHost || ticket.host !== expectedHost ||
+        ticket.websiteId.toUpperCase() !== siteId.toUpperCase()
+      ) {
+        return ok({
+          success: true,
+          allowed: false,
+          visibility,
+          loginRequired: true,
+          reason: 'site_ticket_mismatch'
+        });
       }
+      return grantPrivateSiteAccess(event, site, { userId: ticket.userId });
     }
 
-    return ok({
-      success: true,
-      allowed: false,
-      visibility,
-      loginRequired: false,
-      reason: 'forbidden'
-    });
+    return grantPrivateSiteAccess(event, site, authenticate(event), scopeField);
   } catch (error) {
     console.error('检查站点访问权限失败:', error);
     return ok({ success: false, allowed: false, message: error.message });

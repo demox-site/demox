@@ -34,8 +34,13 @@ const source = fs.readFileSync(path.join(__dirname, 'subdomain-router.js'), 'utf
     assert.equal(stripAuthCookieValue('demox_access'), '');
   });
 
+  test('cookie strip: removes the site ticket as well as the account cookie', () => {
+    assert.equal(stripAuthCookieValue('a=1; demox_site=ticket; demox_access=tok; b=2'), 'a=1; b=2');
+    assert.equal(stripAuthCookieValue('demox_site=ticket'), '');
+  });
+
   test('cookie strip: look-alike names and cookie-less requests are untouched', () => {
-    assert.equal(stripAuthCookieValue('demox_access2=x; xdemox_access=y; Demox_Access=z'), 'demox_access2=x; xdemox_access=y; Demox_Access=z');
+    assert.equal(stripAuthCookieValue('demox_access2=x; xdemox_access=y; Demox_Access=z; demox_site2=q'), 'demox_access2=x; xdemox_access=y; Demox_Access=z; demox_site2=q');
     assert.equal(stripAuthCookieValue(''), '');
     const h = withoutAuthCookieHeaders(new Headers({ accept: 'text/html' }));
     assert.equal(h.get('cookie'), null);
@@ -60,6 +65,9 @@ async function handleWithCookie(url, { cookie, resolve, method = 'GET', accept =
     addEventListener: () => {},
     fetch: async (input, init) => {
       const c = cookieOf(input, init);
+      if (init && typeof init.body === 'string') {
+        try { c.posted = JSON.parse(init.body); } catch (e) { c.posted = null; }
+      }
       calls.push(c);
       if (c.url.includes('/resolve-subdomain')) {
         return new Response(JSON.stringify(resolve || { success: false, message: 'not found' }), {
@@ -67,7 +75,14 @@ async function handleWithCookie(url, { cookie, resolve, method = 'GET', accept =
         });
       }
       if (c.url.includes('/check-site-access')) {
-        return new Response(JSON.stringify(access || { success: true, allowed: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        const posted = c.posted || {};
+        let body = access || { success: true, allowed: true };
+        if (posted.action === 'issue_site_ticket') {
+          body = access && (access.ticket || access.allowed === false)
+            ? access
+            : { success: true, allowed: true, ticket: 'SITE_TICKET', maxAge: 3600 };
+        }
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (c.url.startsWith('https://api.test/')) {
         return new Response('{"fn":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -139,10 +154,11 @@ test('requests without the old cookie get no Set-Cookie added', async () => {
   assert.equal(response.headers.get('set-cookie'), null);
 });
 
-test('private *.demox.site site ignores the account cookie and asks for re-verification', async () => {
+test('private *.demox.site site ignores the account cookie and shows the login gate', async () => {
   const { response, calls, text } = await handleWithCookie('https://prv1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PRIVATE_SITE });
-  assert.equal(response.status, 503);
-  assert.match(text, /需要重新验证/);
+  assert.equal(response.status, 200);
+  assert.match(text, /登录后查看/);
+  assert.doesNotMatch(text, /需要重新验证/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(calls.some((c) => c.url.includes('/check-site-access')), false);
   assert.equal(calls.some((c) => c.url.includes('site-3.demox.site') || c.url.includes('/sites/demo/')), false);
@@ -151,14 +167,64 @@ test('private *.demox.site site ignores the account cookie and asks for re-verif
   assert.equal(api.calls.some((c) => c.url.startsWith('https://api.test/PRV1/')), false);
 });
 
-test('private *.demox.site auth-complete never sets a token cookie or redirects', async () => {
-  const { response } = await handleWithCookie('https://prv1.demox.site/.demox/auth-complete', {
-    resolve: PRIVATE_SITE, method: 'POST', body: 'token=ACCOUNT_TOKEN&next=https%3A%2F%2Fprv1.demox.site%2F',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://www.demox.site' }
+test('private *.demox.site site ticket opens the site and is not the account token', async () => {
+  const { response, calls, text } = await handleWithCookie('https://botcamp.demox.site/docs', {
+    cookie: 'demox_access=ACCOUNT_TOKEN; demox_site=SITE_TICKET',
+    resolve: PRIVATE_SITE,
+    access: { success: true, allowed: true }
   });
-  assert.equal(response.status, 503);
+  assert.equal(response.status, 200);
+  assert.match(text, /Live site/);
+  const check = calls.find((c) => c.url.includes('/check-site-access'));
+  assert.ok(check);
+  assert.equal(check.posted.action, 'check_site_access');
+  assert.equal(check.posted.token, 'SITE_TICKET');
+  assert.equal(check.posted.host, 'botcamp.demox.site');
+  assert.equal(calls.some((c) => c.url.includes('site-3.demox.site')), true);
+  const fn = await handleWithCookie('https://botcamp.demox.site/api/echo', {
+    cookie: 'session=u1; demox_site=SITE_TICKET; demox_access=ACCOUNT_TOKEN',
+    resolve: PRIVATE_SITE,
+    accept: 'application/json',
+    access: { success: true, allowed: true }
+  });
+  const proxied = fn.calls.find((c) => c.url.startsWith('https://api.test/PRV1/'));
+  assert.ok(proxied);
+  assert.equal(proxied.cookie, 'session=u1');
+});
+
+test('private *.demox.site auth-complete sets a host-only site ticket and never the account token', async () => {
+  const { response, calls } = await handleWithCookie('https://prv1.demox.site/.demox/auth-complete', {
+    resolve: PRIVATE_SITE,
+    method: 'POST',
+    body: 'token=ACCOUNT_TOKEN&next=https%3A%2F%2Fprv1.demox.site%2Fdocs',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://www.demox.site' },
+    cookie: 'demox_access=ACCOUNT_TOKEN',
+    access: { success: true, allowed: true, ticket: 'SITE_TICKET', maxAge: 999999 }
+  });
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), '/docs');
+  const cookies = response.headers.getSetCookie();
+  const siteCookie = cookies.find((item) => item.startsWith('demox_site='));
+  assert.equal(siteCookie, 'demox_site=SITE_TICKET; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Lax');
+  assert.equal(cookies.some((item) => item.includes('ACCOUNT_TOKEN')), false);
+  const issued = calls.find((c) => c.posted && c.posted.action === 'issue_site_ticket');
+  assert.ok(issued);
+  assert.equal(issued.posted.token, 'ACCOUNT_TOKEN');
+  assert.equal(issued.posted.host, 'prv1.demox.site');
+  assert.equal(calls.some((c) => c.url.includes('site-3.demox.site')), false);
+});
+
+test('private *.demox.site auth-complete refuses to store the account token as the site cookie', async () => {
+  const { response } = await handleWithCookie('https://prv1.demox.site/.demox/auth-complete', {
+    resolve: PRIVATE_SITE,
+    method: 'POST',
+    body: 'token=ACCOUNT_TOKEN&next=https%3A%2F%2Fprv1.demox.site%2F',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://www.demox.site' },
+    access: { success: true, allowed: true, ticket: 'ACCOUNT_TOKEN' }
+  });
+  assert.equal(response.status, 403);
   assert.equal(response.headers.get('location'), null);
-  assert.doesNotMatch(response.headers.get('set-cookie') || '', /ACCOUNT_TOKEN/);
+  assert.equal(response.headers.get('set-cookie'), null);
 });
 
 // ── 2026-10-10 #49 follow-up：模拟 EdgeOne 的 Request/fetch 语义 ─────────────────────────
@@ -489,7 +555,7 @@ const EXPIRY_CASES = [
   ['function POST', 'https://pub1.demox.site/api/echo', {}, 'POST', 'application/json', 200],
   ['unknown host passthrough', 'https://nobody-here.demox.site/x', { resolve: null }, 'GET', 'text/html', 200],
   ['origin throws → 503', 'https://pub1.demox.site/', { origin: async () => { throw new Error('origin down'); } }, 'GET', 'text/html', 503],
-  ['private site re-verify', 'https://prv1.demox.site/', { resolve: PRIVATE_SITE }, 'GET', 'text/html', 503]
+  ['private site login gate', 'https://prv1.demox.site/', { resolve: PRIVATE_SITE }, 'GET', 'text/html', 200]
 ];
 
 for (const [name, url, opts, method, accept, status] of EXPIRY_CASES) {
@@ -611,10 +677,15 @@ test('private custom domain auth-complete writes nothing when check-site-access 
 
 test('custom-domain auth cookie builder never emits Domain=', () => {
   const hooks = vm.createContext({ URL, URLSearchParams, Request, Response, Headers, console, addEventListener: () => {} });
-  vm.runInContext(`${source}\nglobalThis.__cookieHooks = { customDomainAuthCookieHeader, officialDomainOfHost };`, hooks);
+  vm.runInContext(`${source}\nglobalThis.__cookieHooks = { customDomainAuthCookieHeader, siteTicketCookieHeader, officialDomainOfHost };`, hooks);
   const header = hooks.__cookieHooks.customDomainAuthCookieHeader('www.example.co.uk', 'ACCOUNT_TOKEN');
   assert.match(header, /^demox_access=ACCOUNT_TOKEN; Max-Age=\d+; Path=\/; HttpOnly; Secure; SameSite=Lax$/);
   assert.equal(hooks.__cookieHooks.customDomainAuthCookieHeader('github.io', 'ACCOUNT_TOKEN').includes('Domain='), false);
   assert.equal(hooks.__cookieHooks.customDomainAuthCookieHeader('www.demox.site', 'ACCOUNT_TOKEN'), '');
   assert.equal(hooks.__cookieHooks.officialDomainOfHost('www.example.co.uk'), '');
+  const ticket = hooks.__cookieHooks.siteTicketCookieHeader('botcamp.demox.site', 'SITE_TICKET');
+  assert.match(ticket, /^demox_site=SITE_TICKET; Max-Age=3600; Path=\/; HttpOnly; Secure; SameSite=Lax$/);
+  assert.equal(hooks.__cookieHooks.siteTicketCookieHeader('www.demox.site', 'SITE_TICKET'), '');
+  assert.equal(hooks.__cookieHooks.siteTicketCookieHeader('www.example.co.uk', 'SITE_TICKET'), '');
+  assert.equal(hooks.__cookieHooks.siteTicketCookieHeader('botcamp.demox.site', 'a; Domain=.demox.site'), '');
 });

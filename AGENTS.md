@@ -14,7 +14,7 @@
   1. `https://www.demox.site/` → 200，且是主站页面
   2. 至少一个真实用户站点 → 200
   3. 这才去看未绑定 host 的 404
-  4. 以上每一项都要**带和不带假的 `demox_access` cookie 各跑一遍**：发布前在旧代码上 `npm run p0:edge:baseline -- baseline.json`，发布后 `BASELINE=baseline.json npm run p0:edge`（带 cookie 的结果逐项和 baseline 比状态码 + 正文 sha256），任何一项 FAIL 就回滚。静态 / 源站 / 透传路径必须保持 #49 之前的 `fetch(req)` 写法（三次失败都出在这里），只有 `/api/*` 剥离 demox_access。2026-10-10 #49 只核对了不带 cookie 的情况，带 cookie 的用户访问公开站点全是 503、www 是 404，见 [docs/incidents/2026-10-10-edge-cookie-strip-503.md](docs/incidents/2026-10-10-edge-cookie-strip-503.md)。`*.demox.site` 私有站点是临时「需要重新验证」，不要套到自定义域：自定义域私有站点继续登录门，cookie 只许 host-only（不写 `Domain=`），公共后缀由 website-api 的 `psl` 拒绝。
+  4. 以上每一项都要**带和不带假的 `demox_access` cookie 各跑一遍**：发布前在旧代码上 `npm run p0:edge:baseline -- baseline.json`，发布后 `BASELINE=baseline.json npm run p0:edge`（带 cookie 的结果逐项和 baseline 比状态码 + 正文 sha256），任何一项 FAIL 就回滚。静态 / 源站 / 透传路径必须保持 #49 之前的 `fetch(req)` 写法（三次失败都出在这里），只有 `/api/*` 剥离 demox_access。2026-10-10 #49 只核对了不带 cookie 的情况，带 cookie 的用户访问公开站点全是 503、www 是 404，见 [docs/incidents/2026-10-10-edge-cookie-strip-503.md](docs/incidents/2026-10-10-edge-cookie-strip-503.md)。`*.demox.site` 私有站点只认 host-only 的 `demox_site` 短期票据，不认父域 `demox_access`。不要把这张票据套到自定义域：自定义域私有站点继续登录门，cookie 只许 host-only 的 `demox_access`（不写 `Domain=`），公共后缀由 website-api 的 `psl` 拒绝。
 - D2：`static.demox.site`、`cdn.demox.site`、未知官方子域名、未绑定自定义域的 OPTIONS 是边缘本地 204，不回源。已解析站点（www、用户站、函数）的 OPTIONS 仍回源，P0 矩阵 OPTIONS 列继续和 baseline 比状态码和正文。
 - 核对失败：把上一份 `subdomain-router.js` 写回 `ef-1281msyw`，不要继续改。
 - `DEMOX_TEST_HOST_MAP` 有任何非空值时，不要对 `ef-1281msyw` 做 `ModifyFunction`。`scripts/edge-router-rollback.sh` 和 `scf-code/deploy-edge-functions.sh` 会直接拒绝。这个变量只属于测试函数 `ef-k2test`。

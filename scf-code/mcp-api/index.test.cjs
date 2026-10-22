@@ -177,6 +177,24 @@ test('mcp request logs never carry the bearer token or email (v13)', async () =>
   assert.ok(logGuard.lines.length > before);
 });
 
+test('a site access ticket cannot call MCP as the account', async () => {
+  const upstream = mockUpstream();
+  const ticket = sign({
+    purpose: 'site_access',
+    userId: 'user-1',
+    websiteId: 'BOTCAMP1',
+    host: 'botcamp.demox.site'
+  }, 3600);
+  const result = await api.main({
+    httpMethod: 'POST',
+    path: '/deploy',
+    headers: { Authorization: `Bearer ${ticket}` },
+    body: JSON.stringify({ action: 'abort_deploy_upload', uploadId: 'u1' })
+  });
+  assert.equal(result.statusCode, 401);
+  assert.equal(upstream.options(), undefined);
+});
+
 // ── 日志脱敏守卫（v13）：上面所有测试打出的日志里都不能出现 token、JWT、OAuth code 或邮箱 ──
 test('no token, JWT, OAuth code or email reached any console log in this suite', () => {
   logGuard.assertNoLeaks();

@@ -120,28 +120,37 @@ var WWW_SPA_ROUTES = [
 ];
 var DEMOX_BADGE_MARKER = 'data-demox-site-badge';
 var DEMOX_AUTH_COOKIE = 'demox_access';
+var DEMOX_SITE_TICKET_COOKIE = 'demox_site';
 var DEMOX_SITE_AUTH_COMPLETE_PATH = '/.demox/auth-complete';
 var DEMOX_SITE_AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+var DEMOX_SITE_TICKET_MAX_AGE = 60 * 60;
 
 // 2026-10-10 账号令牌 cookie 止血（#53，三次失败后的可发布版本）：
 //   1) 静态 / 源站 / 透传保持 #49 之前的 fetch(req)，不重建请求、不改头、不剥 cookie。
-//   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access。
-//   3) 官方域名请求带着旧 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
-//   4) *.demox.site 私有站点不再认这个 cookie，先返回「需要重新验证」。
-// 自定义域私有站点不走第 4 条：登录成功只写 host-only cookie（无 Domain=）。
+//   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access 和 demox_site。
+//   3) 官方域名请求带着旧账号 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
+//   4) *.demox.site 私有站点不认账号 cookie。登录后只写 host-only 的 demox_site 短期票据。
+// 自定义域私有站点不走第 4 条：登录成功只写 host-only 的 demox_access（无 Domain=）。
 // 公共后缀拒绝在 website-api（psl）里做，check-site-access 回 cookieScope=refuse 时边缘不写 cookie。
-function isAuthCookiePair(part) {
+function cookiePairName(part) {
   const p = String(part || '').trim();
   const eq = p.indexOf('=');
-  const name = (eq === -1 ? p : p.slice(0, eq)).trim();
-  return name === DEMOX_AUTH_COOKIE;
+  return (eq === -1 ? p : p.slice(0, eq)).trim();
+}
+
+function isAuthCookiePair(part) {
+  return cookiePairName(part) === DEMOX_AUTH_COOKIE;
+}
+
+function isSiteTicketCookiePair(part) {
+  return cookiePairName(part) === DEMOX_SITE_TICKET_COOKIE;
 }
 
 function stripAuthCookieValue(raw) {
   return String(raw || '')
     .split(';')
     .map(function (part) { return part.trim(); })
-    .filter(function (part) { return part && !isAuthCookiePair(part); })
+    .filter(function (part) { return part && !isAuthCookiePair(part) && !isSiteTicketCookiePair(part); })
     .join('; ');
 }
 
@@ -207,6 +216,19 @@ function customDomainAuthCookieHeader(host, token) {
   if (!value || value.length > 16384) return '';
   const header = DEMOX_AUTH_COOKIE + '=' + encodeURIComponent(value) +
     '; Max-Age=' + DEMOX_SITE_AUTH_COOKIE_MAX_AGE +
+    '; Path=/; HttpOnly; Secure; SameSite=Lax';
+  if (/domain\s*=/i.test(header)) return '';
+  return header;
+}
+
+// *.demox.site 私有站点：只写这一台主机的短期票据，不写 Domain=，不写账号 JWT。
+function siteTicketCookieHeader(host, ticket) {
+  const parsed = parseOfficialHost(host);
+  if (!parsed || parsed.label === 'www') return '';
+  const value = String(ticket || '');
+  if (!value || value.length > 4096 || /[\r\n;,]/.test(value)) return '';
+  const header = DEMOX_SITE_TICKET_COOKIE + '=' + encodeURIComponent(value) +
+    '; Max-Age=' + DEMOX_SITE_TICKET_MAX_AGE +
     '; Path=/; HttpOnly; Secure; SameSite=Lax';
   if (/domain\s*=/i.test(header)) return '';
   return header;
@@ -1872,9 +1894,35 @@ async function completePrivateSiteLogin(req, label, domain) {
     });
   }
 
-  if (isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
-  const access = await checkPrivateSiteAccessToken(token, label, domain, requestUrl.hostname);
   const location = next.pathname + next.search + next.hash;
+  if (isOfficialDomain(domain)) {
+    const issued = await issuePrivateSiteTicket(token, label, domain, requestUrl.hostname);
+    if (!issued.allowed || !issued.ticket || issued.ticket === token) {
+      if (issued.loginRequired) {
+        return new Response(null, {
+          status: 303,
+          headers: { Location: location, 'Cache-Control': 'no-store' }
+        });
+      }
+      if (!issued.allowed && issued.reason === 'forbidden') return accessDeniedPage(req);
+      return new Response('这个域名不能保存登录状态', {
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+      });
+    }
+    const cookieHeader = siteTicketCookieHeader(requestUrl.hostname, issued.ticket);
+    if (!cookieHeader) {
+      return new Response('这个域名不能保存登录状态', {
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
+      });
+    }
+    return new Response(null, {
+      status: 303,
+      headers: { Location: location, 'Cache-Control': 'no-store', 'Set-Cookie': cookieHeader }
+    });
+  }
+  const access = await checkPrivateSiteAccessToken(token, label, domain, requestUrl.hostname);
   if (!access.allowed) {
     if (!access.loginRequired) return accessDeniedPage(req);
     return new Response(null, {
@@ -1898,54 +1946,6 @@ async function completePrivateSiteLogin(req, label, domain) {
   return new Response(null, {
     status: 303,
     headers: { Location: location, 'Cache-Control': 'no-store', 'Set-Cookie': cookieHeader }
-  });
-}
-
-function privateSiteReverifyResponse(req) {
-  if (!isDocumentRequest(req)) {
-    return new Response('Re-verification required', {
-      status: 401,
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
-    });
-  }
-  const host = escapeHtml(new URL(req.url).hostname);
-  const home = escapeHtml(demoxHomeUrl());
-  const html = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="robots" content="noindex,nofollow" />
-  <title>需要重新验证 - ${host}</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #18181b;
-      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
-    main { width: min(88vw, 420px); padding: 32px; border: 1px solid rgba(24,24,27,.1); border-radius: 20px; background: #fff; }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    p { margin: 0; color: #52525b; }
-    code { color: #18181b; }
-    a { display: inline-block; margin-top: 20px; padding: 9px 16px; border-radius: 999px; background: #18181b; color: #fff; text-decoration: none; font-size: 14px; }
-    @media (prefers-color-scheme: dark) { body { background: #0d0d0d; color: #f5f5f5; } main { background: #18181b; border-color: rgba(255,255,255,.1); } p { color: #a1a1aa; } code { color: #f5f5f5; } a { background: #f5f5f5; color: #18181b; } }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>需要重新验证</h1>
-    <p><code>${host}</code> 是私有站点。为了账号安全，我们正在升级私有站点的验证方式，暂时无法打开，请稍后再试。</p>
-    <a href="${home}">返回 Demox</a>
-  </main>
-</body>
-</html>`;
-  return new Response(html, {
-    status: 503,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'Retry-After': '3600',
-      'Referrer-Policy': 'no-referrer',
-      'X-Content-Type-Options': 'nosniff'
-    }
   });
 }
 
@@ -2031,33 +2031,62 @@ function accessDeniedPage(req) {
   });
 }
 
+async function enforcePrivateSiteAccess(req, u, label, domain, customHost) {
+  if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
+    if (req.method !== 'POST') {
+      return new Response('Method Not Allowed', {
+        status: 405,
+        headers: { Allow: 'POST', 'Cache-Control': 'no-store' }
+      });
+    }
+    return completePrivateSiteLogin(req, label, domain);
+  }
+  const access = await checkPrivateSiteAccess(req, label, domain, customHost);
+  if (!access.allowed) {
+    if (!access.loginRequired) return accessDeniedPage(req);
+    return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
+  }
+  return null;
+}
+
 async function checkPrivateSiteAccess(req, label, domain, host) {
   // 官方域名下的 demox_access 是旧前端写在父域上的账号令牌，不再认。
-  if (isOfficialDomain(domain) && !host) return { allowed: false, loginRequired: true };
+  // 只认这一台主机的 demox_site 短期票据。
+  if (isOfficialDomain(domain)) {
+    const ticket = getCookie(req, DEMOX_SITE_TICKET_COOKIE);
+    if (!ticket) return { allowed: false, loginRequired: true };
+    return checkPrivateSiteAccessToken(ticket, label, domain, label + '.' + domain);
+  }
   const token = getCookie(req, DEMOX_AUTH_COOKIE);
   if (!token) return { allowed: false, loginRequired: true };
 
   return checkPrivateSiteAccessToken(token, label, domain, host);
 }
 
-async function checkPrivateSiteAccessToken(token, label, domain, host) {
+async function issuePrivateSiteTicket(accountToken, label, domain, host) {
+  return checkPrivateSiteAccessToken(accountToken, label, domain, host, 'issue_site_ticket');
+}
+
+async function checkPrivateSiteAccessToken(token, label, domain, host, action) {
   try {
-    const payload = { action: 'check_site_access', label: label, domain: domain, token: token };
+    const payload = { action: action || 'check_site_access', label: label, domain: domain, token: token };
     if (host) payload.host = host;
     const resp = await fetch(backendUrl('/check-site-access'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!resp.ok) return { allowed: false, loginRequired: false };
+    if (!resp.ok) return { allowed: false, loginRequired: false, ticket: '', reason: '' };
     const data = await resp.json();
     return {
       allowed: !!(data && data.success && data.allowed),
       loginRequired: !!(data && data.loginRequired),
-      cookieScope: (data && data.cookieScope) || ''
+      cookieScope: (data && data.cookieScope) || '',
+      reason: (data && data.reason) || '',
+      ticket: (data && typeof data.ticket === 'string') ? data.ticket : ''
     };
   } catch (e) {
-    return { allowed: false, loginRequired: false };
+    return { allowed: false, loginRequired: false, ticket: '', reason: '' };
   }
 }
 
@@ -2910,21 +2939,8 @@ async function handleRequest(req, event, ctx) {
       return disabledSitePage();
     }
     if (!(domain === DEFAULT_OFFICIAL_DOMAIN && label === 'www') && visibility === VISIBILITY_PRIVATE) {
-      if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
-      if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
-        if (req.method !== 'POST') {
-          return new Response('Method Not Allowed', {
-            status: 405,
-            headers: { Allow: 'POST', 'Cache-Control': 'no-store' }
-          });
-        }
-        return completePrivateSiteLogin(req, label, domain);
-      }
-      const access = await checkPrivateSiteAccess(req, label, domain, parsedHost ? '' : host);
-      if (!access.allowed) {
-        if (!access.loginRequired) return accessDeniedPage(req);
-        return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
-      }
+      const denied = await enforcePrivateSiteAccess(req, u, label, domain, parsedHost ? '' : host);
+      if (denied) return denied;
     }
     if (isSiteApiPath(u.pathname)) {
       return proxySiteFunction(req, websiteId, u);
@@ -3013,21 +3029,8 @@ async function serveResolvedSite(req, event, u, rest, path, origin, parsedHost, 
     return disabledSitePage();
   }
   if (meta.visibility === VISIBILITY_PRIVATE) {
-    if (parsedHost && isOfficialDomain(domain)) return privateSiteReverifyResponse(req);
-    if (u.pathname === DEMOX_SITE_AUTH_COMPLETE_PATH) {
-      if (req.method !== 'POST') {
-        return new Response('Method Not Allowed', {
-          status: 405,
-          headers: { Allow: 'POST', 'Cache-Control': 'no-store' }
-        });
-      }
-      return completePrivateSiteLogin(req, label, domain);
-    }
-    const access = await checkPrivateSiteAccess(req, label, domain, parsedHost ? '' : host);
-    if (!access.allowed) {
-      if (!access.loginRequired) return accessDeniedPage(req);
-      return isDocumentRequest(req) ? privateSiteLoginGate(req) : loginRequiredResponse();
-    }
+    const denied = await enforcePrivateSiteAccess(req, u, label, domain, parsedHost ? '' : host);
+    if (denied) return denied;
   }
   if (isSiteApiPath(u.pathname)) {
     return proxySiteFunction(req, meta.websiteId, u);
