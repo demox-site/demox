@@ -5,25 +5,22 @@ const assert = require('node:assert/strict');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
 const { createFunctionHttpHandler, createPlatformHandler } = require('./index.js');
+const { BUSINESS_ROLE_ARN, createBusinessCredentialProvider } = require('./business-credentials.js');
 const {
-  BUSINESS_ROLE_ARN,
-  BUSINESS_SESSION_POLICY,
-  createBusinessCredentialProvider
-} = require('./business-credentials.js');
+  PLATFORM_SES_ROLE_ENV,
+  PLATFORM_SES_ROLE_NAME,
+  PLATFORM_SES_SESSION_POLICY,
+  readPlatformSesRoleArn,
+  createPlatformSesCredentialProvider
+} = require('./platform-ses-credentials.js');
 const { currentSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 
-Object.assign(process.env, {
-  MYSQL_HOST: process.env.MYSQL_HOST || '127.0.0.1',
-  MYSQL_USER: process.env.MYSQL_USER || 'test',
-  MYSQL_PASSWORD: process.env.MYSQL_PASSWORD || 'test',
-  MYSQL_DATABASE: process.env.MYSQL_DATABASE || 'test'
-});
-const { resolveCreds } = require('../website-api/shared/buckets.js');
-
+const SES_ROLE_ARN = `qcs::cam::uin/100021031865:roleName/${PLATFORM_SES_ROLE_NAME}`;
 const ROLE_ENV = {
   TENCENTCLOUD_SECRETID: 'gw-id',
   TENCENTCLOUD_SECRETKEY: 'gw-key',
   TENCENTCLOUD_SESSIONTOKEN: 'gw-token',
+  PLATFORM_SES_ROLE_ARN: SES_ROLE_ARN,
   FUNCTIONS_PLATFORM_RUNTIME_PREFIXES: undefined,
   FUNCTIONS_PLATFORM_SITE_MODE: undefined
 };
@@ -79,52 +76,70 @@ async function publishSystem(service, { name, slug, routes }) {
   return created;
 }
 
-function bucketCreds() {
-  return resolveCreds({
-    hasOwnCreds: false,
-    provider: 'cos',
-    bucket: 'demox-sites',
-    region: 'ap-guangzhou',
-    endpoint: null,
-    forcePathStyle: false
-  });
+function policyActions(policy) {
+  return policy.statement.flatMap((statement) => statement.action);
 }
 
-function harness({ assume, logger }) {
-  const provider = createBusinessCredentialProvider({ logger, assume });
+function harness({ sesAssume, logger }) {
+  let runtimeRoleAssumed = 0;
+  const business = createBusinessCredentialProvider({
+    logger,
+    assume: async () => {
+      runtimeRoleAssumed += 1;
+      const error = new Error('demox-runtime-role must not be assumed for mail');
+      error.code = 'UNEXPECTED_RUNTIME_ROLE';
+      throw error;
+    }
+  });
+  const ses = createPlatformSesCredentialProvider({ logger, assume: sesAssume });
   const seen = [];
   let handlerCalls = 0;
   const userHandler = createFunctionHttpHandler({
     repository: new InMemoryFunctionRepository(),
     bundleStore: new InMemoryBundleStore(),
-    businessCredentials: provider,
+    businessCredentials: business,
     logger,
     runtime: {
-      async execute() {
-        throw new Error('platform pool must not run');
+      async execute(opts) {
+        seen.push({ pool: opts.pool, env: { ...(opts.env || {}) } });
+        return { status: 200, headers: {}, body: 'user-runtime' };
       }
     }
   });
   const platform = createPlatformHandler({
     logger,
     userHandler,
+    platformSesCredentials: ses,
     systemHandler: async (event) => {
       handlerCalls += 1;
-      const creds = currentSesCredentials();
-      const bucket = bucketCreds();
-      seen.push({
-        path: event.path,
-        creds,
-        bucketSecretId: bucket.secretId,
-        bucketToken: bucket.securityToken
-      });
+      seen.push({ path: event.path, creds: currentSesCredentials() });
       return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{"success":true}' };
     }
   });
-  return { platform, service: userHandler.service, seen, handlerCalls: () => handlerCalls };
+  return {
+    platform,
+    service: userHandler.service,
+    seen,
+    handlerCalls: () => handlerCalls,
+    runtimeRoleAssumed: () => runtimeRoleAssumed
+  };
 }
 
-test('in-process auth, website, and mcp use assumed credentials instead of the gateway role', async () => {
+test('platform SES role ARN is env-only and rejects demox-runtime-role', () => {
+  assert.equal(PLATFORM_SES_ROLE_ENV, 'PLATFORM_SES_ROLE_ARN');
+  assert.equal(PLATFORM_SES_ROLE_NAME, 'demox-platform-ses');
+  assert.equal(readPlatformSesRoleArn({}), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: BUSINESS_ROLE_ARN }), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: 'role/demox-platform-ses' }), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: SES_ROLE_ARN }), SES_ROLE_ARN);
+  const actions = policyActions(PLATFORM_SES_SESSION_POLICY);
+  assert.deepEqual(actions.sort(), ['ses:GetEmailTemplate', 'ses:SendEmail']);
+  const text = JSON.stringify(PLATFORM_SES_SESSION_POLICY);
+  assert.equal(/cos:|teo:|dnspod:|cls:|ssl:/i.test(text), false);
+  assert.equal(text.includes('demox-runtime-role'), false);
+});
+
+test('in-process send-code assumes demox-platform-ses and not demox-runtime-role', async () => {
   const assumeCalls = [];
   const logs = [];
   const logger = {
@@ -134,7 +149,7 @@ test('in-process auth, website, and mcp use assumed credentials instead of the g
   await withEnv(ROLE_ENV, async () => {
     const app = harness({
       logger,
-      assume: async (request) => {
+      sesAssume: async (request) => {
         assumeCalls.push(request);
         return assumedCredentials();
       }
@@ -150,30 +165,39 @@ test('in-process auth, website, and mcp use assumed credentials instead of the g
       body: { action: 'login', email: 'user@example.com' }
     });
     assert.equal(login.statusCode, 200);
-    assert.equal(login.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
-    assert.equal(assumeCalls.length, 1);
-    assert.equal(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
-    assert.equal(assumeCalls[0].policy, BUSINESS_SESSION_POLICY);
-    assert.equal(assumeCalls[0].token, 'gw-token');
-    assert.equal(sessionHasSes(assumeCalls[0].policy), true);
-    assert.match(assumeCalls[0].roleSessionName, /auth/);
-    assert.equal(app.seen[0].creds.secretId, 'lin-ses-id');
-    assert.equal(app.seen[0].creds.secretKey, 'lin-ses-key');
-    assert.equal(app.seen[0].creds.token, 'lin-ses-token');
-    assert.equal(app.seen[0].bucketSecretId, 'lin-ses-id');
-    assert.equal(app.seen[0].bucketToken, 'lin-ses-token');
-    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
-    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
+    assert.equal(assumeCalls.length, 0);
+    assert.equal(app.seen[0].creds.secretId, 'gw-id');
 
-    const sendCode = await app.platform({
+    const first = await app.platform({
       httpMethod: 'POST',
       path: '/auth/send-code',
       headers: {},
       body: { email: 'user@example.com', type: 'login' }
     });
-    assert.equal(sendCode.statusCode, 200);
-    assert.equal(assumeCalls.length, 1, 'auth send-code reuses the cached assumption');
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
+    assert.equal(assumeCalls.length, 1);
+    assert.equal(assumeCalls[0].roleArn, SES_ROLE_ARN);
+    assert.equal(assumeCalls[0].roleArn.includes('demox-runtime-role'), false);
+    assert.notEqual(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+    assert.equal(assumeCalls[0].policy, PLATFORM_SES_SESSION_POLICY);
+    assert.equal(assumeCalls[0].token, 'gw-token');
     assert.equal(app.seen[1].creds.secretId, 'lin-ses-id');
+    assert.equal(app.seen[1].creds.secretKey, 'lin-ses-key');
+    assert.equal(app.seen[1].creds.token, 'lin-ses-token');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
+    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
+    assert.equal(app.runtimeRoleAssumed(), 0);
+
+    const second = await app.platform({
+      httpMethod: 'POST',
+      path: '/auth/send-code',
+      headers: {},
+      body: { action: 'send_code', email: 'user@example.com' }
+    });
+    assert.equal(second.statusCode, 200);
+    assert.equal(assumeCalls.length, 1, 'the second send-code reuses the cached assumption');
+    assert.equal(app.seen[2].creds.secretId, 'lin-ses-id');
 
     const website = await app.platform({
       httpMethod: 'POST',
@@ -182,13 +206,8 @@ test('in-process auth, website, and mcp use assumed credentials instead of the g
       body: { action: 'list' }
     });
     assert.equal(website.statusCode, 200);
-    assert.equal(website.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
-    assert.equal(assumeCalls.length, 2);
-    assert.equal(assumeCalls[1].policy, BUSINESS_SESSION_POLICY);
-    assert.match(assumeCalls[1].roleSessionName, /website/);
-    assert.equal(app.seen[2].creds.secretId, 'lin-ses-id');
-    assert.equal(app.seen[2].bucketSecretId, 'lin-ses-id');
-    assert.notEqual(app.seen[2].bucketSecretId, 'gw-id');
+    assert.equal(assumeCalls.length, 1);
+    assert.equal(app.seen[3].creds.secretId, 'gw-id');
 
     const mcp = await app.platform({
       httpMethod: 'POST',
@@ -197,26 +216,76 @@ test('in-process auth, website, and mcp use assumed credentials instead of the g
       body: { action: 'send_code', email: 'user@example.com' }
     });
     assert.equal(mcp.statusCode, 200);
-    assert.equal(mcp.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
-    assert.equal(assumeCalls.length, 3);
-    assert.match(assumeCalls[2].roleSessionName, /mcp/);
-    assert.equal(app.seen[3].creds.secretId, 'lin-ses-id');
-
-    await app.platform({
-      httpMethod: 'POST',
-      path: '/website',
-      headers: {},
-      body: { action: 'list' }
-    });
-    assert.equal(assumeCalls.length, 3, 'website reuses the cached assumption');
-    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
-    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
+    assert.equal(assumeCalls.length, 1);
+    assert.equal(app.seen[4].creds.secretId, 'gw-id');
+    assert.equal(app.runtimeRoleAssumed(), 0);
     assert.equal(logs.some((line) => JSON.stringify(line).includes('lin-ses')), false);
     assert.equal(logs.some((line) => JSON.stringify(line).includes('gw-token')), false);
   });
 });
 
-test('a failed in-process assume is a clean 5xx and does not call auth', async () => {
+test('missing platform SES role is a clean 5xx and does not call auth or demox-runtime-role', async () => {
+  const assumeCalls = [];
+  const logs = [];
+  const logger = {
+    warn: (...args) => logs.push(args.join(' ')),
+    error: (...args) => logs.push(args.join(' '))
+  };
+  await withEnv({ ...ROLE_ENV, PLATFORM_SES_ROLE_ARN: undefined }, async () => {
+    const app = harness({
+      logger,
+      sesAssume: async (request) => {
+        assumeCalls.push(request);
+        return assumedCredentials();
+      }
+    });
+    await publishSystem(app.service, { name: 'Auth', slug: 'auth', routes: ['/auth'] });
+    const response = await app.platform({
+      httpMethod: 'POST',
+      path: '/auth/send-code',
+      headers: {},
+      body: { email: 'user@example.com' }
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 500);
+    assert.equal(body.error, 'PLATFORM_SES_ROLE_MISSING');
+    assert.equal(body.message, '验证码暂时无法发送');
+    assert.equal(assumeCalls.length, 0);
+    assert.equal(app.handlerCalls(), 0);
+    assert.equal(app.runtimeRoleAssumed(), 0);
+    assert.equal(response.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
+    assert.ok(logs.some((line) => line.includes('PLATFORM_SES_ROLE_MISSING')));
+  });
+});
+
+test('a demox-runtime-role ARN is refused before AssumeRole', async () => {
+  const assumeCalls = [];
+  await withEnv({ ...ROLE_ENV, PLATFORM_SES_ROLE_ARN: BUSINESS_ROLE_ARN }, async () => {
+    const app = harness({
+      logger: { warn() {}, error() {} },
+      sesAssume: async (request) => {
+        assumeCalls.push(request);
+        return assumedCredentials();
+      }
+    });
+    await publishSystem(app.service, { name: 'Auth', slug: 'auth', routes: ['/auth'] });
+    const response = await app.platform({
+      httpMethod: 'POST',
+      path: '/auth/send-code',
+      headers: {},
+      body: { email: 'user@example.com' }
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 500);
+    assert.equal(body.error, 'PLATFORM_SES_ROLE_MISSING');
+    assert.equal(assumeCalls.length, 0);
+    assert.equal(app.handlerCalls(), 0);
+    assert.equal(app.runtimeRoleAssumed(), 0);
+  });
+});
+
+test('a failed platform SES assume is a clean 5xx and does not call auth', async () => {
   const logs = [];
   const logger = {
     warn: (...args) => logs.push(args.join(' ')),
@@ -225,14 +294,13 @@ test('a failed in-process assume is a clean 5xx and does not call auth', async (
   await withEnv(ROLE_ENV, async () => {
     const app = harness({
       logger,
-      assume: async () => {
+      sesAssume: async () => {
         const error = new Error('请检查Region参数');
         error.code = 'InvalidParameter';
         throw error;
       }
     });
     await publishSystem(app.service, { name: 'Auth', slug: 'auth', routes: ['/auth'] });
-    await publishSystem(app.service, { name: 'Website', slug: 'website', routes: ['/website'] });
     const response = await app.platform({
       httpMethod: 'POST',
       path: '/auth/send-code',
@@ -242,22 +310,13 @@ test('a failed in-process assume is a clean 5xx and does not call auth', async (
     const body = JSON.parse(response.body);
     assert.equal(response.statusCode, 500);
     assert.equal(body.error, 'BUSINESS_ROLE_ASSUME_FAILED');
-    assert.equal(body.message, '业务凭证暂时不可用');
+    assert.equal(body.message, '验证码暂时无法发送');
     assert.equal(JSON.stringify(body).includes('请检查Region参数'), false);
     assert.equal(JSON.stringify(body).includes('gw-'), false);
+    assert.equal(JSON.stringify(body).includes('demox-runtime-role'), false);
     assert.equal(response.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
     assert.equal(app.handlerCalls(), 0);
-    const website = await app.platform({
-      httpMethod: 'POST',
-      path: '/website',
-      headers: {},
-      body: { action: 'list' }
-    });
-    const websiteBody = JSON.parse(website.body);
-    assert.equal(website.statusCode, 500);
-    assert.equal(websiteBody.error, 'BUSINESS_ROLE_ASSUME_FAILED');
-    assert.equal(websiteBody.message, '业务凭证暂时不可用');
-    assert.equal(app.handlerCalls(), 0);
+    assert.equal(app.runtimeRoleAssumed(), 0);
     assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
     assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
     assert.ok(logs.some((line) => line.includes('BUSINESS_ROLE_ASSUME_FAILED')));
@@ -265,9 +324,3 @@ test('a failed in-process assume is a clean 5xx and does not call auth', async (
     assert.equal(logs.some((line) => line.includes('gw-id') || line.includes('gw-token')), false);
   });
 });
-
-function sessionHasSes(policy) {
-  return policy.statement.some((statement) => (
-    Array.isArray(statement.action) && statement.action.includes('ses:SendEmail')
-  ));
-}

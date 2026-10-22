@@ -3,12 +3,10 @@
 const { AsyncLocalStorage } = require('async_hooks');
 
 /**
- * 进程内 auth / website / mcp 的腾讯云临时凭证。
- * 网关在进入这三个系统函数之前，用 createBusinessCredentialProvider
- * AssumeRole 到磷的 demox-runtime-role（与平台池同一份会话策略和缓存），
- * 再把临时密钥放进这里。SES、COS、TEO 等客户端读这里，不读网关的 TENCENTCLOUD_*。
- * 不写 process.env，避免盖掉网关自己的角色凭证（带会话策略的 token 不能调 SSL）。
- * 没有这份上下文时（平台池、独立进程）仍读进程环境变量。
+ * 进程内 /auth/send-code 的 SES 凭证。
+ * 网关 AssumeRole 到磷的 demox-platform-ses（环境变量 PLATFORM_SES_ROLE_ARN）之后，
+ * 把临时密钥放进这里。不写 process.env，也不给 website、mcp 或用户函数。
+ * 没有这份上下文时才读进程环境变量（平台池 / 独立 auth 进程）。
  */
 const store = new AsyncLocalStorage();
 

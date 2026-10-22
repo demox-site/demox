@@ -13,9 +13,7 @@ const https = require('https');
  * 证书 SSL 不走这条临时凭证：带会话策略的 token 调 SSL 会 invalid token。
  * cert-renew 和网关进程内的证书调用继续用角色凭证本身。
  *
- * 前缀开关默认空时，平台池不会派发。进程内的 auth / website / mcp
- * 在进入系统函数之前仍进这里：同一份角色、同一份会话策略、同一套缓存。
- * 临时密钥注入腾讯云客户端，不替换网关的 TENCENTCLOUD_*。cert-renew 不进这里。
+ * 前缀开关默认空。只有平台池派发才会进这里，进程内路径不签发。
  * 回滚：清空 FUNCTIONS_PLATFORM_RUNTIME_PREFIXES，流量回到进程内；
  * 已发布的函数版本用 deploy-function-api 的 rollback（磷 version=19，易点 version_ek=3）。
  */

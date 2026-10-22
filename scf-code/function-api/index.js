@@ -11,7 +11,7 @@ const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, cre
 const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
 const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
-const { credentialKind } = require('./business-credentials.js');
+const { createPlatformSesCredentialProvider } = require('./platform-ses-credentials.js');
 const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
@@ -344,9 +344,11 @@ function createPlatformHandler({
   systemRouterOptions = {},
   logger = console,
   seedPlatformSite = false,
+  platformSesCredentials = null,
   ...functionOptions
 } = {}) {
   const resolvedUserHandler = userHandler || createFunctionHttpHandler({ logger, ...functionOptions });
+  const sesCredentials = platformSesCredentials || createPlatformSesCredentialProvider({ logger });
   const resolvedSystemHandler = systemHandler || createSystemFunctionRouter({
     ...systemRouterOptions,
     entries: systemEntries,
@@ -366,34 +368,32 @@ function createPlatformHandler({
     }
   }
 
-  // 进程内 auth / website / mcp 与平台池共用 service 上的 createBusinessCredentialProvider：
-  // 同一角色（磷 demox-runtime-role）、同一份会话策略、同一套缓存和刷新。
-  // 临时密钥只注入当次调用，不写 process.env。签发失败直接 5xx，不回落到网关自己的角色。
+  function isAuthSendCodeEvent(entry, event) {
+    if (!entry || systemFunctionSlug(entry) !== 'auth') return false;
+    const method = String(event.httpMethod || event.requestContext?.http?.method || 'POST').toUpperCase();
+    if (method !== 'POST') return false;
+    const body = parseBody(event);
+    const path = normalizePath(event.path || event.rawPath || event.requestContext?.http?.path || body.path || '/');
+    return path === '/auth/send-code' || body.action === 'send_code';
+  }
+
+  // 只有进程内发验证码签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
+  // 不 Assume demox-runtime-role，不把临时密钥写进 process.env，website / mcp / 用户函数拿不到。
+  // 角色没配或签发失败直接 5xx，不回落到网关自己的 TENCENTCLOUD_*。
   async function dispatchInProcessSystem(entry, event, context, dispatch) {
     const runHandler = () => resolvedSystemHandler(event, context);
-    const slug = systemFunctionSlug(entry);
-    if (credentialKind(slug) !== 'business') {
-      return withDispatchHeader(await runHandler(), dispatch);
-    }
-    const provider = resolvedUserHandler && resolvedUserHandler.service && resolvedUserHandler.service.businessCredentials;
-    if (!provider || typeof provider.credentialsFor !== 'function') {
+    if (!isAuthSendCodeEvent(entry, event)) {
       return withDispatchHeader(await runHandler(), dispatch);
     }
     let cloud;
     try {
-      cloud = await provider.credentialsFor({
-        kind: 'business',
-        slug,
-        functionId: `in-process:${slug}`,
-        websiteId: platformWebsiteId(),
-        sourceEnv: process.env
-      });
+      cloud = await sesCredentials.credentialsFor();
     } catch (error) {
       const code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
         ? String(error.code)
         : 'BUSINESS_ROLE_ASSUME_FAILED';
-      logger.error?.('进程内业务凭证签发失败:', code);
-      const clean = new FunctionApiError('业务凭证暂时不可用', code, 500);
+      logger.error?.('进程内验证码凭证签发失败:', code);
+      const clean = new FunctionApiError('验证码暂时无法发送', code, 500);
       return withDispatchHeader(errorResponse(clean, event), dispatch);
     }
     const response = await runWithSesCredentials({

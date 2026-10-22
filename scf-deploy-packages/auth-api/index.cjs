@@ -1456,9 +1456,9 @@ function formatSesFromAddress(env = process.env) {
 
 /**
  * 发送邮件（使用腾讯云 SES 模板）
- * 进程内路径用网关放进 AsyncLocalStorage 的临时密钥（磷 demox-runtime-role），
- * 不读网关进程的 TENCENTCLOUD_*。没有这份上下文时才读进程环境变量
- * （独立 auth 进程 / 平台池调用环境）。
+ * 进程内发验证码只使用网关放进 AsyncLocalStorage 的 demox-platform-ses 临时密钥。
+ * 角色缺失或签发失败时网关直接 5xx，不会落到这里去读 TENCENTCLOUD_* 或 demox-runtime-role。
+ * 没有这份上下文时（独立 auth 进程 / 平台池调用环境）才读进程环境变量。
  */
 async function sendEmail(to, code, type) {
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {

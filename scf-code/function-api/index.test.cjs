@@ -524,7 +524,19 @@ test('in-process MCP auth routes reach system-auth when AUTH_API_URL is a bare h
   const authCalls = [];
   let mcpCalls = 0;
   let userCalls = 0;
+  let sesCalls = 0;
   const handler = createPlatformHandler({
+    // MCP /send-code 会再进进程内 auth。只有这一跳签发平台发信凭证，不 Assume demox-runtime-role。
+    platformSesCredentials: {
+      async credentialsFor() {
+        sesCalls += 1;
+        return {
+          TENCENTCLOUD_SECRETID: 'platform-ses-id',
+          TENCENTCLOUD_SECRETKEY: 'platform-ses-key',
+          TENCENTCLOUD_SESSIONTOKEN: 'platform-ses-token'
+        };
+      }
+    },
     systemRouterOptions: {
       loaders: {
         'demox-system-auth': () => ({
@@ -578,12 +590,14 @@ test('in-process MCP auth routes reach system-auth when AUTH_API_URL is a bare h
         authCalls.length = 0;
         mcpCalls = 0;
         userCalls = 0;
+        sesCalls = 0;
         const response = await handler(event(path, 'POST', {}));
         const payload = JSON.parse(response.body);
         assert.equal(response.statusCode, 400, `${value} ${path}`);
         assert.equal(payload.error, message, `${value} ${path}`);
         assert.equal(mcpCalls, 1, `${value} ${path}`);
         assert.equal(userCalls, 0, `${value} ${path}`);
+        assert.equal(sesCalls, path === '/send-code' ? 1 : 0, `${value} ${path}`);
         assert.equal(authCalls.length, 1, `${value} ${path}`);
         assert.equal(authCalls[0].path, '/auth', `${value} ${path}`);
         const signature = `${response.statusCode}:${payload.error}`;
@@ -707,18 +721,6 @@ test('Node.js functions run outside the router process and can require jsonwebto
   assert.deepEqual(JSON.parse(invoked.body), { site: 'site-a', leaked: null, tokenOk: true });
 });
 
-function assumedBusinessCredentials() {
-  return {
-    async credentialsFor() {
-      return {
-        TENCENTCLOUD_SECRETID: 'assumed-id',
-        TENCENTCLOUD_SECRETKEY: 'assumed-key',
-        TENCENTCLOUD_SESSIONTOKEN: 'assumed-token'
-      };
-    }
-  };
-}
-
 async function publishPlatformAuth() {
   const app = makeApp();
   const created = JSON.parse((await app.handler(event('/functions', 'POST', {
@@ -742,8 +744,7 @@ async function publishPlatformAuth() {
       repository: app.repository,
       bundleStore: app.bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
-      publicBaseUrl: 'https://functions.test',
-      businessCredentials: assumedBusinessCredentials()
+      publicBaseUrl: 'https://functions.test'
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });
@@ -778,8 +779,7 @@ test('public custom-domain routes ignore a published website bundle and stay in 
         bundleStore: app.bundleStore,
         runtime,
         authenticate: () => ({ userId: 'user-1' }),
-        publicBaseUrl: 'https://functions.test',
-        businessCredentials: assumedBusinessCredentials()
+        publicBaseUrl: 'https://functions.test'
       }),
       systemRouterOptions: {
         loaders: {
@@ -929,8 +929,7 @@ test('custom site routes take over only when they are not system prefixes', asyn
       repository,
       bundleStore,
       authenticate: () => ({ userId: 'user-1' }),
-      publicBaseUrl: 'https://functions.test',
-      businessCredentials: assumedBusinessCredentials()
+      publicBaseUrl: 'https://functions.test'
     }),
     systemHandler: async () => ({ statusCode: 418, body: 'system' })
   });
