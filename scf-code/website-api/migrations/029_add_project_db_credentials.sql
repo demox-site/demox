@@ -1,5 +1,5 @@
 -- 项目数据库的连接密码。主机、端口和用户名不落在这张表里：
--- 用户名是项目对外 ID，主机和端口是 API 的地址。
+-- 主机是 db.demox.site，端口是 3306，用户名是项目对外 ID。
 -- 密码只存密文。可重复执行。
 
 CREATE TABLE IF NOT EXISTS project_db_credentials (

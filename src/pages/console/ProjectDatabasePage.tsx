@@ -75,7 +75,7 @@ const texts = {
     password: "密码",
     showPassword: "显示密码",
     hidePassword: "隐藏密码",
-    directHint: "用这四项发 HTTPS 请求。用户名是项目 ID，密码只属于这个项目。命令里的 notes 是示例表。",
+    directHint: "用这四项连数据库。用户名是项目 ID，密码只属于这个项目。",
     apiHint: "也可以用访问令牌调 API。令牌在访问令牌页创建，放在 Authorization: Bearer 里。",
     copyValue: "复制",
     copied: "已复制",
@@ -145,7 +145,7 @@ const texts = {
     password: "Password",
     showPassword: "Show password",
     hidePassword: "Hide password",
-    directHint: "Send HTTPS requests with these four values. The username is the project ID, and the password belongs to this project. notes in the command is an example table.",
+    directHint: "Connect to the database with these four values. The username is the project ID, and the password belongs to this project.",
     apiHint: "You can also call the API with an access token. Create it on the Access Tokens page and send Authorization: Bearer.",
     copyValue: "Copy",
     copied: "Copied",
@@ -155,33 +155,26 @@ const texts = {
   }
 } as const;
 
-function connectionTarget() {
-  const base = config.websiteApiUrl.replace(/\/+$/, "");
-  const url = new URL(base);
-  return {
-    base,
-    host: url.hostname,
-    port: url.port || (url.protocol === "https:" ? "443" : "80")
-  };
+const DB_HOST = "db.demox.site";
+const DB_PORT = "3306";
+
+function apiBase() {
+  return config.websiteApiUrl.replace(/\/+$/, "");
 }
 
 function directSnippet(username: string, password: string) {
-  const target = connectionTarget();
   const secret = password || "PASSWORD";
-  return `curl -u '${username}:${secret}' \\
-  -X POST '${target.base}/website/list-project-rows' \\
-  -H 'Content-Type: application/json' \\
-  --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'`;
+  return `mysql -h ${DB_HOST} -P ${DB_PORT} -u '${username}' -p'${secret}'`;
 }
 
 function apiSnippet(username: string) {
-  const target = connectionTarget();
-  return `curl -X POST '${target.base}/website/list-project-rows' \\
+  const base = apiBase();
+  return `curl -X POST '${base}/website/list-project-rows' \\
   -H 'Authorization: Bearer $DEMOX_TOKEN' \\
   -H 'Content-Type: application/json' \\
   --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'
 
-curl -X POST '${target.base}/website/put-project-row' \\
+curl -X POST '${base}/website/put-project-row' \\
   -H 'Authorization: Bearer $DEMOX_TOKEN' \\
   -H 'Content-Type: application/json' \\
   --data '{"action":"put_project_row","projectId":"${username}","table":"notes","values":{"id":"1","body":"hello"}}'`;
@@ -212,7 +205,7 @@ function displayValue(value: string | number | boolean | null | undefined, yes: 
 function DatabaseConnectGuide({ projectId }: { projectId: string }) {
   const { copy } = useDatabaseCopy();
   const { toast } = useToast();
-  const target = connectionTarget();
+  const target = { host: DB_HOST, port: DB_PORT };
   const [mode, setMode] = useState<"direct" | "api">("direct");
   const [username, setUsername] = useState(projectId);
   const [password, setPassword] = useState("");
