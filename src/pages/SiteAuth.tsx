@@ -3,6 +3,8 @@ import { LockKeyhole, ShieldCheck } from "lucide-react";
 import { AuthDialog } from "@/components/AuthDialog";
 import { Button } from "@/components/ui";
 import { tokenManager } from "@/api";
+import { useLanguage } from "@/hooks/use-language";
+import { embeddedGateCopy } from "@/lib/embedded-gate-language";
 import {
   isAllowedSiteReturnUrl,
   rememberSiteAuthHandoff,
@@ -20,50 +22,26 @@ function isEmbeddedGate() {
   return new URLSearchParams(window.location.search).get("embedded") === "1";
 }
 
-function SiteGateBackdrop({ host }: { host: string }) {
+function SiteGatePill({ label }: { label: string }) {
   return (
-    <>
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed inset-[-3rem] scale-105 overflow-hidden bg-[#f5f5f2] opacity-85 blur-xl dark:bg-[#101010]"
-      >
-        <div className="absolute -right-32 top-0 h-96 w-96 rounded-full bg-zinc-950/10 dark:bg-white/10 blur-3xl" />
-        <div className="absolute -left-24 bottom-0 h-96 w-96 rounded-full bg-zinc-950/10 dark:bg-white/10 blur-3xl" />
-        <header className="flex h-20 items-center justify-between border-b border-zinc-950/10 bg-white/70 px-[7vw] dark:border-white/10 dark:bg-zinc-900/70">
-          <div className="flex items-center gap-4">
-            <span className="h-9 w-9 rounded-xl bg-zinc-950 dark:bg-white/80" />
-            <span className="h-4 w-28 rounded-full bg-zinc-950/70 dark:bg-white/70" />
-          </div>
-          <div className="hidden items-center gap-4 sm:flex">
-            <span className="h-3 w-16 rounded-full bg-zinc-950/30 dark:bg-white/30" />
-            <span className="h-3 w-16 rounded-full bg-zinc-950/30 dark:bg-white/30" />
-            <span className="h-3 w-16 rounded-full bg-zinc-950/30 dark:bg-white/30" />
-          </div>
-          <span className="h-10 w-24 rounded-full bg-zinc-950 dark:bg-white/80" />
-        </header>
-        <main className="mx-auto mt-[10vh] w-[88vw] max-w-6xl">
-          <div className="h-7 w-36 rounded-full bg-zinc-950/25 dark:bg-white/25" />
-          <div className="mt-8 h-32 w-[min(64vw,48rem)] rounded-2xl bg-zinc-950/80 dark:bg-white/75" />
-          <div className="mt-7 h-16 w-[min(56vw,38rem)] rounded-xl bg-zinc-950/20 dark:bg-white/20" />
-          <div className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-[1.1fr_.9fr]">
-            <div className="h-64 rounded-[2rem] border border-zinc-950/10 bg-white/75 shadow-2xl dark:border-white/10 dark:bg-zinc-900/75" />
-            <div className="hidden h-64 rounded-[2rem] border border-zinc-950/10 bg-white/75 shadow-2xl dark:border-white/10 dark:bg-zinc-900/75 sm:block" />
-          </div>
-        </main>
-      </div>
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 bg-zinc-950/30 shadow-[inset_0_0_10rem_rgba(0,0,0,0.18)] dark:bg-black/40" />
-      <div className="pointer-events-none fixed left-1/2 top-[max(1rem,env(safe-area-inset-top))] z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 overflow-hidden rounded-full border border-white/25 bg-zinc-950/65 px-3.5 py-2 text-xs font-bold text-white/90 shadow-xl backdrop-blur-xl">
-        <span className="h-2 w-2 shrink-0 rounded-full bg-zinc-100 shadow-[0_0_0_.25rem_rgba(255,255,255,0.12)]" />
-        <span className="truncate">{host} 是私有项目</span>
-      </div>
-    </>
+    <div className="pointer-events-none fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 overflow-hidden rounded-full border border-white/25 bg-zinc-950/65 px-3.5 py-2 text-xs font-bold text-white/90 shadow-xl backdrop-blur-xl">
+      <span className="h-2 w-2 shrink-0 rounded-full bg-[#9a9a9a]" />
+      <span className="truncate">{label}</span>
+    </div>
   );
 }
 
 export function SiteAuth() {
   const nextUrl = useMemo(() => readNextUrl(), []);
   const embedded = useMemo(() => isEmbeddedGate() && Boolean(nextUrl), [nextUrl]);
+  const { language } = useLanguage();
+  const gateCopy = embeddedGateCopy(language);
   const [loginOpen, setLoginOpen] = useState(true);
+
+  useEffect(() => {
+    if (!embedded) return;
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+  }, [embedded, language]);
 
   const finishSiteLogin = React.useCallback(() => {
     const token = tokenManager.get();
@@ -98,15 +76,15 @@ export function SiteAuth() {
 
   if (embedded) {
     return (
-      <div className="relative min-h-screen overflow-hidden bg-[#f5f5f2] dark:bg-[#101010]">
-        <SiteGateBackdrop host={host} />
+      <div className="relative min-h-screen overflow-hidden bg-[#f7f7f5]">
+        <SiteGatePill label={gateCopy.pill(host)} />
         <AuthDialog
           isOpen
           onOpenChange={() => setLoginOpen(true)}
           onLoginSuccess={handleLoginSuccess}
           presentation="site-gate"
-          title="登录后查看私有项目"
-          description={`登录 Demox 以继续访问 ${host}`}
+          title={gateCopy.title}
+          description={gateCopy.description(host)}
         />
       </div>
     );
