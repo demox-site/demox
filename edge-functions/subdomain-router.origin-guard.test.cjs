@@ -547,7 +547,7 @@ test('subdomain and custom-domain traffic keep the old resolver, including stale
     })
   });
   const gate = await officialPrivate.visit('https://priv8.demox.site/');
-  assert.match(gate.html, /Sign in to view/);
+  assert.match(gate.html, /登录后查看/);
   assert.doesNotMatch(gate.html, /需要重新验证/);
   assert.equal(officialPrivate.calls.origin.length, 0);
   assert.equal(officialPrivate.calls.resolve.some((payload) => payload.websiteId), false);
