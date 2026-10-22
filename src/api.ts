@@ -1207,6 +1207,14 @@ export const websiteApi = {
     );
   },
 
+  deleteProjectTable: async (data: { projectId: string | number; table: string }) => {
+    return request<{ success: boolean; deleted?: string; message?: string; code?: string }>(
+      WEBSITE_API_URL,
+      "/website/delete-project-table",
+      { method: "POST", body: { action: "delete_project_table", ...data } }
+    );
+  },
+
   // 移动站点到项目
   setWebsiteProject: async (data: { docId?: string | number; websiteId?: string; projectId?: string | number | null }) => {
     return request<{ success: boolean; project?: any; websiteId?: string; docId?: string; message?: string }>(
@@ -1595,6 +1603,7 @@ export type ProjectTable = {
   name: string;
   columns: ProjectColumn[];
   rowCount?: number;
+  createdAt?: string | null;
 };
 
 export type ProjectRow = {
