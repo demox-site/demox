@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { Navigate, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, useToast } from "@/components/ui";
 import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
-import { ArrowLeft, Copy, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, Copy, Eye, EyeOff, Plus, RefreshCw, Search } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { websiteApi, type ProjectColumn, type ProjectRow, type ProjectTable } from "@/api";
+import config from "@/configs/env";
 import { translations } from "../home-translations";
 import { useProjects } from "../use-projects";
 
@@ -64,13 +65,23 @@ const texts = {
     deleteTableDesc: "表和里面的行都会去掉。",
     cancel: "取消",
     connect: "连接",
-    connectTitle: "怎么连上这个库",
-    connectHint: "没有主机、端口、用户名和密码。先 demox login，再用这个项目 ID。命令里的 notes 是示例表，换成你的表名。主键列必须是文本。",
-    projectIdLabel: "项目 ID",
-    copyId: "复制项目 ID",
-    copyCommands: "复制命令",
+    connectTitle: "连接",
+    connectHint: "用主机、端口、用户名和密码连接，或者用 API。",
+    tabDirect: "主机",
+    tabApi: "API",
+    host: "主机",
+    port: "端口",
+    username: "用户名",
+    password: "密码",
+    showPassword: "显示密码",
+    hidePassword: "隐藏密码",
+    directHint: "用这四项发 HTTPS 请求。用户名是项目 ID，密码只属于这个项目。命令里的 notes 是示例表。",
+    apiHint: "也可以用访问令牌调 API。令牌在访问令牌页创建，放在 Authorization: Bearer 里。",
+    copyValue: "复制",
     copied: "已复制",
-    connectNote: "云函数拿不到这个库的地址。不要把登录令牌写进函数环境变量。"
+    passwordLoading: "正在读取密码",
+    passwordReadOnly: "需要这个项目的写权限才能看密码。",
+    passwordFailed: "密码没有读到"
   },
   en: {
     title: "Database",
@@ -124,23 +135,56 @@ const texts = {
     deleteTableDesc: "The table and its rows will be removed.",
     cancel: "Cancel",
     connect: "Connect",
-    connectTitle: "How to reach this database",
-    connectHint: "There is no host, port, username, or password. Run demox login, then use this project ID. notes in the commands is an example table; use your table name. The primary column must be text.",
-    projectIdLabel: "Project ID",
-    copyId: "Copy project ID",
-    copyCommands: "Copy commands",
+    connectTitle: "Connect",
+    connectHint: "Connect with host, port, username, and password, or use the API.",
+    tabDirect: "Host",
+    tabApi: "API",
+    host: "Host",
+    port: "Port",
+    username: "Username",
+    password: "Password",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
+    directHint: "Send HTTPS requests with these four values. The username is the project ID, and the password belongs to this project. notes in the command is an example table.",
+    apiHint: "You can also call the API with an access token. Create it on the Access Tokens page and send Authorization: Bearer.",
+    copyValue: "Copy",
     copied: "Copied",
-    connectNote: "Cloud functions do not receive a database address. Do not put a login token in function env."
+    passwordLoading: "Loading password",
+    passwordReadOnly: "Write access to this project is required to view the password.",
+    passwordFailed: "Could not load the password"
   }
 } as const;
 
-function dbCommands(projectId: string) {
-  const id = projectId || "PROJECT_ID";
-  return `demox login
-demox db tables -p ${id}
-demox db create-table -p ${id} -n notes -c '[{"name":"id","type":"text","primary":true},{"name":"body","type":"text"}]'
-demox db put -p ${id} -t notes -v '{"id":"1","body":"hello"}'
-demox db rows -p ${id} -t notes`;
+function connectionTarget() {
+  const base = config.websiteApiUrl.replace(/\/+$/, "");
+  const url = new URL(base);
+  return {
+    base,
+    host: url.hostname,
+    port: url.port || (url.protocol === "https:" ? "443" : "80")
+  };
+}
+
+function directSnippet(username: string, password: string) {
+  const target = connectionTarget();
+  const secret = password || "PASSWORD";
+  return `curl -u '${username}:${secret}' \\
+  -X POST '${target.base}/website/list-project-rows' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'`;
+}
+
+function apiSnippet(username: string) {
+  const target = connectionTarget();
+  return `curl -X POST '${target.base}/website/list-project-rows' \\
+  -H 'Authorization: Bearer $DEMOX_TOKEN' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'
+
+curl -X POST '${target.base}/website/put-project-row' \\
+  -H 'Authorization: Bearer $DEMOX_TOKEN' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"put_project_row","projectId":"${username}","table":"notes","values":{"id":"1","body":"hello"}}'`;
 }
 
 type ColumnDraft = { name: string; type: ProjectColumn["type"]; primary: boolean };
@@ -168,32 +212,102 @@ function displayValue(value: string | number | boolean | null | undefined, yes: 
 function DatabaseConnectGuide({ projectId }: { projectId: string }) {
   const { copy } = useDatabaseCopy();
   const { toast } = useToast();
-  const commands = dbCommands(projectId);
+  const target = connectionTarget();
+  const [mode, setMode] = useState<"direct" | "api">("direct");
+  const [username, setUsername] = useState(projectId);
+  const [password, setPassword] = useState("");
+  const [passwordNote, setPasswordNote] = useState(copy.passwordLoading);
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setUsername(projectId);
+    setPassword("");
+    setPasswordNote(copy.passwordLoading);
+    websiteApi.getProjectDbConnection(projectId).then((response) => {
+      if (!alive) return;
+      if (!response?.success) {
+        setPasswordNote(response?.message || copy.passwordFailed);
+        return;
+      }
+      if (response.username) setUsername(response.username);
+      if (response.password) {
+        setPassword(response.password);
+        setPasswordNote("");
+        return;
+      }
+      setPasswordNote(response.code === "read_only" ? copy.passwordReadOnly : copy.passwordFailed);
+    }).catch((error) => {
+      if (!alive) return;
+      setPasswordNote(error instanceof Error ? error.message : copy.passwordFailed);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [copy.passwordFailed, copy.passwordLoading, copy.passwordReadOnly, projectId]);
+
   const copyText = async (value: string) => {
     if (!value) return;
     await navigator.clipboard.writeText(value);
     toast({ title: copy.copied });
   };
+  const fields = [
+    { label: copy.host, value: target.host },
+    { label: copy.port, value: target.port },
+    { label: copy.username, value: username },
+    { label: copy.password, value: password, secret: true }
+  ];
+  const snippet = mode === "direct" ? directSnippet(username, password) : apiSnippet(username);
+
   return (
     <div className="min-w-0 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">{copy.projectIdLabel}</p>
-          <p className="truncate font-mono text-sm">{projectId}</p>
+      <div className="flex gap-1">
+        {(["direct", "api"] as const).map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => setMode(item)}
+            className={`rounded-md px-3 py-1.5 text-sm ${mode === item ? "bg-muted font-medium" : "text-muted-foreground"}`}
+          >
+            {item === "direct" ? copy.tabDirect : copy.tabApi}
+          </button>
+        ))}
+      </div>
+      {mode === "direct" ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">{copy.directHint}</p>
+          <div className="divide-y rounded-lg border">
+            {fields.map((field) => (
+              <div key={field.label} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">{field.label}</p>
+                  <p className="truncate font-mono text-sm">
+                    {field.secret ? (password ? (showPassword ? password : "••••••••") : passwordNote) : field.value}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {field.secret && password ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? copy.hidePassword : copy.showPassword}>
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="outline" size="sm" disabled={field.secret && !password} onClick={() => void copyText(field.value)}>
+                    <Copy className="mr-2 h-4 w-4" />
+                    {copy.copyValue}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={() => void copyText(projectId)}>
-          <Copy className="mr-2 h-4 w-4" />
-          {copy.copyId}
-        </Button>
-      </div>
-      <pre className="max-w-full overflow-x-auto rounded-md border bg-muted p-3 font-mono text-xs leading-5">{commands}</pre>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="min-w-0 flex-1 text-sm text-muted-foreground">{copy.connectNote}</p>
-        <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => void copyText(commands)}>
-          <Copy className="mr-2 h-4 w-4" />
-          {copy.copyCommands}
-        </Button>
-      </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">{copy.apiHint}</p>
+      )}
+      <pre className="max-w-full overflow-x-auto rounded-md border bg-muted p-3 font-mono text-xs leading-5">{snippet}</pre>
+      <Button type="button" variant="outline" size="sm" onClick={() => void copyText(snippet)}>
+        <Copy className="mr-2 h-4 w-4" />
+        {copy.copyValue}
+      </Button>
     </div>
   );
 }

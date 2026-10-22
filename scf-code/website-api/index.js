@@ -288,6 +288,13 @@ const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
 const buckets = require('./shared/buckets.js');
 const { encrypt, decrypt } = require('./shared/crypto.js');
+const { createProjectDbConnection } = require('./project-db-connection.js');
+const projectDbConnection = createProjectDbConnection({
+  query,
+  resolveProjectId: (input) => resolveProjectId(input),
+  encrypt,
+  decrypt
+});
 const { createFeishuDirectoryClient, FeishuDirectoryError } = require('./shared/feishu-directory.js');
 let createGithubDirectoryClient;
 let GithubDirectoryError;
@@ -2222,6 +2229,7 @@ async function dispatchWebsiteRequest(event, context) {
       list_project_rows: handleListProjectRows,
       put_project_row: handlePutProjectRow,
       delete_project_row: handleDeleteProjectRow,
+      get_project_db_connection: handleGetProjectDbConnection,
       create_project: handleCreateProject,
       update_project: handleUpdateProject,
       archive_project: handleArchiveProject,
@@ -2340,6 +2348,8 @@ async function dispatchWebsiteRequest(event, context) {
       return await handlePutProjectRow(event);
     } else if (pathUrl.includes('/delete-project-row')) {
       return await handleDeleteProjectRow(event);
+    } else if (pathUrl.includes('/get-project-db-connection')) {
+      return await handleGetProjectDbConnection(event);
     } else if (pathUrl.includes('/list-projects')) {
       return await handleListProjects(event);
     } else if (pathUrl.includes('/create-project')) {
@@ -4800,9 +4810,18 @@ async function handleArchiveProject(event) {
 const PROJECT_DATA_CODES = new Set(['bad_name', 'bad_schema', 'exists', 'quota', 'not_found', 'bad_row']);
 
 async function projectDataContext(event, mode) {
+  const body = event.body || event;
+  const basic = await projectDbConnection.authenticateBasic(event);
+  if (basic && basic.projectId) {
+    const requested = await resolveProjectId(body.projectId || body.id || basic.username);
+    if (requested && String(requested) !== String(basic.projectId)) {
+      return { error: ok({ success: false, message: '项目不存在或无权限' }) };
+    }
+    return { projectId: basic.projectId, body };
+  }
+  if (basic && basic.error) return { error: ok({ success: false, message: '用户名或密码不正确' }) };
   const userId = getUserId(event);
   if (!userId) return { error: ok({ success: false, error: '未登录或token已过期' }) };
-  const body = event.body || event;
   const projectId = await resolveProjectId(body.projectId || body.id);
   if (!projectId) return { error: ok({ success: false, message: '缺少 projectId' }) };
   const allowed = mode === 'write'
@@ -4810,6 +4829,31 @@ async function projectDataContext(event, mode) {
     : await canUserReadProject(userId, projectId);
   if (!allowed) return { error: ok({ success: false, message: '项目不存在或无权限' }) };
   return { projectId, body };
+}
+
+async function handleGetProjectDbConnection(event) {
+  const userId = getUserId(event);
+  if (!userId) return ok({ success: false, error: '未登录或token已过期' });
+  const body = event.body || event;
+  const projectId = await resolveProjectId(body.projectId || body.id);
+  if (!projectId) return ok({ success: false, message: '缺少 projectId' });
+  const writable = await canUserWriteProject(userId, projectId);
+  if (!writable) {
+    const readable = await canUserReadProject(userId, projectId);
+    if (!readable) return ok({ success: false, message: '项目不存在或无权限' });
+    return ok({ success: true, username: String(body.projectId || projectId), password: null, code: 'read_only' });
+  }
+  try {
+    const password = await projectDbConnection.issue(projectId);
+    const keyRows = await query('SELECT project_key FROM projects WHERE id = ? LIMIT 1', [projectId]);
+    const username = keyRows[0] && keyRows[0].project_key ? String(keyRows[0].project_key) : String(body.projectId || projectId);
+    return ok({ success: true, username, password });
+  } catch (error) {
+    if (error && /ENCRYPTION_KEY/.test(error.message || '')) {
+      return ok({ success: false, code: 'unavailable', message: '连接密码还不能签发' });
+    }
+    return projectDataFailure(error);
+  }
 }
 
 function projectDataFailure(error) {

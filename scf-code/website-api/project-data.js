@@ -237,7 +237,8 @@ function createProjectData(query) {
 async function deleteProjectData(exec, projectId) {
   for (const sql of [
     'DELETE FROM project_rows WHERE project_id = ?',
-    'DELETE FROM project_tables WHERE project_id = ?'
+    'DELETE FROM project_tables WHERE project_id = ?',
+    'DELETE FROM project_db_credentials WHERE project_id = ?'
   ]) {
     try {
       await exec(sql, [projectId]);
