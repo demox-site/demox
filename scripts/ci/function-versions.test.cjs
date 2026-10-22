@@ -218,7 +218,7 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
   assert.ok(manifest.functions.every((fn) => fn.runtimeVersion === '0.1.0'));
-  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.17');
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.18');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
   assert.equal(v.deployEntry(manifest).name, 'demox-function-api');
@@ -251,7 +251,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.match(websiteOnly.errors.join('\n'), /demox-function-api 的代码变了/);
 
   const websiteBumped = structuredClone(manifest);
-  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.18';
+  websiteBumped.functions.find((fn) => fn.name === 'demox-function-api').appVersion = '0.1.19';
   const websiteAfterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: websiteBumped,
@@ -275,7 +275,7 @@ test('PR check: code without an app bump fails once the manifest exists on base'
   assert.equal(testsOnly.ok, true, testsOnly.errors.join('\n'));
 
   const bumped = structuredClone(manifest);
-  bumped.functions[0].appVersion = '0.1.18';
+  bumped.functions[0].appVersion = '0.1.19';
   const afterBump = v.evaluateChanges({
     baseManifest: manifest,
     headManifest: bumped,
@@ -329,7 +329,7 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.equal(api.runtime.memoryMB, 512);
   assert.equal(api.runtime.timeoutSec, 300);
   assert.deepEqual(api.runtime.layers, []);
-  assert.equal(api.appVersion, '0.1.17');
+  assert.equal(api.appVersion, '0.1.18');
   assert.equal(api.runtimeVersion, '0.1.0');
   const requests = v.asyncInvokeRequests(api);
   assert.deepEqual(requests.map((item) => item.payload.Qualifier), ['production', '$LATEST']);
@@ -420,7 +420,7 @@ test('release log records versions, commit, sha256, approver, and time', () => {
 
 test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.1\.17 runtime=0\.1\.0/);
+  assert.match(plan, /demox-function-api app=0\.1\.18 runtime=0\.1\.0/);
   assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);
