@@ -1,0 +1,62 @@
+name: Release smoke
+
+# 可复用的双账号冒烟。自己不发布、不回滚、不开 issue。
+# 调用方在自己的 environment 里把 secrets 和地址传进来；失败后由调用方回滚并开 release-failure issue。
+# 凭证只有 DEMOX_SMOKE_EMAIL / DEMOX_SMOKE_PASSWORD，不写进仓库。
+on:
+  workflow_call:
+    inputs:
+      ek_base:
+        description: "易点 API 根地址，生产一般是 https://api.demox.site"
+        required: true
+        type: string
+      lin_base:
+        description: "磷备源站 API 根地址。不要填会被 EdgeOne 转到易点的那一个前门"
+        required: true
+        type: string
+      website_id:
+        description: "测试账号名下、用来反复发布的站点 ID"
+        required: true
+        type: string
+      expect_bundle:
+        description: "www 刚发布的 bundle，例如 assets/index-abc.js。空则只核对页面里现有的 bundle 返回 200"
+        required: false
+        type: string
+        default: ""
+      www_mirror_url:
+        description: "sites.demox.site 上的 www index。空则不查这一路"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      DEMOX_SMOKE_EMAIL:
+        required: true
+      DEMOX_SMOKE_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
+
+      - name: Dual-account smoke
+        env:
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+          DEMOX_SMOKE_EK_BASE: ${{ inputs.ek_base }}
+          DEMOX_SMOKE_LIN_BASE: ${{ inputs.lin_base }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ inputs.website_id }}
+          EXPECT_BUNDLE: ${{ inputs.expect_bundle }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ inputs.www_mirror_url }}
+        run: node scripts/ci/release-smoke.cjs
