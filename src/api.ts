@@ -1215,6 +1215,14 @@ export const websiteApi = {
     );
   },
 
+  getProjectDbConnection: async (projectId: string | number) => {
+    return request<{ success: boolean; username?: string; password?: string | null; code?: string; message?: string }>(
+      WEBSITE_API_URL,
+      "/website/get-project-db-connection",
+      { method: "POST", body: { action: "get_project_db_connection", projectId } }
+    );
+  },
+
   // 移动站点到项目
   setWebsiteProject: async (data: { docId?: string | number; websiteId?: string; projectId?: string | number | null }) => {
     return request<{ success: boolean; project?: any; websiteId?: string; docId?: string; message?: string }>(

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Button, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, useToast } from "@/components/ui";
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, useToast } from "@/components/ui";
 import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
-import { ArrowLeft, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, Copy, Eye, EyeOff, Plus, RefreshCw, Search } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { websiteApi, type ProjectColumn, type ProjectRow, type ProjectTable } from "@/api";
+import config from "@/configs/env";
 import { translations } from "../home-translations";
 import { useProjects } from "../use-projects";
 
@@ -62,7 +63,25 @@ const texts = {
     deleteTable: "删除表",
     deleteTableTitle: "删除这张表",
     deleteTableDesc: "表和里面的行都会去掉。",
-    cancel: "取消"
+    cancel: "取消",
+    connect: "连接",
+    connectTitle: "连接",
+    connectHint: "用主机、端口、用户名和密码连接，或者用 API。",
+    tabDirect: "主机",
+    tabApi: "API",
+    host: "主机",
+    port: "端口",
+    username: "用户名",
+    password: "密码",
+    showPassword: "显示密码",
+    hidePassword: "隐藏密码",
+    directHint: "用这四项连数据库。用户名是项目 ID，密码只属于这个项目。",
+    apiHint: "也可以用访问令牌调 API。令牌在访问令牌页创建，放在 Authorization: Bearer 里。",
+    copyValue: "复制",
+    copied: "已复制",
+    passwordLoading: "正在读取密码",
+    passwordReadOnly: "需要这个项目的写权限才能看密码。",
+    passwordFailed: "密码没有读到"
   },
   en: {
     title: "Database",
@@ -114,9 +133,52 @@ const texts = {
     deleteTable: "Delete table",
     deleteTableTitle: "Delete this table",
     deleteTableDesc: "The table and its rows will be removed.",
-    cancel: "Cancel"
+    cancel: "Cancel",
+    connect: "Connect",
+    connectTitle: "Connect",
+    connectHint: "Connect with host, port, username, and password, or use the API.",
+    tabDirect: "Host",
+    tabApi: "API",
+    host: "Host",
+    port: "Port",
+    username: "Username",
+    password: "Password",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
+    directHint: "Connect to the database with these four values. The username is the project ID, and the password belongs to this project.",
+    apiHint: "You can also call the API with an access token. Create it on the Access Tokens page and send Authorization: Bearer.",
+    copyValue: "Copy",
+    copied: "Copied",
+    passwordLoading: "Loading password",
+    passwordReadOnly: "Write access to this project is required to view the password.",
+    passwordFailed: "Could not load the password"
   }
 } as const;
+
+const DB_HOST = "db.demox.site";
+const DB_PORT = "3306";
+
+function apiBase() {
+  return config.websiteApiUrl.replace(/\/+$/, "");
+}
+
+function directSnippet(username: string, password: string) {
+  const secret = password || "PASSWORD";
+  return `mysql -h ${DB_HOST} -P ${DB_PORT} -u '${username}' -p'${secret}'`;
+}
+
+function apiSnippet(username: string) {
+  const base = apiBase();
+  return `curl -X POST '${base}/website/list-project-rows' \\
+  -H 'Authorization: Bearer $DEMOX_TOKEN' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'
+
+curl -X POST '${base}/website/put-project-row' \\
+  -H 'Authorization: Bearer $DEMOX_TOKEN' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"put_project_row","projectId":"${username}","table":"notes","values":{"id":"1","body":"hello"}}'`;
+}
 
 type ColumnDraft = { name: string; type: ProjectColumn["type"]; primary: boolean };
 type Copy = (typeof texts)["zh"];
@@ -138,6 +200,109 @@ function displayValue(value: string | number | boolean | null | undefined, yes: 
   if (value == null || value === "") return "";
   if (typeof value === "boolean") return value ? yes : no;
   return String(value);
+}
+
+function DatabaseConnectGuide({ projectId }: { projectId: string }) {
+  const { copy } = useDatabaseCopy();
+  const { toast } = useToast();
+  const target = { host: DB_HOST, port: DB_PORT };
+  const [mode, setMode] = useState<"direct" | "api">("direct");
+  const [username, setUsername] = useState(projectId);
+  const [password, setPassword] = useState("");
+  const [passwordNote, setPasswordNote] = useState(copy.passwordLoading);
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setUsername(projectId);
+    setPassword("");
+    setPasswordNote(copy.passwordLoading);
+    websiteApi.getProjectDbConnection(projectId).then((response) => {
+      if (!alive) return;
+      if (!response?.success) {
+        setPasswordNote(response?.message || copy.passwordFailed);
+        return;
+      }
+      if (response.username) setUsername(response.username);
+      if (response.password) {
+        setPassword(response.password);
+        setPasswordNote("");
+        return;
+      }
+      setPasswordNote(response.code === "read_only" ? copy.passwordReadOnly : copy.passwordFailed);
+    }).catch((error) => {
+      if (!alive) return;
+      setPasswordNote(error instanceof Error ? error.message : copy.passwordFailed);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [copy.passwordFailed, copy.passwordLoading, copy.passwordReadOnly, projectId]);
+
+  const copyText = async (value: string) => {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    toast({ title: copy.copied });
+  };
+  const fields = [
+    { label: copy.host, value: target.host },
+    { label: copy.port, value: target.port },
+    { label: copy.username, value: username },
+    { label: copy.password, value: password, secret: true }
+  ];
+  const snippet = mode === "direct" ? directSnippet(username, password) : apiSnippet(username);
+
+  return (
+    <div className="min-w-0 space-y-4">
+      <div className="flex gap-1">
+        {(["direct", "api"] as const).map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => setMode(item)}
+            className={`rounded-md px-3 py-1.5 text-sm ${mode === item ? "bg-muted font-medium" : "text-muted-foreground"}`}
+          >
+            {item === "direct" ? copy.tabDirect : copy.tabApi}
+          </button>
+        ))}
+      </div>
+      {mode === "direct" ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">{copy.directHint}</p>
+          <div className="divide-y rounded-lg border">
+            {fields.map((field) => (
+              <div key={field.label} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">{field.label}</p>
+                  <p className="truncate font-mono text-sm">
+                    {field.secret ? (password ? (showPassword ? password : "••••••••") : passwordNote) : field.value}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {field.secret && password ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? copy.hidePassword : copy.showPassword}>
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="outline" size="sm" disabled={field.secret && !password} onClick={() => void copyText(field.value)}>
+                    <Copy className="mr-2 h-4 w-4" />
+                    {copy.copyValue}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">{copy.apiHint}</p>
+      )}
+      <pre className="max-w-full overflow-x-auto rounded-md border bg-muted p-3 font-mono text-xs leading-5">{snippet}</pre>
+      <Button type="button" variant="outline" size="sm" onClick={() => void copyText(snippet)}>
+        <Copy className="mr-2 h-4 w-4" />
+        {copy.copyValue}
+      </Button>
+    </div>
+  );
 }
 
 function DatabaseNav() {
@@ -176,6 +341,7 @@ export default function ProjectDatabaseLayout() {
     handleAuthError: (error) => console.warn("Project database page auth error:", error)
   });
   const [ready, setReady] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -212,7 +378,19 @@ export default function ProjectDatabaseLayout() {
           <h1 className="site-page-title">{copy.title}</h1>
           <p className="site-page-desc">{copy.subtitle}</p>
         </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => setConnectOpen(true)}>
+          {copy.connect}
+        </Button>
       </div>
+      <Dialog open={connectOpen} onOpenChange={setConnectOpen}>
+        <DialogContent className="max-w-2xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>{copy.connectTitle}</DialogTitle>
+            <DialogDescription>{copy.connectHint}</DialogDescription>
+          </DialogHeader>
+          <DatabaseConnectGuide projectId={projectId} />
+        </DialogContent>
+      </Dialog>
       <Outlet />
     </div>
   );
@@ -270,6 +448,13 @@ export function ProjectDatabaseList() {
     <div className="flex flex-col gap-6 sm:flex-row">
       <DatabaseNav />
       <div className="flex min-w-0 flex-1 flex-col gap-5">
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-medium">{copy.connectTitle}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.connectHint}</p>
+          <div className="mt-4">
+            <DatabaseConnectGuide projectId={projectId} />
+          </div>
+        </section>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

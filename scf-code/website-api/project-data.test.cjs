@@ -88,6 +88,9 @@ function memoryQuery() {
       for (let i = tables.length - 1; i >= 0; i -= 1) if (tables[i].project_id === params[0]) tables.splice(i, 1);
       return { affectedRows: 1 };
     }
+    if (text === 'DELETE FROM project_db_credentials WHERE project_id = ?') {
+      return { affectedRows: 0 };
+    }
     throw new Error(`Unexpected query: ${text}`);
   };
   return { query, tables, rows };
