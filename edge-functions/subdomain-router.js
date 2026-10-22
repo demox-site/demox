@@ -1838,6 +1838,7 @@ function privateSiteLoginGate(req) {
   const noscript = lang === 'zh'
     ? ('需要启用 JavaScript，或<a href="' + frameUrl + '">前往登录</a>。')
     : ('JavaScript is required, or <a href="' + frameUrl + '">sign in</a>.');
+  const frameTitle = lang === 'zh' ? '登录 Demox 后查看私有项目' : 'Sign in to Demox to view this private project';
   const html = `<!doctype html>
 <html lang="${htmlLang}">
 <head>
@@ -1861,7 +1862,7 @@ function privateSiteLoginGate(req) {
     id="demox-auth-frame"
     class="auth-frame"
     data-src="${frameUrl}"
-    title="登录 Demox 后查看私有项目"
+    title="${frameTitle}"
     referrerpolicy="no-referrer"
     sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin allow-top-navigation"
   ></iframe>
