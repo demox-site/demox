@@ -8,15 +8,12 @@
 
 | 路径 | workflow | 触发 | 凭证 | 人工闸门 |
 |------|----------|------|------|----------|
-| 主站 www 静态资源 | `deploy.yml` | push master（`src/**`、`public/**` 等 paths）+ 手动 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
-| 平台站点 website 函数 | `deploy-website-function.yml` | 仅手动，限 master | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 需批准 |
-| 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push（须 `FUNCTION_API_AUTO_DEPLOY=true`，当前未设）+ 手动 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 需批准 + 只允许 master |
+| 主站 www 静态资源 | `deploy.yml`（由 `release.yml` 按路径调用）+ 手动 | master 上前端路径命中时自动发布 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
+| 平台站点 website 函数 | `deploy-website-function.yml` | push master（只含函数源码和该 workflow）自动发布；手动只做回滚 | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 没有 required reviewers，只允许 master |
+| 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push master（路径命中）自动发布；手动只做回滚 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 没有 required reviewers，只允许 master |
+| 边缘函数 `ef-1281msyw` | `deploy-edge.yml` | push master 真写入；手动 dry-run 默认开 | **GitHub OIDC → CAM 角色 `demox-ci-edge-write`**，1 小时临时密钥 | environment `edge-production` 没有 required reviewers，只允许 master |
 
-**结论**：三条路径里只有一条完成 OIDC 化。另两条仍是长期令牌，且 `deploy.yml` 是唯一「merge 即上线」的路径——没有 environment 审批。
-
-`deploy-website-function.yml` 文件头已经自己写了留办事项：
-
-> TODO：团队有了自己的部署令牌后，存成 environment `website-function-production` 的 secret，并删除仓库级 `DEMOX_TOKEN`。
+**结论**：function-api 和边缘函数走 OIDC。www 和 website 函数仍用长期令牌 `DEMOX_TOKEN`。这些路径在 master 上都会按各自的路径自动发布。`function-api-production`、`website-function-production`、`edge-production` 没有 required reviewers，只允许 master。www 没有 environment 审批。
 
 ## 2. `demox-ci-deploy` 实际调用面
 
@@ -74,7 +71,7 @@ if (argv.includes('--with-runtime')) {
 - SCF 读：`ListVersionByFunction`、`ListTriggers`、`ListAliases`、`GetCustomDomain`
 - SCF 写：`UpdateFunctionCode`、`PublishVersion`、`UpdateAlias`
 - COS：`scf-deploy/ci/*` 的 Put / 分片 / Get
-- OIDC 信任：`sub = repo:demox-site/demox:environment:function-api-production`，配合 environment 只允许 master + 人工批准
+- OIDC 信任：`sub = repo:demox-site/demox:environment:function-api-production`。environment `function-api-production` 没有 required reviewers，只允许 master
 - 密钥有效期 1 小时、只留进程内存、不落盘
 
 ### 收窄（按优先级）
@@ -92,7 +89,7 @@ if (argv.includes('--with-runtime')) {
 
 **判定：部分满足，不能勾掉。**
 
-- 已满足：`demox-function-api` 这条路径完成了 OIDC 化，权限收到最小集，两条写操作都要过 environment 人工批准，且分两步（develop → promote），production 有自动回滚。
+- 已满足：`demox-function-api` 这条路径完成了 OIDC 化，权限收到最小集。environment `function-api-production` 没有 required reviewers，只允许 master。发布分两步（develop → promote），production 有自动回滚。
 - 未满足：另外两条发布路径（www 静态、website 函数）仍是长期站点所有者令牌，其中 www 还是 merge 即上线。令牌无法限权、无法限时、无法按 environment 隔离。
 
 按「三条路径全部无长期令牌」作为这一项的完成口径，当前是 **1/3**。

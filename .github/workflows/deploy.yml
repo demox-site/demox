@@ -1,31 +1,17 @@
 name: Deploy to Demox (self-hosted)
 
-# 主站正式发布：push master 后构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
+# 主站正式发布：由 release.yml 在 master 上调用，或手动触发。构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
 # 鉴权用 GitHub Environment `www` 的 Secret DEMOX_TOKEN（环境密钥）。不要把 token 写进代码。
-# 发布成功后，单独的 purge job 用同一 environment 的 OIDC 角色刷新 EdgeOne 缓存。
+# 发布成功后，purge job 用同一 environment 的 OIDC 角色刷新 EdgeOne 缓存。
+# 刷新后再做双账号冒烟，并核对 dist/index.html 里的 bundle。冒烟失败开 issue，不自动换回旧静态文件。
 # deploy 只有 contents: read；id-token: write 只给 purge。不使用长期密钥。
 on:
-  push:
-    branches: [master]
-    # 只有前端构建输入变化时才重新发布 www（EPX2UU43）。边缘函数、SCF、文档等改动不触发。
-    paths:
-      - "src/**"
-      - "public/**"
-      - "index.html"
-      - "package.json"
-      - "package-lock.json"
-      - "vite.config.ts"
-      - "tailwind.config.ts"
-      - "postcss.config.js"
-      - "tsconfig*.json"
-      - "components.json"
-      - "scripts/generate-seo-pages.mjs"
-      - ".github/workflows/deploy.yml"
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
   group: deploy-www
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   WEBSITE_ID: EPX2UU43
@@ -75,6 +61,14 @@ jobs:
           npm install -g @demox-site/cli@1.1.6
           demox deploy ./dist --id "${WEBSITE_ID}"
 
+      - name: Save index for the bundle check
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: www-index-${{ github.run_id }}
+          path: dist/index.html
+          if-no-files-found: error
+          retention-days: 7
+
   purge:
     needs: deploy
     runs-on: ubuntu-latest
@@ -100,3 +94,48 @@ jobs:
           EO_ZONE_ID: ${{ vars.EO_ZONE_ID }}
           WWW_ORIGIN_PURGE_PREFIX: ${{ vars.WWW_ORIGIN_PURGE_PREFIX }}
         run: node scripts/ci/www-purge.cjs
+
+  smoke:
+    needs: purge
+    runs-on: ubuntu-latest
+    environment: www
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
+
+      - name: Download index
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: www-index-${{ github.run_id }}
+          path: www-index
+
+      - name: Bundle name
+        id: bundle
+        run: node scripts/ci/www-bundle.cjs www-index/index.html >> "$GITHUB_OUTPUT"
+
+      - name: Smoke both accounts
+        env:
+          EXPECT_BUNDLE: ${{ steps.bundle.outputs.bundle }}
+          DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
+          DEMOX_SMOKE_LIN_BASE: ${{ vars.DEMOX_SMOKE_LIN_BASE }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ vars.DEMOX_SMOKE_WEBSITE_ID }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ vars.DEMOX_SMOKE_WWW_MIRROR_URL }}
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+        run: node scripts/ci/release-smoke.cjs
+
+      - name: Open failure issue
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_STAGE: www 冒烟未通过
+          RELEASE_ROLLBACK_NOTE: 主站静态文件没有自动换回上一版。
+        run: node scripts/ci/open-release-issue.cjs
