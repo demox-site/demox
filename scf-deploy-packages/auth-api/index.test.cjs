@@ -29,7 +29,7 @@ require.cache[dbModulePath] = {
   }
 };
 
-const { main } = require('./index.cjs');
+const { main, _emailForTest } = require('./index.cjs');
 const { sign, verify } = require('./shared/jwt.cjs');
 
 function request(path, body = {}) {
@@ -357,6 +357,96 @@ test('send-code fails closed when SES is not configured', async () => {
   assert.match(body.error, /发送失败/);
   assert.equal(writes.some((item) => item.sql.startsWith('INSERT INTO verification_codes')), true);
   assert.equal(writes.some((item) => item.sql.startsWith('DELETE FROM verification_codes') && item.sql.includes('code = ?')), true);
+});
+
+test('SES from address is alias, space, and angle-bracket email', () => {
+  assert.equal(
+    _emailForTest.formatSesFromAddress({}),
+    'Demox <noreply@mail.demox.site>'
+  );
+  assert.equal(
+    _emailForTest.formatSesFromAddress({ AUTH_EMAIL_FROM_NAME: '"Demox"' }),
+    'Demox <noreply@mail.demox.site>'
+  );
+  assert.equal(
+    _emailForTest.formatSesFromAddress({ AUTH_EMAIL_FROM_NAME: '' }),
+    'noreply@mail.demox.site'
+  );
+  assert.equal(
+    _emailForTest.formatSesFromAddress({
+      AUTH_EMAIL_FROM: 'noreply@mail.aigc.sx.cn',
+      AUTH_EMAIL_FROM_NAME: 'Demox'
+    }),
+    'Demox <noreply@mail.aigc.sx.cn>'
+  );
+});
+
+test('send-code asks SES for an unquoted from address', async () => {
+  const calls = [];
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) {
+      return [];
+    }
+    return { affectedRows: 1 };
+  };
+
+  const Module = require('node:module');
+  const originalRequire = Module.prototype.require;
+  Module.prototype.require = function patchedRequire(id) {
+    if (id === 'tencentcloud-sdk-nodejs-ses') {
+      return {
+        ses: {
+          v20201002: {
+            Client: class FakeSesClient {
+              async SendEmail(payload) {
+                calls.push(payload);
+                return { MessageId: 'msg-1' };
+              }
+            }
+          }
+        }
+      };
+    }
+    return originalRequire.apply(this, arguments);
+  };
+
+  const previous = {
+    dryRun: process.env.AUTH_EMAIL_DRY_RUN,
+    secretId: process.env.TENCENTCLOUD_SECRETID,
+    secretKey: process.env.TENCENTCLOUD_SECRETKEY,
+    from: process.env.AUTH_EMAIL_FROM,
+    fromName: process.env.AUTH_EMAIL_FROM_NAME
+  };
+  delete process.env.AUTH_EMAIL_DRY_RUN;
+  delete process.env.AUTH_EMAIL_FROM;
+  delete process.env.AUTH_EMAIL_FROM_NAME;
+  process.env.TENCENTCLOUD_SECRETID = 'test-secret-id';
+  process.env.TENCENTCLOUD_SECRETKEY = 'test-secret-key';
+  try {
+    const response = await request('/auth/send-code', {
+      email: 'user@example.com',
+      type: 'login'
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200, JSON.stringify(body));
+    assert.equal(body.success, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].FromEmailAddress, 'Demox <noreply@mail.demox.site>');
+    assert.equal(calls[0].FromEmailAddress.includes('"'), false);
+    assert.equal(calls[0].Template.TemplateID, 137482);
+  } finally {
+    Module.prototype.require = originalRequire;
+    for (const [key, value] of [
+      ['AUTH_EMAIL_DRY_RUN', previous.dryRun],
+      ['TENCENTCLOUD_SECRETID', previous.secretId],
+      ['TENCENTCLOUD_SECRETKEY', previous.secretKey],
+      ['AUTH_EMAIL_FROM', previous.from],
+      ['AUTH_EMAIL_FROM_NAME', previous.fromName]
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('send-code succeeds when email sending is dry-run', async () => {
