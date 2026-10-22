@@ -1244,7 +1244,8 @@ function loginRequiredResponse() {
 function privateSiteLoginGate(req) {
   const next = new URL(req.url);
   const firstLanguage = String(req.headers.get('accept-language') || '').split(',')[0].split(';')[0].trim().toLowerCase();
-  const lang = firstLanguage.indexOf('zh') === 0 ? 'zh' : 'en';
+  const usableLanguage = /^[a-z]{1,8}(?:-[a-z0-9]{1,8})*$/.test(firstLanguage);
+  const lang = usableLanguage && firstLanguage.indexOf('zh') !== 0 ? 'en' : 'zh';
   const target = new URL('/site-auth', 'https://' + WWW_HOST);
   target.searchParams.set('next', next.toString());
   target.searchParams.set('embedded', '1');

@@ -1497,14 +1497,16 @@ test('private site login gate: Accept-Language en-US uses English copy and lang=
   assert.doesNotMatch(html, /登录后查看/);
 });
 
-test('private site login gate: a missing Accept-Language header is English', async () => {
-  const { response, html } = await renderLoginGate('https://prv1.demox.site/');
-  assert.equal(response.headers.get('vary'), 'Accept-Language');
-  assert.match(html, /<html lang="en">/);
-  assert.match(html, /<title>Sign in to view prv1\.demox\.site<\/title>/);
-  assert.match(html, /JavaScript is required, or <a href="[^"]+">sign in<\/a>\./);
-  const frame = new URL(decodeGateAttr(html.match(/data-src="([^"]+)"/)[1]));
-  assert.equal(frame.searchParams.get('lang'), 'en');
+test('private site login gate: a missing, empty, or unusable Accept-Language defaults to Chinese', async () => {
+  for (const header of [undefined, '', '*']) {
+    const { response, html } = await renderLoginGate('https://prv1.demox.site/', header);
+    assert.equal(response.headers.get('vary'), 'Accept-Language');
+    assert.match(html, /<html lang="zh-CN">/);
+    assert.match(html, /<title>登录后查看 prv1\.demox\.site<\/title>/);
+    assert.match(html, /title="登录 Demox 后查看私有项目"/);
+    const frame = new URL(decodeGateAttr(html.match(/data-src="([^"]+)"/)[1]));
+    assert.equal(frame.searchParams.get('lang'), 'zh', JSON.stringify(header));
+  }
 });
 
 test('private site login gate: malformed or quoted hosts are HTML-escaped', async () => {
