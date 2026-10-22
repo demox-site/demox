@@ -1,0 +1,90 @@
+name: Deploy edge function (ef-1281msyw)
+
+# 把 master 的 edge-functions/subdomain-router.js 写到 ef-1281msyw。
+# push 到 master 是真写入。workflow_dispatch 的 dry_run 默认 true。workflow_call 的 dry_run 默认 false。
+# environment edge-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
+# 角色 vars.TENCENT_EDGE_WRITE_ROLE_ARN（qcs::cam::uin/100021031865:roleName/demox-ci-edge-write）。
+# OIDC vars.TENCENT_OIDC_PROVIDER_ID，aud sts.tencentcloudapi.com，临时密钥 3600 秒，与 www 刷新缓存相同。
+# 只调用 teo:DescribeFunctions、teo:ModifyFunction、teo:DescribeFunctionRuntimeEnvironment。
+# FunctionId 只取 vars.EO_FUNCTION_ID，并且必须等于 ef-1281msyw。ZoneId 只取 vars.EO_ZONE_ID。
+# 写完读回，sha256 必须等于仓库文件和 edge-functions/LIVE.sha256。不一致或探针失败都写回上一份。
+# DEMOX_TEST_HOST_MAP 非空时拒绝写入。
+on:
+  push:
+    branches: [master]
+    paths:
+      - "edge-functions/**"
+      - "scripts/ci/edge-deploy.cjs"
+      - "scripts/ci/edge-private-probe.py"
+      - "scripts/ci/edge-release-probes.sh"
+      - ".github/workflows/deploy-edge.yml"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = 只读对比 sha，不 ModifyFunction，不跑冒烟"
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      dry_run:
+        description: "调用方决定。release.yml 传 false。"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-edge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  edge:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: edge-production
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
+
+      - name: Unit tests
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        run: |
+          node --test scripts/ci/edge-deploy.test.cjs
+          python3 scripts/ci/edge-private-probe.py --self-test
+
+      - name: Write or compare
+        env:
+          EDGE_DRY_RUN: ${{ github.event_name == 'push' && 'false' || inputs.dry_run }}
+          EDGE_PREVIOUS_PATH: ${{ runner.temp }}/edge-previous.js
+          EDGE_BASELINE: ${{ runner.temp }}/edge-baseline.json
+          TENCENT_EDGE_WRITE_ROLE_ARN: ${{ vars.TENCENT_EDGE_WRITE_ROLE_ARN }}
+          TENCENT_OIDC_PROVIDER_ID: ${{ vars.TENCENT_OIDC_PROVIDER_ID }}
+          EO_ZONE_ID: ${{ vars.EO_ZONE_ID }}
+          EO_FUNCTION_ID: ${{ vars.EO_FUNCTION_ID }}
+          DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}
+          DEMOX_SMOKE_LIN_BASE: ${{ vars.DEMOX_SMOKE_LIN_BASE }}
+          DEMOX_SMOKE_WEBSITE_ID: ${{ vars.DEMOX_SMOKE_WEBSITE_ID }}
+          DEMOX_SMOKE_WWW_MIRROR_URL: ${{ vars.DEMOX_SMOKE_WWW_MIRROR_URL }}
+          DEMOX_SMOKE_PRIVATE_SITE_URL: ${{ vars.DEMOX_SMOKE_PRIVATE_SITE_URL }}
+          DEMOX_SMOKE_EMAIL: ${{ secrets.DEMOX_SMOKE_EMAIL }}
+          DEMOX_SMOKE_PASSWORD: ${{ secrets.DEMOX_SMOKE_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/edge-deploy.cjs
+
+      - name: Save previous edge code
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: edge-previous-${{ github.run_id }}
+          path: ${{ runner.temp }}/edge-previous.js
+          if-no-files-found: warn
+          retention-days: 14

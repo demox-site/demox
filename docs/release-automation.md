@@ -66,3 +66,22 @@ environment `function-api-production` 没有 required reviewers，只允许 mast
 公开 API 不执行这个别名。冒烟失败仍回滚这里的别名。
 
 `workflow_dispatch` 只接受回滚版本号。environment `website-function-production` 没有 required reviewers，只允许 master。令牌仍是 `DEMOX_TOKEN`，脚本先打 `::add-mask::`，CLI 原文不进日志。
+
+## 边缘函数
+
+`.github/workflows/deploy-edge.yml` 把 `edge-functions/subdomain-router.js` 写到 `ef-1281msyw`。push 到 master 是真写入。`workflow_dispatch` 的 `dry_run` 默认 true。`workflow_call` 的 `dry_run` 默认 false。
+
+environment `edge-production` 没有 required reviewers，只允许 master。变量：
+
+- `TENCENT_EDGE_WRITE_ROLE_ARN`：`qcs::cam::uin/100021031865:roleName/demox-ci-edge-write`
+- `TENCENT_OIDC_PROVIDER_ID`：`github-actions`
+- `EO_ZONE_ID`：`zone-3kplfkbflnd6`
+- `EO_FUNCTION_ID`：`ef-1281msyw`
+
+角色信任 `sub=repo:demox-site/demox:environment:edge-production`，aud `sts.tencentcloudapi.com`。临时密钥 3600 秒，和 www 刷新缓存一样。允许的动作只有 `teo:DescribeFunctions`、`teo:ModifyFunction`、`teo:DescribeFunctionRuntimeEnvironment`。
+
+`EO_FUNCTION_ID` 不是字面量 `ef-1281msyw` 时，在 `ModifyFunction` 之前失败。`DEMOX_TEST_HOST_MAP` 非空也拒绝写入。仓库文件必须和 `edge-functions/LIVE.sha256` 一致。写完再读回，sha256 不一致就把上一份 Content 写回去。
+
+真写入前先跑 `edge-p0-matrix.py baseline`。写入后跑 P0 核对（带 baseline）、`edge-reentry-probe.py`（www 和 `/pricing`）、私有站点语言探针、双账号冒烟。探针最多 6 次、间隔 20 秒。失败写回上一份，再复核一次，job 仍然变红，并开 issue，标题以「发布失败：边缘函数冒烟未通过，已写回上一版」开头。上一份代码作为 artifact 留下。
+
+私有站点探针的地址是变量 `DEMOX_SMOKE_PRIVATE_SITE_URL`。`jbagdduf` 只给这个探针读取，探针不发布，发布脚本也会拒绝把它当成 `DEMOX_SMOKE_WEBSITE_ID`。HTML 缺省或不可用语言是 200「登录后查看」且 `Vary` 含 `Accept-Language`；`en` 是「Sign in to view」；非 HTML 是 401 `Authentication required`，不要求 `Vary`。
