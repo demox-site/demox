@@ -1440,6 +1440,21 @@ function createSesClient(credential) {
 }
 
 /**
+ * SES FromEmailAddress：别名 + 一个空格 + <邮箱>。别名不加引号。
+ * 文档示例是 `QCLOUDTEAM <noreply@mail.qcloud.com>`。写成 `"Demox" <...>` 会报
+ * IncorrectSender，验证码接口直接 502。
+ * 回退老域：AUTH_EMAIL_FROM=noreply@mail.aigc.sx.cn
+ * 只发地址、不要显示名：AUTH_EMAIL_FROM_NAME=（空字符串）
+ */
+function formatSesFromAddress(env = process.env) {
+  const fromAddress = String(env.AUTH_EMAIL_FROM || 'noreply@mail.demox.site').trim();
+  const rawName = env.AUTH_EMAIL_FROM_NAME === undefined ? 'Demox' : env.AUTH_EMAIL_FROM_NAME;
+  const fromName = String(rawName ?? '').trim().replace(/^"+|"+$/g, '');
+  if (!fromName) return fromAddress;
+  return `${fromName} <${fromAddress}>`;
+}
+
+/**
  * 发送邮件（使用腾讯云 SES 模板）
  * 进程内路径用网关放进 AsyncLocalStorage 的临时密钥（磷 demox-runtime-role），
  * 不读网关进程的 TENCENTCLOUD_*。没有这份上下文时才读进程环境变量
@@ -1461,13 +1476,7 @@ async function sendEmail(to, code, type) {
   try {
     const client = createSesClient({ secretId, secretKey, token });
 
-    // 发件人：显示名默认 Demox，地址默认 demox 自有发信域；两者都可用环境变量覆盖以回退
-    // 回退老域：AUTH_EMAIL_FROM=noreply@mail.aigc.sx.cn
-    // 想关掉显示名只显示地址：AUTH_EMAIL_FROM_NAME=（空字符串）
-    const fromAddress = process.env.AUTH_EMAIL_FROM || 'noreply@mail.demox.site';
-    const fromName =
-      process.env.AUTH_EMAIL_FROM_NAME === undefined ? 'Demox' : process.env.AUTH_EMAIL_FROM_NAME;
-    const from = fromName ? `"${fromName}" <${fromAddress}>` : fromAddress;
+    const from = formatSesFromAddress();
 
     // 使用已审核通过的模板（模板ID: 137482）
     const result = await client.SendEmail({
@@ -2331,4 +2340,5 @@ exports._sesForTest = {
   currentSesCredentials,
   runWithSesCredentials: require('./ses-credentials.cjs').runWithSesCredentials
 };
+exports._emailForTest = { formatSesFromAddress };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
