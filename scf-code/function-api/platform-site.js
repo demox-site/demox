@@ -119,6 +119,8 @@ function platformSiteEnvFromProcess(env = process.env) {
  * 平台站点（auth / website / mcp / cert-renew）默认不再交给 demox-user-nodejs 跑，
  * 改由本函数进程内的系统路由执行（用本函数自己的运行角色）。这样平台密钥和运行角色
  * 临时密钥都不会出现在和用户代码共用的 user-nodejs 实例里。
+ * 例外：/auth/send-code 在进系统函数之前 AssumeRole 到磷的 demox-runtime-role
+ * （与平台池同一份会话策略和缓存）。易点网关自己的角色没有 SES，不能拿来发信。
  * 回滚：环境变量 FUNCTIONS_PLATFORM_SITE_MODE=user-runtime（恢复旧行为，含临时密钥合并）。
  */
 function platformSiteInProcess(processEnv = process.env) {

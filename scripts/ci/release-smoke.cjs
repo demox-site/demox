@@ -4,6 +4,7 @@
 /**
  * 发布冒烟。易点（api.demox.site，主）和磷（备源站）各跑一遍：
  *   GET /health → 200
+ *   POST /auth/send-code → 不是 5xx（200 表示 SES 收下；429 表示这一分钟已经发过）
  *   https://www.demox.site/ → 200，并且页面引用的当前 bundle 也是 200
  *   非管理员测试账号登录后，把同一个测试站点重新发布，再把站点页面抓下来核对
  *
@@ -213,6 +214,18 @@ async function checkHealth(account, deps) {
   });
 }
 
+async function checkSendCode(account, config, deps) {
+  await retry(deps.log, `${account.label} POST /auth/send-code`, ATTEMPTS, GAP_MS, deps.wait, async () => {
+    const res = await fetchText(deps.fetchImpl, `${account.base}/auth/send-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ action: 'send_code', email: config.email, type: 'login' })
+    });
+    const status = typeof res.status === 'number' ? res.status : 0;
+    return { ok: status === 200 || status === 429, summary: String(res.status) };
+  });
+}
+
 async function checkPageBundle(label, pageUrl, config, deps) {
   const page = await retry(deps.log, `${label} GET ${pageUrl}`, ATTEMPTS, GAP_MS, deps.wait, async () => {
     const res = await fetchText(deps.fetchImpl, pageUrl, { redirect: 'follow' });
@@ -320,6 +333,7 @@ async function publishSite(account, config, token, deps) {
 async function checkAccount(account, config, deps) {
   deps.log(`- ${account.label} ${account.base}`);
   await checkHealth(account, deps);
+  await checkSendCode(account, config, deps);
   await checkWww(config, deps);
   const token = await login(account, config, deps);
   await assertNotAdmin(account, token, deps);

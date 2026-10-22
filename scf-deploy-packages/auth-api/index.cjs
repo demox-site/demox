@@ -1427,8 +1427,22 @@ function httpsJson(options, body) {
   });
 }
 
+const { currentSesCredentials } = require('./ses-credentials.cjs');
+let sesClientFactory = null;
+
+function createSesClient(credential) {
+  if (typeof sesClientFactory === 'function') return sesClientFactory(credential);
+  const ses = require('tencentcloud-sdk-nodejs-ses').ses.v20201002;
+  return new ses.Client({
+    credential,
+    region: 'ap-hongkong'
+  });
+}
+
 /**
  * 发送邮件（使用腾讯云 SES 模板）
+ * 进程内路径优先用网关放进 AsyncLocalStorage 的临时密钥（磷 demox-runtime-role）。
+ * 没有这份上下文时才读进程环境变量（独立 auth 进程 / 平台池调用环境）。
  */
 async function sendEmail(to, code, type) {
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {
@@ -1436,9 +1450,7 @@ async function sendEmail(to, code, type) {
     return true;
   }
 
-  const secretId = process.env.TENCENTCLOUD_SECRETID || process.env.TENCENT_SECRET_ID;
-  const secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENT_SECRET_KEY;
-  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
+  const { secretId, secretKey, token } = currentSesCredentials();
 
   if (!secretId || !secretKey) {
     console.log('未配置腾讯云密钥，跳过邮件发送');
@@ -1446,12 +1458,7 @@ async function sendEmail(to, code, type) {
   }
 
   try {
-    const ses = require('tencentcloud-sdk-nodejs-ses').ses.v20201002;
-
-    const client = new ses.Client({
-      credential: { secretId, secretKey, token },
-      region: 'ap-hongkong'
-    });
+    const client = createSesClient({ secretId, secretKey, token });
 
     // 发件人：显示名默认 Demox，地址默认 demox 自有发信域；两者都可用环境变量覆盖以回退
     // 回退老域：AUTH_EMAIL_FROM=noreply@mail.aigc.sx.cn
@@ -2318,4 +2325,9 @@ function getCORSHeaders() {
   };
 }
 exports._oauthForTest = { hashClientSecret, clientSecretMatches };
+exports._sesForTest = {
+  setClientFactory(factory) { sesClientFactory = factory; },
+  currentSesCredentials,
+  runWithSesCredentials: require('./ses-credentials.cjs').runWithSesCredentials
+};
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };

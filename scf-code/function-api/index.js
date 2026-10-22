@@ -10,6 +10,7 @@ const { InMemoryFunctionRepository } = require('./repository.js');
 const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, createHttpNodeInvoker } = require('./runtime-nodejs.js');
 const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
+const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
@@ -364,6 +365,49 @@ function createPlatformHandler({
     }
   }
 
+  function isAuthSendCodeEvent(entry, event) {
+    if (!entry || systemFunctionSlug(entry) !== 'auth') return false;
+    const method = String(event.httpMethod || event.requestContext?.http?.method || 'POST').toUpperCase();
+    if (method !== 'POST') return false;
+    const body = parseBody(event);
+    const path = normalizePath(event.path || event.rawPath || event.requestContext?.http?.path || body.path || '/');
+    return path === '/auth/send-code' || body.action === 'send_code';
+  }
+
+  // 进程内 /auth/send-code 与平台池使用同一套 AssumeRole（磷 demox-runtime-role + 会话策略 + 缓存）。
+  // 签发失败直接 5xx，不回落到网关进程自己的角色（易点那份没有 SES）。
+  async function dispatchInProcessSystem(entry, event, context, dispatch) {
+    const runHandler = () => resolvedSystemHandler(event, context);
+    if (!isAuthSendCodeEvent(entry, event)) {
+      return withDispatchHeader(await runHandler(), dispatch);
+    }
+    const service = resolvedUserHandler && resolvedUserHandler.service;
+    if (!service || typeof service.invocationCloudEnv !== 'function') {
+      return withDispatchHeader(await runHandler(), dispatch);
+    }
+    let cloud;
+    try {
+      cloud = await service.invocationCloudEnv({
+        slug: 'auth',
+        functionId: 'auth',
+        websiteId: platformWebsiteId()
+      }, 'business');
+    } catch (error) {
+      const code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+        ? String(error.code)
+        : 'BUSINESS_ROLE_ASSUME_FAILED';
+      logger.error?.('进程内验证码凭证签发失败:', code);
+      const clean = new FunctionApiError('验证码暂时无法发送', code, 500);
+      return withDispatchHeader(errorResponse(clean, event), dispatch);
+    }
+    const response = await runWithSesCredentials({
+      secretId: cloud.TENCENTCLOUD_SECRETID,
+      secretKey: cloud.TENCENTCLOUD_SECRETKEY,
+      token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
+    }, runHandler);
+    return withDispatchHeader(response, dispatch);
+  }
+
   async function routePlatform(event = {}, context = {}) {
     if (seedPlatformSite && resolvedUserHandler.service && !seedOnce) {
       seedOnce = seedPlatformSiteFunctions({
@@ -387,7 +431,7 @@ function createPlatformHandler({
         logger
       );
       if (published.response) return published.response;
-      return withDispatchHeader(await resolvedSystemHandler(scopedEvent, context), published.dispatch);
+      return dispatchInProcessSystem(systemEntry, scopedEvent, context, published.dispatch);
     }
     if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
       const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
