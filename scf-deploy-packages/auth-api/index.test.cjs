@@ -359,6 +359,64 @@ test('send-code fails closed when SES is not configured', async () => {
   assert.equal(writes.some((item) => item.sql.startsWith('DELETE FROM verification_codes') && item.sql.includes('code = ?')), true);
 });
 
+test('send-code uses assumed role credentials and ignores the process role', async () => {
+  const seen = [];
+  const { _sesForTest } = require('./index.cjs');
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) return [];
+    return { affectedRows: 1 };
+  };
+  _sesForTest.setClientFactory((credential) => {
+    seen.push({ ...credential });
+    return { async SendEmail(payload) {
+      seen.push({ template: payload.Template.TemplateID, from: payload.FromEmailAddress });
+      return { MessageId: 'mid-1' };
+    } };
+  });
+  const previous = {
+    id: process.env.TENCENTCLOUD_SECRETID,
+    key: process.env.TENCENTCLOUD_SECRETKEY,
+    token: process.env.TENCENTCLOUD_SESSIONTOKEN,
+    dry: process.env.AUTH_EMAIL_DRY_RUN
+  };
+  process.env.TENCENTCLOUD_SECRETID = 'ek-role-id';
+  process.env.TENCENTCLOUD_SECRETKEY = 'ek-role-key';
+  process.env.TENCENTCLOUD_SESSIONTOKEN = 'ek-role-token';
+  delete process.env.AUTH_EMAIL_DRY_RUN;
+  try {
+    const assumed = await _sesForTest.runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', { email: 'user@example.com', type: 'login' }));
+    assert.equal(assumed.statusCode, 200);
+    assert.equal(JSON.parse(assumed.body).success, true);
+    assert.equal(seen[0].secretId, 'lin-ses-id');
+    assert.equal(seen[0].secretKey, 'lin-ses-key');
+    assert.equal(seen[0].token, 'lin-ses-token');
+    assert.equal(seen[1].template, 137482);
+    assert.equal(seen[1].from, 'Demox <noreply@mail.demox.site>');
+    assert.equal(seen[1].from.includes('"'), false);
+
+    seen.length = 0;
+    const local = await request('/auth/send-code', { email: 'other@example.com', type: 'login' });
+    assert.equal(local.statusCode, 200);
+    assert.equal(seen[0].secretId, 'ek-role-id');
+    assert.equal(seen[0].token, 'ek-role-token');
+  } finally {
+    _sesForTest.setClientFactory(null);
+    for (const [name, value] of [
+      ['TENCENTCLOUD_SECRETID', previous.id],
+      ['TENCENTCLOUD_SECRETKEY', previous.key],
+      ['TENCENTCLOUD_SESSIONTOKEN', previous.token],
+      ['AUTH_EMAIL_DRY_RUN', previous.dry]
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('SES from address is alias, space, and angle-bracket email', () => {
   assert.equal(
     _emailForTest.formatSesFromAddress({}),

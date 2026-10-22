@@ -1427,6 +1427,18 @@ function httpsJson(options, body) {
   });
 }
 
+const { currentSesCredentials } = require('./ses-credentials.cjs');
+let sesClientFactory = null;
+
+function createSesClient(credential) {
+  if (typeof sesClientFactory === 'function') return sesClientFactory(credential);
+  const ses = require('tencentcloud-sdk-nodejs-ses').ses.v20201002;
+  return new ses.Client({
+    credential,
+    region: 'ap-hongkong'
+  });
+}
+
 /**
  * SES FromEmailAddress：别名 + 一个空格 + <邮箱>。别名不加引号。
  * 文档示例是 `QCLOUDTEAM <noreply@mail.qcloud.com>`。写成 `"Demox" <...>` 会报
@@ -1444,6 +1456,9 @@ function formatSesFromAddress(env = process.env) {
 
 /**
  * 发送邮件（使用腾讯云 SES 模板）
+ * 进程内发验证码只使用网关放进 AsyncLocalStorage 的 demox-platform-ses 临时密钥。
+ * 角色缺失或签发失败时网关直接 5xx，不会落到这里去读 TENCENTCLOUD_* 或 demox-runtime-role。
+ * 没有这份上下文时（独立 auth 进程 / 平台池调用环境）才读进程环境变量。
  */
 async function sendEmail(to, code, type) {
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {
@@ -1451,9 +1466,7 @@ async function sendEmail(to, code, type) {
     return true;
   }
 
-  const secretId = process.env.TENCENTCLOUD_SECRETID || process.env.TENCENT_SECRET_ID;
-  const secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENT_SECRET_KEY;
-  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
+  const { secretId, secretKey, token } = currentSesCredentials();
 
   if (!secretId || !secretKey) {
     console.log('未配置腾讯云密钥，跳过邮件发送');
@@ -1461,12 +1474,7 @@ async function sendEmail(to, code, type) {
   }
 
   try {
-    const ses = require('tencentcloud-sdk-nodejs-ses').ses.v20201002;
-
-    const client = new ses.Client({
-      credential: { secretId, secretKey, token },
-      region: 'ap-hongkong'
-    });
+    const client = createSesClient({ secretId, secretKey, token });
 
     const from = formatSesFromAddress();
 
@@ -2327,5 +2335,10 @@ function getCORSHeaders() {
   };
 }
 exports._oauthForTest = { hashClientSecret, clientSecretMatches };
+exports._sesForTest = {
+  setClientFactory(factory) { sesClientFactory = factory; },
+  currentSesCredentials,
+  runWithSesCredentials: require('./ses-credentials.cjs').runWithSesCredentials
+};
 exports._emailForTest = { formatSesFromAddress };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };

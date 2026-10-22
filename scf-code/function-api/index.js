@@ -10,6 +10,8 @@ const { InMemoryFunctionRepository } = require('./repository.js');
 const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, createHttpNodeInvoker } = require('./runtime-nodejs.js');
 const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
+const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+const { createPlatformSesCredentialProvider } = require('./platform-ses-credentials.js');
 const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
@@ -342,9 +344,11 @@ function createPlatformHandler({
   systemRouterOptions = {},
   logger = console,
   seedPlatformSite = false,
+  platformSesCredentials = null,
   ...functionOptions
 } = {}) {
   const resolvedUserHandler = userHandler || createFunctionHttpHandler({ logger, ...functionOptions });
+  const sesCredentials = platformSesCredentials || createPlatformSesCredentialProvider({ logger });
   const resolvedSystemHandler = systemHandler || createSystemFunctionRouter({
     ...systemRouterOptions,
     entries: systemEntries,
@@ -362,6 +366,42 @@ function createPlatformHandler({
       logger.warn?.('平台入口请求被拒:', error.code);
       return errorResponse(error, event);
     }
+  }
+
+  function isAuthSendCodeEvent(entry, event) {
+    if (!entry || systemFunctionSlug(entry) !== 'auth') return false;
+    const method = String(event.httpMethod || event.requestContext?.http?.method || 'POST').toUpperCase();
+    if (method !== 'POST') return false;
+    const body = parseBody(event);
+    const path = normalizePath(event.path || event.rawPath || event.requestContext?.http?.path || body.path || '/');
+    return path === '/auth/send-code' || body.action === 'send_code';
+  }
+
+  // 只有进程内发验证码签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
+  // 不 Assume demox-runtime-role，不把临时密钥写进 process.env，website / mcp / 用户函数拿不到。
+  // 角色没配或签发失败直接 5xx，不回落到网关自己的 TENCENTCLOUD_*。
+  async function dispatchInProcessSystem(entry, event, context, dispatch) {
+    const runHandler = () => resolvedSystemHandler(event, context);
+    if (!isAuthSendCodeEvent(entry, event)) {
+      return withDispatchHeader(await runHandler(), dispatch);
+    }
+    let cloud;
+    try {
+      cloud = await sesCredentials.credentialsFor();
+    } catch (error) {
+      const code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+        ? String(error.code)
+        : 'BUSINESS_ROLE_ASSUME_FAILED';
+      logger.error?.('进程内验证码凭证签发失败:', code);
+      const clean = new FunctionApiError('验证码暂时无法发送', code, 500);
+      return withDispatchHeader(errorResponse(clean, event), dispatch);
+    }
+    const response = await runWithSesCredentials({
+      secretId: cloud.TENCENTCLOUD_SECRETID,
+      secretKey: cloud.TENCENTCLOUD_SECRETKEY,
+      token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
+    }, runHandler);
+    return withDispatchHeader(response, dispatch);
   }
 
   async function routePlatform(event = {}, context = {}) {
@@ -387,7 +427,7 @@ function createPlatformHandler({
         logger
       );
       if (published.response) return published.response;
-      return withDispatchHeader(await resolvedSystemHandler(scopedEvent, context), published.dispatch);
+      return dispatchInProcessSystem(systemEntry, scopedEvent, context, published.dispatch);
     }
     if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
       const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
