@@ -1524,3 +1524,15 @@ test('private site login gate: malformed or quoted hosts are HTML-escaped', asyn
   assert.equal(frame.searchParams.get('lang'), 'zh');
   assert.equal(new URL(frame.searchParams.get('next')).hostname, '"quoted".example');
 });
+
+test('private site login gate: iframe title follows the language', async () => {
+  function iframeTitle(html) {
+    const tag = html.match(/<iframe\b[^>]*>/);
+    assert.ok(tag, 'iframe');
+    const title = tag[0].match(/\btitle="([^"]*)"/);
+    assert.ok(title, 'iframe title');
+    return title[1];
+  }
+  assert.equal(iframeTitle((await renderLoginGate('https://prv1.demox.site/', 'zh')).html), '登录 Demox 后查看私有项目');
+  assert.equal(iframeTitle((await renderLoginGate('https://prv1.demox.site/', 'en-US')).html), 'Sign in to Demox to view this private project');
+});
