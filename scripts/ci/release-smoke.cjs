@@ -4,6 +4,9 @@
 /**
  * 发布冒烟。易点（api.demox.site，主）和磷（备源站）各跑一遍：
  *   GET /health → 200
+ *   POST /auth/send-code 和 POST /send-code：收件人是 DEMOX_SMOKE_EMAIL。
+ *     200 且 success=true 通过；任意 5xx 或缺少 success 失败。
+ *     HTTP 429 或限流文案记警告并通过，不失败。日志不打印邮箱。
  *   https://www.demox.site/ → 200，并且页面引用的当前 bundle 也是 200
  *   非管理员测试账号登录后，把同一个测试站点重新发布，再把站点页面抓下来核对
  *
@@ -20,6 +23,7 @@ const GAP_MS = 5000;
 const TIMEOUT_MS = 15000;
 const SITE_ATTEMPTS = 12;
 const SITE_GAP_MS = 5000;
+const SEND_CODE_PATHS = ['/auth/send-code', '/send-code'];
 
 function mustEnv(env, name) {
   const value = String(env[name] == null ? '' : env[name]).trim();
@@ -249,6 +253,41 @@ function parseJson(text) {
   }
 }
 
+function numericStatus(status) {
+  return typeof status === 'number' ? status : 0;
+}
+
+function isRateLimited(status, body) {
+  if (status === 429) return true;
+  const code = body && (body.code || body.error);
+  if (typeof code === 'string' && /^rate[-_ ]?limited$/i.test(code.trim())) return true;
+  const text = body ? `${body.error || ''} ${body.message || ''}` : '';
+  return /过于频繁|rate[-_ ]?limit|too many requests/i.test(text);
+}
+
+async function checkSendCode(account, config, deps) {
+  for (const path of SEND_CODE_PATHS) {
+    const label = `${account.label} POST ${path}`;
+    await retry(deps.log, label, ATTEMPTS, GAP_MS, deps.wait, async () => {
+      const res = await fetchText(deps.fetchImpl, `${account.base}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ action: 'send_code', email: config.email, type: 'login' })
+      });
+      const status = numericStatus(res.status);
+      const body = parseJson(res.text);
+      if (status >= 500) return { ok: false, summary: `${res.status} 5xx` };
+      if (status === 200 && body && body.success === true) return { ok: true, summary: '200 success=true' };
+      if (isRateLimited(status, body)) {
+        deps.log(`  警告: ${label} 命中限流 (HTTP ${res.status})，记为通过`);
+        return { ok: true, summary: `${res.status} rate-limit warning` };
+      }
+      const success = Boolean(body && body.success === true);
+      return { ok: false, summary: `${res.status} success=${success}` };
+    });
+  }
+}
+
 async function login(account, config, deps) {
   const res = await fetchText(deps.fetchImpl, `${account.base}/auth/login`, {
     method: 'POST',
@@ -320,6 +359,7 @@ async function publishSite(account, config, token, deps) {
 async function checkAccount(account, config, deps) {
   deps.log(`- ${account.label} ${account.base}`);
   await checkHealth(account, deps);
+  await checkSendCode(account, config, deps);
   await checkWww(config, deps);
   const token = await login(account, config, deps);
   await assertNotAdmin(account, token, deps);
