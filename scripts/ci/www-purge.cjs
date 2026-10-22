@@ -183,7 +183,7 @@ function createRedactor(secrets) {
 }
 
 function summarizePurgeTasks(tasks, jobId) {
-  const mine = (tasks || []).filter((task) => !task || !task.JobId || task.JobId === jobId);
+  const mine = (tasks || []).filter((task) => task && task.JobId === jobId);
   if (!mine.length) return { state: 'pending', status: 'missing' };
   const statuses = mine.map((task) => String(task.Status || '').toLowerCase());
   const failed = statuses.find((status) => FAIL_STATUSES.has(status));
@@ -192,6 +192,13 @@ function summarizePurgeTasks(tasks, jobId) {
   const other = statuses.find((status) => status !== 'processing' && status !== 'success');
   if (other) return { state: 'pending', status: other };
   return { state: 'pending', status: 'processing' };
+}
+
+/** 写到 stdout 的 GitHub 掩码。不能先过 redactor，否则掩掉的是占位符而不是凭证。 */
+function maskSecret(log, secrets, value) {
+  if (typeof value !== 'string' || value.length === 0) return;
+  secrets.push(value);
+  log(`::add-mask::${value}`);
 }
 
 function networkFailure(label, error) {
@@ -257,7 +264,7 @@ async function pollUntilSuccess({ jobs, describe, timeoutMs, intervalMs, now, wa
   }
 }
 
-async function assumeRole({ env, settings, fetchImpl, now, secrets, hide }) {
+async function assumeRole({ env, settings, fetchImpl, now, secrets, hide, log }) {
   const tokenRequest = buildOidcTokenRequest({
     requestUrl: env.ACTIONS_ID_TOKEN_REQUEST_URL,
     requestToken: env.ACTIONS_ID_TOKEN_REQUEST_TOKEN
@@ -281,7 +288,7 @@ async function assumeRole({ env, settings, fetchImpl, now, secrets, hide }) {
   }
   const idToken = idJson && idJson.value;
   if (!idToken || typeof idToken !== 'string') throw new Error('获取 GitHub OIDC token 失败：响应没有 value');
-  secrets.push(idToken);
+  maskSecret(log, secrets, idToken);
   const response = await postJson(fetchImpl, buildAssumeRoleRequest({
     providerId: settings.providerId,
     roleArn: settings.roleArn,
@@ -290,10 +297,12 @@ async function assumeRole({ env, settings, fetchImpl, now, secrets, hide }) {
     timestamp: Math.floor(now() / 1000)
   }), hide);
   const credentials = response.Credentials || {};
+  maskSecret(log, secrets, credentials.TmpSecretId);
+  maskSecret(log, secrets, credentials.TmpSecretKey);
+  maskSecret(log, secrets, credentials.Token);
   if (!credentials.TmpSecretId || !credentials.TmpSecretKey || !credentials.Token) {
     throw new Error('AssumeRoleWithWebIdentity 没有返回临时密钥');
   }
-  secrets.push(credentials.TmpSecretId, credentials.TmpSecretKey, credentials.Token);
   return {
     secretId: credentials.TmpSecretId,
     secretKey: credentials.TmpSecretKey,
@@ -303,15 +312,16 @@ async function assumeRole({ env, settings, fetchImpl, now, secrets, hide }) {
 }
 
 async function runPurge({ env = process.env, fetchImpl = globalThis.fetch, log = console.log, now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), timeoutMs = POLL_TIMEOUT_MS, intervalMs = POLL_INTERVAL_MS } = {}) {
+  const secrets = [];
+  maskSecret(log, secrets, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
   const settings = readSettings(env);
   if (!env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
     throw new Error('拿不到 GitHub OIDC token（job 需要 permissions: id-token: write）');
   }
-  const secrets = [env.ACTIONS_ID_TOKEN_REQUEST_TOKEN];
   const hide = (text) => createRedactor(secrets)(text);
   const safeLog = (line) => log(hide(line));
   try {
-    const cred = await assumeRole({ env, settings, fetchImpl, now, secrets, hide });
+    const cred = await assumeRole({ env, settings, fetchImpl, now, secrets, hide, log });
     safeLog(`已通过 OIDC 扮演 ${settings.roleArn}（临时密钥到期 ${cred.expiration || '未知'}）`);
     const createdAt = now();
     const jobs = [];

@@ -100,6 +100,21 @@ function assertNoCredentials(text) {
   assert.equal(text.includes('Authorization'), false);
 }
 
+function publicLines(lines) {
+  return lines.filter((line) => !line.startsWith('::add-mask::'));
+}
+
+/** 掩码行是获得凭证之后的第一批输出，后面的普通日志里不再出现原文。 */
+function assertMasksBeforeOtherOutput(lines, { credentials = true } = {}) {
+  const expected = [`::add-mask::${REQUEST_TOKEN}`, `::add-mask::${ID_TOKEN}`];
+  if (credentials) expected.push(`::add-mask::${SECRET_ID}`, `::add-mask::${SECRET_KEY}`, `::add-mask::${SESSION}`);
+  expected.forEach((line, index) => assert.equal(lines[index], line, `output[${index}]`));
+  const firstOther = lines.findIndex((line) => !line.startsWith('::add-mask::'));
+  if (firstOther === -1) assert.equal(lines.length, expected.length);
+  else assert.equal(firstOther, expected.length);
+  assertNoCredentials(publicLines(lines).join('\n'));
+}
+
 test('readSettings accepts the www environment vars and rejects anything else', () => {
   const settings = readSettings(baseEnv());
   assert.equal(settings.roleArn, ROLE);
@@ -246,6 +261,8 @@ test('summarizePurgeTasks ignores other jobs and treats failed statuses as termi
     assert.equal(summarizePurgeTasks([{ JobId: 'a', Status: status }], 'a').state, 'failed', status);
   }
   assert.deepEqual(summarizePurgeTasks([{ JobId: 'a', Status: 'queued' }], 'a'), { state: 'pending', status: 'queued' });
+  assert.deepEqual(summarizePurgeTasks([{ Status: 'failed' }, { JobId: '', Status: 'success' }, null, { JobId: 'other', Status: 'success' }], 'a'), { state: 'pending', status: 'missing' });
+  assert.deepEqual(summarizePurgeTasks([{ Status: 'failed' }, { JobId: 'a', Status: 'success' }], 'a'), { state: 'success', status: 'success' });
 });
 
 test('pollUntilSuccess returns after every job is success and stops early on failure', async () => {
@@ -349,11 +366,13 @@ test('runPurge submits prefix then url and polls both job ids inside the time wi
   }
   assert.equal(fetchImpl.calls[4].opts.headers.Host, undefined);
   assert.equal(fetchImpl.calls[4].opts.headers['X-TC-Token'], SESSION);
-  assert.match(lines.join('\n'), /EdgeOne 缓存已刷新：purge_prefix job-prefix，purge_url job-url/);
-  assertNoCredentials(lines.join('\n'));
+  assert.match(publicLines(lines).join('\n'), /EdgeOne 缓存已刷新：purge_prefix job-prefix，purge_url job-url/);
+  assertMasksBeforeOtherOutput(lines);
+  assert.match(publicLines(lines).join('\n'), /临时密钥到期 2026-10-22T06:40:00Z \[redacted\]/);
 });
 
 test('runPurge redacts credentials from API errors and does not poll after a rejected task', async () => {
+  const deniedLines = [];
   const denied = scriptedFetch([
     { json: { value: ID_TOKEN } },
     { json: { Response: { Error: { Code: 'AccessDenied', Message: `denied ${ID_TOKEN}` } } } }
@@ -361,7 +380,7 @@ test('runPurge redacts credentials from API errors and does not poll after a rej
   await assert.rejects(runPurge({
     env: baseEnv(),
     fetchImpl: denied,
-    log: () => {},
+    log: (line) => deniedLines.push(line),
     now: () => T0,
     wait: async () => {}
   }), (error) => {
@@ -370,6 +389,7 @@ test('runPurge redacts credentials from API errors and does not poll after a rej
     assert.equal(error.message.includes('[redacted]'), true);
     return true;
   });
+  assertMasksBeforeOtherOutput(deniedLines, { credentials: false });
 
   const rejected = scriptedFetch([
     { json: { value: ID_TOKEN } },
@@ -389,17 +409,19 @@ test('runPurge redacts credentials from API errors and does not poll after a rej
     return true;
   });
   assert.equal(rejected.calls.length, 3);
-  assertNoCredentials(lines.join('\n'));
+  assertMasksBeforeOtherOutput(lines);
 
+  const early = [];
   let calls = 0;
   await assert.rejects(runPurge({
     env: baseEnv({ ACTIONS_ID_TOKEN_REQUEST_URL: '' }),
     fetchImpl: async () => { calls += 1; return { ok: true, status: 200, json: async () => ({}) }; },
-    log: () => {},
+    log: (line) => early.push(line),
     now: () => T0,
     wait: async () => {}
   }), /id-token: write/);
   assert.equal(calls, 0);
+  assert.deepEqual(early, [`::add-mask::${REQUEST_TOKEN}`]);
 });
 
 test('runPurge times out loudly when DescribePurgeTasks stays processing', async () => {
@@ -430,16 +452,32 @@ test('redactor removes credential material and leaves the surrounding text', () 
   assert.equal(hide('short stays'), 'short stays');
 });
 
-test('deploy workflow purges after the www deploy using the www OIDC environment', () => {
+test('purge job is separate from deploy and actions are pinned', () => {
   const yaml = fs.readFileSync(path.join(__dirname, '../../.github/workflows/deploy.yml'), 'utf8');
-  const deployAt = yaml.indexOf('demox deploy ./dist');
-  const purgeAt = yaml.indexOf('node scripts/ci/www-purge.cjs');
-  assert.ok(deployAt > 0 && purgeAt > deployAt);
-  assert.match(yaml, /environment:\s*www/);
-  assert.match(yaml, /id-token:\s*write/);
-  assert.match(yaml, /contents:\s*read/);
+  const deploy = yaml.slice(yaml.indexOf('\n  deploy:\n'), yaml.indexOf('\n  purge:\n'));
+  const purge = yaml.slice(yaml.indexOf('\n  purge:\n'));
+  assert.match(deploy, /environment:\s*www/);
+  assert.match(deploy, /contents:\s*read/);
+  assert.doesNotMatch(deploy, /id-token/);
+  assert.match(deploy, /demox deploy \.\/dist/);
+  assert.doesNotMatch(deploy, /www-purge/);
+  assert.match(purge, /needs:\s*deploy/);
+  assert.match(purge, /environment:\s*www/);
+  assert.match(purge, /id-token:\s*write/);
+  assert.match(purge, /contents:\s*read/);
+  assert.match(purge, /node scripts\/ci\/www-purge\.cjs/);
+  assert.doesNotMatch(purge, /npm /);
   for (const name of ['TENCENT_WWW_PURGE_ROLE_ARN', 'TENCENT_OIDC_PROVIDER_ID', 'EO_ZONE_ID', 'WWW_ORIGIN_PURGE_PREFIX']) {
-    assert.match(yaml, new RegExp(`${name}:\\s*\\$\\{\\{\\s*vars\\.${name}\\s*\\}\\}`));
+    assert.match(purge, new RegExp(`${name}:\\s*\\$\\{\\{\\s*vars\\.${name}\\s*\\}\\}`));
   }
   assert.doesNotMatch(yaml, /TENCENTCLOUD_SECRET|secrets\.TENCENT|secrets\.EO_|secrets\.WWW_/);
+  const pins = [...yaml.matchAll(/uses:\s*actions\/(checkout|setup-node)@([0-9a-f]{40})\s+#\s+(v\d+\.\d+\.\d+)/g)];
+  assert.deepEqual(pins.map((match) => `${match[1]}@${match[3]}`), [
+    'checkout@v5.1.0',
+    'setup-node@v6.5.0',
+    'checkout@v5.1.0',
+    'setup-node@v6.5.0'
+  ]);
+  assert.equal(pins[0][2], 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09');
+  assert.equal(pins[1][2], '249970729cb0ef3589644e2896645e5dc5ba9c38');
 });

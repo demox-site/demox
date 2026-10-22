@@ -2,7 +2,8 @@ name: Deploy to Demox (self-hosted)
 
 # 主站正式发布：push master 后构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
 # 鉴权用 GitHub Environment `www` 的 Secret DEMOX_TOKEN（环境密钥）。不要把 token 写进代码。
-# 发布成功后再用同一 environment 的 OIDC 角色刷新 EdgeOne 缓存，不使用长期密钥。
+# 发布成功后，单独的 purge job 用同一 environment 的 OIDC 角色刷新 EdgeOne 缓存。
+# deploy 只有 contents: read；id-token: write 只给 purge。不使用长期密钥。
 on:
   push:
     branches: [master]
@@ -40,14 +41,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: www
     permissions:
-      id-token: write
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "20"
           cache: "npm"
@@ -74,6 +74,22 @@ jobs:
           fi
           npm install -g @demox-site/cli@1.1.6
           demox deploy ./dist --id "${WEBSITE_ID}"
+
+  purge:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: www
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
 
       # 站点已经发布成功。刷新失败不会回滚发布，但会让本 job 失败。
       - name: Purge EdgeOne cache
