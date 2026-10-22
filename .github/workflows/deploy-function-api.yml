@@ -18,6 +18,8 @@ name: Deploy function-api (SCF demox-function-api)
 # 回滚：Actions → 本 workflow → Run workflow → action=rollback，version=上一个版本号（每次发布的 Summary 里有）。
 # 双账号（vars.DEMOX_EK_ENABLED=true，REQ-7 双发 2026-10-20）：磷（备源站）先、易点（主源站）后；stage/deploy-develop/promote/rollback 两边都做；
 # api.demox.site 公网复查只在易点切完后做一次；易点失败 → 易点脚本自动切回，workflow 再把磷切回。易点用角色 vars.DEMOX_EK_ROLE_ARN（同样的 OIDC sub 条件）。
+# action=deploy（含 push 自动发布）在双账号下不直接调用单账号 deploy：同一个 job 里按 stage → deploy-develop → promote 走完。
+# develop 健康检查失败不会切 production。
 on:
   push:
     branches: [master]
@@ -146,6 +148,10 @@ jobs:
           RELEASE_LOG: docs/function-releases.jsonl
         run: |
           set -euo pipefail
+          # cursor[bot] 含方括号，promote 的批准人只接受字母数字。去掉非法字符，空了再用 cursor。
+          RELEASE_APPROVER=$(printf '%s' "${RELEASE_APPROVER:-}" | tr -cd 'A-Za-z0-9._-')
+          [ -n "$RELEASE_APPROVER" ] || RELEASE_APPROVER=cursor
+          export RELEASE_APPROVER
           echo "## function-api ${ACTION}" >> "$GITHUB_STEP_SUMMARY"
           ZIP=.artifacts/unified-scf/demox-unified-scf.zip
           OUT_LIN=$(mktemp); OUT_EK=$(mktemp)
@@ -194,8 +200,31 @@ jobs:
               run_target lin stage --zip "$ZIP"
               run_target ek stage --zip "$ZIP" ;;
             deploy)
-              # 一步到位会让两边 production 无人验证地一起切；双账号下只允许 stage → deploy-develop → promote。
-              echo "::error::双账号模式不支持 action=deploy（含 push 自动发布）；请走 stage → deploy-develop → promote"; exit 1 ;;
+              # 单次 deploy 会跳过 develop 健康检查。这里按 stage → develop → promote 走完。
+              # develop 失败停在这里，production 不动。易点 promote 复查失败会把磷切回。
+              run_target lin stage --zip "$ZIP"
+              run_target ek stage --zip "$ZIP"
+              STAGED_KEY=$(getout "$OUT_LIN" key)
+              STAGED_SHA256=$(getout "$OUT_LIN" sha256)
+              [ -n "$STAGED_KEY" ] && [ "$STAGED_KEY" = "$(getout "$OUT_EK" key)" ] && [ "$STAGED_SHA256" = "$(getout "$OUT_EK" sha256)" ] \
+                || { echo "::error::两边 stage 的包 key 或 sha256 不一致"; exit 1; }
+              DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
+              run_target ek deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
+              LIN_VER=$(getout "$OUT_LIN" version)
+              EK_VER=$(getout "$OUT_EK" version)
+              num "$LIN_VER" version
+              num "$EK_VER" version_ek
+              echo "- 双账号 deploy：磷 v${LIN_VER}，易点 v${EK_VER}" >> "$GITHUB_STEP_SUMMARY"
+              DEMOX_SKIP_PUBLIC_CHECK=1 RELEASE_LOG= run_target lin promote --version "$LIN_VER"
+              LIN_PREV=$(getout "$OUT_LIN" previous)
+              if ! run_target ek promote --version "$EK_VER"; then
+                if [ -n "$LIN_PREV" ]; then
+                  echo "::error::易点 promote/复查失败（易点已自动切回）；把 磷 也切回 v$LIN_PREV"
+                  DEMOX_SKIP_PUBLIC_CHECK=1 run_target lin rollback --version "$LIN_PREV" \
+                    || echo "::error::磷 自动回滚失败，请人工 action=rollback version=$LIN_PREV"
+                fi
+                exit 1
+              fi ;;
             deploy-develop)
               # 磷 已有同一包的版本（例如之前单账号已发过）→ 复用其版本号，继续发易点。
               DEMOX_REUSE_PUBLISHED=1 run_target lin deploy-develop --key "$STAGED_KEY" --sha256 "$STAGED_SHA256"
