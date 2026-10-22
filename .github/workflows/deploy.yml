@@ -2,6 +2,7 @@ name: Deploy to Demox (self-hosted)
 
 # 主站正式发布：push master 后构建 dist/，再用 Demox CLI 原地更新 EPX2UU43。
 # 鉴权用 GitHub Environment `www` 的 Secret DEMOX_TOKEN（环境密钥）。不要把 token 写进代码。
+# 发布成功后再用同一 environment 的 OIDC 角色刷新 EdgeOne 缓存，不使用长期密钥。
 on:
   push:
     branches: [master]
@@ -38,6 +39,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: www
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -70,3 +74,13 @@ jobs:
           fi
           npm install -g @demox-site/cli@1.1.6
           demox deploy ./dist --id "${WEBSITE_ID}"
+
+      # 站点已经发布成功。刷新失败不会回滚发布，但会让本 job 失败。
+      - name: Purge EdgeOne cache
+        timeout-minutes: 8
+        env:
+          TENCENT_WWW_PURGE_ROLE_ARN: ${{ vars.TENCENT_WWW_PURGE_ROLE_ARN }}
+          TENCENT_OIDC_PROVIDER_ID: ${{ vars.TENCENT_OIDC_PROVIDER_ID }}
+          EO_ZONE_ID: ${{ vars.EO_ZONE_ID }}
+          WWW_ORIGIN_PURGE_PREFIX: ${{ vars.WWW_ORIGIN_PURGE_PREFIX }}
+        run: node scripts/ci/www-purge.cjs
