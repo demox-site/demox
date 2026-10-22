@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Button, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, useToast } from "@/components/ui";
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, useToast } from "@/components/ui";
 import { ConfirmDestructive } from "@/components/ui/confirm-destructive";
-import { ArrowLeft, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, Copy, Plus, RefreshCw, Search } from "lucide-react";
 import { useLanguage } from "@/hooks/use-language";
 import { websiteApi, type ProjectColumn, type ProjectRow, type ProjectTable } from "@/api";
 import { translations } from "../home-translations";
@@ -62,7 +62,15 @@ const texts = {
     deleteTable: "删除表",
     deleteTableTitle: "删除这张表",
     deleteTableDesc: "表和里面的行都会去掉。",
-    cancel: "取消"
+    cancel: "取消",
+    connect: "连接",
+    connectTitle: "怎么连上这个库",
+    connectHint: "没有主机、端口、用户名和密码。先 demox login，再用这个项目 ID。命令里的 notes 是示例表，换成你的表名。主键列必须是文本。",
+    projectIdLabel: "项目 ID",
+    copyId: "复制项目 ID",
+    copyCommands: "复制命令",
+    copied: "已复制",
+    connectNote: "云函数拿不到这个库的地址。不要把登录令牌写进函数环境变量。"
   },
   en: {
     title: "Database",
@@ -114,9 +122,26 @@ const texts = {
     deleteTable: "Delete table",
     deleteTableTitle: "Delete this table",
     deleteTableDesc: "The table and its rows will be removed.",
-    cancel: "Cancel"
+    cancel: "Cancel",
+    connect: "Connect",
+    connectTitle: "How to reach this database",
+    connectHint: "There is no host, port, username, or password. Run demox login, then use this project ID. notes in the commands is an example table; use your table name. The primary column must be text.",
+    projectIdLabel: "Project ID",
+    copyId: "Copy project ID",
+    copyCommands: "Copy commands",
+    copied: "Copied",
+    connectNote: "Cloud functions do not receive a database address. Do not put a login token in function env."
   }
 } as const;
+
+function dbCommands(projectId: string) {
+  const id = projectId || "PROJECT_ID";
+  return `demox login
+demox db tables -p ${id}
+demox db create-table -p ${id} -n notes -c '[{"name":"id","type":"text","primary":true},{"name":"body","type":"text"}]'
+demox db put -p ${id} -t notes -v '{"id":"1","body":"hello"}'
+demox db rows -p ${id} -t notes`;
+}
 
 type ColumnDraft = { name: string; type: ProjectColumn["type"]; primary: boolean };
 type Copy = (typeof texts)["zh"];
@@ -138,6 +163,39 @@ function displayValue(value: string | number | boolean | null | undefined, yes: 
   if (value == null || value === "") return "";
   if (typeof value === "boolean") return value ? yes : no;
   return String(value);
+}
+
+function DatabaseConnectGuide({ projectId }: { projectId: string }) {
+  const { copy } = useDatabaseCopy();
+  const { toast } = useToast();
+  const commands = dbCommands(projectId);
+  const copyText = async (value: string) => {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    toast({ title: copy.copied });
+  };
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground">{copy.projectIdLabel}</p>
+          <p className="truncate font-mono text-sm">{projectId}</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => void copyText(projectId)}>
+          <Copy className="mr-2 h-4 w-4" />
+          {copy.copyId}
+        </Button>
+      </div>
+      <pre className="overflow-auto rounded-md border bg-muted p-3 font-mono text-xs leading-5">{commands}</pre>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <p className="text-sm text-muted-foreground">{copy.connectNote}</p>
+        <Button type="button" variant="outline" size="sm" onClick={() => void copyText(commands)}>
+          <Copy className="mr-2 h-4 w-4" />
+          {copy.copyCommands}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function DatabaseNav() {
@@ -176,6 +234,7 @@ export default function ProjectDatabaseLayout() {
     handleAuthError: (error) => console.warn("Project database page auth error:", error)
   });
   const [ready, setReady] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -212,7 +271,19 @@ export default function ProjectDatabaseLayout() {
           <h1 className="site-page-title">{copy.title}</h1>
           <p className="site-page-desc">{copy.subtitle}</p>
         </div>
+        <Button type="button" variant="outline" size="sm" onClick={() => setConnectOpen(true)}>
+          {copy.connect}
+        </Button>
       </div>
+      <Dialog open={connectOpen} onOpenChange={setConnectOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{copy.connectTitle}</DialogTitle>
+            <DialogDescription>{copy.connectHint}</DialogDescription>
+          </DialogHeader>
+          <DatabaseConnectGuide projectId={projectId} />
+        </DialogContent>
+      </Dialog>
       <Outlet />
     </div>
   );
@@ -270,6 +341,13 @@ export function ProjectDatabaseList() {
     <div className="flex flex-col gap-6 sm:flex-row">
       <DatabaseNav />
       <div className="flex min-w-0 flex-1 flex-col gap-5">
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-medium">{copy.connectTitle}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.connectHint}</p>
+          <div className="mt-4">
+            <DatabaseConnectGuide projectId={projectId} />
+          </div>
+        </section>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
