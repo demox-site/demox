@@ -4,7 +4,7 @@ name: Deploy function-api (SCF demox-function-api)
 # 只更新代码：不改函数环境变量（里面有 JWT_SECRET 等），也不改内存、超时、VPC。
 # push 到 master（路径命中）自动：stage → deploy-develop → develop 双账号冒烟 → promote → production 双账号冒烟。
 # 易点和磷都发。DEMOX_EK_ENABLED 不是 true 时失败，不会只发磷。
-# 冒烟或切换失败：已经动过的别名切回去，job 变红，并开 release-failure issue。
+# 失败：已经动过的别名切回去，job 变红，并按失败类型开 release-failure issue（版本门禁、部署、冒烟已回滚、冒烟回滚失败）。
 # workflow_dispatch 只做回滚（磷 version + 易点 version_ek）。
 # environment function-api-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
 # OIDC sub 仍是 repo:demox-site/demox:environment:function-api-production。

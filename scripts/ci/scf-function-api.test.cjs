@@ -896,7 +896,18 @@ test('releaseDeployDevelop: same manifest and a new package sha publishes an aut
 test('releaseDeployDevelop: dual mode does not bypass a downgrade', async () => {
   const s = samePkgScf();
   const d = createDeployer({ developBaseUrl: DEV, scf: s.api, cos: getCos(), fetchImpl: okFetch, log: quiet, wait: async () => {} });
-  await assert.rejects(releaseDeployDevelop(d, { manifest: releaseManifest('0.0.9'), key: KEY, sha256: 'd'.repeat(64), gitSha: GIT, reusePublished: true, log: quiet }), /不会降级/);
+  const outputs = {};
+  await assert.rejects(releaseDeployDevelop(d, {
+    manifest: releaseManifest('0.0.9'),
+    key: KEY,
+    sha256: 'd'.repeat(64),
+    gitSha: GIT,
+    reusePublished: true,
+    log: quiet,
+    output: (name, value) => { outputs[name] = value; }
+  }), /不会降级/);
+  assert.equal(outputs.failure_kind, 'version-gate');
+  assert.equal(outputs.failure_reason, 'downgrade');
   assert.deepEqual(s.calls.filter((c) => ['UpdateFunctionCode', 'PublishVersion', 'UpdateAlias'].includes(c.name)), []);
 });
 

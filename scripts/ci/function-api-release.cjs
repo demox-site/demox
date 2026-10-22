@@ -69,10 +69,57 @@ function developBase(env, target) {
   return String(target === 'lin' ? env.LIN_DEVELOP_URL : env.EK_DEVELOP_URL).replace(/\/+$/, '');
 }
 
+function detailFromStderr(stderr) {
+  const lines = String(stderr || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  const errors = lines.filter((line) => line.includes('::error::')).map((line) => line.replace(/^.*::error::/, ''));
+  return (errors.length ? errors : lines).join(' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function publicReason(message, env) {
+  let text = String(message || '').replace(/\s+/g, ' ').trim();
+  const token = String(env && env.GITHUB_TOKEN || '');
+  if (token) text = text.split(token).join('[redacted]');
+  return text.slice(0, 500);
+}
+
+function classifyFunctionApiFailure({ phase, outputs = {}, message, rollbackFailures = [], switched = false }) {
+  const code = String(outputs.failure_reason || '').trim();
+  const versionGate = outputs.failure_kind === 'version-gate';
+  const smoke = phase === 'develop-smoke' || phase === 'production-smoke';
+  const failedRollback = rollbackFailures.length > 0;
+  let kind = 'deploy';
+  if (versionGate) kind = 'version-gate';
+  else if (smoke) kind = failedRollback ? 'smoke-rollback-failed' : 'smoke-rolled-back';
+  const reasonText = publicReason(message);
+  const reason = code && !reasonText.includes(code) ? `${reasonText} (${code})`.trim() : (reasonText || code || '未知原因');
+  let rollback;
+  if (kind === 'version-gate') {
+    rollback = switched
+      ? (failedRollback
+        ? `版本门禁拒绝。已尝试把动过的别名切回。回滚未完成：${rollbackFailures.join('、')}。`
+        : '版本门禁拒绝。动过的别名已切回。没有按冒烟失败处理。')
+      : '版本门禁拒绝。没有回滚，别名没有切换。';
+  } else if (kind === 'smoke-rolled-back') {
+    rollback = phase === 'develop-smoke'
+      ? '冒烟未通过。develop 别名已切回上一版，production 未改。'
+      : '冒烟未通过。production 别名已切回上一版。';
+  } else if (kind === 'smoke-rollback-failed') {
+    rollback = `冒烟未通过。回滚未完成：${rollbackFailures.join('、')}。`;
+  } else if (!switched) {
+    rollback = '部署失败。没有回滚，别名没有切换。';
+  } else if (failedRollback) {
+    rollback = `部署失败。已尝试回滚。回滚未完成：${rollbackFailures.join('、')}。`;
+  } else {
+    rollback = '部署失败。已把这次动过的别名切回。';
+  }
+  return { component: 'function-api', stage: phase || '未知', kind, reason, rollback };
+}
+
 async function runScf(spawnImpl, env, target, args, extra = {}) {
   const result = await spawnImpl('scripts/ci/scf-function-api.cjs', args, { ...targetEnv(env, target), ...extra });
   if (!result || result.code !== 0) {
-    const error = new Error(`${target} ${args[0]} 失败`);
+    const detail = String(result && result.detail || '').replace(/\s+/g, ' ').trim();
+    const error = new Error(detail ? `${target} ${args[0]} 失败：${detail}` : `${target} ${args[0]} 失败`);
     error.outputs = result && result.outputs || {};
     throw error;
   }
@@ -88,10 +135,13 @@ async function runSmoke(spawnImpl, env, bases) {
   if (!result || result.code !== 0) throw new Error('双账号冒烟失败');
 }
 
-async function openIssue(spawnImpl, env, rollback) {
+async function openIssue(spawnImpl, env, failure) {
   const result = await spawnImpl('scripts/ci/open-release-issue.cjs', [], {
-    RELEASE_STAGE: 'function-api 冒烟未通过，已回滚别名',
-    RELEASE_ROLLBACK_NOTE: rollback
+    RELEASE_COMPONENT: failure.component,
+    RELEASE_STAGE: failure.stage,
+    RELEASE_KIND: failure.kind,
+    RELEASE_REASON: failure.reason,
+    RELEASE_ROLLBACK_NOTE: failure.rollback
   });
   if (!result || result.code !== 0) throw new Error('创建 release-failure issue 失败');
 }
@@ -136,6 +186,7 @@ async function releaseFunctionApi({ env, spawn: spawnImpl }) {
     ek: { developed: false, promoteStarted: false }
   };
   let switched = false;
+  let phase = 'stage';
   try {
     const staged = {};
     for (const target of ['lin', 'ek']) {
@@ -147,6 +198,7 @@ async function releaseFunctionApi({ env, spawn: spawnImpl }) {
     const key = staged.lin.cos_key;
     const sha256 = staged.lin.sha256;
     if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('stage 没有写出 64 位 sha256');
+    phase = 'deploy-develop';
     for (const target of ['lin', 'ek']) {
       const outputs = await runScf(spawnImpl, env, target, ['deploy-develop', '--key', key, '--sha256', sha256], {
         DEMOX_REUSE_PUBLISHED: target === 'lin' ? '1' : ''
@@ -160,7 +212,9 @@ async function releaseFunctionApi({ env, spawn: spawnImpl }) {
       done[target].productionPrevious = outputs.production;
       switched = true;
     }
+    phase = 'develop-smoke';
     await runSmoke(spawnImpl, env, { ek: developBase(env, 'ek'), lin: developBase(env, 'lin') });
+    phase = 'promote';
     for (const target of ['lin', 'ek']) {
       done[target].promoteStarted = true;
       const outputs = await runScf(spawnImpl, env, target, ['promote', '--version', done[target].version], {
@@ -169,6 +223,7 @@ async function releaseFunctionApi({ env, spawn: spawnImpl }) {
       });
       if (/^\d+$/.test(String(outputs.previous || ''))) done[target].productionPrevious = outputs.previous;
     }
+    phase = 'production-smoke';
     await runSmoke(spawnImpl, env, { ek: productionBase(env, 'ek'), lin: productionBase(env, 'lin') });
     return { lin: done.lin.version, ek: done.ek.version };
   } catch (error) {
@@ -176,13 +231,15 @@ async function releaseFunctionApi({ env, spawn: spawnImpl }) {
     const rollbackFailures = promoted
       ? await rollbackPromoted(spawnImpl, env, done)
       : await rollbackDeveloped(spawnImpl, env, done);
-    const note = !switched
-      ? '别名没有切换。'
-      : promoted
-        ? `已尝试把易点和磷的 production 别名切回上一版。${rollbackFailures.length ? `回滚未完成：${rollbackFailures.join('、')}。` : ''}`
-        : `已尝试把易点和磷的 develop 别名切回上一版，production 未改。${rollbackFailures.length ? `回滚未完成：${rollbackFailures.join('、')}。` : ''}`;
+    const failure = classifyFunctionApiFailure({
+      phase,
+      outputs: error.outputs || {},
+      message: publicReason(error.message, env),
+      rollbackFailures,
+      switched
+    });
     try {
-      await openIssue(spawnImpl, env, note);
+      await openIssue(spawnImpl, env, failure);
     } catch (issueError) {
       error.message = `${error.message}；${issueError.message}`;
     }
@@ -207,8 +264,12 @@ function spawnNode(script, args, env) {
       env: { ...process.env, ...env, GITHUB_OUTPUT: outputFile },
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    let stderr = '';
     child.stdout.on('data', (chunk) => process.stdout.write(chunk));
-    child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+    });
     child.on('close', (code) => {
       const outputs = {};
       for (const line of fs.readFileSync(outputFile, 'utf8').split('\n')) {
@@ -216,7 +277,7 @@ function spawnNode(script, args, env) {
         if (index > 0) outputs[line.slice(0, index)] = line.slice(index + 1);
       }
       fs.unlinkSync(outputFile);
-      resolve({ code: code == null ? 1 : code, outputs });
+      resolve({ code: code == null ? 1 : code, outputs, detail: detailFromStderr(stderr) });
     });
   });
 }
@@ -234,4 +295,11 @@ async function main(env = process.env) {
 
 if (require.main === module) main();
 
-module.exports = { releaseFunctionApi, rollbackRelease, requireReleaseEnv, sanitizeApprover };
+module.exports = {
+  releaseFunctionApi,
+  rollbackRelease,
+  requireReleaseEnv,
+  sanitizeApprover,
+  classifyFunctionApiFailure,
+  detailFromStderr
+};
