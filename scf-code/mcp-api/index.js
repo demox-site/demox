@@ -121,13 +121,36 @@ function normalizeWebsiteApiUrl(value) {
   }
 }
 
-const AUTH_API_URL = requiredEnv('AUTH_API_URL');
+// AUTH_API_URL 必须指到 auth 后端（统一入口下是 https://api.demox.site/auth）。
+// 进程内回源只取 pathname。只写域名时路径是 /，匹配不到 /auth，请求落到用户函数管理，
+// 返回 401「需要登录」，而不是 auth 的 400 缺参。路径为空或 / 时补上 /auth；
+// 已经是 /auth（或 /auth/、/auth/...）则保持，避免再拼一次，也不会绕回 MCP。
+function normalizeAuthApiUrl(value) {
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    const pathname = url.pathname.replace(/\/+$/, '');
+    url.pathname = pathname ? pathname : '/auth';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return /\/auth$/.test(raw) ? raw : `${raw}/auth`;
+  }
+}
+
+requiredEnv('AUTH_API_URL');
 requiredEnv('WEBSITE_API_URL');
 
 // 在用到的时候再读 process.env 并规范化，而不是只在模块加载时读一次：
 // 进程内模式（function-api / api-web 直接 require 本模块）和测试里环境变量可能在加载后才变。
 function websiteApiUrl() {
   return normalizeWebsiteApiUrl(requiredEnv('WEBSITE_API_URL'));
+}
+
+function authApiUrl() {
+  return normalizeAuthApiUrl(requiredEnv('AUTH_API_URL'));
 }
 
 let backendInvoker = null;
@@ -306,7 +329,7 @@ exports.main = async (event) => {
     }
 
     if (method === 'POST' && (path.includes('send-code') || requestData.action === 'send_code')) {
-      return proxy(AUTH_API_URL, {
+      return proxy(authApiUrl(), {
         action: 'send_code',
         email: requestData.email,
         type: requestData.type || 'login'
@@ -314,7 +337,7 @@ exports.main = async (event) => {
     }
 
     if (method === 'POST' && (path.includes('login-code') || requestData.action === 'login_code')) {
-      return proxy(AUTH_API_URL, {
+      return proxy(authApiUrl(), {
         action: 'login_code',
         email: requestData.email,
         code: requestData.code,
@@ -323,7 +346,7 @@ exports.main = async (event) => {
     }
 
     if (method === 'POST' && (path.includes('login') || requestData.action === 'login')) {
-      return proxy(AUTH_API_URL, {
+      return proxy(authApiUrl(), {
         action: 'login',
         email: requestData.email,
         password: requestData.password
@@ -331,7 +354,7 @@ exports.main = async (event) => {
     }
 
     if (method === 'POST' && (path.includes('register') || requestData.action === 'register')) {
-      return proxy(AUTH_API_URL, {
+      return proxy(authApiUrl(), {
         action: 'register',
         email: requestData.email,
         password: requestData.password
@@ -341,7 +364,7 @@ exports.main = async (event) => {
     if (method === 'POST' && (path.includes('/me') || requestData.action === 'me')) {
       const token = extractToken(event);
       if (!token) return unauthorized('未登录');
-      return proxy(AUTH_API_URL, { action: 'me' }, token);
+      return proxy(authApiUrl(), { action: 'me' }, token);
     }
 
     return response(404, {
@@ -370,5 +393,5 @@ exports.main = async (event) => {
 };
 
 exports.setBackendInvoker = setBackendInvoker;
-exports.__private = { normalizeDeployPayload, isDeployRequest, normalizeWebsiteApiUrl, websiteApiUrl };
+exports.__private = { normalizeDeployPayload, isDeployRequest, normalizeWebsiteApiUrl, websiteApiUrl, normalizeAuthApiUrl, authApiUrl };
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
