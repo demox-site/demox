@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { assertAllowed, ALLOWED_ACTIONS, runEdgeDeploy } = require('./edge-deploy.cjs');
+const { assertAllowed, ALLOWED_ACTIONS, runEdgeDeploy, restorePrevious, probeChildEnv, issueChildEnv } = require('./edge-deploy.cjs');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -67,6 +67,7 @@ function fakeFetch(mode) {
     }
     if (action === 'ModifyFunction') {
       modifies += 1;
+      if (mode === 'throw-once' && modifies === 1) throw new Error('ModifyFunction 网络错误');
       if (mode !== 'mismatch' || modifies > 1) live = body.Content;
       return { ok: true, status: 200, json: async () => ({ Response: { RequestId: 'mod' } }) };
     }
@@ -256,4 +257,112 @@ test('probe failure writes back and stays failed after the write-back probe', as
   assert.equal(checks, 2);
   assert.equal(fetchImpl.calls.filter((call) => call.action === 'ModifyFunction').length, 2);
   assert.equal(issues.length, 1);
+  assert.equal(String(issues[0]).includes('smoke-password'), false);
+});
+
+test('wrong zone never calls ModifyFunction', async () => {
+  const files = fixture();
+  const fetchImpl = fakeFetch('ok');
+  await assert.rejects(
+    () => runEdgeDeploy({
+      env: env({ EO_ZONE_ID: 'zone-other' }),
+      fetchImpl,
+      log: () => {},
+      masterPath: files.masterPath,
+      liveShaPath: files.liveShaPath,
+      previousPath: files.previousPath
+    }),
+    /zone-3kplfkbflnd6/
+  );
+  assert.equal(fetchImpl.calls.some((call) => call.action === 'ModifyFunction'), false);
+});
+
+test('a thrown ModifyFunction still writes the previous content back', async () => {
+  const files = fixture();
+  const fetchImpl = fakeFetch('throw-once');
+  const issues = [];
+  await assert.rejects(
+    () => runEdgeDeploy({
+      env: env(),
+      fetchImpl,
+      log: () => {},
+      probe: async () => {},
+      openIssue: async (_issueEnv, note) => { issues.push(note); },
+      masterPath: files.masterPath,
+      liveShaPath: files.liveShaPath,
+      previousPath: files.previousPath,
+      attempts: 1,
+      gapMs: 0,
+      dryRun: false
+    }),
+    /网络错误/
+  );
+  const modifies = fetchImpl.calls.filter((call) => call.action === 'ModifyFunction');
+  assert.equal(modifies.length, 2);
+  assert.equal(modifies[1].body.Content, 'previous-live');
+  assert.equal(issues.length, 1);
+});
+
+test('probe and issue environments are an allowlist', () => {
+  const source = env({
+    TENCENTCLOUD_SECRET_ID: 'sts-id',
+    TENCENTCLOUD_SECRET_KEY: 'sts-key',
+    DEMOX_TOKEN: 'site-token',
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/token',
+    PATH: '/usr/bin',
+    HOME: '/home/runner',
+    EDGE_BASELINE: '/tmp/baseline.json'
+  });
+  const probeEnv = probeChildEnv(source);
+  assert.equal(probeEnv.DEMOX_SMOKE_PASSWORD, 'smoke-password');
+  assert.equal(probeEnv.EDGE_BASELINE, '/tmp/baseline.json');
+  assert.equal(probeEnv.PATH, '/usr/bin');
+  for (const key of Object.keys(probeEnv)) {
+    assert.equal(key.startsWith('ACTIONS_ID_TOKEN_REQUEST_'), false);
+    assert.equal(key.startsWith('TENCENTCLOUD_'), false);
+  }
+  assert.equal(probeEnv.DEMOX_TOKEN, undefined);
+  assert.equal(probeEnv.GITHUB_TOKEN, undefined);
+  const issueEnv = issueChildEnv(source, '已写回');
+  assert.equal(issueEnv.GITHUB_TOKEN, 'github-token');
+  assert.equal(issueEnv.RELEASE_ROLLBACK_NOTE, '已写回');
+  assert.equal(issueEnv.RELEASE_STAGE, '边缘函数冒烟未通过，已写回上一版');
+  assert.equal(issueEnv.DEMOX_SMOKE_PASSWORD, undefined);
+  assert.equal(issueEnv.DEMOX_TOKEN, undefined);
+  assert.equal(issueEnv.ACTIONS_ID_TOKEN_REQUEST_TOKEN, undefined);
+  assert.equal(issueEnv.TENCENTCLOUD_SECRET_ID, undefined);
+});
+
+test('restore skips a missing file and writes back only when the live sha differs', async () => {
+  const files = fixture();
+  const missing = await restorePrevious({
+    env: env(),
+    fetchImpl: fakeFetch('ok'),
+    log: () => {},
+    previousPath: path.join(files.dir, 'absent.js')
+  });
+  assert.equal(missing.reason, 'missing');
+  fs.writeFileSync(files.previousPath, 'previous-live');
+  const sameFetch = fakeFetch('ok');
+  const same = await restorePrevious({
+    env: env(),
+    fetchImpl: sameFetch,
+    log: () => {},
+    previousPath: files.previousPath
+  });
+  assert.equal(same.reason, 'unchanged');
+  assert.equal(sameFetch.calls.some((call) => call.action === 'ModifyFunction'), false);
+  const changed = fakeFetch('ok');
+  fs.writeFileSync(files.previousPath, 'saved-previous');
+  const result = await restorePrevious({
+    env: env(),
+    fetchImpl: changed,
+    log: () => {},
+    previousPath: files.previousPath
+  });
+  assert.equal(result.restored, true);
+  const modify = changed.calls.find((call) => call.action === 'ModifyFunction');
+  assert.equal(modify.body.Content, 'saved-previous');
+  assert.equal(modify.body.ZoneId, 'zone-3kplfkbflnd6');
+  assert.equal(modify.body.FunctionId, 'ef-1281msyw');
 });

@@ -5,7 +5,9 @@
  * 把 master 的 edge-functions/subdomain-router.js 写到 ef-1281msyw。
  * 只调用 teo:DescribeFunctions、teo:ModifyFunction、teo:DescribeFunctionRuntimeEnvironment。
  * FunctionId 来自 EO_FUNCTION_ID，并且必须等于字面量 ef-1281msyw，否则在 ModifyFunction 之前失败。
+ * ZoneId 必须等于字面量 zone-3kplfkbflnd6。
  * 写完读回，sha256 必须等于仓库文件。不一致或冒烟失败都把上一份 Content 写回去。
+ * `node scripts/ci/edge-deploy.cjs restore` 只按 EDGE_PREVIOUS_PATH 写回，不跑探针，不开 issue。
  * dry-run 只读，不 ModifyFunction，也不跑会发布站点的冒烟。
  */
 
@@ -23,6 +25,23 @@ const {
 } = require('./www-purge.cjs');
 
 const EXPECTED_FUNCTION_ID = 'ef-1281msyw';
+const EXPECTED_ZONE_ID = 'zone-3kplfkbflnd6';
+const PROBE_ENV_KEYS = [
+  'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'USER', 'CI',
+  'EDGE_BASELINE',
+  'DEMOX_SMOKE_EK_BASE', 'DEMOX_SMOKE_LIN_BASE',
+  'DEMOX_SMOKE_EMAIL', 'DEMOX_SMOKE_PASSWORD',
+  'DEMOX_SMOKE_WEBSITE_ID', 'DEMOX_SMOKE_WWW_MIRROR_URL',
+  'DEMOX_SMOKE_PRIVATE_SITE_URL',
+  'GITHUB_RUN_ID', 'GITHUB_SHA', 'GITHUB_REPOSITORY',
+  'GITHUB_SERVER_URL', 'GITHUB_API_URL', 'GITHUB_WORKSPACE',
+  'EXPECT_BUNDLE', 'WWW_URL'
+];
+const ISSUE_ENV_KEYS = [
+  'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL',
+  'GITHUB_TOKEN', 'GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID',
+  'GITHUB_SERVER_URL', 'GITHUB_API_URL'
+];
 const ALLOWED_ACTIONS = new Set(['DescribeFunctions', 'ModifyFunction', 'DescribeFunctionRuntimeEnvironment']);
 const OIDC_AUDIENCE = 'sts.tencentcloudapi.com';
 const REQUEST_TIMEOUT_MS = 20000;
@@ -57,7 +76,9 @@ function readSettings(env) {
     throw new Error('TENCENT_EDGE_WRITE_ROLE_ARN 格式不正确');
   }
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(providerId)) throw new Error('TENCENT_OIDC_PROVIDER_ID 格式不正确');
-  if (!/^zone-[a-z0-9]+$/.test(zoneId)) throw new Error('EO_ZONE_ID 格式不正确');
+  if (zoneId !== EXPECTED_ZONE_ID) {
+    throw new Error(`EO_ZONE_ID 必须是 ${EXPECTED_ZONE_ID}，拒绝写入`);
+  }
   if (functionId !== EXPECTED_FUNCTION_ID) {
     throw new Error(`EO_FUNCTION_ID 必须是 ${EXPECTED_FUNCTION_ID}，拒绝写入`);
   }
@@ -206,10 +227,35 @@ async function runChecks(probe, env, attempts, gapMs, wait) {
   throw lastError || new Error('边缘冒烟失败');
 }
 
+function pickEnv(source, keys) {
+  const out = {};
+  for (const key of keys) {
+    if (key.startsWith('ACTIONS_ID_TOKEN_REQUEST_') || key.startsWith('TENCENTCLOUD_') || key === 'DEMOX_TOKEN') continue;
+    const value = source && source[key];
+    if (typeof value === 'string' && value.length > 0) out[key] = value;
+  }
+  return out;
+}
+
+function probeChildEnv(source) {
+  return pickEnv(source, PROBE_ENV_KEYS);
+}
+
+function issueChildEnv(source, note) {
+  return {
+    ...pickEnv(source, ISSUE_ENV_KEYS),
+    RELEASE_STAGE: '边缘函数冒烟未通过，已写回上一版',
+    RELEASE_ROLLBACK_NOTE: String(note || '')
+  };
+}
+
 function spawnProbe(phase, env) {
   const script = path.join(__dirname, 'edge-release-probes.sh');
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', [script, phase], { env: { ...process.env, ...env }, stdio: ['ignore', 'inherit', 'inherit'] });
+    const child = spawn('bash', [script, phase], {
+      env: probeChildEnv({ ...process.env, ...env }),
+      stdio: ['ignore', 'inherit', 'inherit']
+    });
     child.on('close', (code) => {
       if (code === 0) resolve();
       else reject(new Error(`边缘探针 ${phase} 失败（退出码 ${code == null ? 1 : code}）`));
@@ -220,12 +266,7 @@ function spawnProbe(phase, env) {
 function spawnIssue(env, note) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'open-release-issue.cjs')], {
-      env: {
-        ...process.env,
-        ...env,
-        RELEASE_STAGE: '边缘函数冒烟未通过，已写回上一版',
-        RELEASE_ROLLBACK_NOTE: note
-      },
+      env: issueChildEnv({ ...process.env, ...env }, note),
       stdio: ['ignore', 'inherit', 'inherit']
     });
     child.on('close', (code) => {
@@ -287,31 +328,39 @@ async function runEdgeDeploy({
       safeLog(liveSha === master.sha256 ? 'dry-run：线上与 master 一致，未调用 ModifyFunction' : 'dry-run：线上与 master 不同，未调用 ModifyFunction');
       return { dryRun: true, liveSha, masterSha: master.sha256, previousPath };
     }
-    await probe('baseline', env);
-    if (settings.functionId !== EXPECTED_FUNCTION_ID) {
-      throw new Error(`EO_FUNCTION_ID 必须是 ${EXPECTED_FUNCTION_ID}，拒绝 ModifyFunction`);
+    await probe('baseline', probeChildEnv(env));
+    if (settings.functionId !== EXPECTED_FUNCTION_ID || settings.zoneId !== EXPECTED_ZONE_ID) {
+      throw new Error(`拒绝 ModifyFunction：FunctionId 必须是 ${EXPECTED_FUNCTION_ID}，ZoneId 必须是 ${EXPECTED_ZONE_ID}`);
     }
+    wrote = true;
     await postJson(fetchImpl, signed(cred, 'ModifyFunction', {
       ZoneId: settings.zoneId,
       FunctionId: settings.functionId,
       Content: master.body
     }, now), hide);
-    wrote = true;
     const readBack = await describeContent(fetchImpl, cred, settings, hide, now);
     if (sha256(readBack) !== master.sha256) {
       throw new Error(`读回 sha256 ${sha256(readBack)} 与 master ${master.sha256} 不一致`);
     }
     safeLog('读回 sha256 与 master 一致');
-    await runChecks(probe, env, attempts, gapMs, wait);
+    await runChecks(probe, probeChildEnv(env), attempts, gapMs, wait);
     safeLog('边缘冒烟通过');
     return { dryRun: false, versionSha: master.sha256, previousPath };
   } catch (error) {
     if (error && error.message) error.message = hide(error.message);
     if (!dryRun) {
       let note = wrote ? '已尝试把上一份边缘代码写回去。' : '没有调用 ModifyFunction。';
-      if (wrote && previous) {
+      if (previous) try {
+        const cred = await assumeRole({ env, settings, fetchImpl, now, secrets, hide, log });
+        let liveChanged = false;
         try {
-          const cred = await assumeRole({ env, settings, fetchImpl, now, secrets, hide, log });
+          const live = await describeContent(fetchImpl, cred, settings, hide, now);
+          liveChanged = sha256(live) !== sha256(previous);
+        } catch (describeError) {
+          liveChanged = wrote;
+          safeLog(`写回前无法确认线上内容：${hide(describeError.message)}`);
+        }
+        if (wrote || liveChanged) {
           await postJson(fetchImpl, signed(cred, 'ModifyFunction', {
             ZoneId: settings.zoneId,
             FunctionId: settings.functionId,
@@ -321,29 +370,72 @@ async function runEdgeDeploy({
           if (sha256(restored) !== sha256(previous)) throw new Error('写回后读回的 sha256 与上一份不一致');
           note = '已把上一份边缘代码写回去。';
           try {
-            await probe('check', env);
+            await probe('check', probeChildEnv(env));
             note += '写回后复核已跑完，发布仍然失败。';
           } catch (probeError) {
-            note += `写回后复核失败：${probeError.message}`;
+            note += `写回后复核失败：${hide(probeError.message)}`;
           }
-        } catch (rollbackError) {
-          note = `写回未完成：${rollbackError.message}`;
         }
+      } catch (rollbackError) {
+        note = `写回未完成：${hide(rollbackError.message)}`;
       }
+      const safeNote = hide(note);
       try {
-        await openIssue(env, note);
+        await openIssue(issueChildEnv(env, safeNote), safeNote);
       } catch (issueError) {
-        error.message = `${error.message}；${issueError.message}`;
+        error.message = `${error.message}；${hide(issueError.message)}`;
       }
-      error.message = `${error.message} ${note}`;
+      error.message = `${error.message} ${safeNote}`;
     }
     throw error;
   }
 }
 
+async function restorePrevious({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  log = console.log,
+  now = Date.now,
+  previousPath = env.EDGE_PREVIOUS_PATH || ''
+} = {}) {
+  if (!previousPath || !fs.existsSync(previousPath)) {
+    log('没有上一份边缘代码文件，跳过写回');
+    return { restored: false, reason: 'missing' };
+  }
+  const previous = fs.readFileSync(previousPath, 'utf8');
+  if (!previous) {
+    log('上一份边缘代码为空，跳过写回');
+    return { restored: false, reason: 'empty' };
+  }
+  const secrets = [];
+  maskSecret(log, secrets, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
+  const settings = readSettings(env);
+  if (!env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
+    throw new Error('拿不到 GitHub OIDC token（job 需要 permissions: id-token: write）');
+  }
+  const hide = (text) => createRedactor(secrets)(text);
+  const safeLog = (line) => log(hide(line));
+  const cred = await assumeRole({ env, settings, fetchImpl, now, secrets, hide, log });
+  const live = await describeContent(fetchImpl, cred, settings, hide, now);
+  if (sha256(live) === sha256(previous)) {
+    safeLog(`线上与保存的上一份一致（sha256 ${sha256(previous)}），未调用 ModifyFunction`);
+    return { restored: false, reason: 'unchanged', sha256: sha256(previous) };
+  }
+  await postJson(fetchImpl, signed(cred, 'ModifyFunction', {
+    ZoneId: settings.zoneId,
+    FunctionId: settings.functionId,
+    Content: previous
+  }, now), hide);
+  const restored = await describeContent(fetchImpl, cred, settings, hide, now);
+  if (sha256(restored) !== sha256(previous)) throw new Error('写回后读回的 sha256 与上一份不一致');
+  safeLog(`已写回保存的上一份边缘代码 sha256 ${sha256(previous)}`);
+  return { restored: true, sha256: sha256(previous) };
+}
+
 async function main(env = process.env) {
   try {
-    await runEdgeDeploy({ env });
+    if (process.argv[2] === 'restore') await restorePrevious({ env });
+    else await runEdgeDeploy({ env });
   } catch (error) {
     console.error(`::error::${error && error.message ? error.message : error}`);
     process.exitCode = 1;
@@ -354,10 +446,14 @@ if (require.main === module) main();
 
 module.exports = {
   EXPECTED_FUNCTION_ID,
+  EXPECTED_ZONE_ID,
   ALLOWED_ACTIONS,
   assertAllowed,
   readSettings,
   readMaster,
   functionContent,
-  runEdgeDeploy
+  probeChildEnv,
+  issueChildEnv,
+  runEdgeDeploy,
+  restorePrevious
 };

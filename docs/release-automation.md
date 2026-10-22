@@ -80,8 +80,10 @@ environment `edge-production` 没有 required reviewers，只允许 master。变
 
 角色信任 `sub=repo:demox-site/demox:environment:edge-production`，aud `sts.tencentcloudapi.com`。临时密钥 3600 秒，和 www 刷新缓存一样。允许的动作只有 `teo:DescribeFunctions`、`teo:ModifyFunction`、`teo:DescribeFunctionRuntimeEnvironment`。
 
-`EO_FUNCTION_ID` 不是字面量 `ef-1281msyw` 时，在 `ModifyFunction` 之前失败。`DEMOX_TEST_HOST_MAP` 非空也拒绝写入。仓库文件必须和 `edge-functions/LIVE.sha256` 一致。写完再读回，sha256 不一致就把上一份 Content 写回去。
+`EO_FUNCTION_ID` 不是字面量 `ef-1281msyw`，或 `EO_ZONE_ID` 不是字面量 `zone-3kplfkbflnd6` 时，在 `ModifyFunction` 之前失败。`DEMOX_TEST_HOST_MAP` 非空也拒绝写入。仓库文件必须和 `edge-functions/LIVE.sha256` 一致。写完再读回，sha256 不一致就把上一份 Content 写回去。`ModifyFunction` 在请求发出前就把本次标记为已写入；请求抛错时再 Describe，线上 sha 变了就写回。
 
-真写入前先跑 `edge-p0-matrix.py baseline`。写入后跑 P0 核对（带 baseline）、`edge-reentry-probe.py`（www 和 `/pricing`）、私有站点语言探针、双账号冒烟。探针最多 6 次、间隔 20 秒。失败写回上一份，再复核一次，job 仍然变红，并开 issue，标题以「发布失败：边缘函数冒烟未通过，已写回上一版」开头。上一份代码作为 artifact 留下。
+真写入前先跑 `edge-p0-matrix.py baseline`。写入后跑 P0 核对（带 baseline）、`edge-reentry-probe.py`（www 和 `/pricing`）、私有站点语言探针、双账号冒烟。探针最多 6 次、间隔 20 秒。失败写回上一份，再复核一次，job 仍然变红，并开 issue，标题以「发布失败：边缘函数冒烟未通过，已写回上一版」开头。探针和开 issue 的子进程只拿到各自需要的环境变量，不带 OIDC 请求令牌、STS 临时密钥或 `DEMOX_TOKEN`。issue 正文在写入前去掉已掩码的冒烟凭证。
+
+上一份代码作为 artifact `edge-previous-<run_id>` 留下（保留 14 天）。job 失败或被取消时，`node scripts/ci/edge-deploy.cjs restore` 会读这份文件：文件不存在就退出；线上 sha256 相同就不调用 `ModifyFunction`；不同才写回。不要把文件内容贴进 issue。手动恢复时下载该 artifact，放到 `EDGE_PREVIOUS_PATH`，在能扮演 `demox-ci-edge-write` 的环境里设置 `EO_ZONE_ID=zone-3kplfkbflnd6` 和 `EO_FUNCTION_ID=ef-1281msyw`，再跑同一条 restore 命令。
 
 私有站点探针的地址是变量 `DEMOX_SMOKE_PRIVATE_SITE_URL`。`jbagdduf` 只给这个探针读取，探针不发布，发布脚本也会拒绝把它当成 `DEMOX_SMOKE_WEBSITE_ID`。HTML 缺省或不可用语言是 200「登录后查看」且 `Vary` 含 `Accept-Language`；`en` 是「Sign in to view」；非 HTML 是 401 `Authentication required`，不要求 `Vary`。
