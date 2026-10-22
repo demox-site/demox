@@ -1243,21 +1243,30 @@ function loginRequiredResponse() {
 
 function privateSiteLoginGate(req) {
   const next = new URL(req.url);
+  const firstLanguage = String(req.headers.get('accept-language') || '').split(',')[0].split(';')[0].trim().toLowerCase();
+  const lang = firstLanguage.indexOf('zh') === 0 ? 'zh' : 'en';
   const target = new URL('/site-auth', 'https://' + WWW_HOST);
   target.searchParams.set('next', next.toString());
   target.searchParams.set('embedded', '1');
+  target.searchParams.set('lang', lang);
 
   const host = escapeHtml(next.hostname);
   const frameUrl = escapeHtml(target.toString());
   // URL fragments never reach the edge, so the gate restores the browser's hash locally.
   const frameLoader = "(function(){var f=document.getElementById('demox-auth-frame');var u=new URL(f.dataset.src);var n=new URL(u.searchParams.get('next'));n.hash=window.location.hash;u.searchParams.set('next',n.toString());f.src=u.toString();})();";
+  const htmlLang = lang === 'zh' ? 'zh-CN' : 'en';
+  const title = lang === 'zh' ? ('登录后查看 ' + host) : ('Sign in to view ' + host);
+  const noscript = lang === 'zh'
+    ? ('需要启用 JavaScript，或<a href="' + frameUrl + '">前往登录</a>。')
+    : ('JavaScript is required, or <a href="' + frameUrl + '">sign in</a>.');
+  const frameTitle = lang === 'zh' ? '登录 Demox 后查看私有项目' : 'Sign in to Demox to view this private project';
   const html = `<!doctype html>
-<html lang="zh-CN">
+<html lang="${htmlLang}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="robots" content="noindex,nofollow" />
-  <title>登录后查看 ${host}</title>
+  <title>${title}</title>
   <style>
     :root { color-scheme: light dark; background: #e9e9e6; }
     * { box-sizing: border-box; }
@@ -1274,12 +1283,12 @@ function privateSiteLoginGate(req) {
     id="demox-auth-frame"
     class="auth-frame"
     data-src="${frameUrl}"
-    title="登录 Demox 后查看私有项目"
+    title="${frameTitle}"
     referrerpolicy="no-referrer"
     sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-scripts allow-same-origin allow-top-navigation"
   ></iframe>
   <script>${frameLoader}</script>
-  <noscript><p class="fallback">需要启用 JavaScript，或<a href="${frameUrl}">前往登录</a>。</p></noscript>
+  <noscript><p class="fallback">${noscript}</p></noscript>
 </body>
 </html>`;
 
@@ -1288,6 +1297,7 @@ function privateSiteLoginGate(req) {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      'Vary': 'Accept-Language',
       'Content-Security-Policy': "default-src 'none'; frame-src https://" + WWW_HOST + "; script-src 'sha256-29k9IDwlfsUcc+yDMI+K34/rKJWIEVngWepmVWailgM='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff'

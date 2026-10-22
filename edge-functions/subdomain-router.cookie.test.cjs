@@ -157,7 +157,7 @@ test('requests without the old cookie get no Set-Cookie added', async () => {
 test('private *.demox.site site ignores the account cookie and shows the login gate', async () => {
   const { response, calls, text } = await handleWithCookie('https://prv1.demox.site/', { cookie: 'demox_access=ACCOUNT_TOKEN', resolve: PRIVATE_SITE });
   assert.equal(response.status, 200);
-  assert.match(text, /登录后查看/);
+  assert.match(text, /Sign in to view/);
   assert.doesNotMatch(text, /需要重新验证/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(calls.some((c) => c.url.includes('/check-site-access')), false);
@@ -619,7 +619,7 @@ test('expiry Set-Cookie: non-official custom host gets no Demox cookie headers',
 test('private custom domain shows the login gate, not the official re-verify page', async () => {
   const { response, calls, text } = await handleWithCookie('https://www.example.co.uk/', { resolve: PRIVATE_SITE });
   assert.equal(response.status, 200);
-  assert.match(text, /登录后查看/);
+  assert.match(text, /Sign in to view/);
   assert.doesNotMatch(text, /需要重新验证/);
   assert.equal(calls.some((c) => c.url.includes('/check-site-access')), false);
   assert.equal(calls.some((c) => c.url.includes('site-3.demox.site') || c.url.includes('/sites/demo/')), false);

@@ -1398,3 +1398,141 @@ test('every App.tsx /console route (including params) is matched by isWwwSpaRout
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/SAMPLE1/database/new'), true);
   assert.equal(context.__testHooks.isWwwSpaRoute('/console/projects/SAMPLE1/database/tables/SAMPLE1'), true);
 });
+
+const FRAME_LOADER = "(function(){var f=document.getElementById('demox-auth-frame');var u=new URL(f.dataset.src);var n=new URL(u.searchParams.get('next'));n.hash=window.location.hash;u.searchParams.set('next',n.toString());f.src=u.toString();})();";
+
+function loadPrivateSiteLoginGate() {
+  const ctx = vm.createContext({
+    URL, URLSearchParams, Request, Response, Headers, console,
+    addEventListener: () => {}
+  });
+  vm.runInContext(`${source}\nglobalThis.__testHooks = { privateSiteLoginGate };`, ctx);
+  return ctx.__testHooks.privateSiteLoginGate;
+}
+
+function decodeGateAttr(value) {
+  return String(value)
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+async function renderLoginGate(url, acceptLanguage) {
+  const headers = { Accept: 'text/html' };
+  if (acceptLanguage !== undefined) headers['Accept-Language'] = acceptLanguage;
+  const response = await loadPrivateSiteLoginGate()(new Request(url, { headers }));
+  const html = await response.text();
+  return { response, html };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function assertGateLanguage(html, { htmlLang, title, lang, noscript }) {
+  assert.match(html, new RegExp('<html lang="' + htmlLang + '">'));
+  assert.match(html, new RegExp('<title>' + escapeRegExp(title) + '</title>'));
+  const src = html.match(/data-src="([^"]+)"/);
+  assert.ok(src, 'iframe data-src');
+  const frame = new URL(decodeGateAttr(src[1]));
+  assert.equal(frame.origin + frame.pathname, 'https://www.demox.site/site-auth');
+  assert.equal(frame.searchParams.get('embedded'), '1');
+  assert.equal(frame.searchParams.get('lang'), lang);
+  assert.match(html, new RegExp('<noscript><p class="fallback">' + escapeRegExp(noscript.replace('__FRAME__', src[1])) + '</p></noscript>'));
+  assert.equal(html.includes(FRAME_LOADER), true);
+  const next = new URL(frame.searchParams.get('next'));
+  assert.equal(next.hash, '');
+  return { frame, next };
+}
+
+test('private site login gate: Accept-Language zh uses Chinese copy and lang=zh', async () => {
+  // Fragments are not sent to the edge. The loader copies window.location.hash onto next.
+  const { response, html } = await renderLoginGate('https://prv1.demox.site/docs?x=1', 'zh');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('vary'), 'Accept-Language');
+  assert.match(response.headers.get('content-security-policy'), /sha256-29k9IDwlfsUcc\+yDMI\+K34\/rKJWIEVngWepmVWailgM=/);
+  const { frame, next } = assertGateLanguage(html, {
+    htmlLang: 'zh-CN',
+    title: '登录后查看 prv1.demox.site',
+    lang: 'zh',
+    noscript: '需要启用 JavaScript，或<a href="__FRAME__">前往登录</a>。'
+  });
+  assert.equal(next.origin + next.pathname + next.search, 'https://prv1.demox.site/docs?x=1');
+  const frameEl = { dataset: { src: frame.toString() }, src: '' };
+  vm.runInNewContext(FRAME_LOADER, {
+    document: { getElementById: () => frameEl },
+    window: { location: { hash: '#notes' } },
+    URL
+  });
+  const loaded = new URL(frameEl.src);
+  const restored = new URL(loaded.searchParams.get('next'));
+  assert.equal(restored.hash, '#notes');
+  assert.equal(restored.origin + restored.pathname + restored.search, 'https://prv1.demox.site/docs?x=1');
+  assert.equal(loaded.searchParams.get('lang'), 'zh');
+  assert.equal(loaded.searchParams.get('embedded'), '1');
+});
+
+test('private site login gate: first Accept-Language tag zh-TW is Chinese', async () => {
+  const { response, html } = await renderLoginGate('https://prv1.demox.site/', 'zh-TW,zh;q=0.9,en-US;q=0.8');
+  assert.equal(response.headers.get('vary'), 'Accept-Language');
+  assertGateLanguage(html, {
+    htmlLang: 'zh-CN',
+    title: '登录后查看 prv1.demox.site',
+    lang: 'zh',
+    noscript: '需要启用 JavaScript，或<a href="__FRAME__">前往登录</a>。'
+  });
+});
+
+test('private site login gate: Accept-Language en-US uses English copy and lang=en', async () => {
+  const { response, html } = await renderLoginGate('https://prv1.demox.site/docs', 'en-US,zh;q=0.8');
+  assert.equal(response.headers.get('vary'), 'Accept-Language');
+  assertGateLanguage(html, {
+    htmlLang: 'en',
+    title: 'Sign in to view prv1.demox.site',
+    lang: 'en',
+    noscript: 'JavaScript is required, or <a href="__FRAME__">sign in</a>.'
+  });
+  assert.doesNotMatch(html, /登录后查看/);
+});
+
+test('private site login gate: a missing Accept-Language header is English', async () => {
+  const { response, html } = await renderLoginGate('https://prv1.demox.site/');
+  assert.equal(response.headers.get('vary'), 'Accept-Language');
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /<title>Sign in to view prv1\.demox\.site<\/title>/);
+  assert.match(html, /JavaScript is required, or <a href="[^"]+">sign in<\/a>\./);
+  const frame = new URL(decodeGateAttr(html.match(/data-src="([^"]+)"/)[1]));
+  assert.equal(frame.searchParams.get('lang'), 'en');
+});
+
+test('private site login gate: malformed or quoted hosts are HTML-escaped', async () => {
+  const { response, html } = await renderLoginGate('https://a%22b%26c%27.example/docs', 'en');
+  assert.equal(response.headers.get('vary'), 'Accept-Language');
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /<title>Sign in to view a&quot;b&amp;c&#39;\.example<\/title>/);
+  assert.doesNotMatch(html, /<title>[^<]*["'][^<]*<\/title>/);
+  const zh = await renderLoginGate('https://%22quoted%22.example/', 'zh');
+  assert.match(zh.html, /<html lang="zh-CN">/);
+  assert.match(zh.html, /<title>登录后查看 &quot;quoted&quot;\.example<\/title>/);
+  assert.doesNotMatch(zh.html, /<title>[^<]*["'][^<]*<\/title>/);
+  const src = zh.html.match(/data-src="([^"]*)"/);
+  assert.ok(src);
+  assert.equal(src[1].includes('"'), false);
+  const frame = new URL(decodeGateAttr(src[1]));
+  assert.equal(frame.searchParams.get('lang'), 'zh');
+  assert.equal(new URL(frame.searchParams.get('next')).hostname, '"quoted".example');
+});
+
+test('private site login gate: iframe title follows the language', async () => {
+  function iframeTitle(html) {
+    const tag = html.match(/<iframe\b[^>]*>/);
+    assert.ok(tag, 'iframe');
+    const title = tag[0].match(/\btitle="([^"]*)"/);
+    assert.ok(title, 'iframe title');
+    return title[1];
+  }
+  assert.equal(iframeTitle((await renderLoginGate('https://prv1.demox.site/', 'zh')).html), '登录 Demox 后查看私有项目');
+  assert.equal(iframeTitle((await renderLoginGate('https://prv1.demox.site/', 'en-US')).html), 'Sign in to Demox to view this private project');
+});
