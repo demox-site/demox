@@ -1,7 +1,7 @@
 name: Deploy website function (Demox EPX2UU43 / slug website)
 
 # 平台站点 EPX2UU43 上的 website 业务函数。
-# push 到 master，且 website-api（不含测试和 migrations）、发布脚本或本 workflow 有改动时，自动推送并切别名。
+# 由 release.yml 在 master 上调用，或手动回滚。路径过滤在 release.yml。
 # workflow_dispatch 只做回滚（数字 version）。
 # environment website-function-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
 # 切到 production 之后跑双账号冒烟（易点前门 + DEMOX_SMOKE_LIN_BASE）。
@@ -10,14 +10,7 @@ name: Deploy website function (Demox EPX2UU43 / slug website)
 # 冒烟仍打两个前门；失败一样回滚这个函数的别名。
 # 令牌只用 secret DEMOX_TOKEN，不进命令行参数。脚本先 ::add-mask::，CLI 输出不打印。
 on:
-  push:
-    branches: [master]
-    paths:
-      # GitHub paths 不能排除子路径。测试和 migrations 由 website-paths.py 跳过发布。
-      - "scf-code/website-api/**"
-      - "scripts/ci/website-function-release.cjs"
-      - "scripts/ci/website-paths.py"
-      - ".github/workflows/deploy-website-function.yml"
+  workflow_call:
   workflow_dispatch:
     inputs:
       version:
@@ -43,26 +36,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Scope
-        id: scope
-        if: github.event_name == 'push'
-        env:
-          RELEASE_BASE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          base="${RELEASE_BASE:-}"
-          if [[ "$base" =~ ^[0-9a-f]{40}$ && "$base" != 0000000000000000000000000000000000000000 ]]; then
-            git fetch --depth=1 origin "$base" || true
-          fi
-          python3 scripts/ci/website-paths.py
-
       - name: Setup Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "20"
 
       - name: Unit tests
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_call'
         run: |
           set -euo pipefail
           node --test scripts/ci/website-function-release.test.cjs
@@ -72,11 +52,10 @@ jobs:
           node --test scf-code/website-api/*.test.cjs scf-code/website-api/shared/*.test.cjs
 
       - name: Install Demox CLI
-        if: github.event_name != 'push' || steps.scope.outputs.release == 'true'
         run: npm install -g @demox-site/cli@1.1.6 --no-audit --no-fund > /dev/null
 
       - name: Release
-        if: github.event_name == 'push' && steps.scope.outputs.release == 'true'
+        if: github.event_name == 'push' || github.event_name == 'workflow_call'
         env:
           DEMOX_TOKEN: ${{ secrets.DEMOX_TOKEN }}
           DEMOX_SMOKE_EK_BASE: ${{ vars.DEMOX_SMOKE_EK_BASE }}

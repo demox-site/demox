@@ -2,7 +2,7 @@ name: Deploy function-api (SCF demox-function-api)
 
 # 统一 SCF 路由 demox-function-api（ap-guangzhou / namespace demox）的发布。
 # 只更新代码：不改函数环境变量（里面有 JWT_SECRET 等），也不改内存、超时、VPC。
-# push 到 master（路径命中）自动：stage → deploy-develop → develop 双账号冒烟 → promote → production 双账号冒烟。
+# 由 release.yml 在 master 上调用，或手动回滚。stage → deploy-develop → develop 双账号冒烟 → promote → production 双账号冒烟。
 # 易点和磷都发。DEMOX_EK_ENABLED 不是 true 时失败，不会只发磷。
 # 冒烟或切换失败：已经动过的别名切回去，job 变红，并开 release-failure issue。
 # workflow_dispatch 只做回滚（磷 version + 易点 version_ek）。
@@ -11,19 +11,7 @@ name: Deploy function-api (SCF demox-function-api)
 # 凭证：不用任何腾讯云 secret。临时密钥 1 小时，只留在进程内存里。
 # 角色只能对 codename=demox 的函数换代码/发版本/切别名。健康检查走公网 HTTPS，不用 Invoke。
 on:
-  push:
-    branches: [master]
-    paths:
-      - "scf-code/function-api/**"
-      - "scf-code/website-api/**"
-      - "scf-code/mcp-api/**"
-      - "scf-code/cert-renew/**"
-      - "scf-deploy-packages/auth-api/**"
-      - "scripts/package-unified-scf.mjs"
-      - "scripts/ci/unified-scf-package-lock.json"
-      - "scripts/ci/scf-function-api.cjs"
-      - "scripts/ci/function-api-release.cjs"
-      - ".github/workflows/deploy-function-api.yml"
+  workflow_call:
   workflow_dispatch:
     inputs:
       version:
@@ -70,14 +58,14 @@ jobs:
           npm ci --prefix scf-code/cert-renew --omit=dev --no-audit --no-fund --ignore-scripts
 
       - name: Unit tests (deploy script + function-api)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_call'
         run: |
           node --test scripts/ci/scf-function-api.test.cjs scripts/ci/function-api-release.test.cjs
           node --test scripts/ci/function-versions.test.cjs scripts/ci/reproducible-zip.test.mjs
           npm test --prefix scf-code/function-api
 
       - name: Build unified package
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_call'
         run: |
           node scripts/package-unified-scf.mjs --apply > /tmp/unified-manifest.json
           node -e "const m=require('/tmp/unified-manifest.json');console.log('zip', m.artifact.sizeBytes, 'bytes sha256', m.artifact.sha256)"
@@ -86,7 +74,7 @@ jobs:
             || { echo "::error::统一包缺少可执行的 scf_bootstrap"; exit 1; }
 
       - name: Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_call'
         env:
           # 磷（UIN 100021031865）：备源站。入口是 SCF 自定义域名。
           LIN_ROLE_ARN: qcs::cam::uin/100021031865:roleName/demox-ci-deploy

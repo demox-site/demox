@@ -1,7 +1,7 @@
 name: Deploy edge function (ef-1281msyw)
 
 # 把 master 的 edge-functions/subdomain-router.js 写到 ef-1281msyw。
-# push 到 master 是真写入。workflow_dispatch 的 dry_run 默认 true。workflow_call 的 dry_run 默认 false。
+# 由 release.yml 调用时 dry_run 默认 false，是真写入。workflow_dispatch 的 dry_run 默认 true。
 # environment edge-production：没有 required reviewers，只允许 master。本仓库不改这个 environment。
 # 角色 vars.TENCENT_EDGE_WRITE_ROLE_ARN（qcs::cam::uin/100021031865:roleName/demox-ci-edge-write）。
 # OIDC vars.TENCENT_OIDC_PROVIDER_ID，aud sts.tencentcloudapi.com，临时密钥 3600 秒，与 www 刷新缓存相同。
@@ -10,14 +10,6 @@ name: Deploy edge function (ef-1281msyw)
 # 写完读回，sha256 必须等于仓库文件和 edge-functions/LIVE.sha256。不一致或探针失败都写回上一份。
 # DEMOX_TEST_HOST_MAP 非空时拒绝写入。
 on:
-  push:
-    branches: [master]
-    paths:
-      - "edge-functions/**"
-      - "scripts/ci/edge-deploy.cjs"
-      - "scripts/ci/edge-private-probe.py"
-      - "scripts/ci/edge-release-probes.sh"
-      - ".github/workflows/deploy-edge.yml"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -63,7 +55,7 @@ jobs:
 
       - name: Write or compare
         env:
-          EDGE_DRY_RUN: ${{ github.event_name == 'push' && 'false' || inputs.dry_run }}
+          EDGE_DRY_RUN: ${{ inputs.dry_run }}
           EDGE_PREVIOUS_PATH: ${{ runner.temp }}/edge-previous.js
           EDGE_BASELINE: ${{ runner.temp }}/edge-baseline.json
           TENCENT_EDGE_WRITE_ROLE_ARN: ${{ vars.TENCENT_EDGE_WRITE_ROLE_ARN }}

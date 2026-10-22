@@ -87,3 +87,13 @@ environment `edge-production` 没有 required reviewers，只允许 master。变
 上一份代码作为 artifact `edge-previous-<run_id>` 留下（保留 14 天）。job 失败或被取消时，`node scripts/ci/edge-deploy.cjs restore` 会读这份文件：文件不存在就退出；线上 sha256 相同就不调用 `ModifyFunction`；不同才写回。不要把文件内容贴进 issue。手动恢复时下载该 artifact，放到 `EDGE_PREVIOUS_PATH`，在能扮演 `demox-ci-edge-write` 的环境里设置 `EO_ZONE_ID=zone-3kplfkbflnd6` 和 `EO_FUNCTION_ID=ef-1281msyw`，再跑同一条 restore 命令。
 
 私有站点探针的地址是变量 `DEMOX_SMOKE_PRIVATE_SITE_URL`。`jbagdduf` 只给这个探针读取，探针不发布，发布脚本也会拒绝把它当成 `DEMOX_SMOKE_WEBSITE_ID`。HTML 缺省或不可用语言是 200「登录后查看」且 `Vary` 含 `Accept-Language`；`en` 是「Sign in to view」；非 HTML 是 401 `Authentication required`，不要求 `Vary`。
+
+## 编排
+
+`.github/workflows/release.yml` 是 master push 的自动发布入口。`deploy-function-api.yml`、`deploy-website-function.yml`、`deploy-edge.yml`、`deploy.yml` 不再监听 push，只剩 `workflow_call` 和手动入口，所以同一次推送不会发布两遍。
+
+顺序：function-api → website 函数 → 边缘函数 → www（发布、刷新缓存、再冒烟）。上一段失败，后面不跑。`scripts/ci/release-changes.py` 按路径跳过没改到的段，跳过不挡住后面改到的段。`workflow_dispatch` 四段都真跑。并发组 `release-master`，不取消正在跑的发布。
+
+www 冒烟核对 `dist/index.html` 里的 `assets/*.js`。失败开 issue。静态文件没有自动换回上一版。
+
+只改 `release.yml` 或这份分类脚本时，不会因此去发布四段。要整段重跑用手动触发。

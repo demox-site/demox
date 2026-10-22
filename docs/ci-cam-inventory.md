@@ -8,7 +8,7 @@
 
 | 路径 | workflow | 触发 | 凭证 | 人工闸门 |
 |------|----------|------|------|----------|
-| 主站 www 静态资源 | `deploy.yml` | push master（`src/**`、`public/**` 等 paths）+ 手动 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
+| 主站 www 静态资源 | `deploy.yml`（由 `release.yml` 按路径调用）+ 手动 | master 上前端路径命中时自动发布 | 仓库级 secret `DEMOX_TOKEN`（**站点所有者令牌，长期**） | **无 environment 审批** |
 | 平台站点 website 函数 | `deploy-website-function.yml` | push master（只含函数源码和该 workflow）自动发布；手动只做回滚 | 仓库级 secret `DEMOX_TOKEN`（同上） | environment `website-function-production` 没有 required reviewers，只允许 master |
 | 统一 SCF `demox-function-api` | `deploy-function-api.yml` | push master（路径命中）自动发布；手动只做回滚 | **GitHub OIDC → CAM 角色 `demox-ci-deploy`**，1 小时临时密钥 | environment `function-api-production` 没有 required reviewers，只允许 master |
 | 边缘函数 `ef-1281msyw` | `deploy-edge.yml` | push master 真写入；手动 dry-run 默认开 | **GitHub OIDC → CAM 角色 `demox-ci-edge-write`**，1 小时临时密钥 | environment `edge-production` 没有 required reviewers，只允许 master |

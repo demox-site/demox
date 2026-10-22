@@ -30,7 +30,7 @@ Demox 自己也是平台上的一个站点（`EPX2UU43`）。功能更新走 Dem
 git push origin master
 ```
 
-Actions 会 `npm run build`，再执行 `demox deploy ./dist --id EPX2UU43`。本地同一条 CLI 只用于紧急核对；发完仍要推到 `origin/master`，让远程和线上一致。
+Actions 里的 `release.yml` 按改动路径发布：function-api、website 函数、边缘函数 `ef-1281msyw`、www。www 这一段会 `npm run build`，再执行 `demox deploy ./dist --id EPX2UU43`。本地同一条 CLI 只用于紧急核对；发完仍要推到 `origin/master`，让远程和线上一致。顺序、冒烟和失败回滚见 [docs/release-automation.md](docs/release-automation.md)。
 
 后端业务云函数（Auth / Website / MCP / 证书续期）已经挂在同一站点上，用函数推送：
 
@@ -74,9 +74,9 @@ node scripts/deploy-function-api.mjs --unified --apply
 
 ## 给 Agent 的发布提醒
 
-- 用户说「发布吧」「上线吧」时：主站页面走 `git push origin master`（Actions 里 `demox deploy`）。业务云函数走 `demox functions push`。不要默认跑 `deploy-function-api.mjs`。
+- 用户说「发布吧」「上线吧」时：推 `origin/master`。`release.yml` 按路径发布 function-api、平台 website 函数、边缘函数和 www。不要默认跑 `deploy-function-api.mjs`，也不要再手动 `demox functions push` 平台站点，除非用户明确要求绕过 CI。用户自己的站点仍然只用仓库 CLI。
 - 只改 `index.js` / `index.cjs` 入口即可用 CLI 推送。`shared/` 和运行时 `node_modules` 仍在统一包里；改这些附属文件等于改运行时，才走统一 SCF 部署。
 - 统一部署后的种子只会在函数不存在或仍是旧包装源码时写入，不会盖掉 CLI 已发布的版本。
 - 不要临时改 `.github/workflows/deploy.yml` 中的目标站点，除非用户明确要求。
 - 发布前建议至少执行 `npm run build`（前端）或对应包的测试（后端）。
-- 改 `edge-functions/subdomain-router.js` 或对 `ef-1281msyw` 做 `ModifyFunction`：先读本文 P0 禁令，跑 `npm run test:edge-router`，上线后立刻核对 `www` 和一个真实用户站点仍是 200。详见 [docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md](docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md)。
+- 改 `edge-functions/subdomain-router.js`：先读本文 P0 禁令，跑 `npm run test:edge-router`。推到 master 后由 `release.yml` 写入 `ef-1281msyw`，探针失败会写回上一份。不要在 CI 之外再对 `ef-1281msyw` 做 `ModifyFunction`，除非正在按事故文档回滚。详见 [docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md](docs/incidents/2026-09-14-p0-unknown-subdomain-404-outage.md)。

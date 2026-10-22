@@ -61,6 +61,8 @@ jobs:
           node --test scf-code/website-api/*.test.cjs scf-code/website-api/shared/*.test.cjs
           python3 scripts/edge-reentry-probe.py --self-test
           python3 scripts/ci/edge-private-probe.py --self-test
+          python3 scripts/ci/release-changes.py --self-test
+          node --test scripts/ci/www-bundle.test.cjs
           python3 scripts/edge-p0-matrix.py perf-self-test
           python3 scripts/edge-p0-matrix.py d2-self-test
           bash scripts/edge-router-rollback.sh self-test
