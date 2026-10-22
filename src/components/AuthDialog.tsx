@@ -1,6 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { authApi, loginThrottledUntil } from "../api";
 import { LoginThrottleNotice } from "@/components/LoginThrottleNotice";
+import {
+  LOGIN_FORM_SINK_NAME,
+  keepEmbeddedLoginModeOnSubmit,
+  loginFormSubmitTarget,
+  readEmbeddedLoginMode,
+  writeEmbeddedLoginMode
+} from "@/lib/embedded-login-mode";
 import { Github } from "lucide-react";
 import { FeishuIcon } from "@/components/FeishuIcon";
 import { useLanguage } from "@/hooks/use-language";
@@ -27,6 +34,15 @@ interface AuthDialogProps {
 }
 
 type LoginMode = "password" | "code";
+
+function embeddedModeStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 const translations = {
   zh: {
@@ -124,7 +140,9 @@ export function AuthDialog({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [loginMode, setLoginMode] = useState<LoginMode>("code");
+  const [loginMode, setLoginMode] = useState<LoginMode>(() =>
+    presentation === "site-gate" ? readEmbeddedLoginMode(embeddedModeStorage()) : "code"
+  );
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -187,8 +205,17 @@ export function AuthDialog({
     }
   };
 
+  const selectLoginMode = (mode: LoginMode) => {
+    setLoginMode(mode);
+    if (isSiteGate) writeEmbeddedLoginMode(embeddedModeStorage(), mode);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 记住这次提交时的模式。原生提交或登录门重挂都不能把它打回验证码。
+    const submittedMode: LoginMode = isSiteGate
+      ? keepEmbeddedLoginModeOnSubmit(embeddedModeStorage(), loginMode)
+      : loginMode;
 
     if (!email) {
       toast({ title: t.enterEmail, variant: "destructive" });
@@ -200,19 +227,19 @@ export function AuthDialog({
       return;
     }
 
-    if (loginMode === "code" && !code) {
+    if (submittedMode === "code" && !code) {
       toast({ title: t.enterCode, variant: "destructive" });
       return;
     }
 
-    if (loginMode === "password" && !password) {
+    if (submittedMode === "password" && !password) {
       toast({ title: t.enterPassword, variant: "destructive" });
       return;
     }
 
     setLoading(true);
     try {
-      if (loginMode === "code") {
+      if (submittedMode === "code") {
         const result = await authApi.loginWithCode(email, code);
         toast({
           title: result.isNewUser ? t.signupSuccess : t.loginSuccess,
@@ -223,7 +250,8 @@ export function AuthDialog({
         toast({ title: t.loginSuccess, description: t.welcomeBack });
       }
       onLoginSuccess();
-      onOpenChange(false);
+      // 站点门是嵌在 iframe 里的，关掉再打开会把内容卸掉。密码模式不能跟着这次成功提交一起丢。
+      if (!isSiteGate) onOpenChange(false);
     } catch (error: any) {
       const until = loginThrottledUntil(error);
       if (until) {
@@ -289,7 +317,19 @@ export function AuthDialog({
           <DialogTitle>{title ?? t.title}</DialogTitle>
           <DialogDescription>{description ?? t.description}</DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <iframe
+          name={LOGIN_FORM_SINK_NAME}
+          title="login-sink"
+          aria-hidden="true"
+          tabIndex={-1}
+          className="hidden"
+        />
+        <form
+          {...loginFormSubmitTarget()}
+          onSubmit={handleSubmit}
+          noValidate
+          className="space-y-4"
+        >
           <div className="space-y-2">
             <Label htmlFor="email">{t.email}</Label>
             <Input
@@ -432,9 +472,7 @@ export function AuthDialog({
               type="button"
               variant="link"
               className="p-0 h-auto"
-              onClick={() =>
-                setLoginMode(loginMode === "code" ? "password" : "code")
-              }
+              onClick={() => selectLoginMode(loginMode === "code" ? "password" : "code")}
             >
               {loginMode === "code" ? t.usePassword : t.useCode}
             </Button>
