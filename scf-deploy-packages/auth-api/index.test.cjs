@@ -359,7 +359,7 @@ test('send-code fails closed when SES is not configured', async () => {
   assert.equal(writes.some((item) => item.sql.startsWith('DELETE FROM verification_codes') && item.sql.includes('code = ?')), true);
 });
 
-test('send-code uses assumed role credentials and ignores the process role', async () => {
+test('send-code uses assumed role credentials and refuses the process role', async () => {
   const seen = [];
   const { _sesForTest } = require('./index.cjs');
   queryImpl = async (sql) => {
@@ -400,9 +400,11 @@ test('send-code uses assumed role credentials and ignores the process role', asy
 
     seen.length = 0;
     const local = await request('/auth/send-code', { email: 'other@example.com', type: 'login' });
-    assert.equal(local.statusCode, 200);
-    assert.equal(seen[0].secretId, 'ek-role-id');
-    assert.equal(seen[0].token, 'ek-role-token');
+    assert.equal(local.statusCode, 502);
+    assert.match(JSON.parse(local.body).error, /发送失败/);
+    assert.equal(seen.length, 0);
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'ek-role-id');
+    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'ek-role-token');
   } finally {
     _sesForTest.setClientFactory(null);
     for (const [name, value] of [
@@ -439,6 +441,68 @@ test('SES from address is alias, space, and angle-bracket email', () => {
   );
 });
 
+test('send-code refuses a from domain outside the allowlist before calling SES', async () => {
+  const seen = [];
+  const { _sesForTest } = require('./index.cjs');
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) return [];
+    return { affectedRows: 1 };
+  };
+  _sesForTest.setClientFactory(() => ({
+    async SendEmail() {
+      seen.push('called');
+      return { MessageId: 'mid-1' };
+    }
+  }));
+  const previous = {
+    dry: process.env.AUTH_EMAIL_DRY_RUN,
+    from: process.env.AUTH_EMAIL_FROM,
+    fromName: process.env.AUTH_EMAIL_FROM_NAME
+  };
+  delete process.env.AUTH_EMAIL_DRY_RUN;
+  process.env.AUTH_EMAIL_FROM = 'noreply@evil.example';
+  process.env.AUTH_EMAIL_FROM_NAME = 'Demox';
+  try {
+    const response = await _sesForTest.runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', { email: 'user@example.com', type: 'login' }));
+    assert.equal(response.statusCode, 502);
+    assert.match(JSON.parse(response.body).error, /发送失败/);
+    assert.equal(seen.length, 0);
+
+    process.env.AUTH_EMAIL_FROM = 'noreply@mail.aigc.sx.cn';
+    seen.length = 0;
+    _sesForTest.setClientFactory((credential) => ({
+      async SendEmail(payload) {
+        seen.push({ credential, from: payload.FromEmailAddress, template: payload.Template.TemplateID });
+        return { MessageId: 'mid-2' };
+      }
+    }));
+    const allowed = await _sesForTest.runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', { email: 'user@example.com', type: 'login' }));
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].credential.secretId, 'lin-ses-id');
+    assert.equal(seen[0].from, 'Demox <noreply@mail.aigc.sx.cn>');
+    assert.equal(seen[0].template, 137482);
+  } finally {
+    _sesForTest.setClientFactory(null);
+    for (const [name, value] of [
+      ['AUTH_EMAIL_DRY_RUN', previous.dry],
+      ['AUTH_EMAIL_FROM', previous.from],
+      ['AUTH_EMAIL_FROM_NAME', previous.fromName]
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('send-code asks SES for an unquoted from address', async () => {
   const calls = [];
   queryImpl = async (sql) => {
@@ -472,6 +536,7 @@ test('send-code asks SES for an unquoted from address', async () => {
     dryRun: process.env.AUTH_EMAIL_DRY_RUN,
     secretId: process.env.TENCENTCLOUD_SECRETID,
     secretKey: process.env.TENCENTCLOUD_SECRETKEY,
+    token: process.env.TENCENTCLOUD_SESSIONTOKEN,
     from: process.env.AUTH_EMAIL_FROM,
     fromName: process.env.AUTH_EMAIL_FROM_NAME
   };
@@ -480,14 +545,22 @@ test('send-code asks SES for an unquoted from address', async () => {
   delete process.env.AUTH_EMAIL_FROM_NAME;
   process.env.TENCENTCLOUD_SECRETID = 'test-secret-id';
   process.env.TENCENTCLOUD_SECRETKEY = 'test-secret-key';
+  process.env.TENCENTCLOUD_SESSIONTOKEN = 'test-secret-token';
+  const { runWithSesCredentials } = require('./ses-credentials.cjs');
   try {
-    const response = await request('/auth/send-code', {
+    const response = await runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', {
       email: 'user@example.com',
       type: 'login'
-    });
+    }));
     const body = JSON.parse(response.body);
     assert.equal(response.statusCode, 200, JSON.stringify(body));
     assert.equal(body.success, true);
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'test-secret-id');
+    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'test-secret-token');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].FromEmailAddress, 'Demox <noreply@mail.demox.site>');
     assert.equal(calls[0].FromEmailAddress.includes('"'), false);
@@ -498,6 +571,7 @@ test('send-code asks SES for an unquoted from address', async () => {
       ['AUTH_EMAIL_DRY_RUN', previous.dryRun],
       ['TENCENTCLOUD_SECRETID', previous.secretId],
       ['TENCENTCLOUD_SECRETKEY', previous.secretKey],
+      ['TENCENTCLOUD_SESSIONTOKEN', previous.token],
       ['AUTH_EMAIL_FROM', previous.from],
       ['AUTH_EMAIL_FROM_NAME', previous.fromName]
     ]) {

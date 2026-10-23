@@ -1427,7 +1427,8 @@ function httpsJson(options, body) {
   });
 }
 
-const { currentSesCredentials } = require('./ses-credentials.cjs');
+const { assumedPlatformSesCredentials } = require('./ses-credentials.cjs');
+const { assertPlatformSesSend } = require('./ses-allowlist.cjs');
 let sesClientFactory = null;
 
 function createSesClient(credential) {
@@ -1456,35 +1457,44 @@ function formatSesFromAddress(env = process.env) {
 
 /**
  * 发送邮件（使用腾讯云 SES 模板）
- * 进程内发验证码只使用网关放进 AsyncLocalStorage 的 demox-platform-ses 临时密钥。
- * 角色缺失或签发失败时网关直接 5xx，不会落到这里去读 TENCENTCLOUD_* 或 demox-runtime-role。
- * 没有这份上下文时（独立 auth 进程 / 平台池调用环境）才读进程环境变量。
+ * 只使用当次请求放进 AsyncLocalStorage 的 demox-platform-ses 临时密钥。
+ * 进程内由网关签发，平台池由 demox-platform-nodejs 用自己的执行角色签发。
+ * 没有这份上下文就失败，不读 TENCENTCLOUD_*，也不盖掉它。
  */
 async function sendEmail(to, code, type) {
+  const from = formatSesFromAddress();
+  const templateId = 137482;
+  try {
+    assertPlatformSesSend({ from, templateId });
+  } catch (error) {
+    console.log('发信地址或模板不在允许列表');
+    return false;
+  }
+
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {
     console.log('AUTH_EMAIL_DRY_RUN=1，跳过真实发信');
     return true;
   }
 
-  const { secretId, secretKey, token } = currentSesCredentials();
+  const assumed = assumedPlatformSesCredentials();
+  const secretId = assumed && assumed.secretId;
+  const secretKey = assumed && assumed.secretKey;
+  const token = (assumed && assumed.token) || '';
 
   if (!secretId || !secretKey) {
-    console.log('未配置腾讯云密钥，跳过邮件发送');
+    console.log('平台发信凭证不可用，拒绝发送');
     return false;
   }
 
   try {
     const client = createSesClient({ secretId, secretKey, token });
 
-    const from = formatSesFromAddress();
-
-    // 使用已审核通过的模板（模板ID: 137482）
     const result = await client.SendEmail({
       FromEmailAddress: from,
       Destination: [to],
       Subject: '【Demox】验证码',
       Template: {
-        TemplateID: 137482,
+        TemplateID: templateId,
         TemplateData: JSON.stringify({ code: code })
       }
     });
@@ -2337,7 +2347,6 @@ function getCORSHeaders() {
 exports._oauthForTest = { hashClientSecret, clientSecretMatches };
 exports._sesForTest = {
   setClientFactory(factory) { sesClientFactory = factory; },
-  currentSesCredentials,
   runWithSesCredentials: require('./ses-credentials.cjs').runWithSesCredentials
 };
 exports._emailForTest = { formatSesFromAddress };

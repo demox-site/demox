@@ -15,7 +15,7 @@ const {
   createBusinessCredentialProvider,
   tencentClientCredentials
 } = require('./business-credentials.js');
-const { currentSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+const { assumedPlatformSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 
 const dbModulePath = require.resolve('../website-api/shared/db.js');
 require.cache[dbModulePath] = {
@@ -205,7 +205,7 @@ function harness({ assume, sesAssume, logger = console }) {
         return { statusCode: 204, body: '' };
       }
       if (String(event.path || '').startsWith('/auth/send-code') || (event.body && event.body.action === 'send_code' && String(event.path || '').startsWith('/auth'))) {
-        seen.push({ label: 'send-code', creds: currentSesCredentials() });
+        seen.push({ label: 'send-code', creds: assumedPlatformSesCredentials() });
         return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{"success":true}' };
       }
       seen.push(await exerciseClients(event.path || ''));

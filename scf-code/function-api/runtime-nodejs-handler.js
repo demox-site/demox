@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { executeNodejsPayload } = require('./runtime-nodejs.js');
 const { sealPayload } = require('./response-seal.js');
 const { installLogRedaction } = require('./log-redact.js');
+const { sesCredentialsForPoolMail } = require('./platform-ses-credentials.js');
 
 installLogRedaction(console);
 
@@ -31,6 +32,21 @@ async function main(event = {}) {
       error: { code: 'UNSUPPORTED_RUNTIME_PAYLOAD', message: '不是 Node.js 运行时调用' }
     });
   }
+  let sesCredentials = null;
+  try {
+    sesCredentials = await sesCredentialsForPoolMail(payload);
+  } catch (error) {
+    const code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+      ? String(error.code)
+      : 'PLATFORM_SES_ROLE_MISSING';
+    return respond(incoming.http, sealPayload({
+      ok: false,
+      error: {
+        code,
+        message: code === 'PLATFORM_SES_ROLE_MISSING' ? '平台发信角色未配置' : '平台发信凭证签发失败'
+      }
+    }, seal));
+  }
   try {
     const result = await executeNodejsPayload({
       source: payload.source,
@@ -40,7 +56,8 @@ async function main(event = {}) {
       limits: payload.limits,
       entrypoint: payload.entrypoint,
       packageName: payload.packageName,
-      callingConvention: payload.callingConvention
+      callingConvention: payload.callingConvention,
+      sesCredentials
     });
     return respond(incoming.http, sealPayload({ ok: true, result }, seal));
   } catch (error) {

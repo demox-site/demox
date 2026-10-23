@@ -494,7 +494,7 @@ test('platform pool spec keeps the user pool free of secrets and refuses apply',
   assert.equal(PLATFORM_POOL_SPEC.resources.cls.topic, 'SCF_logtopic_yorder');
   assert.equal(PLATFORM_POOL_SPEC.resources.mail.action, 'ses:SendEmail');
   assert.equal(PLATFORM_POOL_SPEC.switches.userPoolReceivesPlatformSecrets, false);
-  assert.equal(PLATFORM_POOL_SPEC.switches.businessSessionPolicy, 'cos-eo-dns-ims-ses-cls');
+  assert.equal(PLATFORM_POOL_SPEC.switches.businessSessionPolicy, 'cos-eo-dns-ims');
   assert.equal(PLATFORM_POOL_SPEC.switches.certificateCredentials, 'role-without-session-policy');
   assert.equal(PLATFORM_POOL_SPEC.switches.longLivedBizKeys, false);
   const manifest = require('../../functions.json');

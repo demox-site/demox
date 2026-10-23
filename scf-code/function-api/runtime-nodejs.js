@@ -115,7 +115,7 @@ class NodeWorkerPool {
         throw new FunctionRuntimeError('运行时需要源码', 'SOURCE_REQUIRED');
       }
       this.touch(existing);
-      return this.invokeSlot(existing, payload.request || {}, payload.env || {}, timeoutMs);
+      return this.invokeSlot(existing, payload.request || {}, payload.env || {}, timeoutMs, payload.sesCredentials || null);
     }
     const slot = await this.ensureSlot(key, {
       source,
@@ -127,7 +127,7 @@ class NodeWorkerPool {
       memoryMb,
       timeoutMs
     });
-    return this.invokeSlot(slot, payload.request || {}, payload.env || {}, timeoutMs);
+    return this.invokeSlot(slot, payload.request || {}, payload.env || {}, timeoutMs, payload.sesCredentials || null);
   }
 
   async ensureSlot(key, boot) {
@@ -208,8 +208,10 @@ class NodeWorkerPool {
     }, boot.timeoutMs);
   }
 
-  invokeSlot(slot, request, env, timeoutMs) {
-    const run = () => this.send(slot, { type: 'invoke', request, env }, timeoutMs);
+  invokeSlot(slot, request, env, timeoutMs, sesCredentials) {
+    const message = { type: 'invoke', request, env };
+    if (sesCredentials) message.sesCredentials = sesCredentials;
+    const run = () => this.send(slot, message, timeoutMs);
     const queued = slot.queue.then(run, run);
     slot.queue = queued.catch(() => {});
     return queued;

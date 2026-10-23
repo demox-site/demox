@@ -8,8 +8,11 @@ const { AsyncLocalStorage } = require('async_hooks');
  * 业务函数（auth / website / mcp）的云资源凭证。
  *
  * 网关用自己的 demox-runtime-role 凭证（SCF 注入，不带会话策略）去 AssumeRole
- * 同一个角色，带上只含 COS / EO / DNS / IMS / SES / CLS 的会话策略，把临时密钥放进
+ * 同一个角色，带上只含 COS / EO / DNS / IMS 的会话策略，把临时密钥放进
  * 当次平台池调用的环境变量。不落库，不写 DEMOX_BIZ_*，不改网关进程的环境变量。
+ * 不含 ses，不含 cls。登录验证码和停用通知走 demox-platform-ses（PLATFORM_SES_ROLE_ARN），
+ * 临时密钥只进当次 AsyncLocalStorage，不写进 TENCENTCLOUD_*。
+ * 用户函数不 Assume 这个角色，也拿不到发信凭证。
  *
  * 证书 SSL 不走这条临时凭证：带会话策略的 token 调 SSL 会 invalid token。
  * cert-renew 和网关进程内的证书调用继续用角色凭证本身。
@@ -21,7 +24,7 @@ const { AsyncLocalStorage } = require('async_hooks');
  * 只有显式回滚（BUSINESS_CREDENTIALS_MODE=execution-role）或完全没配 BUSINESS_ROLE_ARN
  * 时，才读执行角色的 TENCENTCLOUD_*。ARN 已设置但不在白名单里抛 BUSINESS_ROLE_ARN_INVALID。
  * 显式要求 session 却没配 ARN 时抛 BUSINESS_ROLE_ARN_MISSING。
- * 发验证码的平台 SES 不走这条，见 platform-ses-credentials.js。
+ * 平台 SES（验证码、停用通知）不走这条，见 platform-ses-credentials.js。
  * cert-renew 继续用角色凭证本身，不带会话策略。
  * 回滚进程内这条：BUSINESS_CREDENTIALS_MODE=execution-role，或把函数别名指回上一版本。
  * 前缀开关 FUNCTIONS_PLATFORM_RUNTIME_PREFIXES 仍只决定平台池派发，默认空。
@@ -42,7 +45,7 @@ const ROLE_CREDENTIAL_ENV_KEYS = Object.freeze([
 const BUSINESS_SLUGS = new Set(['auth', 'website', 'mcp']);
 const CERTIFICATE_SLUGS = new Set(['cert-renew']);
 
-/** 磷 demox-runtime-role 的会话策略。有效权限 = 角色策略 ∩ 这份策略。不含 ssl。 */
+/** 磷 demox-runtime-role 的会话策略。有效权限 = 角色策略 ∩ 这份策略。不含 ssl，不含 ses，不含 cls。 */
 const BUSINESS_SESSION_POLICY = deepFreeze({
   version: '2.0',
   statement: [
@@ -94,16 +97,6 @@ const BUSINESS_SESSION_POLICY = deepFreeze({
       effect: 'allow',
       action: ['ims:ImageModeration'],
       resource: ['*']
-    },
-    {
-      effect: 'allow',
-      action: ['ses:SendEmail'],
-      resource: ['qcs::ses:ap-hongkong:uin/100021031865:*']
-    },
-    {
-      effect: 'allow',
-      action: ['cls:pushLog', 'cls:UploadLog'],
-      resource: ['qcs::cls:ap-guangzhou:uin/100021031865:topic/37a3159b-881c-4491-9592-59c1fa3e24b7']
     }
   ]
 });
@@ -114,6 +107,12 @@ if (Buffer.byteLength(BUSINESS_SESSION_POLICY_TEXT) > 2048) {
 }
 if (sessionPolicyAllowsSsl(BUSINESS_SESSION_POLICY)) {
   throw new Error('业务会话策略不能包含 SSL');
+}
+if (sessionPolicyAllowsSes(BUSINESS_SESSION_POLICY)) {
+  throw new Error('业务会话策略不能包含 SES');
+}
+if (sessionPolicyAllowsCls(BUSINESS_SESSION_POLICY)) {
+  throw new Error('业务会话策略不能包含 CLS');
 }
 
 function deepFreeze(value) {
@@ -129,6 +128,14 @@ function sessionPolicyAllowsSsl(policy = BUSINESS_SESSION_POLICY) {
     if (actions.some((action) => /ssl/i.test(String(action || '')))) return true;
   }
   return false;
+}
+
+function sessionPolicyAllowsSes(policy = BUSINESS_SESSION_POLICY) {
+  return /ses:/i.test(JSON.stringify(policy ?? {}));
+}
+
+function sessionPolicyAllowsCls(policy = BUSINESS_SESSION_POLICY) {
+  return /cls:/i.test(JSON.stringify(policy ?? {}));
 }
 
 function credentialKind(slug) {
@@ -495,6 +502,8 @@ module.exports = {
   CERTIFICATE_SLUGS,
   ROLE_CREDENTIAL_ENV_KEYS,
   sessionPolicyAllowsSsl,
+  sessionPolicyAllowsSes,
+  sessionPolicyAllowsCls,
   credentialKind,
   roleSessionName,
   roleCredentialEnv,

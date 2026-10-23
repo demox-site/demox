@@ -6,6 +6,8 @@ const path = require('path');
 const Module = require('module');
 const { pathToFileURL } = require('url');
 
+const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+
 const BLOCKED_MODULES = new Set([
   'child_process',
   'node:child_process',
@@ -176,9 +178,17 @@ async function invoke(payload = {}) {
   }
   applyEnv(payload.env || {});
   const request = payload.request || {};
-  const value = callingConvention === 'scf-event'
-    ? await handler(toScfEvent(request), {})
-    : await handler(request, payload.env || {});
+  const run = () => (callingConvention === 'scf-event'
+    ? handler(toScfEvent(request), {})
+    : handler(request, payload.env || {}));
+  const ses = payload.sesCredentials;
+  const value = ses && ses.secretId && ses.secretKey
+    ? await runWithSesCredentials({
+      secretId: ses.secretId,
+      secretKey: ses.secretKey,
+      token: ses.token || ''
+    }, run)
+    : await run();
   return value === undefined ? null : value;
 }
 
