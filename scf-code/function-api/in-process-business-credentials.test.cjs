@@ -28,13 +28,18 @@ require.cache[dbModulePath] = {
   }
 };
 
-const ENV_ROLE_ARN = 'qcs::cam::uin/100021031865:roleName/demox-runtime-b1';
+const REJECTED_ROLE_ARNS = [
+  'qcs::cam::uin/100021031865:roleName/demox-runtime-b1',
+  'qcs::cam::uin/100021031865:roleName/demox-gateway-role',
+  'qcs::cam::uin/100021031865:roleName/demox-platform-ses',
+  'qcs::cam::uin/100021031866:roleName/demox-runtime-role'
+];
 const SES_ROLE_ARN = 'qcs::cam::uin/100021031865:roleName/demox-platform-ses';
 const ROLE_ENV = {
   TENCENTCLOUD_SECRETID: 'gw-id',
   TENCENTCLOUD_SECRETKEY: 'gw-key',
   TENCENTCLOUD_SESSIONTOKEN: 'gw-token',
-  BUSINESS_ROLE_ARN: ENV_ROLE_ARN,
+  BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN,
   BUSINESS_CREDENTIALS_MODE: undefined,
   PLATFORM_SES_ROLE_ARN: SES_ROLE_ARN,
   FUNCTIONS_PLATFORM_RUNTIME_PREFIXES: undefined,
@@ -189,7 +194,14 @@ function harness({ assume, sesAssume, logger = console }) {
     systemHandler: async (event) => {
       handlerCalls += 1;
       if (event.TriggerName === 'monthly-renew') {
-        seen.push({ label: 'cert-renew', creds: tencentClientCredentials() });
+        seen.push({
+          label: 'cert-renew',
+          creds: {
+            secretId: process.env.TENCENTCLOUD_SECRETID || '',
+            secretKey: process.env.TENCENTCLOUD_SECRETKEY || '',
+            token: process.env.TENCENTCLOUD_SESSIONTOKEN || ''
+          }
+        });
         return { statusCode: 204, body: '' };
       }
       if (String(event.path || '').startsWith('/auth/send-code') || (event.body && event.body.action === 'send_code' && String(event.path || '').startsWith('/auth'))) {
@@ -224,8 +236,10 @@ test('in-process auth and website assume the business role and SDK clients get t
       assert.equal(login.statusCode, 200);
       assert.equal(login.headers['x-demox-dispatch'], 'fallback:PLATFORM_SITE_IN_PROCESS');
       assert.equal(app.assumeCalls.length, 1);
-      assert.equal(app.assumeCalls[0].roleArn, ENV_ROLE_ARN);
-      assert.notEqual(app.assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+      assert.equal(app.assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+      for (const arn of REJECTED_ROLE_ARNS) {
+        assert.notEqual(app.assumeCalls[0].roleArn, arn);
+      }
       assert.equal(app.assumeCalls[0].token, 'gw-token');
       assert.equal(app.assumeCalls[0].policy, BUSINESS_SESSION_POLICY);
       assert.equal(app.assumeCalls[0].policy.statement.some((item) => item.action.includes('ims:ImageModeration')), true);
@@ -236,7 +250,7 @@ test('in-process auth and website assume the business role and SDK clients get t
       const website = await app.platform({ httpMethod: 'POST', path: '/website', headers: {}, body: { action: 'list' } });
       assert.equal(website.statusCode, 200);
       assert.equal(app.assumeCalls.length, 2);
-      assert.equal(app.assumeCalls[1].roleArn, ENV_ROLE_ARN);
+      assert.equal(app.assumeCalls[1].roleArn, BUSINESS_ROLE_ARN);
       assert.equal(app.seen[1].secretId, 'biz-id');
       assert.equal(app.seen[1].token, 'biz-token');
 
@@ -249,16 +263,22 @@ test('in-process auth and website assume the business role and SDK clients get t
       assert.equal(app.assumeCalls.length, 3);
       assert.equal(app.seen[3].secretId, 'biz-id');
 
+      const rollup = await app.platform({ Type: 'Timer', TriggerName: 'analytics-rollup-5m' });
+      assert.equal(rollup.statusCode, 200);
+      assert.equal(app.assumeCalls.length, 3, 'website timer reuses the inproc-website session');
+      assert.equal(app.seen[4].secretId, 'biz-id');
+      assert.equal(app.seen[4].token, 'biz-token');
+
       const renew = await app.platform({ Type: 'Timer', TriggerName: 'monthly-renew' });
       assert.equal(renew.statusCode, 204);
       assert.equal(app.assumeCalls.length, 3, 'cert-renew does not assume the business role');
-      assert.equal(app.seen[4].creds.secretId, 'gw-id');
-      assert.equal(app.seen[4].creds.token, 'gw-token');
+      assert.equal(app.seen[5].creds.secretId, 'gw-id');
+      assert.equal(app.seen[5].creds.token, 'gw-token');
 
       const teo = http.seen.filter((item) => item.action === 'CreatePurgeTask');
       const ims = http.seen.filter((item) => item.action === 'ImageModeration');
-      assert.equal(teo.length, 4);
-      assert.equal(ims.length, 4);
+      assert.equal(teo.length, 5);
+      assert.equal(ims.length, 5);
       for (const call of [...teo, ...ims]) {
         assert.match(call.authorization, /Credential=biz-id\//);
         assert.equal(call.authorization.includes('gw-id'), false);
@@ -267,7 +287,10 @@ test('in-process auth and website assume the business role and SDK clients get t
       }
       assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
       assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'gw-token');
-      assert.equal(tencentClientCredentials().secretId, 'gw-id');
+      assert.throws(
+        () => tencentClientCredentials(),
+        (error) => error.code === 'BUSINESS_CREDENTIALS_MISSING'
+      );
       assert.equal(logs.some((line) => line.includes('biz-') || line.includes('gw-token') || line.includes('gw-id')), false);
     });
   } finally {
@@ -340,14 +363,16 @@ test('an explicit session mode without an ARN fails closed', async () => {
 });
 
 test('an invalid BUSINESS_ROLE_ARN fails closed and execution-role still rolls back', async () => {
-  await withEnv({ ...ROLE_ENV, BUSINESS_ROLE_ARN: 'qcs::cam::uin/100021031865:roleName/demox-platform-ses' }, async () => {
-    const app = harness({});
-    await publishSystem(app.service, { name: 'Website', slug: 'website', routes: ['/website'] });
-    const denied = await app.platform({ httpMethod: 'POST', path: '/website', headers: {}, body: {} });
-    assert.equal(JSON.parse(denied.body).error, 'BUSINESS_ROLE_ARN_INVALID');
-    assert.equal(app.handlerCalls(), 0);
-    assert.equal(app.assumeCalls.length, 0);
-  });
+  for (const arn of REJECTED_ROLE_ARNS) {
+    await withEnv({ ...ROLE_ENV, BUSINESS_ROLE_ARN: arn }, async () => {
+      const app = harness({});
+      await publishSystem(app.service, { name: 'Website', slug: 'website', routes: ['/website'] });
+      const denied = await app.platform({ httpMethod: 'POST', path: '/website', headers: {}, body: {} });
+      assert.equal(JSON.parse(denied.body).error, 'BUSINESS_ROLE_ARN_INVALID');
+      assert.equal(app.handlerCalls(), 0);
+      assert.equal(app.assumeCalls.length, 0);
+    });
+  }
   const http = installHttpsCapture();
   try {
     await withEnv({
@@ -446,7 +471,8 @@ test('gateway function-bundle COS uses the business session only when the switch
       return {
         TENCENTCLOUD_SECRETID: 'biz-id',
         TENCENTCLOUD_SECRETKEY: 'biz-key',
-        TENCENTCLOUD_SESSIONTOKEN: 'biz-token'
+        TENCENTCLOUD_SESSIONTOKEN: 'biz-token',
+        expiresAt: 1_900_000_000_000
       };
     }
   });
@@ -464,6 +490,25 @@ test('gateway function-bundle COS uses the business session only when the switch
   assert.equal(sessionCreds.TmpSecretKey, 'biz-key');
   assert.equal(sessionCreds.SecurityToken, 'biz-token');
   assert.equal(sessionCreds.XCosSecurityToken, 'biz-token');
+  assert.equal(sessionCreds.ExpiredTime, 1_900_000_000);
+
+  const missingExpiry = gatewayBundleCosOptions({
+    env: { ...ROLE_ENV },
+    credentialsFor: async () => ({
+      TENCENTCLOUD_SECRETID: 'biz-id',
+      TENCENTCLOUD_SECRETKEY: 'biz-key',
+      TENCENTCLOUD_SESSIONTOKEN: 'biz-token'
+    })
+  });
+  const failedCreds = await new Promise((resolve, reject) => {
+    try {
+      missingExpiry.getAuthorization({}, (creds) => resolve(creds));
+    } catch (error) {
+      reject(error);
+    }
+  });
+  assert.equal(failedCreds instanceof Error, true);
+  assert.equal(failedCreds.code, 'BUSINESS_ROLE_ASSUME_FAILED');
 
   let legacyCalls = 0;
   const legacyOptions = gatewayBundleCosOptions({
@@ -492,6 +537,47 @@ test('gateway function-bundle COS uses the business session only when the switch
   });
   assert.equal(store.cos.options.getAuthorization, sessionOptions.getAuthorization);
   assert.ok(!store.cos.options.SecretId);
+});
+
+test('buckets does not fall back to env when the credential module cannot be loaded', () => {
+  const bucketsPath = require.resolve('../website-api/shared/buckets.js');
+  const saved = require.cache[bucketsPath];
+  delete require.cache[bucketsPath];
+  const Module = require('node:module');
+  const original = Module._resolveFilename;
+  Module._resolveFilename = function resolveBlocked(request, parent, ...rest) {
+    if (String(request).includes('function-api/business-credentials.js')) {
+      const error = new Error('missing');
+      error.code = 'MODULE_NOT_FOUND';
+      throw error;
+    }
+    return original.call(this, request, parent, ...rest);
+  };
+  try {
+    const buckets = require(bucketsPath);
+    assert.throws(
+      () => buckets.tencentClientCredentials({
+        TENCENTCLOUD_SECRETID: 'gw-id',
+        TENCENTCLOUD_SECRETKEY: 'gw-key',
+        TENCENTCLOUD_SESSIONTOKEN: 'gw-token',
+        BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN
+      }),
+      (error) => error.code === 'BUSINESS_CREDENTIALS_UNAVAILABLE'
+    );
+    assert.throws(
+      () => buckets.resolveCreds({
+        hasOwnCreds: false,
+        provider: 'cos',
+        bucket: 'resource-game-1307257815',
+        region: 'ap-chengdu'
+      }),
+      (error) => error.code === 'BUSINESS_CREDENTIALS_UNAVAILABLE'
+    );
+  } finally {
+    Module._resolveFilename = original;
+    delete require.cache[bucketsPath];
+    if (saved) require.cache[bucketsPath] = saved;
+  }
 });
 
 test('no token reached any console log in this suite', () => {

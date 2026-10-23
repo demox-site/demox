@@ -485,31 +485,40 @@ test('the worker and the platform invoke payload receive the invocation credenti
   }
 });
 
-test('role ARN comes from BUSINESS_ROLE_ARN and the in-process switch defaults to session only when it is set', async () => {
-  const envArn = 'qcs::cam::uin/100021031865:roleName/demox-runtime-b1';
+test('role ARN is only the pinned demox-runtime-role and session mode does not read env without ALS', async () => {
+  const rejected = [
+    'qcs::cam::uin/100021031865:roleName/demox-runtime-b1',
+    'qcs::cam::uin/100021031865:roleName/demox-gateway-role',
+    'qcs::cam::uin/100021031865:roleName/demox-platform-ses',
+    'qcs::cam::uin/100021031866:roleName/demox-runtime-role',
+    'not-an-arn'
+  ];
   assert.equal(BUSINESS_ROLE_ENV, 'BUSINESS_ROLE_ARN');
   assert.equal(BUSINESS_CREDENTIALS_MODE_ENV, 'BUSINESS_CREDENTIALS_MODE');
   assert.equal(BUSINESS_CREDENTIALS_LEGACY_MODE, 'execution-role');
   assert.equal(inProcessBusinessCredentialMode({}), 'legacy');
-  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: envArn }), 'session');
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN }), 'session');
   assert.equal(inProcessBusinessCredentialMode({
-    BUSINESS_ROLE_ARN: envArn,
+    BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN,
     BUSINESS_CREDENTIALS_MODE: 'execution-role'
   }), 'legacy');
-  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: 'not-an-arn' }), 'invalid');
-  assert.equal(inProcessBusinessCredentialMode({
-    BUSINESS_ROLE_ARN: 'qcs::cam::uin/100021031865:roleName/demox-platform-ses'
-  }), 'invalid');
+  for (const arn of rejected) {
+    assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: arn }), 'invalid');
+    assert.throws(
+      () => resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: arn }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+    );
+  }
   assert.equal(inProcessBusinessCredentialMode({ BUSINESS_CREDENTIALS_MODE: 'session' }), 'missing');
   assert.equal(resolveBusinessRoleArn({}), BUSINESS_ROLE_ARN);
-  assert.equal(resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: envArn }), envArn);
-  assert.throws(() => resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: 'role/demox-runtime-role' }), (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID');
+  assert.equal(resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN }), BUSINESS_ROLE_ARN);
 
   const beforeId = process.env.TENCENTCLOUD_SECRETID;
   const beforeToken = process.env.TENCENTCLOUD_SESSIONTOKEN;
+  const sessionEnv = { ...ROLE_ENV, BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN };
   const assumeCalls = [];
   const provider = createBusinessCredentialProvider({
-    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: envArn },
+    env: sessionEnv,
     assume: async (request) => {
       assumeCalls.push(request);
       return { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token', expiration: '2099-01-01T00:00:00Z' };
@@ -520,20 +529,40 @@ test('role ARN comes from BUSINESS_ROLE_ARN and the in-process switch defaults t
     slug: 'website',
     functionId: 'fn_web',
     websiteId: PLATFORM_ID,
-    sourceEnv: { ...ROLE_ENV, BUSINESS_ROLE_ARN: envArn }
+    sourceEnv: sessionEnv
   });
-  assert.equal(assumeCalls[0].roleArn, envArn);
-  assert.notEqual(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+  assert.equal(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
   assert.equal(issued.TENCENTCLOUD_SECRETID, 'biz-id');
+  assert.equal(typeof issued.expiresAt, 'number');
   assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
   assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, beforeToken);
+  const rejectedProvider = createBusinessCredentialProvider({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: rejected[0] },
+    assume: async () => {
+      throw new Error('should not assume');
+    }
+  });
+  await assert.rejects(
+    rejectedProvider.credentialsFor({
+      kind: 'business',
+      slug: 'website',
+      functionId: 'fn_rejected',
+      websiteId: PLATFORM_ID,
+      sourceEnv: { ...ROLE_ENV, BUSINESS_ROLE_ARN: rejected[1] }
+    }),
+    (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+  );
 
   let seen = null;
   await runWithBusinessCredentials({ secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' }, () => {
-    seen = tencentClientCredentials({ ...ROLE_ENV });
+    seen = tencentClientCredentials(sessionEnv);
     assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
   });
   assert.deepEqual(seen, { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' });
+  assert.throws(
+    () => tencentClientCredentials(sessionEnv),
+    (error) => error.code === 'BUSINESS_CREDENTIALS_MISSING'
+  );
   assert.equal(tencentClientCredentials(ROLE_ENV).secretId, 'gw-id');
   assert.equal(tencentClientCredentials().secretId, beforeId || '');
 });

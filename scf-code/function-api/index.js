@@ -470,7 +470,8 @@ function createPlatformHandler({
 
     const scopedEvent = applySiteScope(event, systemEntries);
     const systemEntry = resolveSystemFunction(scopedEvent, systemEntries);
-    if (systemEntry) {
+    const timerEvent = isTimerEvent(scopedEvent);
+    if (systemEntry && !timerEvent) {
       const published = await invokePublishedSystemFunction(
         resolvedUserHandler.service,
         systemEntry,
@@ -481,12 +482,27 @@ function createPlatformHandler({
       if (published.response) return published.response;
       return dispatchInProcessSystem(systemEntry, scopedEvent, context, published.dispatch);
     }
-    if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
+    if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function' && !(systemEntry && timerEvent)) {
       const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
       if (userHit) return userHit;
     }
-    if (isTimerEvent(scopedEvent)) {
-      return resolvedSystemHandler(scopedEvent, context);
+    if (timerEvent) {
+      if (!systemEntry) return resolvedSystemHandler(scopedEvent, context);
+      const published = await invokePublishedSystemFunction(
+        resolvedUserHandler.service,
+        systemEntry,
+        scopedEvent,
+        context,
+        logger
+      );
+      if (published.response) return published.response;
+      const runHandler = () => resolvedSystemHandler(scopedEvent, context);
+      // website 的 analytics-rollup 定时器要读 analytics-raw。cert-renew 继续用执行角色。
+      if (systemFunctionSlug(systemEntry) === 'cert-renew') {
+        return withDispatchHeader(await runHandler(), published.dispatch);
+      }
+      const response = await runWithInProcessBusinessCredentials(systemEntry, scopedEvent, runHandler);
+      return withDispatchHeader(response, published.dispatch);
     }
     return resolvedUserHandler(scopedEvent, context);
   }
@@ -724,10 +740,16 @@ function createProductionNodeInvoker(logger = console) {
   return createLocalNodeInvoker({ logger });
 }
 
+function cosExpiredSeconds(expiresAt) {
+  const value = Number(expiresAt);
+  if (!Number.isFinite(value)) return 0;
+  return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+}
+
 function gatewayBundleCosOptions({ env = process.env, credentialsFor } = {}) {
   return {
     getAuthorization(_options, callback) {
-      const finish = (creds) => {
+      const finish = (creds, expiredTime) => {
         const now = Math.floor(Date.now() / 1000);
         const token = creds.token || '';
         callback({
@@ -736,15 +758,23 @@ function gatewayBundleCosOptions({ env = process.env, credentialsFor } = {}) {
           SecurityToken: token,
           XCosSecurityToken: token,
           StartTime: now - 1,
-          ExpiredTime: now + 900
+          ExpiredTime: expiredTime
         });
       };
+      const fail = (error) => {
+        const wrapped = new Error('业务云凭证不可用');
+        wrapped.code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+          ? String(error.code)
+          : 'BUSINESS_ROLE_ASSUME_FAILED';
+        callback(wrapped);
+      };
       if (inProcessBusinessCredentialMode(env) !== 'session') {
+        const now = Math.floor(Date.now() / 1000);
         finish({
           secretId: env.FUNCTIONS_COS_SECRET_ID || env.COS_SECRET_ID || env.TENCENTCLOUD_SECRETID || '',
           secretKey: env.FUNCTIONS_COS_SECRET_KEY || env.COS_SECRET_KEY || env.TENCENTCLOUD_SECRETKEY || '',
           token: env.TENCENTCLOUD_SESSIONTOKEN || env.COS_SESSION_TOKEN || ''
-        });
+        }, now + 900);
         return;
       }
       Promise.resolve().then(() => credentialsFor({
@@ -753,17 +783,20 @@ function gatewayBundleCosOptions({ env = process.env, credentialsFor } = {}) {
         functionId: 'gateway-cos',
         websiteId: platformWebsiteId(env),
         sourceEnv: env
-      })).then((cloud) => finish({
-        secretId: cloud.TENCENTCLOUD_SECRETID,
-        secretKey: cloud.TENCENTCLOUD_SECRETKEY,
-        token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
-      })).catch((error) => {
-        const wrapped = new Error('业务云凭证不可用');
-        wrapped.code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
-          ? String(error.code)
-          : 'BUSINESS_ROLE_ASSUME_FAILED';
-        callback(wrapped);
-      });
+      })).then((cloud) => {
+        const expired = cosExpiredSeconds(cloud && cloud.expiresAt);
+        if (!(expired > Math.floor(Date.now() / 1000))) {
+          const error = new Error('业务云凭证不可用');
+          error.code = 'BUSINESS_ROLE_ASSUME_FAILED';
+          fail(error);
+          return;
+        }
+        finish({
+          secretId: cloud.TENCENTCLOUD_SECRETID,
+          secretKey: cloud.TENCENTCLOUD_SECRETKEY,
+          token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
+        }, expired);
+      }).catch((error) => fail(error));
     }
   };
 }

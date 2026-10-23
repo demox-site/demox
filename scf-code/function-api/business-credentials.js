@@ -14,10 +14,12 @@ const { AsyncLocalStorage } = require('async_hooks');
  * 证书 SSL 不走这条临时凭证：带会话策略的 token 调 SSL 会 invalid token。
  * cert-renew 和网关进程内的证书调用继续用角色凭证本身。
  *
- * 平台池派发一直走这里。进程内 auth / website / mcp（COS、EO、IMS）在
- * BUSINESS_ROLE_ARN 已设置、且 BUSINESS_CREDENTIALS_MODE 不是 execution-role 时也走这里：
- * 临时密钥放进当次请求的 AsyncLocalStorage，不写 process.env。
+ * 平台池派发一直走这里。进程内 auth / website / mcp（COS、EO、IMS，含 website 的
+ * analytics-rollup 定时器）在 BUSINESS_ROLE_ARN 正好是磷 demox-runtime-role、且
+ * BUSINESS_CREDENTIALS_MODE 不是 execution-role 时也走这里：临时密钥放进当次请求的
+ * AsyncLocalStorage，不写 process.env。session 模式下没有这份会话就抛错，不读 TENCENTCLOUD_*。
  * 未设置 BUSINESS_ROLE_ARN 时，进程内仍直接读执行角色的 TENCENTCLOUD_*（旧行为）。
+ * 其他 ARN（gateway-role、platform-ses、别的 uin）失败关闭。
  * 发验证码的平台 SES 不走这条，见 platform-ses-credentials.js。
  * cert-renew 继续用角色凭证本身，不带会话策略。
  * 回滚进程内这条：BUSINESS_CREDENTIALS_MODE=execution-role，或把函数别名指回上一版本。
@@ -28,7 +30,6 @@ const BUSINESS_ROLE_ARN = 'qcs::cam::uin/100021031865:roleName/demox-runtime-rol
 const BUSINESS_ROLE_ENV = 'BUSINESS_ROLE_ARN';
 const BUSINESS_CREDENTIALS_MODE_ENV = 'BUSINESS_CREDENTIALS_MODE';
 const BUSINESS_CREDENTIALS_LEGACY_MODE = 'execution-role';
-const BUSINESS_ROLE_ARN_PATTERN = /^qcs::cam::uin\/\d+:roleName\/[A-Za-z0-9+=,.@_-]{1,64}$/;
 const BUSINESS_ROLE_SESSION_SECONDS = 900;
 const BUSINESS_ROLE_REFRESH_SKEW_MS = 180_000;
 const STS_HOST = 'sts.tencentcloudapi.com';
@@ -176,16 +177,15 @@ function cloudEnvFromCredentials(credentials, kind) {
 const businessCredentialStore = new AsyncLocalStorage();
 
 /**
- * BUSINESS_ROLE_ARN 的取值。空串表示没配。demox-platform-ses 不能拿来当业务角色。
- * 非法值 state=invalid，调用方应失败关闭，不要悄悄退回执行角色。
+ * BUSINESS_ROLE_ARN 的取值。空串表示没配。
+ * 只接受磷 demox-runtime-role 这一条 ARN。gateway-role、platform-ses、别的 uin、
+ * 以及其他任何字符串都是 invalid，调用方失败关闭，不退回执行角色。
  */
 function classifyBusinessRoleArn(env = process.env) {
   const raw = String(env?.[BUSINESS_ROLE_ENV] || '').trim();
   if (!raw) return { state: 'unset', arn: '' };
-  if (!BUSINESS_ROLE_ARN_PATTERN.test(raw)) return { state: 'invalid', arn: '' };
-  const roleName = raw.split(':roleName/')[1] || '';
-  if (roleName === 'demox-platform-ses') return { state: 'invalid', arn: '' };
-  return { state: 'ok', arn: raw };
+  if (raw !== BUSINESS_ROLE_ARN) return { state: 'invalid', arn: '' };
+  return { state: 'ok', arn: BUSINESS_ROLE_ARN };
 }
 
 /**
@@ -236,13 +236,19 @@ function currentBusinessCredentials() {
 }
 
 /**
- * 业务 SDK（COS / TEO / IMS）读凭证的唯一入口。
- * 有请求级会话时用会话；否则读进程环境变量（平台池 worker，或回滚后的网关进程）。
- * 不写 process.env。
+ * 业务 SDK（COS / TEO / IMS）读凭证的唯一入口。不写 process.env。
+ * 有请求级会话时用会话。session 模式下没有会话就抛错，不读 TENCENTCLOUD_*。
+ * 非 session（未设 ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role）才读环境变量：
+ * 平台池 worker 里那是网关已经换好的会话，回滚后的网关进程里那是执行角色。
  */
 function tencentClientCredentials(env = process.env) {
   const assumed = currentBusinessCredentials();
   if (assumed) return assumed;
+  if (inProcessBusinessCredentialMode(env) === 'session') {
+    const error = new Error('业务云凭证不可用');
+    error.code = 'BUSINESS_CREDENTIALS_MISSING';
+    throw error;
+  }
   const source = env || {};
   return {
     secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
@@ -383,6 +389,10 @@ async function assumeBusinessRole({
   };
 }
 
+function issuedBusinessCredentials(entry) {
+  return { ...entry.env, expiresAt: entry.expiresAt };
+}
+
 function createBusinessCredentialProvider({
   clock = () => Date.now(),
   logger = console,
@@ -452,11 +462,11 @@ function createBusinessCredentialProvider({
       const key = String(request.functionId || request.slug || 'business');
       const now = clock();
       const hit = cache.get(key);
-      if (hit && hit.expiresAt - now > refreshSkewMs) return { ...hit.env };
+      if (hit && hit.expiresAt - now > refreshSkewMs) return issuedBusinessCredentials(hit);
       if (inflight.has(key)) return inflight.get(key);
       const pending = assumeFor(request, source).then((entry) => {
         cache.set(key, entry);
-        return { ...entry.env };
+        return issuedBusinessCredentials(entry);
       });
       inflight.set(key, pending);
       try {

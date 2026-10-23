@@ -9,35 +9,36 @@
  *
  * 凭证解析规则(getCreds)：
  *   - *_enc 非空 → 解密得到该桶专属密钥(自助注册的新桶)。
- *   - *_enc 为 NULL → 用当次请求的业务会话；没有会话时回退环境变量(TENCENTCLOUD_*)。
- *     兼容本地/旧环境里的 COS_SECRET_ID/KEY。旧默认桶密钥永不入库。
+ *   - *_enc 为 NULL → 用当次请求的业务会话。session 模式下没有会话就抛错。
+ *     未设 BUSINESS_ROLE_ARN 或回滚到 execution-role 时，才读环境变量。
+ *     旧默认桶密钥永不入库。
  */
 
 const { query } = require('./db.js');
 const { decrypt } = require('./crypto.js');
 
-function legacyTencentClientCredentials(env = process.env) {
-  const source = env || {};
-  return {
-    secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
-    secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
-    token: source.TENCENTCLOUD_SESSIONTOKEN || ''
-  };
-}
-
 let businessCredentialReader = null;
 
-/** 网关进程内优先读请求级会话。池里或旧包没有该模块时退回环境变量。 */
+function credentialModuleUnavailable() {
+  const error = new Error('业务云凭证不可用');
+  error.code = 'BUSINESS_CREDENTIALS_UNAVAILABLE';
+  return error;
+}
+
+/**
+ * 网关进程内读请求级会话。加载业务凭证模块失败时抛错，不退回 TENCENTCLOUD_*。
+ * session 模式下没有会话由该模块抛错，同样不读执行角色密钥。
+ */
 function tencentClientCredentials(env = process.env) {
   if (!businessCredentialReader) {
+    let loaded;
     try {
-      const loaded = require('../../function-api/business-credentials.js');
-      businessCredentialReader = typeof loaded.tencentClientCredentials === 'function'
-        ? loaded.tencentClientCredentials
-        : legacyTencentClientCredentials;
+      loaded = require('../../function-api/business-credentials.js');
     } catch {
-      businessCredentialReader = legacyTencentClientCredentials;
+      throw credentialModuleUnavailable();
     }
+    if (typeof loaded.tencentClientCredentials !== 'function') throw credentialModuleUnavailable();
+    businessCredentialReader = loaded.tencentClientCredentials;
   }
   return businessCredentialReader(env);
 }
@@ -97,7 +98,8 @@ async function listBuckets() {
 
 /**
  * 把一个桶配置解析成可直接喂给 storage.createProvider 的对象（含明文凭证）。
- * 凭证来源：自带密文则解密；否则用当次请求的业务会话，没有会话时才读环境变量。
+ * 凭证来源：自带密文则解密；否则用当次请求的业务会话。
+ * session 模式下没有会话，或业务凭证模块加载失败，都抛错，不读 TENCENTCLOUD_*。
  * 返回对象只在内存里用，绝不外传。
  */
 function resolveCreds(cfg) {
@@ -109,7 +111,6 @@ function resolveCreds(cfg) {
     secretId = decrypt(cfg.secretIdEnc);
     secretKey = decrypt(cfg.secretKeyEnc);
   } else {
-    // 网关进程内走业务角色会话。没有会话时才读环境变量（平台池或回滚）。
     const creds = tencentClientCredentials();
     secretId = creds.secretId;
     secretKey = creds.secretKey;
