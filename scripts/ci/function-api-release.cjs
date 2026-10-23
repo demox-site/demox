@@ -50,7 +50,9 @@ function targetEnv(env, target) {
   return {
     TENCENTCLOUD_ROLE_ARN: lin ? env.LIN_ROLE_ARN : env.EK_ROLE_ARN,
     DEMOX_TARGET: target,
-    DEMOX_ENTRY_MODE: lin ? 'custom-domain' : 'http-trigger',
+    // 2026-10-23：api.demox.site 自定义域只在易点；磷侧域名已删，生产入口是 HTTP 触发器
+    //（DEMOX_SMOKE_LIN_BASE / LIN_DEVELOP_URL）。磷继续用 custom-domain 会 GetCustomDomain 报「该域名未找到」。
+    DEMOX_ENTRY_MODE: 'http-trigger',
     DEMOX_COS_BUCKET: lin ? env.LIN_COS_BUCKET : env.EK_COS_BUCKET,
     DEMOX_COS_REGION: lin ? env.LIN_COS_REGION : env.EK_COS_REGION,
     DEMOX_COS_ACCELERATE: lin ? (env.LIN_COS_ACCELERATE || '') : (env.EK_COS_ACCELERATE || ''),

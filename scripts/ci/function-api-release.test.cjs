@@ -116,6 +116,8 @@ test('release stages, smokes develop, promotes, then smokes production on both a
   assert.equal(calls[7].env.DEMOX_SMOKE_LIN_BASE, 'https://lin-backup.example');
   assert.equal(calls[2].env.DEMOX_REUSE_PUBLISHED, '1');
   assert.equal(calls[5].env.DEMOX_SKIP_PUBLIC_CHECK, '1');
+  assert.equal(calls[2].env.DEMOX_ENTRY_MODE, 'http-trigger');
+  assert.equal(calls[3].env.DEMOX_ENTRY_MODE, 'http-trigger');
   fs.unlinkSync(zip);
 });
 
