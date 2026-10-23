@@ -21,6 +21,7 @@
 | `demox-website-api` | `demox` | **回滚用**，不要再更新 | `scf-code/website-api/` | HTTP；定时器应关闭 |
 | `demox-auth-api` | `demox` | **回滚用**，不要再更新 | `scf-deploy-packages/auth-api/` | HTTP |
 | `demox-mcp-api` | `demox` | **回滚用**，不要再更新 | `scf-code/mcp-api/` | HTTP |
+| `demox-cert-job` | `demox` | **生产证书续期**（独立函数） | `scf-code/cert-renew/` | 定时 `monthly-renew` @ production |
 | `demox-cert-renew` | `demox` | **回滚用**，不要再更新 | `scf-code/cert-renew/` | 定时器应关闭 |
 
 `demox-function-api` 绑定运行角色 `demox-runtime-role`，VPC `vpc-bwtrj6fb` / 子网 `subnet-nzrl3bbq`，内存 512 MB，超时 300 秒。`demox-user-nodejs` 在同一 VPC，无平台密钥。`demox-function-api` 的环境变量名以 `functions.json` 的 `environmentNames` 为准（不含值）。`scf-code/function-api/live-config.json` 是 2026-08-31 的脱敏快照，里面的 21 个名字不是当前名单。
@@ -62,7 +63,7 @@ tccli scf GetFunction --FunctionName demox-function-api --Namespace demox --regi
 | SSL | `*.demox.site` 泛域名证书；`api.demox.site` 所用证书 |
 | DNSPod | 域名 `demox.site` |
 | CDN | 历史域名 `demox.aigc.sx.cn`、`*.demox.aigc.sx.cn` |
-| CAM | 角色 `demox-runtime-role` |
+| CAM | 角色 `demox-runtime-role`；证书续期 `demox-cert-job-role`；网关专用 `demox-gateway-role`（尚未挂载） |
 
 ## 不要整实例改标签
 
