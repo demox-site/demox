@@ -12,6 +12,11 @@ const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
 const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 const { createPlatformSesCredentialProvider } = require('./platform-ses-credentials.js');
+const {
+  createBusinessCredentialProvider,
+  inProcessBusinessCredentialMode,
+  runWithBusinessCredentials
+} = require('./business-credentials.js');
 const { CosBundleStore, MemoryCachedBundleStore } = require('./bundle-store.js');
 const { createMysqlFunctionRepository } = require('./repository.js');
 const {
@@ -349,6 +354,13 @@ function createPlatformHandler({
 } = {}) {
   const resolvedUserHandler = userHandler || createFunctionHttpHandler({ logger, ...functionOptions });
   const sesCredentials = platformSesCredentials || createPlatformSesCredentialProvider({ logger });
+  let ownedBusinessCredentials = null;
+  function businessCredentialProvider() {
+    const fromService = resolvedUserHandler && resolvedUserHandler.service && resolvedUserHandler.service.businessCredentials;
+    if (fromService && typeof fromService.credentialsFor === 'function') return fromService;
+    if (!ownedBusinessCredentials) ownedBusinessCredentials = createBusinessCredentialProvider({ logger });
+    return ownedBusinessCredentials;
+  }
   const resolvedSystemHandler = systemHandler || createSystemFunctionRouter({
     ...systemRouterOptions,
     entries: systemEntries,
@@ -377,21 +389,61 @@ function createPlatformHandler({
     return path === '/auth/send-code' || body.action === 'send_code';
   }
 
-  // 只有进程内发验证码签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
-  // 不 Assume demox-runtime-role，不把临时密钥写进 process.env，website / mcp / 用户函数拿不到。
-  // 角色没配或签发失败直接 5xx，不回落到网关自己的 TENCENTCLOUD_*。
+  // 发验证码只签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
+  // 不 Assume 业务角色，不把临时密钥写进 process.env。角色没配或签发失败直接 5xx，
+  // 不回落到网关自己的 TENCENTCLOUD_*。
+  // 其他进程内 auth / website / mcp：BUSINESS_ROLE_ARN 合法且未切回 execution-role 时，
+  // AssumeRole 业务角色，会话凭证只放进这次请求的 AsyncLocalStorage。cert-renew 不进这里。
+  function safeCredentialCode(error, fallback) {
+    const code = String(error?.code || fallback || '');
+    return /^[A-Za-z0-9._:-]{1,64}$/.test(code) ? code : (fallback || 'BUSINESS_ROLE_ASSUME_FAILED');
+  }
+
+  function businessCredentialError(event, code) {
+    const safe = safeCredentialCode({ code }, 'BUSINESS_ROLE_ASSUME_FAILED');
+    logger.error?.('进程内业务凭证签发失败:', safe);
+    const clean = new FunctionApiError('业务云凭证不可用', safe, 500);
+    if (isTimerEvent(event)) throw clean;
+    return errorResponse(clean, event);
+  }
+
+  async function runWithInProcessBusinessCredentials(entry, event, inner) {
+    const slug = systemFunctionSlug(entry);
+    if (!['auth', 'website', 'mcp'].includes(slug) || isAuthSendCodeEvent(entry, event)) return inner();
+    const mode = inProcessBusinessCredentialMode();
+    if (mode === 'legacy') return inner();
+    if (mode === 'invalid') return businessCredentialError(event, 'BUSINESS_ROLE_ARN_INVALID');
+    if (mode === 'missing') return businessCredentialError(event, 'BUSINESS_ROLE_ARN_MISSING');
+    let cloud;
+    try {
+      cloud = await businessCredentialProvider().credentialsFor({
+        kind: 'business',
+        slug,
+        functionId: `inproc-${slug}`,
+        websiteId: platformWebsiteId(),
+        sourceEnv: process.env
+      });
+    } catch (error) {
+      return businessCredentialError(event, safeCredentialCode(error, 'BUSINESS_ROLE_ASSUME_FAILED'));
+    }
+    return runWithBusinessCredentials({
+      secretId: cloud.TENCENTCLOUD_SECRETID,
+      secretKey: cloud.TENCENTCLOUD_SECRETKEY,
+      token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
+    }, inner);
+  }
+
   async function dispatchInProcessSystem(entry, event, context, dispatch) {
     const runHandler = () => resolvedSystemHandler(event, context);
     if (!isAuthSendCodeEvent(entry, event)) {
-      return withDispatchHeader(await runHandler(), dispatch);
+      const response = await runWithInProcessBusinessCredentials(entry, event, runHandler);
+      return withDispatchHeader(response, dispatch);
     }
     let cloud;
     try {
       cloud = await sesCredentials.credentialsFor();
     } catch (error) {
-      const code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
-        ? String(error.code)
-        : 'BUSINESS_ROLE_ASSUME_FAILED';
+      const code = safeCredentialCode(error, 'BUSINESS_ROLE_ASSUME_FAILED');
       logger.error?.('进程内验证码凭证签发失败:', code);
       const clean = new FunctionApiError('验证码暂时无法发送', code, 500);
       return withDispatchHeader(errorResponse(clean, event), dispatch);
@@ -672,18 +724,64 @@ function createProductionNodeInvoker(logger = console) {
   return createLocalNodeInvoker({ logger });
 }
 
+function gatewayBundleCosOptions({ env = process.env, credentialsFor } = {}) {
+  return {
+    getAuthorization(_options, callback) {
+      const finish = (creds) => {
+        const now = Math.floor(Date.now() / 1000);
+        const token = creds.token || '';
+        callback({
+          TmpSecretId: creds.secretId || '',
+          TmpSecretKey: creds.secretKey || '',
+          SecurityToken: token,
+          XCosSecurityToken: token,
+          StartTime: now - 1,
+          ExpiredTime: now + 900
+        });
+      };
+      if (inProcessBusinessCredentialMode(env) !== 'session') {
+        finish({
+          secretId: env.FUNCTIONS_COS_SECRET_ID || env.COS_SECRET_ID || env.TENCENTCLOUD_SECRETID || '',
+          secretKey: env.FUNCTIONS_COS_SECRET_KEY || env.COS_SECRET_KEY || env.TENCENTCLOUD_SECRETKEY || '',
+          token: env.TENCENTCLOUD_SESSIONTOKEN || env.COS_SESSION_TOKEN || ''
+        });
+        return;
+      }
+      Promise.resolve().then(() => credentialsFor({
+        kind: 'business',
+        slug: 'website',
+        functionId: 'gateway-cos',
+        websiteId: platformWebsiteId(env),
+        sourceEnv: env
+      })).then((cloud) => finish({
+        secretId: cloud.TENCENTCLOUD_SECRETID,
+        secretKey: cloud.TENCENTCLOUD_SECRETKEY,
+        token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
+      })).catch((error) => {
+        const wrapped = new Error('业务云凭证不可用');
+        wrapped.code = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+          ? String(error.code)
+          : 'BUSINESS_ROLE_ASSUME_FAILED';
+        callback(wrapped);
+      });
+    }
+  };
+}
+
 function createProductionHandler({ publicBaseUrl, logger = console, database, bundleStore } = {}) {
   const databaseAdapter = database || createMysqlDatabaseFromEnv();
   const repository = createMysqlFunctionRepository(databaseAdapter);
   const bucket = process.env.FUNCTIONS_COS_BUCKET;
   const region = process.env.FUNCTIONS_COS_REGION || process.env.COS_REGION;
   if (!bundleStore && (!bucket || !region)) throw new Error('生产函数服务缺少 FUNCTIONS_COS_BUCKET/FUNCTIONS_COS_REGION');
+  const businessCredentials = createBusinessCredentialProvider({ logger });
   const productionBundleStore = new MemoryCachedBundleStore(bundleStore || new CosBundleStore({
     bucket,
     region,
-    secretId: process.env.FUNCTIONS_COS_SECRET_ID || process.env.COS_SECRET_ID || process.env.TENCENTCLOUD_SECRETID,
-    secretKey: process.env.FUNCTIONS_COS_SECRET_KEY || process.env.COS_SECRET_KEY || process.env.TENCENTCLOUD_SECRETKEY,
-    securityToken: process.env.TENCENTCLOUD_SESSIONTOKEN || process.env.COS_SESSION_TOKEN
+    ...gatewayBundleCosOptions({
+      env: process.env,
+      credentialsFor: (request) => businessCredentials.credentialsFor(request)
+    })
   }));
   const nodeInvoke = createProductionNodeInvoker(logger);
   const platformInvoke = createPlatformPoolInvoker(logger);
@@ -696,7 +794,8 @@ function createProductionHandler({ publicBaseUrl, logger = console, database, bu
     }),
     authenticate: createJwtAuthenticator(),
     publicBaseUrl: publicBaseUrl || process.env.FUNCTION_PUBLIC_BASE_URL,
-    logger
+    logger,
+    businessCredentials
   });
 }
 
@@ -789,6 +888,7 @@ module.exports = {
   createPlatformHandler,
   bindInProcessSystemBackends,
   createProductionHandler,
+  gatewayBundleCosOptions,
   createProductionNodeInvoker,
   createMysqlDatabaseFromEnv,
   createDefaultRuntime,

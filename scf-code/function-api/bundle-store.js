@@ -43,12 +43,15 @@ class CosBundleStore {
     if (!config?.bucket || !config?.region) throw new Error('COS 函数代码桶缺少 bucket 或 region');
     this.bucket = config.bucket;
     this.region = config.region;
-    this.cos = client || new COS({
-      SecretId: config.secretId,
-      SecretKey: config.secretKey,
-      SecurityToken: config.securityToken,
-      UserAgent: 'Demox-Function-API'
-    });
+    const options = { UserAgent: 'Demox-Function-API' };
+    if (typeof config.getAuthorization === 'function') {
+      options.getAuthorization = config.getAuthorization;
+    } else {
+      options.SecretId = config.secretId;
+      options.SecretKey = config.secretKey;
+      options.SecurityToken = config.securityToken;
+    }
+    this.cos = client || new COS(options);
   }
 
   put(key, body) {

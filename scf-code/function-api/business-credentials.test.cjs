@@ -9,14 +9,21 @@ const { FunctionService } = require('./service.js');
 const { executeNodejsPayload, createScfNodeInvoker, resetNodeWorkerPool } = require('./runtime-nodejs.js');
 const {
   BUSINESS_ROLE_ARN,
+  BUSINESS_ROLE_ENV,
+  BUSINESS_CREDENTIALS_MODE_ENV,
+  BUSINESS_CREDENTIALS_LEGACY_MODE,
   BUSINESS_ROLE_SESSION_SECONDS,
   BUSINESS_SESSION_POLICY,
   assumeBusinessRole,
   buildAssumeRoleRequest,
   createBusinessCredentialProvider,
   credentialKind,
+  inProcessBusinessCredentialMode,
+  resolveBusinessRoleArn,
   roleCredentialEnv,
-  sessionPolicyAllowsSsl
+  runWithBusinessCredentials,
+  sessionPolicyAllowsSsl,
+  tencentClientCredentials
 } = require('./business-credentials.js');
 
 const PLATFORM_ID = 'EPX2UU43';
@@ -99,7 +106,7 @@ test('business session policy covers COS EO DNS SES CLS and not SSL', () => {
   assert.equal(BUSINESS_ROLE_SESSION_SECONDS, 900);
   assert.equal(BUSINESS_ROLE_ARN, 'qcs::cam::uin/100021031865:roleName/demox-runtime-role');
   const actions = BUSINESS_SESSION_POLICY.statement.flatMap((item) => item.action).join(' ');
-  for (const service of ['cos:', 'teo:', 'dnspod:', 'ses:SendEmail', 'cls:']) {
+  for (const service of ['cos:', 'teo:', 'dnspod:', 'ims:ImageModeration', 'ses:SendEmail', 'cls:']) {
     assert.equal(actions.includes(service), true, service);
   }
   assert.equal(actions.includes('scf:'), false);
@@ -476,6 +483,59 @@ test('the worker and the platform invoke payload receive the invocation credenti
       else process.env[key] = value;
     }
   }
+});
+
+test('role ARN comes from BUSINESS_ROLE_ARN and the in-process switch defaults to session only when it is set', async () => {
+  const envArn = 'qcs::cam::uin/100021031865:roleName/demox-runtime-b1';
+  assert.equal(BUSINESS_ROLE_ENV, 'BUSINESS_ROLE_ARN');
+  assert.equal(BUSINESS_CREDENTIALS_MODE_ENV, 'BUSINESS_CREDENTIALS_MODE');
+  assert.equal(BUSINESS_CREDENTIALS_LEGACY_MODE, 'execution-role');
+  assert.equal(inProcessBusinessCredentialMode({}), 'legacy');
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: envArn }), 'session');
+  assert.equal(inProcessBusinessCredentialMode({
+    BUSINESS_ROLE_ARN: envArn,
+    BUSINESS_CREDENTIALS_MODE: 'execution-role'
+  }), 'legacy');
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: 'not-an-arn' }), 'invalid');
+  assert.equal(inProcessBusinessCredentialMode({
+    BUSINESS_ROLE_ARN: 'qcs::cam::uin/100021031865:roleName/demox-platform-ses'
+  }), 'invalid');
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_CREDENTIALS_MODE: 'session' }), 'missing');
+  assert.equal(resolveBusinessRoleArn({}), BUSINESS_ROLE_ARN);
+  assert.equal(resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: envArn }), envArn);
+  assert.throws(() => resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: 'role/demox-runtime-role' }), (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID');
+
+  const beforeId = process.env.TENCENTCLOUD_SECRETID;
+  const beforeToken = process.env.TENCENTCLOUD_SESSIONTOKEN;
+  const assumeCalls = [];
+  const provider = createBusinessCredentialProvider({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: envArn },
+    assume: async (request) => {
+      assumeCalls.push(request);
+      return { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token', expiration: '2099-01-01T00:00:00Z' };
+    }
+  });
+  const issued = await provider.credentialsFor({
+    kind: 'business',
+    slug: 'website',
+    functionId: 'fn_web',
+    websiteId: PLATFORM_ID,
+    sourceEnv: { ...ROLE_ENV, BUSINESS_ROLE_ARN: envArn }
+  });
+  assert.equal(assumeCalls[0].roleArn, envArn);
+  assert.notEqual(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+  assert.equal(issued.TENCENTCLOUD_SECRETID, 'biz-id');
+  assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
+  assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, beforeToken);
+
+  let seen = null;
+  await runWithBusinessCredentials({ secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' }, () => {
+    seen = tencentClientCredentials({ ...ROLE_ENV });
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
+  });
+  assert.deepEqual(seen, { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' });
+  assert.equal(tencentClientCredentials(ROLE_ENV).secretId, 'gw-id');
+  assert.equal(tencentClientCredentials().secretId, beforeId || '');
 });
 
 test('no token reached any console log in this suite', () => {

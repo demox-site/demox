@@ -117,8 +117,9 @@ function platformSiteEnvFromProcess(env = process.env) {
 
 /**
  * 平台站点（auth / website / mcp / cert-renew）默认不再交给 demox-user-nodejs 跑，
- * 改由本函数进程内的系统路由执行（用本函数自己的运行角色）。这样平台密钥和运行角色
- * 临时密钥都不会出现在和用户代码共用的 user-nodejs 实例里。
+ * 改由本函数进程内的系统路由执行。BUSINESS_ROLE_ARN 已设置时，auth / website / mcp
+ * 的业务云调用用 runtime-role 会话，不把执行角色密钥交给用户池。平台密钥也不会
+ * 出现在和用户代码共用的 user-nodejs 实例里。
  * 回滚：环境变量 FUNCTIONS_PLATFORM_SITE_MODE=user-runtime（恢复旧行为，含临时密钥合并）。
  */
 function platformSiteInProcess(processEnv = process.env) {

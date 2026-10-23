@@ -9,12 +9,38 @@
  *
  * 凭证解析规则(getCreds)：
  *   - *_enc 非空 → 解密得到该桶专属密钥(自助注册的新桶)。
- *   - *_enc 为 NULL → 回退 SCF 运行角色临时密钥(TENCENTCLOUD_*)。
+ *   - *_enc 为 NULL → 用当次请求的业务会话；没有会话时回退环境变量(TENCENTCLOUD_*)。
  *     兼容本地/旧环境里的 COS_SECRET_ID/KEY。旧默认桶密钥永不入库。
  */
 
 const { query } = require('./db.js');
 const { decrypt } = require('./crypto.js');
+
+function legacyTencentClientCredentials(env = process.env) {
+  const source = env || {};
+  return {
+    secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
+    secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
+    token: source.TENCENTCLOUD_SESSIONTOKEN || ''
+  };
+}
+
+let businessCredentialReader = null;
+
+/** 网关进程内优先读请求级会话。池里或旧包没有该模块时退回环境变量。 */
+function tencentClientCredentials(env = process.env) {
+  if (!businessCredentialReader) {
+    try {
+      const loaded = require('../../function-api/business-credentials.js');
+      businessCredentialReader = typeof loaded.tencentClientCredentials === 'function'
+        ? loaded.tencentClientCredentials
+        : legacyTencentClientCredentials;
+    } catch {
+      businessCredentialReader = legacyTencentClientCredentials;
+    }
+  }
+  return businessCredentialReader(env);
+}
 
 function rowToConfig(row) {
   if (!row) return null;
@@ -71,7 +97,8 @@ async function listBuckets() {
 
 /**
  * 把一个桶配置解析成可直接喂给 storage.createProvider 的对象（含明文凭证）。
- * 凭证来源：自带密文则解密；否则回退 env。返回对象**只在内存里用**，绝不外传。
+ * 凭证来源：自带密文则解密；否则用当次请求的业务会话，没有会话时才读环境变量。
+ * 返回对象只在内存里用，绝不外传。
  */
 function resolveCreds(cfg) {
   let secretId;
@@ -82,10 +109,11 @@ function resolveCreds(cfg) {
     secretId = decrypt(cfg.secretIdEnc);
     secretKey = decrypt(cfg.secretKeyEnc);
   } else {
-    // 生产走 SCF 运行角色注入的临时密钥；COS_SECRET_* 仅兼容本地/旧配置。
-    secretId = process.env.TENCENTCLOUD_SECRETID || process.env.COS_SECRET_ID;
-    secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.COS_SECRET_KEY;
-    securityToken = process.env.TENCENTCLOUD_SESSIONTOKEN || undefined;
+    // 网关进程内走业务角色会话。没有会话时才读环境变量（平台池或回滚）。
+    const creds = tencentClientCredentials();
+    secretId = creds.secretId;
+    secretKey = creds.secretKey;
+    securityToken = creds.token || undefined;
   }
 
   return {
@@ -100,4 +128,11 @@ function resolveCreds(cfg) {
   };
 }
 
-module.exports = { getDefaultBucket, getBucketById, listBuckets, resolveCreds, rowToConfig };
+module.exports = {
+  getDefaultBucket,
+  getBucketById,
+  listBuckets,
+  resolveCreds,
+  rowToConfig,
+  tencentClientCredentials
+};

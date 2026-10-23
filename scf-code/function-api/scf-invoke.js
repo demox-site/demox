@@ -9,6 +9,7 @@ const keepAliveAgents = {
   'https:': new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8, scheduling: 'lifo' })
 };
 
+// 执行角色凭证只签 SCF Invoke（平台池，以及仍走 SCF 的用户池）。业务 COS / EO / IMS / STS 不读这里。
 function getRoleCredentials() {
   const secretId = process.env.TENCENTCLOUD_SECRETID || process.env.TENCENT_SECRET_ID;
   const secretKey = process.env.TENCENTCLOUD_SECRETKEY || process.env.TENCENT_SECRET_KEY;
