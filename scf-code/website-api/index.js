@@ -1813,9 +1813,10 @@ async function callTencentCloudApi(opts) {
   return parsed.Response || parsed;
 }
 
-function encodeSesBody(value) {
-  return Buffer.from(String(value || ''), 'utf8').toString('base64');
-}
+const { assertPlatformSesSend } = require('./ses-allowlist.js');
+const BAN_NOTICE_TEMPLATE_ID = 226012;
+const BAN_NOTICE_REPLY_DAYS = '3';
+const BAN_NOTICE_REPLY_TO = 'phosa@qq.com';
 
 function readPlatformSesCredentials() {
   const als = globalThis[Symbol.for('demox.platformSes.als')];
@@ -1829,7 +1830,7 @@ function readPlatformSesCredentials() {
   };
 }
 
-async function sendSesEmail({ to, subject, text, html }) {
+async function sendSesEmail({ to, subject, templateId, templateData }) {
   const creds = readPlatformSesCredentials();
   if (!creds) {
     const error = new Error('平台发信角色未配置');
@@ -1837,6 +1838,7 @@ async function sendSesEmail({ to, subject, text, html }) {
     throw error;
   }
   const from = String(process.env.SES_FROM_EMAIL || 'Demox <noreply@mail.demox.site>').trim();
+  assertPlatformSesSend({ from, templateId });
   const region = String(process.env.SES_REGION || 'ap-hongkong').trim() || 'ap-hongkong';
   return callTencentCloudApi({
     secretId: creds.secretId,
@@ -1851,60 +1853,27 @@ async function sendSesEmail({ to, subject, text, html }) {
       FromEmailAddress: from,
       Destination: [to],
       Subject: subject,
-      TriggerType: 1,
-      Simple: {
-        Text: encodeSesBody(text),
-        Html: encodeSesBody(html)
+      ReplyToAddresses: BAN_NOTICE_REPLY_TO,
+      Template: {
+        TemplateID: Number(templateId),
+        TemplateData: JSON.stringify(templateData || {})
       }
     }
   });
 }
 
-function escapeEmailText(value) {
-  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function buildSiteDisabledNotice({ ownerName, siteName, siteUrl, websiteId, reason }) {
-  const greeting = ownerName ? `${ownerName}，你好：` : '你好：';
-  const text = [
-    greeting,
-    '',
-    '你在 Demox 发布的站点已被管理员停用，访客目前无法打开该站点。',
-    '',
-    `站点名称：${siteName}`,
-    `站点地址：${siteUrl}`,
-    `站点 ID：${websiteId}`,
-    '',
-    '停用理由：',
-    reason,
-    '',
-    '如对本次处理有异议，可回复本邮件说明情况。',
-    '',
-    'Demox 团队',
-    'https://www.demox.site/'
-  ].join('\n');
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<body style="margin:0;padding:24px;background:#f4f4f5;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;">
-  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:28px 28px 24px;">
-    <p style="margin:0 0 16px;">${escapeEmailText(greeting)}</p>
-    <p style="margin:0 0 16px;">你在 Demox 发布的站点已被管理员停用，访客目前无法打开该站点。</p>
-    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;">
-      <tr><td style="padding:6px 0;color:#71717a;width:96px;">站点名称</td><td>${escapeEmailText(siteName)}</td></tr>
-      <tr><td style="padding:6px 0;color:#71717a;">站点地址</td><td><a href="${escapeEmailText(siteUrl)}">${escapeEmailText(siteUrl)}</a></td></tr>
-      <tr><td style="padding:6px 0;color:#71717a;">站点 ID</td><td>${escapeEmailText(websiteId)}</td></tr>
-    </table>
-    <p style="margin:0 0 8px;font-weight:700;">停用理由</p>
-    <pre style="margin:0 0 20px;white-space:pre-wrap;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:#f4f4f5;padding:12px 14px;border-radius:10px;">${escapeEmailText(reason)}</pre>
-    <p style="margin:0 0 20px;color:#52525b;font-size:14px;">如对本次处理有异议，可回复本邮件说明情况。</p>
-    <p style="margin:0;font-size:13px;color:#71717a;">Demox 团队<br><a href="https://www.demox.site/">https://www.demox.site/</a></p>
-  </div>
-</body>
-</html>`;
+function buildSiteDisabledNotice({ siteName, websiteId, reason }) {
+  const id = String(websiteId || '').trim();
+  const name = String(siteName || '').trim() || '你的站点';
   return {
-    subject: `【Demox】你的站点「${siteName}」已被停用`,
-    text,
-    html
+    subject: `【Demox】站点 ${id} 已停用，可申诉`,
+    templateId: BAN_NOTICE_TEMPLATE_ID,
+    templateData: {
+      siteId: id,
+      siteName: name,
+      reason: String(reason || ''),
+      replyDays: BAN_NOTICE_REPLY_DAYS
+    }
   };
 }
 
@@ -3369,11 +3338,8 @@ async function handleUpdateWebsiteVisibility(event) {
         'UPDATE websites SET visibility = ?, disable_reason = ?, disabled_at = NOW(), updated_at = NOW() WHERE id = ?',
         [rawVisibility, disableReason.slice(0, 500), site.id]
       );
-      const siteUrl = String(site.url || `https://${String(site.website_id).toLowerCase()}.demox.site/`);
       const notice = buildSiteDisabledNotice({
-        ownerName: owner.nickname || '',
         siteName: site.name || site.file_name || site.website_id,
-        siteUrl,
         websiteId: site.website_id,
         reason: disableReason
       });
@@ -3381,8 +3347,8 @@ async function handleUpdateWebsiteVisibility(event) {
         await sendSesEmail({
           to: ownerEmail,
           subject: notice.subject,
-          text: notice.text,
-          html: notice.html
+          templateId: notice.templateId,
+          templateData: notice.templateData
         });
         emailed = true;
       } catch (mailErr) {

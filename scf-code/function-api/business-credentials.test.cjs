@@ -22,6 +22,7 @@ const {
   resolveBusinessRoleArn,
   roleCredentialEnv,
   runWithBusinessCredentials,
+  sessionPolicyAllowsCls,
   sessionPolicyAllowsSes,
   sessionPolicyAllowsSsl,
   tencentClientCredentials
@@ -100,19 +101,22 @@ function policyActions(statementIndex) {
   return BUSINESS_SESSION_POLICY.statement[statementIndex].action;
 }
 
-test('business session policy covers COS EO DNS CLS and not SSL or SES', () => {
+test('business session policy covers COS EO DNS IMS and not SSL SES or CLS', () => {
   assert.equal(sessionPolicyAllowsSsl(BUSINESS_SESSION_POLICY), false);
   assert.equal(sessionPolicyAllowsSes(BUSINESS_SESSION_POLICY), false);
+  assert.equal(sessionPolicyAllowsCls(BUSINESS_SESSION_POLICY), false);
   assert.equal(JSON.stringify(BUSINESS_SESSION_POLICY).includes('DEMOX_BIZ_'), false);
   assert.ok(Buffer.byteLength(JSON.stringify(BUSINESS_SESSION_POLICY)) <= 2048);
   assert.equal(BUSINESS_ROLE_SESSION_SECONDS, 900);
   assert.equal(BUSINESS_ROLE_ARN, 'qcs::cam::uin/100021031865:roleName/demox-runtime-role');
   const actions = BUSINESS_SESSION_POLICY.statement.flatMap((item) => item.action).join(' ');
-  for (const service of ['cos:', 'teo:', 'dnspod:', 'ims:ImageModeration', 'cls:']) {
+  for (const service of ['cos:', 'teo:', 'dnspod:', 'ims:ImageModeration']) {
     assert.equal(actions.includes(service), true, service);
   }
   assert.equal(/ses:/i.test(actions), false);
+  assert.equal(/cls:/i.test(actions), false);
   assert.equal(/ses:/i.test(JSON.stringify(BUSINESS_SESSION_POLICY)), false);
+  assert.equal(/cls:/i.test(JSON.stringify(BUSINESS_SESSION_POLICY)), false);
   assert.equal(actions.includes('scf:'), false);
   assert.equal(actions.includes('cam:'), false);
   assert.equal(policyActions(0).includes('name/cos:PutObject'), true);
@@ -133,6 +137,19 @@ test('business session policy contains no ses action', () => {
   }
   assert.equal(sessionPolicyAllowsSes(BUSINESS_SESSION_POLICY), false);
   assert.equal(/ses:/i.test(JSON.stringify(BUSINESS_SESSION_POLICY)), false);
+});
+
+test('business session policy contains no cls action', () => {
+  const actions = BUSINESS_SESSION_POLICY.statement.flatMap((item) => item.action);
+  assert.ok(actions.length > 0);
+  for (const action of actions) {
+    assert.equal(/cls:/i.test(String(action)), false, String(action));
+  }
+  assert.equal(sessionPolicyAllowsCls(BUSINESS_SESSION_POLICY), false);
+  assert.equal(/cls:/i.test(JSON.stringify(BUSINESS_SESSION_POLICY)), false);
+  assert.equal(sessionPolicyAllowsCls({
+    statement: [{ action: ['cls:pushLog'], resource: ['*'] }]
+  }), true);
 });
 
 test('AssumeRole sends the session policy and returns a different token from the role', async () => {
@@ -170,6 +187,7 @@ test('AssumeRole sends the session policy and returns a different token from the
   assert.equal(body.DurationSeconds, 900);
   assert.equal(sessionPolicyAllowsSsl(policy), false);
   assert.equal(sessionPolicyAllowsSes(policy), false);
+  assert.equal(sessionPolicyAllowsCls(policy), false);
   assert.equal(/ses:/i.test(body.Policy), false);
   assert.equal(result.secretId, 'ses-id');
   assert.equal(result.token, 'ses-token');
@@ -243,6 +261,7 @@ test('business credentials are cached for at most 900 seconds and are not the ro
   assert.equal(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
   assert.equal(sessionPolicyAllowsSsl(assumeCalls[0].policy), false);
   assert.equal(sessionPolicyAllowsSes(assumeCalls[0].policy), false);
+  assert.equal(sessionPolicyAllowsCls(assumeCalls[0].policy), false);
   assert.equal(assumeCalls[0].durationSeconds, 900);
   assert.equal(first.TENCENTCLOUD_SECRETID, 'ses-id');
   assert.equal(first.TENCENTCLOUD_SESSIONTOKEN, 'ses-token');
@@ -315,6 +334,7 @@ test('platform invoke gives business functions session credentials and cert-rene
     assert.equal(assumeCalls.length, 1);
     assert.equal(sessionPolicyAllowsSsl(assumeCalls[0].policy), false);
     assert.equal(sessionPolicyAllowsSes(assumeCalls[0].policy), false);
+    assert.equal(sessionPolicyAllowsCls(assumeCalls[0].policy), false);
     assert.equal(assumeCalls[0].token, 'gw-token');
 
     const renew = await publish(service, {

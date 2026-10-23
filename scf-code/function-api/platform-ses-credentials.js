@@ -1,7 +1,6 @@
 'use strict';
 
 const {
-  BUSINESS_ROLE_ARN,
   BUSINESS_ROLE_SESSION_SECONDS,
   BUSINESS_ROLE_REFRESH_SKEW_MS,
   assumeBusinessRole,
@@ -22,7 +21,8 @@ const {
  * ARN：qcs::cam::uin/100021031865:roleName/demox-platform-ses
  * 网关读自己的 PLATFORM_SES_ROLE_ARN。平台池 demox-platform-nodejs 也要有这份环境变量，
  * 并且 demox-platform-ses 必须信任 demox-platform-runtime-role（云帆，合并前）。
- * 缺省时不回落到 demox-runtime-role 或 TENCENTCLOUD_*，发信直接失败。
+ * PLATFORM_SES_ROLE_ARN 必须严格等于这条 ARN，否则当没配，发信失败。
+ * 缺省、写错账号或写错角色名都不回落到 demox-runtime-role 或 TENCENTCLOUD_*。
  * 用户池不能 Assume。
  * 角色策略与下面的会话策略相同：ses:SendEmail、ses:GetEmailIdentity、ses:GetEmailTemplate，资源 *。
  * 没有 COS / EO / DNS。
@@ -30,7 +30,7 @@ const {
 const PLATFORM_SES_ROLE_ENV = 'PLATFORM_SES_ROLE_ARN';
 const PLATFORM_SES_ROLE_NAME = 'demox-platform-ses';
 const PLATFORM_SES_ACCOUNT_UIN = '100021031865';
-const ROLE_ARN_PATTERN = /^qcs::cam::uin\/\d+:roleName\/[A-Za-z0-9+=,.@_-]{1,64}$/;
+const PLATFORM_SES_ROLE_ARN = `qcs::cam::uin/${PLATFORM_SES_ACCOUNT_UIN}:roleName/${PLATFORM_SES_ROLE_NAME}`;
 
 /** AssumeRole 必须带上的会话策略。有效权限 = 角色策略 ∩ 这份策略。只有这三项 SES，资源 *。 */
 const PLATFORM_SES_SESSION_POLICY = deepFreeze({
@@ -69,10 +69,7 @@ function sessionPolicyLeavesSes(policy) {
 
 function readPlatformSesRoleArn(env = process.env) {
   const value = String(env?.[PLATFORM_SES_ROLE_ENV] || '').trim();
-  if (!ROLE_ARN_PATTERN.test(value)) return '';
-  const roleName = value.split(':roleName/')[1] || '';
-  if (roleName === 'demox-runtime-role' || value === BUSINESS_ROLE_ARN) return '';
-  return value;
+  return value === PLATFORM_SES_ROLE_ARN ? value : '';
 }
 
 function createPlatformSesCredentialProvider({
@@ -226,6 +223,7 @@ module.exports = {
   PLATFORM_SES_ROLE_ENV,
   PLATFORM_SES_ROLE_NAME,
   PLATFORM_SES_ACCOUNT_UIN,
+  PLATFORM_SES_ROLE_ARN,
   PLATFORM_SES_SESSION_POLICY,
   readPlatformSesRoleArn,
   createPlatformSesCredentialProvider,

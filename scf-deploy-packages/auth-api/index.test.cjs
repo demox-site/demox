@@ -441,6 +441,68 @@ test('SES from address is alias, space, and angle-bracket email', () => {
   );
 });
 
+test('send-code refuses a from domain outside the allowlist before calling SES', async () => {
+  const seen = [];
+  const { _sesForTest } = require('./index.cjs');
+  queryImpl = async (sql) => {
+    if (sql.includes('FROM verification_codes') && sql.includes('INTERVAL 1 MINUTE')) return [];
+    return { affectedRows: 1 };
+  };
+  _sesForTest.setClientFactory(() => ({
+    async SendEmail() {
+      seen.push('called');
+      return { MessageId: 'mid-1' };
+    }
+  }));
+  const previous = {
+    dry: process.env.AUTH_EMAIL_DRY_RUN,
+    from: process.env.AUTH_EMAIL_FROM,
+    fromName: process.env.AUTH_EMAIL_FROM_NAME
+  };
+  delete process.env.AUTH_EMAIL_DRY_RUN;
+  process.env.AUTH_EMAIL_FROM = 'noreply@evil.example';
+  process.env.AUTH_EMAIL_FROM_NAME = 'Demox';
+  try {
+    const response = await _sesForTest.runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', { email: 'user@example.com', type: 'login' }));
+    assert.equal(response.statusCode, 502);
+    assert.match(JSON.parse(response.body).error, /发送失败/);
+    assert.equal(seen.length, 0);
+
+    process.env.AUTH_EMAIL_FROM = 'noreply@mail.aigc.sx.cn';
+    seen.length = 0;
+    _sesForTest.setClientFactory((credential) => ({
+      async SendEmail(payload) {
+        seen.push({ credential, from: payload.FromEmailAddress, template: payload.Template.TemplateID });
+        return { MessageId: 'mid-2' };
+      }
+    }));
+    const allowed = await _sesForTest.runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => request('/auth/send-code', { email: 'user@example.com', type: 'login' }));
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].credential.secretId, 'lin-ses-id');
+    assert.equal(seen[0].from, 'Demox <noreply@mail.aigc.sx.cn>');
+    assert.equal(seen[0].template, 137482);
+  } finally {
+    _sesForTest.setClientFactory(null);
+    for (const [name, value] of [
+      ['AUTH_EMAIL_DRY_RUN', previous.dry],
+      ['AUTH_EMAIL_FROM', previous.from],
+      ['AUTH_EMAIL_FROM_NAME', previous.fromName]
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('send-code asks SES for an unquoted from address', async () => {
   const calls = [];
   queryImpl = async (sql) => {

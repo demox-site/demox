@@ -2,7 +2,7 @@
   "name": "auth-api",
   "version": "1.0.0",
   "scripts": {
-    "test": "node --test index.test.cjs shared/jwt.test.cjs shared/login-throttle.test.cjs shared/fail-open-health.test.cjs"
+    "test": "node --test index.test.cjs ses-allowlist.test.cjs shared/jwt.test.cjs shared/login-throttle.test.cjs shared/fail-open-health.test.cjs"
   },
   "dependencies": {
     "bcrypt": "*",

@@ -19,7 +19,12 @@ function captureSes(fn) {
   const original = https.request;
   const seen = [];
   https.request = (options, callback) => {
-    seen.push(options);
+    const request = new EventEmitter();
+    request.body = '';
+    request.write = (chunk) => { request.body += chunk; };
+    request.end = () => {};
+    request.destroy = () => {};
+    seen.push({ ...options, request });
     const response = new EventEmitter();
     response.statusCode = 200;
     response.setEncoding = () => {};
@@ -28,10 +33,6 @@ function captureSes(fn) {
       response.emit('data', JSON.stringify({ Response: { MessageId: 'mid-1' } }));
       response.emit('end');
     });
-    const request = new EventEmitter();
-    request.write = () => {};
-    request.end = () => {};
-    request.destroy = () => {};
     return request;
   };
   const finish = () => {
@@ -102,10 +103,11 @@ test('ban notice signs SendEmail with the platform SES context and leaves TENCEN
     }, () => captureSes(async (seen) => {
       const result = await _sesMailForTest.sendSesEmail({
         to: 'owner@example.com',
-        subject: '停用',
-        text: 'text',
-        html: '<p>html</p>'
+        subject: '【Demox】站点 STX0K1MD 已停用，可申诉',
+        templateId: 226012,
+        templateData: { siteId: 'STX0K1MD', siteName: '示例', reason: '违规内容需要下线处理', replyDays: '3' }
       });
+      const payload = JSON.parse(seen[0].request.body);
       assert.equal(result.MessageId, 'mid-1');
       assert.equal(seen.length, 1);
       assert.equal(seen[0].host, 'ses.tencentcloudapi.com');
@@ -113,6 +115,10 @@ test('ban notice signs SendEmail with the platform SES context and leaves TENCEN
       assert.match(seen[0].headers.Authorization, /Credential=lin-ses-id\//);
       assert.equal(seen[0].headers.Authorization.includes('biz-id'), false);
       assert.equal(seen[0].headers['X-TC-Token'], 'lin-ses-token');
+      assert.equal(payload.FromEmailAddress, 'Demox <noreply@mail.demox.site>');
+      assert.equal(payload.Template.TemplateID, 226012);
+      assert.equal(payload.Simple, undefined);
+      assert.equal(JSON.parse(payload.Template.TemplateData).siteId, 'STX0K1MD');
       assert.equal(process.env.TENCENTCLOUD_SECRETID, 'biz-id');
       assert.equal(process.env.TENCENTCLOUD_SECRETKEY, 'biz-key');
       assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, 'biz-token');
@@ -126,5 +132,51 @@ test('ban notice signs SendEmail with the platform SES context and leaves TENCEN
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test('ban notice refuses a foreign from domain and a template outside 137482 or 226012 before calling SES', async () => {
+  const previous = process.env.SES_FROM_EMAIL;
+  process.env.SES_FROM_EMAIL = 'Demox <noreply@evil.example>';
+  try {
+    await runWithSesCredentials({
+      secretId: 'lin-ses-id',
+      secretKey: 'lin-ses-key',
+      token: 'lin-ses-token'
+    }, () => captureSes(async (seen) => {
+      await assert.rejects(
+        _sesMailForTest.sendSesEmail({
+          to: 'owner@example.com',
+          subject: '停用',
+          templateId: 226012,
+          templateData: { siteId: 'STX0K1MD' }
+        }),
+        (error) => error.code === 'SES_SEND_REFUSED'
+      );
+      process.env.SES_FROM_EMAIL = 'noreply@mail.aigc.sx.cn';
+      await assert.rejects(
+        _sesMailForTest.sendSesEmail({
+          to: 'owner@example.com',
+          subject: '停用',
+          templateId: 999999,
+          templateData: { siteId: 'STX0K1MD' }
+        }),
+        (error) => error.code === 'SES_SEND_REFUSED'
+      );
+      const result = await _sesMailForTest.sendSesEmail({
+        to: 'owner@example.com',
+        subject: '停用',
+        templateId: 226012,
+        templateData: { siteId: 'STX0K1MD', siteName: '示例', reason: '理由足够长', replyDays: '3' }
+      });
+      assert.equal(result.MessageId, 'mid-1');
+      assert.equal(seen.length, 1);
+      const payload = JSON.parse(seen[0].request.body);
+      assert.equal(payload.FromEmailAddress, 'noreply@mail.aigc.sx.cn');
+      assert.equal(payload.Template.TemplateID, 226012);
+    }));
+  } finally {
+    if (previous === undefined) delete process.env.SES_FROM_EMAIL;
+    else process.env.SES_FROM_EMAIL = previous;
   }
 });

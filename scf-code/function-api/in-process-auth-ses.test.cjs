@@ -7,13 +7,14 @@ const { InMemoryFunctionRepository } = require('./repository.js');
 const { createFunctionHttpHandler, createPlatformHandler } = require('./index.js');
 const { BUSINESS_ROLE_ARN, BUSINESS_SESSION_POLICY, createBusinessCredentialProvider } = require('./business-credentials.js');
 const {
+  PLATFORM_SES_ROLE_ARN,
   PLATFORM_SES_ROLE_ENV,
   PLATFORM_SES_ROLE_NAME,
   PLATFORM_SES_SESSION_POLICY,
   readPlatformSesRoleArn,
   createPlatformSesCredentialProvider
 } = require('./platform-ses-credentials.js');
-const { currentSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+const { assumedBusinessCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 
 const SES_ROLE_ARN = `qcs::cam::uin/100021031865:roleName/${PLATFORM_SES_ROLE_NAME}`;
 const ROLE_ENV = {
@@ -114,7 +115,10 @@ function harness({ sesAssume, logger }) {
     platformSesCredentials: ses,
     systemHandler: async (event) => {
       handlerCalls += 1;
-      seen.push({ path: event.path, creds: currentSesCredentials() });
+      seen.push({
+        path: event.path,
+        creds: assumedBusinessCredentials() || { secretId: '', secretKey: '', token: '' }
+      });
       return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{"success":true}' };
     }
   });
@@ -130,9 +134,13 @@ function harness({ sesAssume, logger }) {
 test('platform SES role ARN is env-only and rejects demox-runtime-role', () => {
   assert.equal(PLATFORM_SES_ROLE_ENV, 'PLATFORM_SES_ROLE_ARN');
   assert.equal(PLATFORM_SES_ROLE_NAME, 'demox-platform-ses');
+  assert.equal(PLATFORM_SES_ROLE_ARN, SES_ROLE_ARN);
   assert.equal(readPlatformSesRoleArn({}), '');
   assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: BUSINESS_ROLE_ARN }), '');
   assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: 'role/demox-platform-ses' }), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: 'qcs::cam::uin/100021031865:roleName/other-ses' }), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: 'qcs::cam::uin/1:roleName/demox-platform-ses' }), '');
+  assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: `${SES_ROLE_ARN}/extra` }), '');
   assert.equal(readPlatformSesRoleArn({ PLATFORM_SES_ROLE_ARN: SES_ROLE_ARN }), SES_ROLE_ARN);
   const actions = policyActions(PLATFORM_SES_SESSION_POLICY);
   assert.deepEqual(actions.sort(), ['ses:GetEmailIdentity', 'ses:GetEmailTemplate', 'ses:SendEmail']);
@@ -170,7 +178,8 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
     });
     assert.equal(login.statusCode, 200);
     assert.equal(assumeCalls.length, 0);
-    assert.equal(app.seen[0].creds.secretId, 'gw-id');
+    assert.equal(app.seen[0].creds.secretId, '');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
 
     const first = await app.platform({
       httpMethod: 'POST',
@@ -219,7 +228,8 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
     });
     assert.equal(website.statusCode, 200);
     assert.equal(assumeCalls.length, 1);
-    assert.equal(app.seen[3].creds.secretId, 'gw-id');
+    assert.equal(app.seen[3].creds.secretId, '');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
 
     const mcp = await app.platform({
       httpMethod: 'POST',
@@ -229,7 +239,8 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
     });
     assert.equal(mcp.statusCode, 200);
     assert.equal(assumeCalls.length, 1);
-    assert.equal(app.seen[4].creds.secretId, 'gw-id');
+    assert.equal(app.seen[4].creds.secretId, '');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
     assert.equal(app.runtimeRoleAssumed(), 0);
     assert.equal(logs.some((line) => JSON.stringify(line).includes('lin-ses')), false);
     assert.equal(logs.some((line) => JSON.stringify(line).includes('gw-token')), false);
@@ -283,7 +294,8 @@ test('in-process disable notice assumes demox-platform-ses and does not overwrit
     });
     assert.equal(opened.statusCode, 200);
     assert.equal(assumeCalls.length, 1);
-    assert.equal(app.seen.at(-1).creds.secretId, 'gw-id');
+    assert.equal(app.seen.at(-1).creds.secretId, '');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
   });
 });
 

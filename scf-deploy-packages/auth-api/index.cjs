@@ -1427,7 +1427,8 @@ function httpsJson(options, body) {
   });
 }
 
-const { currentSesCredentials, assumedBusinessCredentials } = require('./ses-credentials.cjs');
+const { assumedBusinessCredentials } = require('./ses-credentials.cjs');
+const { assertPlatformSesSend } = require('./ses-allowlist.cjs');
 let sesClientFactory = null;
 
 function createSesClient(credential) {
@@ -1461,6 +1462,15 @@ function formatSesFromAddress(env = process.env) {
  * 没有这份上下文就失败，不读 TENCENTCLOUD_*，也不盖掉它。
  */
 async function sendEmail(to, code, type) {
+  const from = formatSesFromAddress();
+  const templateId = 137482;
+  try {
+    assertPlatformSesSend({ from, templateId });
+  } catch (error) {
+    console.log('发信地址或模板不在允许列表');
+    return false;
+  }
+
   if (process.env.AUTH_EMAIL_DRY_RUN === '1') {
     console.log('AUTH_EMAIL_DRY_RUN=1，跳过真实发信');
     return true;
@@ -1479,15 +1489,12 @@ async function sendEmail(to, code, type) {
   try {
     const client = createSesClient({ secretId, secretKey, token });
 
-    const from = formatSesFromAddress();
-
-    // 使用已审核通过的模板（模板ID: 137482）
     const result = await client.SendEmail({
       FromEmailAddress: from,
       Destination: [to],
       Subject: '【Demox】验证码',
       Template: {
-        TemplateID: 137482,
+        TemplateID: templateId,
         TemplateData: JSON.stringify({ code: code })
       }
     });
@@ -2340,7 +2347,6 @@ function getCORSHeaders() {
 exports._oauthForTest = { hashClientSecret, clientSecretMatches };
 exports._sesForTest = {
   setClientFactory(factory) { sesClientFactory = factory; },
-  currentSesCredentials,
   runWithSesCredentials: require('./ses-credentials.cjs').runWithSesCredentials
 };
 exports._emailForTest = { formatSesFromAddress };
