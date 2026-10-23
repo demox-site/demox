@@ -563,6 +563,21 @@ test('role ARN is only the pinned demox-runtime-role and session mode does not r
     () => tencentClientCredentials(sessionEnv),
     (error) => error.code === 'BUSINESS_CREDENTIALS_MISSING'
   );
+  for (const arn of rejected) {
+    assert.throws(
+      () => tencentClientCredentials({ ...ROLE_ENV, BUSINESS_ROLE_ARN: arn }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+    );
+  }
+  assert.throws(
+    () => tencentClientCredentials({ ...ROLE_ENV, BUSINESS_CREDENTIALS_MODE: 'session' }),
+    (error) => error.code === 'BUSINESS_ROLE_ARN_MISSING'
+  );
+  assert.equal(tencentClientCredentials({
+    ...ROLE_ENV,
+    BUSINESS_ROLE_ARN: rejected[0],
+    BUSINESS_CREDENTIALS_MODE: 'execution-role'
+  }).secretId, 'gw-id');
   assert.equal(tencentClientCredentials(ROLE_ENV).secretId, 'gw-id');
   assert.equal(tencentClientCredentials().secretId, beforeId || '');
 });

@@ -17,9 +17,10 @@ const { AsyncLocalStorage } = require('async_hooks');
  * 平台池派发一直走这里。进程内 auth / website / mcp（COS、EO、IMS，含 website 的
  * analytics-rollup 定时器）在 BUSINESS_ROLE_ARN 正好是磷 demox-runtime-role、且
  * BUSINESS_CREDENTIALS_MODE 不是 execution-role 时也走这里：临时密钥放进当次请求的
- * AsyncLocalStorage，不写 process.env。session 模式下没有这份会话就抛错，不读 TENCENTCLOUD_*。
- * 未设置 BUSINESS_ROLE_ARN 时，进程内仍直接读执行角色的 TENCENTCLOUD_*（旧行为）。
- * 其他 ARN（gateway-role、platform-ses、别的 uin）失败关闭。
+ * AsyncLocalStorage，不写 process.env。没有这份会话就抛错，不读 TENCENTCLOUD_*。
+ * 只有显式回滚（BUSINESS_CREDENTIALS_MODE=execution-role）或完全没配 BUSINESS_ROLE_ARN
+ * 时，才读执行角色的 TENCENTCLOUD_*。ARN 已设置但不在白名单里抛 BUSINESS_ROLE_ARN_INVALID。
+ * 显式要求 session 却没配 ARN 时抛 BUSINESS_ROLE_ARN_MISSING。
  * 发验证码的平台 SES 不走这条，见 platform-ses-credentials.js。
  * cert-renew 继续用角色凭证本身，不带会话策略。
  * 回滚进程内这条：BUSINESS_CREDENTIALS_MODE=execution-role，或把函数别名指回上一版本。
@@ -237,24 +238,28 @@ function currentBusinessCredentials() {
 
 /**
  * 业务 SDK（COS / TEO / IMS）读凭证的唯一入口。不写 process.env。
- * 有请求级会话时用会话。session 模式下没有会话就抛错，不读 TENCENTCLOUD_*。
- * 非 session（未设 ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role）才读环境变量：
- * 平台池 worker 里那是网关已经换好的会话，回滚后的网关进程里那是执行角色。
+ * 有请求级会话时用会话。
+ * 只有 legacy 才读环境变量：没配 BUSINESS_ROLE_ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role。
+ * 平台池 worker 在 legacy 下读到的是网关已经换好的会话；回滚后的网关进程读到的是执行角色。
+ * ARN 非法、显式 session 却没配 ARN、或 session 模式下没有会话，都抛错，不读 TENCENTCLOUD_*。
  */
 function tencentClientCredentials(env = process.env) {
   const assumed = currentBusinessCredentials();
   if (assumed) return assumed;
-  if (inProcessBusinessCredentialMode(env) === 'session') {
-    const error = new Error('业务云凭证不可用');
-    error.code = 'BUSINESS_CREDENTIALS_MISSING';
-    throw error;
+  const mode = inProcessBusinessCredentialMode(env);
+  if (mode === 'legacy') {
+    const source = env || {};
+    return {
+      secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
+      secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
+      token: source.TENCENTCLOUD_SESSIONTOKEN || ''
+    };
   }
-  const source = env || {};
-  return {
-    secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
-    secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
-    token: source.TENCENTCLOUD_SESSIONTOKEN || ''
-  };
+  const error = new Error('业务云凭证不可用');
+  if (mode === 'invalid') error.code = 'BUSINESS_ROLE_ARN_INVALID';
+  else if (mode === 'missing') error.code = 'BUSINESS_ROLE_ARN_MISSING';
+  else error.code = 'BUSINESS_CREDENTIALS_MISSING';
+  throw error;
 }
 
 function sign(key, message, encoding) {

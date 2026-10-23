@@ -9,9 +9,9 @@
  *
  * 凭证解析规则(getCreds)：
  *   - *_enc 非空 → 解密得到该桶专属密钥(自助注册的新桶)。
- *   - *_enc 为 NULL → 用当次请求的业务会话。session 模式下没有会话就抛错。
- *     未设 BUSINESS_ROLE_ARN 或回滚到 execution-role 时，才读环境变量。
- *     旧默认桶密钥永不入库。
+ *   - *_enc 为 NULL → 用当次请求的业务会话。没有会话、ARN 非法、或显式 session
+ *     却没配 ARN 时抛错。只有没配 BUSINESS_ROLE_ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role，
+ *     才读环境变量。旧默认桶密钥永不入库。
  */
 
 const { query } = require('./db.js');
@@ -19,26 +19,58 @@ const { decrypt } = require('./crypto.js');
 
 let businessCredentialReader = null;
 
-function credentialModuleUnavailable() {
+// 与 business-credentials.js 的白名单和 inProcessBusinessCredentialMode 保持一致。
+// 统一包里两份文件都在（scf-code/function-api 与 scf-code/website-api）。
+// 池里的临时副本解析不到相对路径时，只有 legacy 才读环境变量。
+const PINNED_BUSINESS_ROLE_ARN = 'qcs::cam::uin/100021031865:roleName/demox-runtime-role';
+
+function localCredentialMode(env = process.env) {
+  const source = env || {};
+  const mode = String(source.BUSINESS_CREDENTIALS_MODE || '').trim().toLowerCase();
+  if (mode === 'execution-role') return 'legacy';
+  const arn = String(source.BUSINESS_ROLE_ARN || '').trim();
+  if (!arn) return mode === 'session' ? 'missing' : 'legacy';
+  if (arn !== PINNED_BUSINESS_ROLE_ARN) return 'invalid';
+  return 'session';
+}
+
+function readEnvCredentials(env = process.env) {
+  const source = env || {};
+  return {
+    secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
+    secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
+    token: source.TENCENTCLOUD_SESSIONTOKEN || ''
+  };
+}
+
+function throwCredentialMode(mode) {
   const error = new Error('业务云凭证不可用');
-  error.code = 'BUSINESS_CREDENTIALS_UNAVAILABLE';
-  return error;
+  if (mode === 'invalid') error.code = 'BUSINESS_ROLE_ARN_INVALID';
+  else if (mode === 'missing') error.code = 'BUSINESS_ROLE_ARN_MISSING';
+  else error.code = 'BUSINESS_CREDENTIALS_UNAVAILABLE';
+  throw error;
 }
 
 /**
- * 网关进程内读请求级会话。加载业务凭证模块失败时抛错，不退回 TENCENTCLOUD_*。
- * session 模式下没有会话由该模块抛错，同样不读执行角色密钥。
+ * 网关进程内读请求级会话。统一包能加载到 business-credentials.js。
+ * 加载失败时：legacy（没配 ARN，或 execution-role）读环境变量；
+ * session / 非法 ARN / 缺 ARN 抛错，不读 TENCENTCLOUD_*。
  */
 function tencentClientCredentials(env = process.env) {
   if (!businessCredentialReader) {
-    let loaded;
+    let loaded = null;
     try {
       loaded = require('../../function-api/business-credentials.js');
     } catch {
-      throw credentialModuleUnavailable();
+      loaded = null;
     }
-    if (typeof loaded.tencentClientCredentials !== 'function') throw credentialModuleUnavailable();
-    businessCredentialReader = loaded.tencentClientCredentials;
+    if (loaded && typeof loaded.tencentClientCredentials === 'function') {
+      businessCredentialReader = loaded.tencentClientCredentials;
+    } else {
+      const mode = localCredentialMode(env);
+      if (mode === 'legacy') return readEnvCredentials(env);
+      throwCredentialMode(mode);
+    }
   }
   return businessCredentialReader(env);
 }
@@ -99,7 +131,8 @@ async function listBuckets() {
 /**
  * 把一个桶配置解析成可直接喂给 storage.createProvider 的对象（含明文凭证）。
  * 凭证来源：自带密文则解密；否则用当次请求的业务会话。
- * session 模式下没有会话，或业务凭证模块加载失败，都抛错，不读 TENCENTCLOUD_*。
+ * legacy 才读环境变量。session 没有会话、ARN 非法、显式 session 缺 ARN，
+ * 以及这些模式下模块加载失败，都抛错，不读 TENCENTCLOUD_*。
  * 返回对象只在内存里用，绝不外传。
  */
 function resolveCreds(cfg) {

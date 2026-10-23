@@ -470,8 +470,7 @@ function createPlatformHandler({
 
     const scopedEvent = applySiteScope(event, systemEntries);
     const systemEntry = resolveSystemFunction(scopedEvent, systemEntries);
-    const timerEvent = isTimerEvent(scopedEvent);
-    if (systemEntry && !timerEvent) {
+    if (systemEntry) {
       const published = await invokePublishedSystemFunction(
         resolvedUserHandler.service,
         systemEntry,
@@ -482,27 +481,20 @@ function createPlatformHandler({
       if (published.response) return published.response;
       return dispatchInProcessSystem(systemEntry, scopedEvent, context, published.dispatch);
     }
-    if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function' && !(systemEntry && timerEvent)) {
+    if (typeof resolvedUserHandler.tryInvokeUserRoute === 'function') {
       const userHit = await resolvedUserHandler.tryInvokeUserRoute(scopedEvent, context);
       if (userHit) return userHit;
     }
-    if (timerEvent) {
-      if (!systemEntry) return resolvedSystemHandler(scopedEvent, context);
-      const published = await invokePublishedSystemFunction(
-        resolvedUserHandler.service,
-        systemEntry,
-        scopedEvent,
-        context,
-        logger
-      );
-      if (published.response) return published.response;
+    if (isTimerEvent(scopedEvent)) {
       const runHandler = () => resolvedSystemHandler(scopedEvent, context);
-      // website 的 analytics-rollup 定时器要读 analytics-raw。cert-renew 继续用执行角色。
-      if (systemFunctionSlug(systemEntry) === 'cert-renew') {
-        return withDispatchHeader(await runHandler(), published.dispatch);
+      // 清单定时器已在上面返回。这里只包没有清单条目的定时器；monthly-renew 不进业务会话。
+      if (timerNameOf(scopedEvent) === 'monthly-renew') return runHandler();
+      const timerEntry = resolveSystemFunction(scopedEvent, systemEntries);
+      const slug = timerEntry ? systemFunctionSlug(timerEntry) : '';
+      if (slug === 'auth' || slug === 'website' || slug === 'mcp') {
+        return runWithInProcessBusinessCredentials(timerEntry, scopedEvent, runHandler);
       }
-      const response = await runWithInProcessBusinessCredentials(systemEntry, scopedEvent, runHandler);
-      return withDispatchHeader(response, published.dispatch);
+      return runHandler();
     }
     return resolvedUserHandler(scopedEvent, context);
   }
@@ -768,7 +760,16 @@ function gatewayBundleCosOptions({ env = process.env, credentialsFor } = {}) {
           : 'BUSINESS_ROLE_ASSUME_FAILED';
         callback(wrapped);
       };
-      if (inProcessBusinessCredentialMode(env) !== 'session') {
+      const mode = inProcessBusinessCredentialMode(env);
+      if (mode === 'invalid') {
+        fail({ code: 'BUSINESS_ROLE_ARN_INVALID' });
+        return;
+      }
+      if (mode === 'missing') {
+        fail({ code: 'BUSINESS_ROLE_ARN_MISSING' });
+        return;
+      }
+      if (mode !== 'session') {
         const now = Math.floor(Date.now() / 1000);
         finish({
           secretId: env.FUNCTIONS_COS_SECRET_ID || env.COS_SECRET_ID || env.TENCENTCLOUD_SECRETID || '',

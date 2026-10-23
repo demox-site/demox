@@ -539,7 +539,97 @@ test('gateway function-bundle COS uses the business session only when the switch
   assert.ok(!store.cos.options.SecretId);
 });
 
-test('buckets does not fall back to env when the credential module cannot be loaded', () => {
+test('no ARN: timer path unchanged', async () => {
+  await withEnv({ ...ROLE_ENV, BUSINESS_ROLE_ARN: undefined, BUSINESS_CREDENTIALS_MODE: undefined }, async () => {
+    const order = [];
+    let assumes = 0;
+    const userHandler = createFunctionHttpHandler({
+      repository: new InMemoryFunctionRepository(),
+      bundleStore: new InMemoryBundleStore(),
+      businessCredentials: createBusinessCredentialProvider({
+        assume: async () => {
+          assumes += 1;
+          throw new Error('should not assume');
+        }
+      }),
+      logger: console,
+      runtime: { async execute() { order.push('runtime'); return { status: 200, headers: {}, body: 'user-runtime' }; } }
+    });
+    const service = userHandler.service;
+    const originalInvoke = service.invokeBySlug.bind(service);
+    service.invokeBySlug = async (request) => {
+      order.push(`invoke:${request.slug}`);
+      return originalInvoke(request);
+    };
+    const originalTry = userHandler.tryInvokeUserRoute.bind(userHandler);
+    userHandler.tryInvokeUserRoute = async (event, context) => {
+      order.push(`user:${event.TriggerName || event.path || ''}`);
+      return originalTry(event, context);
+    };
+    const platform = createPlatformHandler({
+      userHandler,
+      systemHandler: async (event) => {
+        order.push(`system:${event.TriggerName || event.path || ''}`);
+        return { statusCode: 204, body: event.TriggerName === 'monthly-renew' ? (process.env.TENCENTCLOUD_SECRETID || '') : '' };
+      }
+    });
+    const renew = await platform({ Type: 'Timer', TriggerName: 'monthly-renew' });
+    const rollup = await platform({ Type: 'Timer', TriggerName: 'analytics-rollup-5m' });
+    const custom = await platform({ Type: 'Timer', TriggerName: 'site-cron' });
+    assert.equal(renew.statusCode, 204);
+    assert.equal(renew.body, 'gw-id');
+    assert.equal(rollup.statusCode, 204);
+    assert.equal(custom.statusCode, 204);
+    assert.deepEqual(order, [
+      'invoke:cert-renew',
+      'system:monthly-renew',
+      'invoke:website',
+      'system:analytics-rollup-5m',
+      'user:site-cron',
+      'system:site-cron'
+    ]);
+    assert.equal(assumes, 0);
+    assert.equal(order.includes('runtime'), false);
+  });
+});
+
+test('gateway COS does not read env when the business ARN is invalid or session is required without one', async () => {
+  let calls = 0;
+  const credentialsFor = async () => {
+    calls += 1;
+    throw new Error('should not assume');
+  };
+  const invalidOptions = gatewayBundleCosOptions({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: REJECTED_ROLE_ARNS[1] },
+    credentialsFor
+  });
+  const invalidCreds = await new Promise((resolve) => {
+    invalidOptions.getAuthorization({}, (creds) => resolve(creds));
+  });
+  assert.equal(invalidCreds instanceof Error, true);
+  assert.equal(invalidCreds.code, 'BUSINESS_ROLE_ARN_INVALID');
+  const missingOptions = gatewayBundleCosOptions({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: undefined, BUSINESS_CREDENTIALS_MODE: 'session' },
+    credentialsFor
+  });
+  const missingCreds = await new Promise((resolve) => {
+    missingOptions.getAuthorization({}, (creds) => resolve(creds));
+  });
+  assert.equal(missingCreds instanceof Error, true);
+  assert.equal(missingCreds.code, 'BUSINESS_ROLE_ARN_MISSING');
+  assert.equal(calls, 0);
+  const legacyOptions = gatewayBundleCosOptions({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: undefined },
+    credentialsFor
+  });
+  const legacyCreds = await new Promise((resolve) => {
+    legacyOptions.getAuthorization({}, (creds) => resolve(creds));
+  });
+  assert.equal(legacyCreds.TmpSecretId, 'gw-id');
+  assert.equal(legacyCreds.SecurityToken, 'gw-token');
+});
+
+test('buckets load failure throws only outside legacy mode', async () => {
   const bucketsPath = require.resolve('../website-api/shared/buckets.js');
   const saved = require.cache[bucketsPath];
   delete require.cache[bucketsPath];
@@ -555,24 +645,38 @@ test('buckets does not fall back to env when the credential module cannot be loa
   };
   try {
     const buckets = require(bucketsPath);
+    const envCreds = {
+      TENCENTCLOUD_SECRETID: 'gw-id',
+      TENCENTCLOUD_SECRETKEY: 'gw-key',
+      TENCENTCLOUD_SESSIONTOKEN: 'gw-token'
+    };
     assert.throws(
-      () => buckets.tencentClientCredentials({
-        TENCENTCLOUD_SECRETID: 'gw-id',
-        TENCENTCLOUD_SECRETKEY: 'gw-key',
-        TENCENTCLOUD_SESSIONTOKEN: 'gw-token',
-        BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN
-      }),
+      () => buckets.tencentClientCredentials({ ...envCreds, BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN }),
       (error) => error.code === 'BUSINESS_CREDENTIALS_UNAVAILABLE'
     );
     assert.throws(
-      () => buckets.resolveCreds({
+      () => buckets.tencentClientCredentials({ ...envCreds, BUSINESS_ROLE_ARN: REJECTED_ROLE_ARNS[0] }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+    );
+    assert.throws(
+      () => buckets.tencentClientCredentials({ ...envCreds, BUSINESS_CREDENTIALS_MODE: 'session' }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_MISSING'
+    );
+    assert.equal(buckets.tencentClientCredentials(envCreds).secretId, 'gw-id');
+    assert.equal(buckets.tencentClientCredentials({
+      ...envCreds,
+      BUSINESS_ROLE_ARN: REJECTED_ROLE_ARNS[1],
+      BUSINESS_CREDENTIALS_MODE: 'execution-role'
+    }).secretId, 'gw-id');
+    await withEnv({ ...envCreds, BUSINESS_ROLE_ARN: undefined, BUSINESS_CREDENTIALS_MODE: undefined }, () => {
+      const resolved = buckets.resolveCreds({
         hasOwnCreds: false,
         provider: 'cos',
         bucket: 'resource-game-1307257815',
         region: 'ap-chengdu'
-      }),
-      (error) => error.code === 'BUSINESS_CREDENTIALS_UNAVAILABLE'
-    );
+      });
+      assert.equal(resolved.secretId, 'gw-id');
+    });
   } finally {
     Module._resolveFilename = original;
     delete require.cache[bucketsPath];
