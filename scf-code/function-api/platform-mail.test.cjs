@@ -58,9 +58,9 @@ function mailPayload(packageName, request) {
     callingConvention: 'scf-event',
     entrypoint: 'index.cjs',
     source: packageName === 'demox-auth'
-      ? `const { assumedBusinessCredentials } = require('./ses-credentials.cjs');
+      ? `const { assumedPlatformSesCredentials } = require('./ses-credentials.cjs');
 module.exports = async function () {
-  const ses = assumedBusinessCredentials();
+  const ses = assumedPlatformSesCredentials();
   return {
     secretId: ses && ses.secretId || null,
     token: ses && ses.token || null,

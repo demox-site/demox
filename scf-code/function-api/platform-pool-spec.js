@@ -132,7 +132,6 @@ const PLATFORM_POOL_SPEC = Object.freeze({
     'ssl:UploadCertificate、ssl:DescribeCertificate、ssl:DescribeCertificates',
     'scf:GetCustomDomain、scf:UpdateCustomDomain，资源限于自定义域名 api.demox.site',
     'dnspod:CreateRecord、dnspod:DeleteRecord，资源限于域名 demox.site（证书 DNS-01）',
-    'ses:SendEmail，资源限于 mail.demox.site；若 AUTH_EMAIL_FROM 仍是 noreply@mail.aigc.sx.cn，加上该发信身份',
     'ims:ImageModeration 可选。website 内容审核调用它，无权限时回退本地规则，不阻断发布'
   ]),
   switches: Object.freeze({

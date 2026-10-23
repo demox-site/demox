@@ -22,7 +22,7 @@ function runWithSesCredentials(credentials, fn) {
   }, fn);
 }
 
-function assumedBusinessCredentials() {
+function assumedPlatformSesCredentials() {
   const stored = store.getStore();
   if (!stored || !stored.secretId || !stored.secretKey) return null;
   return {
@@ -34,5 +34,5 @@ function assumedBusinessCredentials() {
 
 module.exports = {
   runWithSesCredentials,
-  assumedBusinessCredentials
+  assumedPlatformSesCredentials
 };

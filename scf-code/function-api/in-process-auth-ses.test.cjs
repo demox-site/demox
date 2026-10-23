@@ -14,7 +14,7 @@ const {
   readPlatformSesRoleArn,
   createPlatformSesCredentialProvider
 } = require('./platform-ses-credentials.js');
-const { assumedBusinessCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
+const { assumedPlatformSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
 
 const SES_ROLE_ARN = `qcs::cam::uin/100021031865:roleName/${PLATFORM_SES_ROLE_NAME}`;
 const ROLE_ENV = {
@@ -117,7 +117,7 @@ function harness({ sesAssume, logger }) {
       handlerCalls += 1;
       seen.push({
         path: event.path,
-        creds: assumedBusinessCredentials() || { secretId: '', secretKey: '', token: '' }
+        creds: assumedPlatformSesCredentials() || { secretId: '', secretKey: '', token: '' }
       });
       return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{"success":true}' };
     }

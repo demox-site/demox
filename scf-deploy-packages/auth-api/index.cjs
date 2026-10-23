@@ -1427,7 +1427,7 @@ function httpsJson(options, body) {
   });
 }
 
-const { assumedBusinessCredentials } = require('./ses-credentials.cjs');
+const { assumedPlatformSesCredentials } = require('./ses-credentials.cjs');
 const { assertPlatformSesSend } = require('./ses-allowlist.cjs');
 let sesClientFactory = null;
 
@@ -1476,7 +1476,7 @@ async function sendEmail(to, code, type) {
     return true;
   }
 
-  const assumed = assumedBusinessCredentials();
+  const assumed = assumedPlatformSesCredentials();
   const secretId = assumed && assumed.secretId;
   const secretKey = assumed && assumed.secretKey;
   const token = (assumed && assumed.token) || '';
