@@ -10,8 +10,9 @@ const { AsyncLocalStorage } = require('async_hooks');
  * 网关用自己的 demox-runtime-role 凭证（SCF 注入，不带会话策略）去 AssumeRole
  * 同一个角色，带上只含 COS / EO / DNS / IMS / CLS 的会话策略，把临时密钥放进
  * 当次平台池调用的环境变量。不落库，不写 DEMOX_BIZ_*，不改网关进程的环境变量。
- * 不含 ses。登录验证码走 demox-platform-ses（PLATFORM_SES_ROLE_ARN），不走这份策略。
- * 用户函数不 Assume 这个角色。
+ * 不含 ses。登录验证码和停用通知走 demox-platform-ses（PLATFORM_SES_ROLE_ARN），
+ * 临时密钥只进当次 AsyncLocalStorage，不写进 TENCENTCLOUD_*。
+ * 用户函数不 Assume 这个角色，也拿不到发信凭证。
  *
  * 证书 SSL 不走这条临时凭证：带会话策略的 token 调 SSL 会 invalid token。
  * cert-renew 和网关进程内的证书调用继续用角色凭证本身。

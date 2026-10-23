@@ -1712,11 +1712,17 @@ function providerFor(cfg) {
 }
 
 /**
- * 腾讯云 TC3-HMAC-SHA256。凭证来自当次请求的业务会话；没有会话时才读进程环境变量。
+ * 腾讯云 TC3-HMAC-SHA256。调用方显式传入 secretId/secretKey 时只用那一对（平台 SES），
+ * 不混入业务会话的 token。否则凭证来自当次请求的业务会话；没有会话时才读进程环境变量。
  * 不新 require shared 文件：functions push 只上传本文件，shared 来自已经在跑的 worker 包。
  */
 async function callTencentCloudApi(opts) {
-  const { secretId, secretKey, token } = buckets.tencentClientCredentials();
+  const explicit = typeof opts.secretId === 'string' && opts.secretId
+    && typeof opts.secretKey === 'string' && opts.secretKey;
+  const fromSession = explicit ? null : buckets.tencentClientCredentials();
+  const secretId = explicit ? opts.secretId : fromSession.secretId;
+  const secretKey = explicit ? opts.secretKey : fromSession.secretKey;
+  const token = explicit ? (opts.token || '') : (fromSession.token || '');
 
   if (!secretId || !secretKey) {
     throw new Error('缺少腾讯云 API 密钥');
@@ -1811,10 +1817,31 @@ function encodeSesBody(value) {
   return Buffer.from(String(value || ''), 'utf8').toString('base64');
 }
 
+function readPlatformSesCredentials() {
+  const als = globalThis[Symbol.for('demox.platformSes.als')];
+  if (!als || typeof als.getStore !== 'function') return null;
+  const stored = als.getStore();
+  if (!stored || !stored.secretId || !stored.secretKey) return null;
+  return {
+    secretId: String(stored.secretId),
+    secretKey: String(stored.secretKey),
+    token: stored.token ? String(stored.token) : ''
+  };
+}
+
 async function sendSesEmail({ to, subject, text, html }) {
+  const creds = readPlatformSesCredentials();
+  if (!creds) {
+    const error = new Error('平台发信角色未配置');
+    error.code = 'PLATFORM_SES_ROLE_MISSING';
+    throw error;
+  }
   const from = String(process.env.SES_FROM_EMAIL || 'Demox <noreply@mail.demox.site>').trim();
   const region = String(process.env.SES_REGION || 'ap-hongkong').trim() || 'ap-hongkong';
   return callTencentCloudApi({
+    secretId: creds.secretId,
+    secretKey: creds.secretKey,
+    token: creds.token,
     service: 'ses',
     host: 'ses.tencentcloudapi.com',
     version: '2020-10-02',
@@ -11384,6 +11411,7 @@ exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => 
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;
 exports._cookieDomainForTest = { cookieDomainScope, customDomainAuthCookieHeader };
+exports._sesMailForTest = { sendSesEmail, readPlatformSesCredentials };
 exports._galleryForTest = {
   isDemoxHttpsUrl,
   parseGalleryCardInput,

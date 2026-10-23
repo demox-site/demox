@@ -236,6 +236,85 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
   });
 });
 
+test('in-process disable notice assumes demox-platform-ses and does not overwrite TENCENTCLOUD_*', async () => {
+  const assumeCalls = [];
+  await withEnv(ROLE_ENV, async () => {
+    const app = harness({
+      logger: { warn() {}, error() {} },
+      sesAssume: async (request) => {
+        assumeCalls.push({
+          roleArn: request.roleArn,
+          secretId: request.secretId,
+          token: request.token
+        });
+        return assumedCredentials();
+      }
+    });
+    await publishSystem(app.service, { name: 'Website', slug: 'website', routes: ['/website'] });
+    const before = {
+      id: process.env.TENCENTCLOUD_SECRETID,
+      key: process.env.TENCENTCLOUD_SECRETKEY,
+      token: process.env.TENCENTCLOUD_SESSIONTOKEN
+    };
+    const disabled = await app.platform({
+      httpMethod: 'POST',
+      path: '/website/update-visibility',
+      headers: {},
+      body: { action: 'update_visibility', websiteId: 'STX0K1MD', visibility: 'disabled', disableReason: '违规内容需要下线处理' }
+    });
+    assert.equal(disabled.statusCode, 200);
+    assert.equal(assumeCalls.length, 1);
+    assert.equal(assumeCalls[0].roleArn, SES_ROLE_ARN);
+    assert.equal(assumeCalls[0].secretId, 'gw-id');
+    assert.equal(assumeCalls[0].token, 'gw-token');
+    assert.equal(assumeCalls[0].roleArn.includes('demox-runtime-role'), false);
+    assert.equal(app.seen.at(-1).creds.secretId, 'lin-ses-id');
+    assert.equal(app.seen.at(-1).creds.token, 'lin-ses-token');
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, before.id);
+    assert.equal(process.env.TENCENTCLOUD_SECRETKEY, before.key);
+    assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, before.token);
+    assert.equal(app.runtimeRoleAssumed(), 0);
+
+    const opened = await app.platform({
+      httpMethod: 'POST',
+      path: '/website/update-visibility',
+      headers: {},
+      body: { action: 'update_visibility', websiteId: 'STX0K1MD', visibility: 'public' }
+    });
+    assert.equal(opened.statusCode, 200);
+    assert.equal(assumeCalls.length, 1);
+    assert.equal(app.seen.at(-1).creds.secretId, 'gw-id');
+  });
+});
+
+test('in-process disable notice fails closed when PLATFORM_SES_ROLE_ARN is missing', async () => {
+  const assumeCalls = [];
+  await withEnv({ ...ROLE_ENV, PLATFORM_SES_ROLE_ARN: undefined }, async () => {
+    const app = harness({
+      logger: { warn() {}, error() {} },
+      sesAssume: async (request) => {
+        assumeCalls.push(request);
+        return assumedCredentials();
+      }
+    });
+    await publishSystem(app.service, { name: 'Website', slug: 'website', routes: ['/website'] });
+    const response = await app.platform({
+      httpMethod: 'POST',
+      path: '/website/update-visibility',
+      headers: {},
+      body: { action: 'update_visibility', visibility: 'disabled' }
+    });
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 500);
+    assert.equal(body.error, 'PLATFORM_SES_ROLE_MISSING');
+    assert.equal(body.message, '停用通知暂时无法发送');
+    assert.equal(assumeCalls.length, 0);
+    assert.equal(app.handlerCalls(), 0);
+    assert.equal(app.runtimeRoleAssumed(), 0);
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, 'gw-id');
+  });
+});
+
 test('missing platform SES role is a clean 5xx and does not call auth or demox-runtime-role', async () => {
   const assumeCalls = [];
   const logs = [];

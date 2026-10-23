@@ -3,12 +3,15 @@
 const { AsyncLocalStorage } = require('async_hooks');
 
 /**
- * 进程内 /auth/send-code 的 SES 凭证。
- * 网关 AssumeRole 到磷的 demox-platform-ses（环境变量 PLATFORM_SES_ROLE_ARN）之后，
- * 把临时密钥放进这里。不写 process.env，也不给 website、mcp 或用户函数。
- * 没有这份上下文时才读进程环境变量（平台池 / 独立 auth 进程）。
+ * 平台发信（验证码、停用通知）的 SES 临时密钥。
+ * 网关或平台池 AssumeRole 到磷的 demox-platform-ses（PLATFORM_SES_ROLE_ARN）之后，
+ * 放进 AsyncLocalStorage。不写 process.env，因此不会盖掉 TENCENTCLOUD_*。
+ * 同一进程里的 website 入口用 Symbol.for 读同一份存储，不要求能 require 到这个文件。
+ * 没有这份上下文时，发信必须失败，不能改用 TENCENTCLOUD_*（那可能是业务会话）。
  */
-const store = new AsyncLocalStorage();
+const ALS_KEY = Symbol.for('demox.platformSes.als');
+if (!globalThis[ALS_KEY]) globalThis[ALS_KEY] = new AsyncLocalStorage();
+const store = globalThis[ALS_KEY];
 
 function runWithSesCredentials(credentials, fn) {
   return store.run({

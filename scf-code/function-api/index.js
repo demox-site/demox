@@ -11,7 +11,12 @@ const { NodejsFunctionRuntime, createLocalNodeInvoker, createScfNodeInvoker, cre
 const { FunctionService } = require('./service.js');
 const { FunctionApiError, badRequest, unauthorized, isClientError, corsHeaders, typedErrorResponse } = require('./errors.js');
 const { runWithSesCredentials } = require('../../scf-deploy-packages/auth-api/ses-credentials.cjs');
-const { createPlatformSesCredentialProvider } = require('./platform-ses-credentials.js');
+const { FunctionRuntimeError } = require('./runtime-error.js');
+const {
+  createPlatformSesCredentialProvider,
+  isAuthSendCodeRequest,
+  isWebsiteDisableNoticeRequest
+} = require('./platform-ses-credentials.js');
 const {
   createBusinessCredentialProvider,
   inProcessBusinessCredentialMode,
@@ -309,6 +314,24 @@ function withDispatchHeader(response, dispatch) {
   return { ...response, headers };
 }
 
+function publishedMailKind(entry, event) {
+  const slug = systemFunctionSlug(entry);
+  const body = parseBody(event);
+  const request = {
+    method: String(event.httpMethod || event.requestContext?.http?.method || 'POST').toUpperCase(),
+    path: normalizePath(event.path || event.rawPath || event.requestContext?.http?.path || body.path || '/'),
+    body
+  };
+  if (slug === 'auth' && isAuthSendCodeRequest(request)) return 'auth';
+  if (slug === 'website' && isWebsiteDisableNoticeRequest(request)) return 'website';
+  return '';
+}
+
+function isPoolMailCredentialError(error) {
+  return error instanceof FunctionRuntimeError
+    && (error.code === 'PLATFORM_SES_ROLE_MISSING' || error.code === 'BUSINESS_ROLE_ASSUME_FAILED');
+}
+
 async function invokePublishedSystemFunction(service, entry, event, context, logger) {
   if (!service || typeof service.invokeBySlug !== 'function') {
     return { response: null, dispatch: 'in-process' };
@@ -326,6 +349,12 @@ async function invokePublishedSystemFunction(service, entry, event, context, log
       dispatch: null
     };
   } catch (error) {
+    const mailKind = publishedMailKind(entry, event);
+    if (mailKind && isPoolMailCredentialError(error)) {
+      const message = mailKind === 'website' ? '停用通知暂时无法发送' : '验证码暂时无法发送';
+      const clean = new FunctionApiError(message, error.code, 500);
+      return { response: errorResponse(clean, event), dispatch: null };
+    }
     if (isSoftPublishFallback(error)) {
       const code = fallbackToken(error);
       const fields = { code, slug, path: dispatchPath(event) };
@@ -389,11 +418,12 @@ function createPlatformHandler({
     return path === '/auth/send-code' || body.action === 'send_code';
   }
 
-  // 发验证码只签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
-  // 不 Assume 业务角色，不把临时密钥写进 process.env。角色没配或签发失败直接 5xx，
-  // 不回落到网关自己的 TENCENTCLOUD_*。
-  // 其他进程内 auth / website / mcp：BUSINESS_ROLE_ARN 合法且未切回 execution-role 时，
-  // AssumeRole 业务角色，会话凭证只放进这次请求的 AsyncLocalStorage。cert-renew 不进这里。
+  // 验证码和停用通知签发 demox-platform-ses（PLATFORM_SES_ROLE_ARN）。
+  // 临时密钥只进 AsyncLocalStorage，不写 process.env，不盖掉 TENCENTCLOUD_*。
+  // 角色没配或签发失败直接 5xx，不回落。验证码不 Assume 业务角色。
+  // 其他进程内 auth / website / mcp（含停用通知里的非发信调用）：
+  // BUSINESS_ROLE_ARN 合法且未切回 execution-role 时 AssumeRole 业务角色，
+  // 会话凭证只放进这次请求的 AsyncLocalStorage。cert-renew 不进这里。
   function safeCredentialCode(error, fallback) {
     const code = String(error?.code || fallback || '');
     return /^[A-Za-z0-9._:-]{1,64}$/.test(code) ? code : (fallback || 'BUSINESS_ROLE_ASSUME_FAILED');
@@ -435,7 +465,8 @@ function createPlatformHandler({
 
   async function dispatchInProcessSystem(entry, event, context, dispatch) {
     const runHandler = () => resolvedSystemHandler(event, context);
-    if (!isAuthSendCodeEvent(entry, event)) {
+    const kind = publishedMailKind(entry, event);
+    if (!kind) {
       const response = await runWithInProcessBusinessCredentials(entry, event, runHandler);
       return withDispatchHeader(response, dispatch);
     }
@@ -444,15 +475,16 @@ function createPlatformHandler({
       cloud = await sesCredentials.credentialsFor();
     } catch (error) {
       const code = safeCredentialCode(error, 'BUSINESS_ROLE_ASSUME_FAILED');
-      logger.error?.('进程内验证码凭证签发失败:', code);
-      const clean = new FunctionApiError('验证码暂时无法发送', code, 500);
+      logger.error?.('进程内发信凭证签发失败:', code);
+      const message = kind === 'website' ? '停用通知暂时无法发送' : '验证码暂时无法发送';
+      const clean = new FunctionApiError(message, code, 500);
       return withDispatchHeader(errorResponse(clean, event), dispatch);
     }
     const response = await runWithSesCredentials({
       secretId: cloud.TENCENTCLOUD_SECRETID,
       secretKey: cloud.TENCENTCLOUD_SECRETKEY,
       token: cloud.TENCENTCLOUD_SESSIONTOKEN || ''
-    }, runHandler);
+    }, () => runWithInProcessBusinessCredentials(entry, event, runHandler));
     return withDispatchHeader(response, dispatch);
   }
 
