@@ -70,10 +70,10 @@ const CONFIG = Object.freeze({
   cosAccelerateRaw: process.env.DEMOX_COS_ACCELERATE || '',
   cosPrefix: 'scf-deploy/ci/',
   publicBaseUrl: 'https://api.demox.site',
-  // 双账号发布（REQ-7 双发）：同一脚本分别对 磷（custom-domain：api.demox.site 走 SCF 自定义域名）
-  // 和 易点（http-trigger：EO 主源站直连函数 HTTP 触发器）各跑一遍。target 只用于日志/summary。
+  // 双账号发布（REQ-7 双发）：磷与易点入口均为 HTTP 触发器别名（production/develop）。
+  // api.demox.site 自定义域现挂在易点；磷侧该域已删。target 只用于日志/summary。
   target: process.env.DEMOX_TARGET || 'lin',
-  entryMode: process.env.DEMOX_ENTRY_MODE || 'custom-domain',
+  entryMode: process.env.DEMOX_ENTRY_MODE || 'http-trigger',
   // 只接受这两个账号的 APPID 作为部署桶后缀（磷 1307257815 / 易点 1490780430）。
   cosAppids: ['1307257815', '1490780430'],
   // =1 时 promote/rollback 不做 api.demox.site 公网复查（双发时先切的备源站账号用；复查放在主源站切完之后）。

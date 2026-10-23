@@ -49,8 +49,7 @@ push 到 master 且路径命中时，`scripts/ci/function-api-release.cjs` 自�
 
 ## 双账号发布（REQ-7 双发，2026-10-20）
 
-api.demox.site 走 EdgeOne 源站组：**易点**（UIN 100052992193，主源站 og-3wbc6x4y03bk，入口是 demox-function-api 的 HTTP 触发器）
-和 **磷**（UIN 100021031865，备源站 og-3wbc6yrrll1l，入口是 SCF 自定义域名）。之前 CI 只发 磷，主源站代码会漂移。
+公网 `api.demox.site` 现挂**易点** SCF 自定义域（DNS 旁路 EO 后仍落易点）；双发仍推两边的 `demox-function-api`：**易点**与**磷**入口模式均为 HTTP 触发器别名（`DEMOX_ENTRY_MODE=http-trigger`）。磷侧 `api.demox.site` 自定义域已删除，CI 不得再对磷 `GetCustomDomain`。之前 CI 只发磷时主源站代码会漂移。
 
 - 开关：仓库变量 `DEMOX_EK_ENABLED` 必须是 `true`。自动发布缺这个值就失败，不会只发磷。
 - 易点 变量（都不是密钥）：`DEMOX_EK_ROLE_ARN`（qcs::cam::uin/100052992193:roleName/demox-ci-deploy）、

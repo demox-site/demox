@@ -12,6 +12,7 @@ const FORBIDDEN = ['Invoke', 'GetFunction', 'UpdateFunctionConfiguration', 'Upda
 
 const endpoints = (q) => ['/', '/*', '/auth/*'].map((p) => ({ Namespace: 'demox', FunctionName: CONFIG.functionName, Qualifier: q, PathMatch: p }));
 const timers = (q) => [{ Type: 'timer', TriggerName: 'analytics-rollup-5m', Enable: 1, Qualifier: q }];
+const http = (q, name = 'h') => ({ Type: 'http', TriggerName: name, Qualifier: q, Enable: 1 });
 
 const DEV = 'https://develop.example.com';
 function fakeScf({ qualifier = 'production', prodVersion = '3', publishStatus = 'Active', aliasNames = ['production', 'develop'], descriptions = {}, aliasVersions = null } = {}) {
@@ -27,7 +28,8 @@ function fakeScf({ qualifier = 'production', prodVersion = '3', publishStatus = 
         for (let v = versions; v >= 1; v -= 1) list.push({ Version: String(v), Status: v > Number(prodVersion) ? publishStatus : 'Active', Description: descriptions[String(v)] || '' });
         return { Versions: list };
       }
-      case 'ListTriggers': return { Triggers: [...timers(qualifier), { Type: 'http', TriggerName: 'h', Qualifier: '$LATEST', Enable: 1 }] };
+      // 默认 http-trigger：production + develop 各一条；勿绑 $LATEST（否则前置检查拒绝）。
+      case 'ListTriggers': return { Triggers: [...timers(qualifier), http('production', 'prod-http'), http('develop', 'dev-http')] };
       case 'GetCustomDomain': return { EndpointsConfig: endpoints(qualifier) };
       case 'ListAliases': return { Aliases: aliases };
       case 'UpdateFunctionCode': return {};
@@ -83,7 +85,12 @@ const zip = () => { const p = path.join(os.tmpdir(), `t-${process.pid}.zip`); fs
 const quiet = () => {};
 
 test('preconditions refuse traffic on $LATEST and missing alias', () => {
-  const r = checkPreconditions({ fn: { Handler: 'index.main', Runtime: 'Nodejs18.15', Status: 'Active', Triggers: timers('$LATEST') }, domain: { EndpointsConfig: endpoints('$LATEST') }, aliases: [] });
+  const r = checkPreconditions({
+    fn: { Handler: 'index.main', Runtime: 'Nodejs18.15', Status: 'Active', Triggers: timers('$LATEST') },
+    domain: { EndpointsConfig: endpoints('$LATEST') },
+    aliases: [],
+    entryMode: 'custom-domain'
+  });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.includes('别名 production 不存在')));
   assert.ok(r.errors.some((e) => e.includes('入口不在别名')));
@@ -91,11 +98,21 @@ test('preconditions refuse traffic on $LATEST and missing alias', () => {
 });
 
 test('preconditions pass when domain and timers use the alias', () => {
-  const r = checkPreconditions({ fn: { Status: 'Active', Triggers: timers('production') }, domain: { EndpointsConfig: endpoints('production') },
-    aliases: [{ Name: 'production', FunctionVersion: '3' }, { Name: 'develop', FunctionVersion: '3' }], developBaseUrl: DEV });
+  const r = checkPreconditions({
+    fn: { Status: 'Active', Triggers: [...timers('production'), http('production'), http('develop', 'dev')] },
+    domain: { EndpointsConfig: endpoints('production') },
+    aliases: [{ Name: 'production', FunctionVersion: '3' }, { Name: 'develop', FunctionVersion: '3' }],
+    developBaseUrl: DEV,
+    entryMode: 'custom-domain'
+  });
   assert.equal(r.ok, true, r.errors.join('; '));
-  const noDev = checkPreconditions({ fn: { Status: 'Active', Triggers: timers('production') }, domain: { EndpointsConfig: endpoints('production') },
-    aliases: [{ Name: 'production', FunctionVersion: '3' }, { Name: 'develop', FunctionVersion: '3' }], developBaseUrl: 'https://api.demox.site/' });
+  const noDev = checkPreconditions({
+    fn: { Status: 'Active', Triggers: [...timers('production'), http('production'), http('develop', 'dev')] },
+    domain: { EndpointsConfig: endpoints('production') },
+    aliases: [{ Name: 'production', FunctionVersion: '3' }, { Name: 'develop', FunctionVersion: '3' }],
+    developBaseUrl: 'https://api.demox.site/',
+    entryMode: 'custom-domain'
+  });
   assert.ok(noDev.errors.some((e) => e.includes('不能是 production')));
   assert.equal(r.productionVersion, '3');
 });
