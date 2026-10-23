@@ -70,7 +70,7 @@ node scripts/deploy-function-api.mjs --unified --apply
 
 线上入口是命名空间 **`demox`** 里的 `demox-function-api`（路由器）和 `demox-user-nodejs`（用户 Node 运行时）。对外 API 只用 `https://api.demox.site`。
 
-不要更新、也不要删除旧的四支回滚函数：`demox-website-api`、`demox-auth-api`、`demox-mcp-api`、`demox-cert-renew`。它们的定时器应保持关闭。所有 tccli / SDK 调用必须带 `Namespace=demox`。腾讯云 Demox 专属资源必须打计费标签 **`codename=demox`**。共享 MySQL 不要改成 demox。完整清单见 [docs/tencent-cloud.md](docs/tencent-cloud.md)。
+不要更新、也不要删除旧的四支回滚函数：`demox-website-api`、`demox-auth-api`、`demox-mcp-api`、`demox-cert-renew`。它们的定时器应保持关闭。生产证书续期走独立函数 `demox-cert-job`（角色 `demox-cert-job-role`），见 [docs/cert-job.md](docs/cert-job.md)；网关上的 `monthly-renew` 应关闭。所有 tccli / SDK 调用必须带 `Namespace=demox`。腾讯云 Demox 专属资源必须打计费标签 **`codename=demox`**。共享 MySQL 不要改成 demox。完整清单见 [docs/tencent-cloud.md](docs/tencent-cloud.md)。
 
 ## 给 Agent 的发布提醒
 
