@@ -992,8 +992,12 @@ test('a GitHub grant lets the matching github_id access a private project site',
       return [{ path: 'sites/private/index.html', user_id: 'project-owner', project_id: 42, website_id: 'PRIVATE1', visibility: 'private' }];
     }
     if (sql.includes('FROM user_roles')) return [];
-    if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) return [];
     if (sql.includes('CREATE TABLE IF NOT EXISTS project_github_grants')) return { affectedRows: 0 };
+    // 热路径一次拉飞书+GitHub 身份；缺列时才拆成两条。
+    if (sql.includes('FROM users WHERE id') && sql.includes('github_id') && sql.includes('feishu_open_id')) {
+      return [{ github_id: '1', github_login: 'octocat', feishu_open_id: null }];
+    }
+    if (sql.includes('SELECT feishu_open_id') && sql.includes('FROM users WHERE id')) return [];
     if (sql.includes('SELECT github_id') && sql.includes('FROM users WHERE id')) {
       return [{ github_id: '1', github_login: 'octocat' }];
     }
@@ -1520,13 +1524,16 @@ test('project custom domain list and public resolve use root and subdomain route
         { id: 2, label: 'subsite', website_id: 10, website_public_id: 'SUBSITE1', website_name: 'Sub site' }
       ];
     }
-    if (sql.includes("CONCAT(r.label, '.', cd.hostname)")) {
-      return [siteResolveRow('SUBSITE1', 'sites/42/SUBSITE1/dist')];
-    }
-    if (sql.includes("AND r.label = ''") && sql.includes('cd.hostname = ?')) {
-      const host = params[params.length - 1];
-      if (host !== 'demox.aigc.sx.cn') return [];
-      return [siteResolveRow('SITEOK01', 'sites/42/SITEOK01/dist')];
+    // 公开解析把根域与 label.suffix 合成一条 SQL；按 host 参数回结果。
+    if (sql.includes('FROM custom_domains cd') && sql.includes('JOIN custom_domain_routes r')) {
+      const host = params.find((p) => String(p).includes('aigc.sx.cn')) || params[params.length - 1];
+      if (host === 'subsite.demox.aigc.sx.cn') {
+        return [siteResolveRow('SUBSITE1', 'sites/42/SUBSITE1/dist')];
+      }
+      if (host === 'demox.aigc.sx.cn') {
+        return [siteResolveRow('SITEOK01', 'sites/42/SITEOK01/dist')];
+      }
+      return [];
     }
     throw new Error(`Unexpected query: ${sql}`);
   };
@@ -2406,6 +2413,37 @@ function lenientSchemaQueries(sql) {
   if (sql.startsWith('ALTER TABLE') || sql.includes('CREATE TABLE IF NOT EXISTS')) return { affectedRows: 0 };
   return null;
 }
+
+test('resolve_subdomain happy path issues a single websites SELECT (no schema-fallback fan-out)', async () => {
+  const websiteSelects = [];
+  queryImpl = async (sql) => {
+    const schema = lenientSchemaQueries(sql);
+    if (schema) return schema;
+    if (sql.includes('FROM websites w')) {
+      websiteSelects.push(sql);
+      return [{
+        path: 'sites/u/ONEHIT/dist',
+        user_id: 'u',
+        project_id: null,
+        website_id: 'ONEHIT01',
+        visibility: 'public',
+        hide_watermark: 0,
+        origin_host: 'sites.demox.site',
+        seo_title: null,
+        seo_description: null,
+        og_image: null
+      }];
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const response = await request('resolve_subdomain', { subdomain: 'onehit', domain: 'demox.site' });
+  assert.equal(response.statusCode, 200);
+  const body = JSON.parse(response.body);
+  assert.equal(body.success, true);
+  assert.equal(body.websiteId, 'ONEHIT01');
+  assert.equal(websiteSelects.length, 1, `expected 1 websites SELECT, got ${websiteSelects.length}`);
+  assert.match(websiteSelects[0], /OR LOWER\(w\.website_id\) = \?/);
+});
 
 test('resolve_subdomain for a banned site is a real answer: success:true with visibility=disabled', async () => {
   queryImpl = async (sql) => {
