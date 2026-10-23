@@ -9,14 +9,21 @@ const { FunctionService } = require('./service.js');
 const { executeNodejsPayload, createScfNodeInvoker, resetNodeWorkerPool } = require('./runtime-nodejs.js');
 const {
   BUSINESS_ROLE_ARN,
+  BUSINESS_ROLE_ENV,
+  BUSINESS_CREDENTIALS_MODE_ENV,
+  BUSINESS_CREDENTIALS_LEGACY_MODE,
   BUSINESS_ROLE_SESSION_SECONDS,
   BUSINESS_SESSION_POLICY,
   assumeBusinessRole,
   buildAssumeRoleRequest,
   createBusinessCredentialProvider,
   credentialKind,
+  inProcessBusinessCredentialMode,
+  resolveBusinessRoleArn,
   roleCredentialEnv,
-  sessionPolicyAllowsSsl
+  runWithBusinessCredentials,
+  sessionPolicyAllowsSsl,
+  tencentClientCredentials
 } = require('./business-credentials.js');
 
 const PLATFORM_ID = 'EPX2UU43';
@@ -99,7 +106,7 @@ test('business session policy covers COS EO DNS SES CLS and not SSL', () => {
   assert.equal(BUSINESS_ROLE_SESSION_SECONDS, 900);
   assert.equal(BUSINESS_ROLE_ARN, 'qcs::cam::uin/100021031865:roleName/demox-runtime-role');
   const actions = BUSINESS_SESSION_POLICY.statement.flatMap((item) => item.action).join(' ');
-  for (const service of ['cos:', 'teo:', 'dnspod:', 'ses:SendEmail', 'cls:']) {
+  for (const service of ['cos:', 'teo:', 'dnspod:', 'ims:ImageModeration', 'ses:SendEmail', 'cls:']) {
     assert.equal(actions.includes(service), true, service);
   }
   assert.equal(actions.includes('scf:'), false);
@@ -476,6 +483,103 @@ test('the worker and the platform invoke payload receive the invocation credenti
       else process.env[key] = value;
     }
   }
+});
+
+test('role ARN is only the pinned demox-runtime-role and session mode does not read env without ALS', async () => {
+  const rejected = [
+    'qcs::cam::uin/100021031865:roleName/demox-runtime-b1',
+    'qcs::cam::uin/100021031865:roleName/demox-gateway-role',
+    'qcs::cam::uin/100021031865:roleName/demox-platform-ses',
+    'qcs::cam::uin/100021031866:roleName/demox-runtime-role',
+    'not-an-arn'
+  ];
+  assert.equal(BUSINESS_ROLE_ENV, 'BUSINESS_ROLE_ARN');
+  assert.equal(BUSINESS_CREDENTIALS_MODE_ENV, 'BUSINESS_CREDENTIALS_MODE');
+  assert.equal(BUSINESS_CREDENTIALS_LEGACY_MODE, 'execution-role');
+  assert.equal(inProcessBusinessCredentialMode({}), 'legacy');
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN }), 'session');
+  assert.equal(inProcessBusinessCredentialMode({
+    BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN,
+    BUSINESS_CREDENTIALS_MODE: 'execution-role'
+  }), 'legacy');
+  for (const arn of rejected) {
+    assert.equal(inProcessBusinessCredentialMode({ BUSINESS_ROLE_ARN: arn }), 'invalid');
+    assert.throws(
+      () => resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: arn }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+    );
+  }
+  assert.equal(inProcessBusinessCredentialMode({ BUSINESS_CREDENTIALS_MODE: 'session' }), 'missing');
+  assert.equal(resolveBusinessRoleArn({}), BUSINESS_ROLE_ARN);
+  assert.equal(resolveBusinessRoleArn({ BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN }), BUSINESS_ROLE_ARN);
+
+  const beforeId = process.env.TENCENTCLOUD_SECRETID;
+  const beforeToken = process.env.TENCENTCLOUD_SESSIONTOKEN;
+  const sessionEnv = { ...ROLE_ENV, BUSINESS_ROLE_ARN: BUSINESS_ROLE_ARN };
+  const assumeCalls = [];
+  const provider = createBusinessCredentialProvider({
+    env: sessionEnv,
+    assume: async (request) => {
+      assumeCalls.push(request);
+      return { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token', expiration: '2099-01-01T00:00:00Z' };
+    }
+  });
+  const issued = await provider.credentialsFor({
+    kind: 'business',
+    slug: 'website',
+    functionId: 'fn_web',
+    websiteId: PLATFORM_ID,
+    sourceEnv: sessionEnv
+  });
+  assert.equal(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
+  assert.equal(issued.TENCENTCLOUD_SECRETID, 'biz-id');
+  assert.equal(typeof issued.expiresAt, 'number');
+  assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
+  assert.equal(process.env.TENCENTCLOUD_SESSIONTOKEN, beforeToken);
+  const rejectedProvider = createBusinessCredentialProvider({
+    env: { ...ROLE_ENV, BUSINESS_ROLE_ARN: rejected[0] },
+    assume: async () => {
+      throw new Error('should not assume');
+    }
+  });
+  await assert.rejects(
+    rejectedProvider.credentialsFor({
+      kind: 'business',
+      slug: 'website',
+      functionId: 'fn_rejected',
+      websiteId: PLATFORM_ID,
+      sourceEnv: { ...ROLE_ENV, BUSINESS_ROLE_ARN: rejected[1] }
+    }),
+    (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+  );
+
+  let seen = null;
+  await runWithBusinessCredentials({ secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' }, () => {
+    seen = tencentClientCredentials(sessionEnv);
+    assert.equal(process.env.TENCENTCLOUD_SECRETID, beforeId);
+  });
+  assert.deepEqual(seen, { secretId: 'biz-id', secretKey: 'biz-key', token: 'biz-token' });
+  assert.throws(
+    () => tencentClientCredentials(sessionEnv),
+    (error) => error.code === 'BUSINESS_CREDENTIALS_MISSING'
+  );
+  for (const arn of rejected) {
+    assert.throws(
+      () => tencentClientCredentials({ ...ROLE_ENV, BUSINESS_ROLE_ARN: arn }),
+      (error) => error.code === 'BUSINESS_ROLE_ARN_INVALID'
+    );
+  }
+  assert.throws(
+    () => tencentClientCredentials({ ...ROLE_ENV, BUSINESS_CREDENTIALS_MODE: 'session' }),
+    (error) => error.code === 'BUSINESS_ROLE_ARN_MISSING'
+  );
+  assert.equal(tencentClientCredentials({
+    ...ROLE_ENV,
+    BUSINESS_ROLE_ARN: rejected[0],
+    BUSINESS_CREDENTIALS_MODE: 'execution-role'
+  }).secretId, 'gw-id');
+  assert.equal(tencentClientCredentials(ROLE_ENV).secretId, 'gw-id');
+  assert.equal(tencentClientCredentials().secretId, beforeId || '');
 });
 
 test('no token reached any console log in this suite', () => {

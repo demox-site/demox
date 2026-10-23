@@ -1686,7 +1686,7 @@ const LEGACY_BUCKET = {
   region: 'ap-chengdu',
   endpoint: null,
   originHost: 'sites.demox.site',
-  hasOwnCreds: false // 用 SCF 运行角色临时凭证
+  hasOwnCreds: false // 没有桶专属密钥：用业务会话，没有会话时才读环境变量
 };
 
 /**
@@ -1712,20 +1712,11 @@ function providerFor(cfg) {
 }
 
 /**
- * 腾讯云 TC3-HMAC-SHA256 请求。这里不用引入完整 SDK，避免拉大 SCF 包体积。
- * 生产由 SCF 运行角色注入 TENCENTCLOUD_*；COS_SECRET_* 仅兼容本地/旧配置。
- * @param {{ service:string, host:string, version:string, action:string, payload:object, region?:string }} opts
+ * 腾讯云 TC3-HMAC-SHA256。凭证来自当次请求的业务会话；没有会话时才读进程环境变量。
+ * 不新 require shared 文件：functions push 只上传本文件，shared 来自已经在跑的 worker 包。
  */
 async function callTencentCloudApi(opts) {
-  const secretId =
-    process.env.TENCENTCLOUD_SECRETID ||
-    process.env.TENCENT_SECRET_ID ||
-    process.env.COS_SECRET_ID;
-  const secretKey =
-    process.env.TENCENTCLOUD_SECRETKEY ||
-    process.env.TENCENT_SECRET_KEY ||
-    process.env.COS_SECRET_KEY;
-  const token = process.env.TENCENTCLOUD_SESSIONTOKEN || '';
+  const { secretId, secretKey, token } = buckets.tencentClientCredentials();
 
   if (!secretId || !secretKey) {
     throw new Error('缺少腾讯云 API 密钥');
@@ -11346,6 +11337,7 @@ function getCORSHeaders() {
   };
 }
 
+exports._tencentApiForTest = { callTencentCloudApi };
 exports.setCustomDomainRuntime = setCustomDomainRuntime;
 exports.buildOriginPurgeTargets = buildOriginPurgeTargets;
 exports.websiteStoragePrefix = websiteStoragePrefix;

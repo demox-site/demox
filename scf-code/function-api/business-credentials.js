@@ -2,23 +2,35 @@
 
 const crypto = require('crypto');
 const https = require('https');
+const { AsyncLocalStorage } = require('async_hooks');
 
 /**
  * 业务函数（auth / website / mcp）的云资源凭证。
  *
  * 网关用自己的 demox-runtime-role 凭证（SCF 注入，不带会话策略）去 AssumeRole
- * 同一个角色，带上只含 COS / EO / DNS / SES / CLS 的会话策略，把临时密钥放进
+ * 同一个角色，带上只含 COS / EO / DNS / IMS / SES / CLS 的会话策略，把临时密钥放进
  * 当次平台池调用的环境变量。不落库，不写 DEMOX_BIZ_*，不改网关进程的环境变量。
  *
  * 证书 SSL 不走这条临时凭证：带会话策略的 token 调 SSL 会 invalid token。
  * cert-renew 和网关进程内的证书调用继续用角色凭证本身。
  *
- * 前缀开关默认空。只有平台池派发才会进这里，进程内路径不签发。
- * 回滚：清空 FUNCTIONS_PLATFORM_RUNTIME_PREFIXES，流量回到进程内；
- * 已发布的函数版本用 deploy-function-api 的 rollback（磷 version=19，易点 version_ek=3）。
+ * 平台池派发一直走这里。进程内 auth / website / mcp（COS、EO、IMS，含 website 的
+ * analytics-rollup 定时器）在 BUSINESS_ROLE_ARN 正好是磷 demox-runtime-role、且
+ * BUSINESS_CREDENTIALS_MODE 不是 execution-role 时也走这里：临时密钥放进当次请求的
+ * AsyncLocalStorage，不写 process.env。没有这份会话就抛错，不读 TENCENTCLOUD_*。
+ * 只有显式回滚（BUSINESS_CREDENTIALS_MODE=execution-role）或完全没配 BUSINESS_ROLE_ARN
+ * 时，才读执行角色的 TENCENTCLOUD_*。ARN 已设置但不在白名单里抛 BUSINESS_ROLE_ARN_INVALID。
+ * 显式要求 session 却没配 ARN 时抛 BUSINESS_ROLE_ARN_MISSING。
+ * 发验证码的平台 SES 不走这条，见 platform-ses-credentials.js。
+ * cert-renew 继续用角色凭证本身，不带会话策略。
+ * 回滚进程内这条：BUSINESS_CREDENTIALS_MODE=execution-role，或把函数别名指回上一版本。
+ * 前缀开关 FUNCTIONS_PLATFORM_RUNTIME_PREFIXES 仍只决定平台池派发，默认空。
  */
 
 const BUSINESS_ROLE_ARN = 'qcs::cam::uin/100021031865:roleName/demox-runtime-role';
+const BUSINESS_ROLE_ENV = 'BUSINESS_ROLE_ARN';
+const BUSINESS_CREDENTIALS_MODE_ENV = 'BUSINESS_CREDENTIALS_MODE';
+const BUSINESS_CREDENTIALS_LEGACY_MODE = 'execution-role';
 const BUSINESS_ROLE_SESSION_SECONDS = 900;
 const BUSINESS_ROLE_REFRESH_SKEW_MS = 180_000;
 const STS_HOST = 'sts.tencentcloudapi.com';
@@ -77,6 +89,11 @@ const BUSINESS_SESSION_POLICY = deepFreeze({
         'dnspod:DeleteRecord'
       ],
       resource: ['qcs::dnspod::uin/100021031865:domain/98754074']
+    },
+    {
+      effect: 'allow',
+      action: ['ims:ImageModeration'],
+      resource: ['*']
     },
     {
       effect: 'allow',
@@ -156,6 +173,93 @@ function cloudEnvFromCredentials(credentials, kind) {
     throw error;
   }
   return output;
+}
+
+const businessCredentialStore = new AsyncLocalStorage();
+
+/**
+ * BUSINESS_ROLE_ARN 的取值。空串表示没配。
+ * 只接受磷 demox-runtime-role 这一条 ARN。gateway-role、platform-ses、别的 uin、
+ * 以及其他任何字符串都是 invalid，调用方失败关闭，不退回执行角色。
+ */
+function classifyBusinessRoleArn(env = process.env) {
+  const raw = String(env?.[BUSINESS_ROLE_ENV] || '').trim();
+  if (!raw) return { state: 'unset', arn: '' };
+  if (raw !== BUSINESS_ROLE_ARN) return { state: 'invalid', arn: '' };
+  return { state: 'ok', arn: BUSINESS_ROLE_ARN };
+}
+
+/**
+ * 进程内业务云调用（以及网关自己的函数代码桶 COS）用哪套凭证。
+ * - legacy：直接读执行角色注入的 TENCENTCLOUD_*。BUSINESS_ROLE_ARN 未设置时的默认，
+ *   也是 BUSINESS_CREDENTIALS_MODE=execution-role 的回滚。
+ * - session：AssumeRole。BUSINESS_ROLE_ARN 合法时的默认。
+ * - invalid：环境变量写了，但不是可用的业务角色 ARN。
+ * - missing：显式要求 session，但没有 ARN。
+ */
+function inProcessBusinessCredentialMode(env = process.env) {
+  const mode = String(env?.[BUSINESS_CREDENTIALS_MODE_ENV] || '').trim().toLowerCase();
+  if (mode === BUSINESS_CREDENTIALS_LEGACY_MODE) return 'legacy';
+  const classified = classifyBusinessRoleArn(env);
+  if (classified.state === 'ok') return 'session';
+  if (classified.state === 'invalid') return 'invalid';
+  if (mode === 'session') return 'missing';
+  return 'legacy';
+}
+
+/** 平台池和进程内 AssumeRole 用的角色。环境变量优先；没配时仍用内置的磷 demox-runtime-role。 */
+function resolveBusinessRoleArn(env = process.env) {
+  const classified = classifyBusinessRoleArn(env);
+  if (classified.state === 'invalid') {
+    const error = new Error('业务角色 ARN 无效');
+    error.code = 'BUSINESS_ROLE_ARN_INVALID';
+    throw error;
+  }
+  return classified.arn || BUSINESS_ROLE_ARN;
+}
+
+function runWithBusinessCredentials(credentials, fn) {
+  return businessCredentialStore.run({
+    secretId: credentials && credentials.secretId,
+    secretKey: credentials && credentials.secretKey,
+    token: (credentials && credentials.token) || ''
+  }, fn);
+}
+
+function currentBusinessCredentials() {
+  const stored = businessCredentialStore.getStore();
+  if (!stored || !stored.secretId || !stored.secretKey) return null;
+  return {
+    secretId: stored.secretId,
+    secretKey: stored.secretKey,
+    token: stored.token || ''
+  };
+}
+
+/**
+ * 业务 SDK（COS / TEO / IMS）读凭证的唯一入口。不写 process.env。
+ * 有请求级会话时用会话。
+ * 只有 legacy 才读环境变量：没配 BUSINESS_ROLE_ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role。
+ * 平台池 worker 在 legacy 下读到的是网关已经换好的会话；回滚后的网关进程读到的是执行角色。
+ * ARN 非法、显式 session 却没配 ARN、或 session 模式下没有会话，都抛错，不读 TENCENTCLOUD_*。
+ */
+function tencentClientCredentials(env = process.env) {
+  const assumed = currentBusinessCredentials();
+  if (assumed) return assumed;
+  const mode = inProcessBusinessCredentialMode(env);
+  if (mode === 'legacy') {
+    const source = env || {};
+    return {
+      secretId: source.TENCENTCLOUD_SECRETID || source.TENCENT_SECRET_ID || source.COS_SECRET_ID || '',
+      secretKey: source.TENCENTCLOUD_SECRETKEY || source.TENCENT_SECRET_KEY || source.COS_SECRET_KEY || '',
+      token: source.TENCENTCLOUD_SESSIONTOKEN || ''
+    };
+  }
+  const error = new Error('业务云凭证不可用');
+  if (mode === 'invalid') error.code = 'BUSINESS_ROLE_ARN_INVALID';
+  else if (mode === 'missing') error.code = 'BUSINESS_ROLE_ARN_MISSING';
+  else error.code = 'BUSINESS_CREDENTIALS_MISSING';
+  throw error;
 }
 
 function sign(key, message, encoding) {
@@ -290,6 +394,10 @@ async function assumeBusinessRole({
   };
 }
 
+function issuedBusinessCredentials(entry) {
+  return { ...entry.env, expiresAt: entry.expiresAt };
+}
+
 function createBusinessCredentialProvider({
   clock = () => Date.now(),
   logger = console,
@@ -308,16 +416,19 @@ function createBusinessCredentialProvider({
         secretId: source.TENCENTCLOUD_SECRETID,
         secretKey: source.TENCENTCLOUD_SECRETKEY,
         token: source.TENCENTCLOUD_SESSIONTOKEN || '',
-        roleArn: BUSINESS_ROLE_ARN,
+        roleArn: resolveBusinessRoleArn(request.sourceEnv || env),
         roleSessionName: roleSessionName(request.websiteId, request.functionId),
         durationSeconds: BUSINESS_ROLE_SESSION_SECONDS,
         policy: BUSINESS_SESSION_POLICY
       });
     } catch (error) {
-      logger?.warn?.(`[business-credentials] BUSINESS_ROLE_ASSUME_FAILED ${error.code || 'AssumeRoleFailed'}`);
+      const logged = /^[A-Za-z0-9._:-]{1,64}$/.test(String(error?.code || ''))
+        ? String(error.code)
+        : 'AssumeRoleFailed';
+      logger?.warn?.(`[business-credentials] BUSINESS_ROLE_ASSUME_FAILED ${logged}`);
       const wrapped = new Error('业务函数临时凭证签发失败');
-      wrapped.code = error.code === 'BUSINESS_ROLE_POLICY_REJECTED'
-        ? 'BUSINESS_ROLE_POLICY_REJECTED'
+      wrapped.code = error.code === 'BUSINESS_ROLE_POLICY_REJECTED' || error.code === 'BUSINESS_ROLE_ARN_INVALID'
+        ? error.code
         : 'BUSINESS_ROLE_ASSUME_FAILED';
       throw wrapped;
     }
@@ -356,11 +467,11 @@ function createBusinessCredentialProvider({
       const key = String(request.functionId || request.slug || 'business');
       const now = clock();
       const hit = cache.get(key);
-      if (hit && hit.expiresAt - now > refreshSkewMs) return { ...hit.env };
+      if (hit && hit.expiresAt - now > refreshSkewMs) return issuedBusinessCredentials(hit);
       if (inflight.has(key)) return inflight.get(key);
       const pending = assumeFor(request, source).then((entry) => {
         cache.set(key, entry);
-        return { ...entry.env };
+        return issuedBusinessCredentials(entry);
       });
       inflight.set(key, pending);
       try {
@@ -374,6 +485,9 @@ function createBusinessCredentialProvider({
 
 module.exports = {
   BUSINESS_ROLE_ARN,
+  BUSINESS_ROLE_ENV,
+  BUSINESS_CREDENTIALS_MODE_ENV,
+  BUSINESS_CREDENTIALS_LEGACY_MODE,
   BUSINESS_ROLE_SESSION_SECONDS,
   BUSINESS_ROLE_REFRESH_SKEW_MS,
   BUSINESS_SESSION_POLICY,
@@ -386,6 +500,12 @@ module.exports = {
   roleCredentialEnv,
   stripLongLivedBizKeys,
   cloudEnvFromCredentials,
+  classifyBusinessRoleArn,
+  inProcessBusinessCredentialMode,
+  resolveBusinessRoleArn,
+  runWithBusinessCredentials,
+  currentBusinessCredentials,
+  tencentClientCredentials,
   buildAssumeRoleRequest,
   assumeBusinessRole,
   createBusinessCredentialProvider
