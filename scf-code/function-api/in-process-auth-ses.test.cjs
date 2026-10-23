@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { InMemoryBundleStore } = require('./bundle-store.js');
 const { InMemoryFunctionRepository } = require('./repository.js');
 const { createFunctionHttpHandler, createPlatformHandler } = require('./index.js');
-const { BUSINESS_ROLE_ARN, createBusinessCredentialProvider } = require('./business-credentials.js');
+const { BUSINESS_ROLE_ARN, BUSINESS_SESSION_POLICY, createBusinessCredentialProvider } = require('./business-credentials.js');
 const {
   PLATFORM_SES_ROLE_ENV,
   PLATFORM_SES_ROLE_NAME,
@@ -186,6 +186,8 @@ test('in-process send-code assumes demox-platform-ses and not demox-runtime-role
     assert.equal(assumeCalls[0].roleArn.includes('demox-runtime-role'), false);
     assert.notEqual(assumeCalls[0].roleArn, BUSINESS_ROLE_ARN);
     assert.equal(assumeCalls[0].policy, PLATFORM_SES_SESSION_POLICY);
+    assert.notEqual(assumeCalls[0].policy, BUSINESS_SESSION_POLICY);
+    assert.equal(/ses:/i.test(JSON.stringify(BUSINESS_SESSION_POLICY)), false);
     assert.deepEqual(
       [...assumeCalls[0].policy.statement[0].action].sort(),
       ['ses:GetEmailIdentity', 'ses:GetEmailTemplate', 'ses:SendEmail']

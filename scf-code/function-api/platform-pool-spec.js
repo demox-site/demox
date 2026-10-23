@@ -36,7 +36,7 @@ const PLATFORM_POOL_SPEC = Object.freeze({
   camRole: Object.freeze({
     name: 'demox-platform-runtime-role',
     policyName: 'demox-platform-runtime-policy',
-    note: '只绑定到 demox-platform-nodejs，策略保持空。不要绑到 demox-user-nodejs。前缀打开后，auth / website / mcp 由网关 AssumeRole 到 demox-runtime-role，会话策略只含 COS、EO、DNS、IMS、SES、CLS，临时密钥只放进当次调用的环境变量。证书 SSL 继续用网关或 cert-renew 的角色凭证，不带会话策略，不交给业务函数。不建长期子用户，不写 DEMOX_BIZ_*。用户池 worker 不改。前缀开关默认空。BUSINESS_ROLE_ARN 正好是磷 demox-runtime-role 时，进程内 auth / website / mcp（含 analytics-rollup 定时器）的 COS、EO、IMS 也用这份会话凭证，没有会话就抛错。ARN 已设置但不在白名单，或显式 session 却没配 ARN，也抛错，不读 TENCENTCLOUD_*。只有没配 ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role，才读执行角色。平台 SES 与 cert-renew 不走这条。'
+    note: '只绑定到 demox-platform-nodejs，策略保持空。不要绑到 demox-user-nodejs。前缀打开后，auth / website / mcp 由网关 AssumeRole 到 demox-runtime-role，会话策略只含 COS、EO、DNS、IMS、CLS，不含 ses，临时密钥只放进当次调用的环境变量。发信走 demox-platform-ses，不走这份会话。证书 SSL 继续用网关或 cert-renew 的角色凭证，不带会话策略，不交给业务函数。不建长期子用户，不写 DEMOX_BIZ_*。用户池 worker 不改。前缀开关默认空。BUSINESS_ROLE_ARN 正好是磷 demox-runtime-role 时，进程内 auth / website / mcp（含 analytics-rollup 定时器）的 COS、EO、IMS 也用这份会话凭证，没有会话就抛错。ARN 已设置但不在白名单，或显式 session 却没配 ARN，也抛错，不读 TENCENTCLOUD_*。只有没配 ARN，或 BUSINESS_CREDENTIALS_MODE=execution-role，才读执行角色。平台 SES 与 cert-renew 不走这条。'
   }),
   gateway: Object.freeze({
     secretKeyEnv: 'PLATFORM_SECRETS_KEY',
@@ -140,7 +140,7 @@ const PLATFORM_POOL_SPEC = Object.freeze({
     prefixSwitchDefault: 'off',
     userPoolReceivesPlatformSecrets: false,
     deploy: false,
-    businessSessionPolicy: 'cos-eo-dns-ims-ses-cls',
+    businessSessionPolicy: 'cos-eo-dns-ims-cls',
     certificateCredentials: 'role-without-session-policy',
     longLivedBizKeys: false
   })
