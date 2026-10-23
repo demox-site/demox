@@ -230,7 +230,8 @@ test('real manifest is platform-only, bootstrapped, and has no account ids', () 
   assert.equal(Object.hasOwn(manifest, 'seed'), false);
   assert.equal(Object.hasOwn(manifest, 'seedNote'), false);
   assert.ok(manifest.functions.every((fn) => fn.layer === 'platform'));
-  assert.ok(manifest.functions.every((fn) => fn.runtimeVersion === '0.1.0'));
+  assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').runtimeVersion, '0.1.1');
+  assert.ok(manifest.functions.filter((fn) => fn.name !== 'demox-function-api').every((fn) => fn.runtimeVersion === '0.1.0'));
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-function-api').appVersion, '0.1.21');
   assert.equal(manifest.functions.find((fn) => fn.name === 'demox-user-nodejs').appVersion, '0.1.0');
   assert.ok(manifest.functions.every((fn) => !v.isPlaceholderVersion(fn.appVersion) && !v.isPlaceholderVersion(fn.runtimeVersion)));
@@ -305,7 +306,7 @@ test('PR check: code without an app bump warns once the manifest exists on base'
   assert.match(runtimeFile.warnings.join('\n'), /打包脚本变了/);
 
   const runtimeCfg = structuredClone(manifest);
-  runtimeCfg.functions[0].runtime = { ...runtimeCfg.functions[0].runtime, memoryMB: 1024 };
+  runtimeCfg.functions[0].runtime = { ...runtimeCfg.functions[0].runtime, memoryMB: 2048 };
   const cfg = v.evaluateChanges({ baseManifest: manifest, headManifest: runtimeCfg, changedFiles: [] });
   assert.equal(cfg.ok, false);
   assert.match(cfg.errors.join('\n'), /runtime/);
@@ -339,11 +340,11 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.deepEqual(api.runtime.environmentNames, [...api.runtime.environmentNames].sort());
   assert.deepEqual(api.runtime.triggers, ['http:api.demox.site', 'timer:analytics-rollup-5m', 'timer:monthly-renew']);
   assert.equal(api.runtime.entry, 'index.main');
-  assert.equal(api.runtime.memoryMB, 512);
+  assert.equal(api.runtime.memoryMB, 1024);
   assert.equal(api.runtime.timeoutSec, 300);
   assert.deepEqual(api.runtime.layers, []);
   assert.equal(api.appVersion, '0.1.21');
-  assert.equal(api.runtimeVersion, '0.1.0');
+  assert.equal(api.runtimeVersion, '0.1.1');
   const requests = v.asyncInvokeRequests(api);
   assert.deepEqual(requests.map((item) => item.payload.Qualifier), ['production', '$LATEST']);
   for (const request of requests) {
@@ -391,7 +392,7 @@ test('seed placeholder may correct environment names without a runtime bump', ()
   assert.match(namesOnly.warnings.join('\n'), /environmentNames/);
 
   const alsoMemory = structuredClone(head);
-  alsoMemory.functions.find((fn) => fn.name === 'demox-function-api').runtime.memoryMB = 1024;
+  alsoMemory.functions.find((fn) => fn.name === 'demox-function-api').runtime.memoryMB = 2048;
   const mixed = v.evaluateChanges({ baseManifest: base, headManifest: alsoMemory, changedFiles: [] });
   assert.equal(mixed.ok, false);
   assert.match(mixed.errors.join('\n'), /runtime/);
@@ -433,7 +434,7 @@ test('release log records versions, commit, sha256, approver, and time', () => {
 
 test('runtime-plan prints bootstrapped versions and placeholder still stops before credentials', () => {
   const plan = execFileSync(process.execPath, ['scripts/ci/scf-function-api.cjs', 'runtime-plan'], { cwd: ROOT, encoding: 'utf8' });
-  assert.match(plan, /demox-function-api app=0\.1\.21 runtime=0\.1\.0/);
+  assert.match(plan, /demox-function-api app=0\.1\.21 runtime=0\.1\.1/);
   assert.match(plan, /demox-user-nodejs app=0\.1\.0 runtime=0\.1\.0/);
   assert.match(plan, /不部署/);
   assert.match(plan, /Chief 批准/);

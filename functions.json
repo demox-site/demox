@@ -42,7 +42,7 @@
       "layer": "platform",
       "releaseVia": "deploy-develop",
       "appVersion": "0.1.21",
-      "runtimeVersion": "0.1.0",
+      "runtimeVersion": "0.1.1",
       "codePaths": [
         "scf-code/function-api",
         "scf-code/website-api",
@@ -57,7 +57,7 @@
       ],
       "runtime": {
         "entry": "index.main",
-        "memoryMB": 512,
+        "memoryMB": 1024,
         "timeoutSec": 300,
         "layers": [],
         "environmentNames": [

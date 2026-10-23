@@ -2587,10 +2587,12 @@ function proFeatureDenied(code, message) {
  * 查询站点列表并附带项目展示字段。项目表未迁移时自动降级为只查 websites。
  */
 async function queryWebsitesWithProjects({ userId = null, includeAll = false, projectId = null } = {}) {
-  const normalizedProjectId = await resolveProjectId(projectId);
+  const [normalizedProjectId, grantRoles] = await Promise.all([
+    resolveProjectId(projectId),
+    includeAll ? Promise.resolve(new Map()) : getGrantedProjectRoles(userId)
+  ]);
 
   try {
-    const grantRoles = includeAll ? new Map() : await getGrantedProjectRoles(userId);
     const grantedProjectIds = Array.from(grantRoles.keys());
     const params = [];
     const where = [];
@@ -4158,18 +4160,49 @@ async function refreshFeishuDirectoryIdentity(userId, identity) {
   }
 }
 
-async function getFeishuGrantedProjectRoles(userId) {
+async function loadUserExternalIdentities(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  try {
+    const rows = await query(
+      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key,
+              feishu_department_ids, feishu_directory_synced_at,
+              github_id, github_login
+       FROM users WHERE id = ? LIMIT 1`,
+      [uid]
+    );
+    return rows[0] || null;
+  } catch (e) {
+    // 旧库可能缺 github / 飞书列：分别兜底，避免整条授权链失败。
+    let feishu = null;
+    let github = null;
+    try {
+      const rows = await query(
+        `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key,
+                feishu_department_ids, feishu_directory_synced_at
+         FROM users WHERE id = ? LIMIT 1`,
+        [uid]
+      );
+      feishu = rows[0] || null;
+    } catch (_) { /* ignore */ }
+    try {
+      const rows = await query(
+        'SELECT github_id, github_login FROM users WHERE id = ? LIMIT 1',
+        [uid]
+      );
+      github = rows[0] || null;
+    } catch (_) { /* ignore */ }
+    if (!feishu && !github) return null;
+    return { ...(feishu || {}), ...(github || {}) };
+  }
+}
+
+async function getFeishuGrantedProjectRoles(userId, identityRow = null) {
   const uid = String(userId || '').trim();
   if (!uid) return new Map();
   const roles = new Map();
   try {
-    const identityRows = await query(
-      `SELECT feishu_open_id, feishu_union_id, feishu_tenant_key,
-              feishu_department_ids, feishu_directory_synced_at
-       FROM users WHERE id = ? LIMIT 1`,
-      [uid]
-    );
-    const row = identityRows[0];
+    const row = identityRow || (await loadUserExternalIdentities(uid));
     if (!row?.feishu_open_id) return roles;
     let identity = {
       openId: row.feishu_open_id,
@@ -4218,17 +4251,14 @@ async function getFeishuGrantedProjectRoles(userId) {
   return roles;
 }
 
-async function getGithubGrantedProjectRoles(userId) {
+async function getGithubGrantedProjectRoles(userId, identityRow = null) {
   const uid = String(userId || '').trim();
   const roles = new Map();
   if (!uid) return roles;
   try {
     await ensureGithubGrantsTable();
-    const identityRows = await query(
-      'SELECT github_id, github_login FROM users WHERE id = ? LIMIT 1',
-      [uid]
-    );
-    const githubId = String(identityRows[0]?.github_id || '').trim();
+    const row = identityRow || (await loadUserExternalIdentities(uid));
+    const githubId = String(row?.github_id || '').trim();
     if (!githubId) return roles;
     const grantRows = await query(
       `SELECT project_id, role
@@ -4248,9 +4278,10 @@ async function getGithubGrantedProjectRoles(userId) {
 
 async function getGrantedProjectRoles(userId) {
   const merged = new Map();
+  const identityRow = await loadUserExternalIdentities(userId);
   const [feishu, github] = await Promise.all([
-    getFeishuGrantedProjectRoles(userId),
-    getGithubGrantedProjectRoles(userId)
+    getFeishuGrantedProjectRoles(userId, identityRow),
+    getGithubGrantedProjectRoles(userId, identityRow)
   ]);
   feishu.forEach((role, key) => merged.set(key, role));
   github.forEach((role, key) => mergeGrantedRole(merged, { project_id: key, role }));
@@ -4419,13 +4450,17 @@ async function ensureProjectOwnerMembershipBestEffort(projectId, ownerId) {
 }
 
 async function getProjectWithUserRole(userId, projectId, { includeArchived = true } = {}) {
-  const pid = await resolveProjectId(projectId);
   const uid = String(userId || '').trim();
-  if (!pid || !uid) return null;
+  if (!uid) return null;
+  // resolveProjectId 与授权查询互不依赖：并行隐藏 key→id 往返。
+  const [pid, grantRoles] = await Promise.all([
+    resolveProjectId(projectId),
+    getGrantedProjectRoles(uid)
+  ]);
+  if (!pid) return null;
 
   const archivedSql = includeArchived ? '' : 'AND p.archived = 0';
   try {
-    const grantRoles = await getGrantedProjectRoles(uid);
     const grantRole = grantRoles.get(String(pid)) || null;
     const rows = await query(
       `SELECT p.*,
@@ -7403,6 +7438,18 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, {
             ${originExpr} AS origin_host
      FROM websites w ${bucketJoin}`;
 
+  // 默认域：subdomain 命中优先，否则用 website_id（如 epx2uu43.demox.site）——合并为一次往返。
+  if (withSubdomainDomain && domain === defaultDomain) {
+    return await query(
+      `${selectSql}
+       WHERE (w.subdomain = ? AND ${subdomainDomainExpr} = ?)
+          OR LOWER(w.website_id) = ?
+       ORDER BY (w.subdomain = ? AND ${subdomainDomainExpr} = ?) DESC
+       LIMIT 1`,
+      [label, domain, label, label, domain]
+    );
+  }
+
   let rows = [];
   if (withSubdomainDomain) {
     rows = await query(
@@ -7419,34 +7466,29 @@ async function queryResolvedSiteByLabel(label, domain = defaultDomain, {
 }
 
 /**
- * 解析公开 label 到站点元数据。按能力降级：
- * 1) storage_buckets + visibility
- * 2) visibility
- * 3) 旧表结构(public)
+ * 解析公开 label 到站点元数据。
+ * 生产 schema 已由 migrations 保证（ensureSeo / ensureWatermark 为空 stub），热路径只跑现代查询；
+ * 列缺失时再降到 websites 最小形状，避免旧的 8 模式串行试错。
  */
 async function resolveSiteMetadataByLabel(label, domain = defaultDomain) {
-  const baseModes = [
-    { withBucket: true, withVisibility: true, withSubdomainDomain: true },
-    { withBucket: false, withVisibility: true, withSubdomainDomain: true },
-    { withBucket: false, withVisibility: false, withSubdomainDomain: true },
-    { withBucket: false, withVisibility: false, withSubdomainDomain: false }
-  ];
-  const modes = [
-    ...baseModes.map((mode) => ({ ...mode, withWatermark: true })),
-    ...baseModes.map((mode) => ({ ...mode, withWatermark: false }))
-  ];
-  let lastErr = null;
-  for (const mode of modes) {
-    try {
-      const rows = await queryResolvedSiteByLabel(label, domain, mode);
-      return rows.length > 0 ? rows[0] : null;
-    } catch (e) {
-      lastErr = e;
-      console.warn('解析站点元数据失败，尝试降级:', e.message);
-    }
+  try {
+    const rows = await queryResolvedSiteByLabel(label, domain, {
+      withBucket: true,
+      withVisibility: true,
+      withSubdomainDomain: true,
+      withWatermark: true
+    });
+    return rows.length > 0 ? rows[0] : null;
+  } catch (e) {
+    console.warn('解析站点元数据失败，尝试最小降级:', e.message);
+    const rows = await queryResolvedSiteByLabel(label, domain, {
+      withBucket: false,
+      withVisibility: false,
+      withSubdomainDomain: false,
+      withWatermark: false
+    });
+    return rows.length > 0 ? rows[0] : null;
   }
-  if (lastErr) throw lastErr;
-  return null;
 }
 
 /**
@@ -7492,7 +7534,8 @@ async function resolveSiteMetadataByCustomHost(hostname) {
   await ensureCustomDomainsTable();
   await ensureSeoColumns();
   await ensureWatermarkColumn();
-  const selectSql =
+  // 根域精确匹配优先于 label.suffix；一次查询覆盖两种形状。
+  const rows = await query(
     `SELECT w.path AS path,
             w.user_id AS user_id,
             w.project_id AS project_id,
@@ -7509,20 +7552,14 @@ async function resolveSiteMetadataByCustomHost(hostname) {
      FROM custom_domains cd
      JOIN custom_domain_routes r ON r.custom_domain_id = cd.id
      JOIN websites w ON w.id = r.website_id AND w.project_id = cd.project_id
-     LEFT JOIN storage_buckets b ON b.id = w.bucket_id`;
-  const exact = await query(
-    `${selectSql} WHERE cd.hostname = ? AND r.label = '' LIMIT 1`,
-    [defaultDomain, VISIBILITY_PUBLIC, host]
-  );
-  if (exact[0]) return exact[0];
-  const suffix = await query(
-    `${selectSql}
-     WHERE r.label != '' AND ? = CONCAT(r.label, '.', cd.hostname)
-     ORDER BY CHAR_LENGTH(cd.hostname) DESC
+     LEFT JOIN storage_buckets b ON b.id = w.bucket_id
+     WHERE (cd.hostname = ? AND r.label = '')
+        OR (r.label != '' AND ? = CONCAT(r.label, '.', cd.hostname))
+     ORDER BY (cd.hostname = ? AND r.label = '') DESC, CHAR_LENGTH(cd.hostname) DESC
      LIMIT 1`,
-    [defaultDomain, VISIBILITY_PUBLIC, host]
+    [defaultDomain, VISIBILITY_PUBLIC, host, host, host]
   );
-  return suffix[0] || null;
+  return rows[0] || null;
 }
 
 function originIdVerdict(fields) {
