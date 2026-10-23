@@ -701,7 +701,9 @@ function createProductionHandler({ publicBaseUrl, logger = console, database, bu
 }
 
 function createMysqlDatabaseFromEnv() {
-  const adapter = loadWebsiteMysqlAdapter() || createDedicatedMysqlAdapter();
+  // 网关元数据库只用 GATEWAY_MYSQL_*（回落 MYSQL_*），不复用 website 业务库适配器，
+  // 避免配置了 BUSINESS_MYSQL_* 之后网关误连业务账号。
+  const adapter = createDedicatedMysqlAdapter();
   return {
     query: (sql, params = []) => adapter.query(sql, params),
     transaction: (callback) => adapter.transaction(callback),
@@ -720,16 +722,15 @@ function loadWebsiteMysqlAdapter() {
 }
 
 function createDedicatedMysqlAdapter() {
-  const required = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
-  const missing = required.filter((key) => !process.env[key]);
-  if (missing.length) throw new Error(`函数服务缺少数据库环境变量: ${missing.join(', ')}`);
+  const { gatewayMysqlConfig, assertMysqlConfig } = require('../website-api/shared/env-pairs.js');
+  const cfg = assertMysqlConfig(gatewayMysqlConfig(), '函数服务（网关）');
   const mysql = require('mysql2/promise');
   const pool = mysql.createPool({
-    host: process.env.MYSQL_HOST,
-    port: Number(process.env.MYSQL_PORT || 3306),
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_DATABASE,
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: cfg.database,
     timezone: 'Z',
     waitForConnections: true,
     connectionLimit: Number(process.env.FUNCTIONS_DB_POOL_SIZE || 5),

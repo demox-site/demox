@@ -7,9 +7,12 @@ const { loadSystemManifest } = require('./system-router.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+/**
+ * 允许从网关 process.env 种子到平台站点的非密钥配置。
+ * 飞书 / GitHub / ENCRYPTION_KEY / 统计 salt / MySQL / JWT / ACME 等业务密钥
+ * 不得再从网关拷贝；应写在各函数 Environment Secrets（PLATFORM_SECRETS_*）。
+ */
 const PLATFORM_ENV_KEYS = [
-  'ACME_EMAIL',
-  'ANALYTICS_HASH_SALT',
   'ANALYTICS_RAW_BUCKET_ID',
   'ANALYTICS_RAW_ENABLED',
   'AUTH_API_URL',
@@ -17,21 +20,39 @@ const PLATFORM_ENV_KEYS = [
   'CERT_SAN',
   'DNSPOD_DOMAIN',
   'EDGEONE_ZONE_ID',
+  'JWT_EXPIRES_IN',
+  'RENEW_THRESHOLD_DAYS',
+  'WEBSITE_API_URL'
+];
+
+/** 业务密钥：禁止经 platformSiteEnvFromProcess 从网关种子。 */
+const PLATFORM_BUSINESS_SECRET_KEYS = [
+  'ACME_EMAIL',
+  'ANALYTICS_HASH_SALT',
   'ENCRYPTION_KEY',
   'FEISHU_APP_ID',
   'FEISHU_APP_SECRET',
   'FEISHU_REDIRECT_URI',
   'GITHUB_CLIENT_ID',
   'GITHUB_CLIENT_SECRET',
-  'JWT_EXPIRES_IN',
   'JWT_SECRET',
+  'BUSINESS_JWT_SECRET',
+  'GATEWAY_JWT_SECRET',
   'MYSQL_DATABASE',
   'MYSQL_HOST',
   'MYSQL_PASSWORD',
   'MYSQL_PORT',
   'MYSQL_USER',
-  'RENEW_THRESHOLD_DAYS',
-  'WEBSITE_API_URL'
+  'BUSINESS_MYSQL_DATABASE',
+  'BUSINESS_MYSQL_HOST',
+  'BUSINESS_MYSQL_PASSWORD',
+  'BUSINESS_MYSQL_PORT',
+  'BUSINESS_MYSQL_USER',
+  'GATEWAY_MYSQL_DATABASE',
+  'GATEWAY_MYSQL_HOST',
+  'GATEWAY_MYSQL_PASSWORD',
+  'GATEWAY_MYSQL_PORT',
+  'GATEWAY_MYSQL_USER'
 ];
 
 const LIVE_CREDENTIAL_KEYS = [
@@ -108,8 +129,10 @@ function platformFunctionSpecs(entries = loadSystemManifest()) {
 }
 
 function platformSiteEnvFromProcess(env = process.env) {
+  const blocked = new Set(PLATFORM_BUSINESS_SECRET_KEYS);
   const output = {};
   for (const key of PLATFORM_ENV_KEYS) {
+    if (blocked.has(key)) continue;
     if (typeof env[key] === 'string' && env[key]) output[key] = env[key];
   }
   return output;
@@ -214,6 +237,7 @@ async function seedPlatformSiteFunctions({ service, ownerId, websiteId, logger =
 
 module.exports = {
   PLATFORM_ENV_KEYS,
+  PLATFORM_BUSINESS_SECRET_KEYS,
   LIVE_CREDENTIAL_KEYS,
   MODULE_BY_SLUG,
   systemFunctionSlug,
