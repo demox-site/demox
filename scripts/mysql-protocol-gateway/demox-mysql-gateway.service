@@ -1,0 +1,17 @@
+[Unit]
+Description=Demox MySQL protocol gateway (logical project tables)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/demox-mysql-gateway
+EnvironmentFile=/opt/demox-mysql-gateway/.env
+ExecStart=/opt/demox-mysql-gateway/venv/bin/python /opt/demox-mysql-gateway/server.py
+Restart=on-failure
+RestartSec=3
+# Do not grant ambient capabilities; bind 3306 as root.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,9 @@
 'use strict';
 
 // 一个项目对应一份表和行。表目录和全部行都在 Demox 现有的 MySQL 里，
-// 行表按 project_id 分开。这里不新建物理库，也不对外开放数据库端口。
+// 行表按 project_id 分开。这里不新建物理库。
+// 公网 MySQL 协议由 scripts/mysql-protocol-gateway 提供（db.demox.site:3306），
+// 鉴权同 project_db_credentials / HTTP Basic，不直连平台库账号。
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const TYPES = new Set(['text', 'number', 'boolean']);
