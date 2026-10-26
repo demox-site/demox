@@ -60,9 +60,10 @@ tccli scf GetFunction --FunctionName demox-function-api --Namespace demox --regi
 | CI | `resource-game-1307257815` 数据万象 |
 | SES | 发信域名 `mail.demox.site`（香港，DNS 四条验证记录已在，**尚未接入代码**）；当前生产实际用 `mail.aigc.sx.cn` 发信（`scf-deploy-packages/auth-api/index.cjs` 的 `sendEmail`，模板 137482） |
 | SSL | `*.demox.site` 泛域名证书；`api.demox.site` 所用证书 |
-| DNSPod | 域名 `demox.site` |
+| DNSPod | 域名 `demox.site`；`db` A → aigc（MySQL 协议网关，见下） |
 | CDN | 历史域名 `demox.aigc.sx.cn`、`*.demox.aigc.sx.cn` |
 | CAM | 角色 `demox-runtime-role` |
+| MySQL 协议网关 | 跑在 aigc CVM `ins-by6r2czu`（`119.91.123.2` / `10.0.100.10`），systemd `demox-mysql-gateway`，源码 `scripts/mysql-protocol-gateway/`；DNS `db.demox.site`；**不要**把租户指到 CDB WAN CLB |
 
 ## 不要整实例改标签
 
