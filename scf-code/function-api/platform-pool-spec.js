@@ -29,9 +29,13 @@ const PLATFORM_POOL_SPEC = Object.freeze({
     mysqlPortEnv: 'MYSQL_PORT',
     mysqlUserEnv: 'MYSQL_USER',
     mysqlDatabaseEnv: 'MYSQL_DATABASE',
+    gatewayMysqlPrefix: 'GATEWAY_MYSQL_',
+    businessMysqlPrefix: 'BUSINESS_MYSQL_',
+    gatewayJwtEnv: 'GATEWAY_JWT_SECRET',
+    businessJwtEnv: 'BUSINESS_JWT_SECRET',
     yidianP1: 'public-ip-allowlist',
     plannedPeeringCidr: '10.1.0.0/16',
-    note: '易点 P1 经公网 IP 白名单访问 MySQL，主机只读 MYSQL_HOST。plannedPeeringCidr 不是拨号地址，代码不会连接它。对等建立之后由基础设施负责人填写 vpcId 和 subnetId。用户池的网络配置不动。'
+    note: '网关读 GATEWAY_MYSQL_*（回落 MYSQL_*）；业务函数读 BUSINESS_MYSQL_*（回落 MYSQL_*）。JWT 同理 GATEWAY_JWT_SECRET / BUSINESS_JWT_SECRET，回落 JWT_SECRET。易点 P1 经公网 IP 白名单访问 MySQL。plannedPeeringCidr 不是拨号地址。对等建立之后由基础设施负责人填写 vpcId 和 subnetId。用户池的网络配置不动。'
   }),
   camRole: Object.freeze({
     name: 'demox-platform-runtime-role',
