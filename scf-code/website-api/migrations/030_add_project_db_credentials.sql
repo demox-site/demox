@@ -1,5 +1,5 @@
--- 项目数据库的连接密码。主机、端口和用户名不落在这张表里：
--- 主机是 db.demox.site，端口是 3306，用户名是项目对外 ID。
+-- 项目数据库的 HTTP Basic 密码（不是公网 MySQL 协议账号）。
+-- 用户名是项目对外 ID；公网不开放 db.demox.site:3306。
 -- 密码只存密文。可重复执行。
 
 CREATE TABLE IF NOT EXISTS project_db_credentials (

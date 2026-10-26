@@ -66,17 +66,17 @@ const texts = {
     cancel: "取消",
     connect: "连接",
     connectTitle: "连接",
-    connectHint: "用主机、端口、用户名和密码连接，或者用 API。",
-    tabDirect: "主机",
-    tabApi: "API",
+    connectHint: "用 HTTPS API 读写逻辑表。公网不提供 MySQL 协议端口。",
+    tabDirect: "Basic",
+    tabApi: "Bearer",
     host: "主机",
     port: "端口",
     username: "用户名",
     password: "密码",
     showPassword: "显示密码",
     hidePassword: "隐藏密码",
-    directHint: "用这四项连数据库。用户名是项目 ID，密码只属于这个项目。",
-    apiHint: "也可以用访问令牌调 API。令牌在访问令牌页创建，放在 Authorization: Bearer 里。",
+    directHint: "用户名和密码用于调 API 时的 Authorization: Basic（不是 mysql 客户端）。用户名是项目 ID，密码只属于这个项目。db.demox.site:3306 公网不可连。",
+    apiHint: "用访问令牌调 API。令牌在访问令牌页创建，放在 Authorization: Bearer 里。也可用 demox db。",
     copyValue: "复制",
     copied: "已复制",
     passwordLoading: "正在读取密码",
@@ -136,17 +136,17 @@ const texts = {
     cancel: "Cancel",
     connect: "Connect",
     connectTitle: "Connect",
-    connectHint: "Connect with host, port, username, and password, or use the API.",
-    tabDirect: "Host",
-    tabApi: "API",
+    connectHint: "Read and write logical tables over the HTTPS API. MySQL wire protocol is not open on the public internet.",
+    tabDirect: "Basic",
+    tabApi: "Bearer",
     host: "Host",
     port: "Port",
     username: "Username",
     password: "Password",
     showPassword: "Show password",
     hidePassword: "Hide password",
-    directHint: "Connect to the database with these four values. The username is the project ID, and the password belongs to this project.",
-    apiHint: "You can also call the API with an access token. Create it on the Access Tokens page and send Authorization: Bearer.",
+    directHint: "Username and password are for Authorization: Basic on the API (not a mysql client). The username is the project ID; the password belongs to this project. db.demox.site:3306 is not reachable from the public internet.",
+    apiHint: "Call the API with an access token from the Access Tokens page (Authorization: Bearer). You can also use demox db.",
     copyValue: "Copy",
     copied: "Copied",
     passwordLoading: "Loading password",
@@ -155,16 +155,17 @@ const texts = {
   }
 } as const;
 
-const DB_HOST = "db.demox.site";
-const DB_PORT = "3306";
-
 function apiBase() {
   return config.websiteApiUrl.replace(/\/+$/, "");
 }
 
 function directSnippet(username: string, password: string) {
   const secret = password || "PASSWORD";
-  return `mysql -h ${DB_HOST} -P ${DB_PORT} -u '${username}' -p'${secret}'`;
+  const base = apiBase();
+  return `curl -X POST '${base}/website/list-project-rows' \\
+  -u '${username}:${secret}' \\
+  -H 'Content-Type: application/json' \\
+  --data '{"action":"list_project_rows","projectId":"${username}","table":"notes","limit":50}'`;
 }
 
 function apiSnippet(username: string) {
@@ -205,8 +206,7 @@ function displayValue(value: string | number | boolean | null | undefined, yes: 
 function DatabaseConnectGuide({ projectId }: { projectId: string }) {
   const { copy } = useDatabaseCopy();
   const { toast } = useToast();
-  const target = { host: DB_HOST, port: DB_PORT };
-  const [mode, setMode] = useState<"direct" | "api">("direct");
+  const [mode, setMode] = useState<"direct" | "api">("api");
   const [username, setUsername] = useState(projectId);
   const [password, setPassword] = useState("");
   const [passwordNote, setPasswordNote] = useState(copy.passwordLoading);
@@ -245,8 +245,6 @@ function DatabaseConnectGuide({ projectId }: { projectId: string }) {
     toast({ title: copy.copied });
   };
   const fields = [
-    { label: copy.host, value: target.host },
-    { label: copy.port, value: target.port },
     { label: copy.username, value: username },
     { label: copy.password, value: password, secret: true }
   ];
