@@ -42,7 +42,7 @@ const CONFIG = {
   dnspodDomain: process.env.DNSPOD_DOMAIN || 'demox.site',
   zoneId: process.env.EDGEONE_ZONE_ID || process.env.TEO_ZONE_ID || 'zone-3kplfkbflnd6',
   region: process.env.SCF_REGION || 'ap-guangzhou',
-  scfCustomDomain: process.env.SCF_CUSTOM_DOMAIN || 'api.demox.site',
+  scfCustomDomain: resolveScfCustomDomain(process.env.DEMOX_API_CUSTOM_DOMAIN || process.env.API_CUSTOM_DOMAIN || process.env.SCF_CUSTOM_DOMAIN),
   dnsPropagationMs: parseInteger(process.env.DNS_PROPAGATION_MS, 25_000),
   dnsRetryPropagationMs: parseInteger(process.env.DNS_RETRY_PROPAGATION_MS, 60_000),
   reuseWithinDays: parseInteger(process.env.CERT_REUSE_WITHIN_DAYS, 7),
@@ -98,6 +98,24 @@ function redactSecrets(text) {
   return String(text ?? '')
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[redacted-private-key]')
     .replace(/\b(Authorization|X-TC-Token|SessionToken|TENCENTCLOUD_SESSIONTOKEN)\b\s*[:=][^\n]*/gi, '$1=[redacted]');
+}
+
+
+function isScfDomainMissingError(error) {
+  const text = String(error?.message || error || '');
+  return /Domain\.UnExist/i.test(text)
+    || /ResourceNotFound\.Domain/i.test(text)
+    || /该域名未找到/.test(text)
+    || /自定义域名不存在/.test(text)
+    || /domain.*(not found|does not exist)/i.test(text);
+}
+
+function resolveScfCustomDomain(raw) {
+  if (raw === undefined || raw === null) return 'api.demox.site';
+  const value = String(raw).trim();
+  if (!value) return '';
+  if (['off', 'none', '-', 'false', '0'].includes(value.toLowerCase())) return '';
+  return value;
 }
 
 function formatRenewalAlert(error) {
@@ -416,7 +434,29 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
 
   async function readApiTarget(now, { force = false } = {}) {
     if (!config.scfCustomDomain) return null;
-    const domain = await apis.scf('GetCustomDomain', { Domain: config.scfCustomDomain });
+    let domain;
+    try {
+      domain = await apis.scf('GetCustomDomain', { Domain: config.scfCustomDomain });
+    } catch (error) {
+      if (isScfDomainMissingError(error)) {
+        logger.warn?.(redactSecrets(
+          `cert-renew api domain missing; skip SCF bind (no ALERT) host=${config.scfCustomDomain} err=${error.message}`
+        ));
+        return {
+          kind: 'scf',
+          role: 'api',
+          host: config.scfCustomDomain,
+          present: false,
+          writable: true,
+          upload: false,
+          days: null,
+          certId: null,
+          domain: null,
+          due: false
+        };
+      }
+      throw error;
+    }
     const certId = domain.CertConfig?.CertificateId || null;
     let days = null;
     if (certId) {
@@ -716,7 +756,19 @@ function createRenewService({ config: configInput = CONFIG, apis = createApis(),
       error.step = 'bind-scf';
       throw error;
     }
-    const domain = await apis.scf('GetCustomDomain', { Domain: domainName });
+    let domain;
+    try {
+      domain = await apis.scf('GetCustomDomain', { Domain: domainName });
+    } catch (error) {
+      if (isScfDomainMissingError(error)) {
+        logger.warn?.(redactSecrets(
+          `cert-renew api domain missing on bind; skip UpdateCustomDomain host=${domainName} err=${error.message}`
+        ));
+        if (!required) return { updated: false, reason: 'domain_missing' };
+        throw apiNotUpdated(`SCF 自定义域名 ${domainName} 在本账号不存在（Domain.UnExist），无法绑定`);
+      }
+      throw error;
+    }
     const current = domain.CertConfig?.CertificateId || null;
     if (current === certId) return { updated: false, reason: 'already_bound', certId };
     const endpoints = mapScfEndpoints(domain);
@@ -887,6 +939,8 @@ exports.__private = {
   isRetryableIssuanceError,
   formatRenewalAlert,
   redactSecrets,
+  isScfDomainMissingError,
+  resolveScfCustomDomain,
   parseCloudTime,
   daysUntil,
   publicCertView,

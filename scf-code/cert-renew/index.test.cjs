@@ -1262,3 +1262,108 @@ test('challenge cleanup failure does not hide a successful issuance flow', async
   assert.equal(warnings.length, 1);
   assert.match(warnings[0][1], /temporary DNS failure/);
 });
+
+
+test('isScfDomainMissingError matches Domain.UnExist variants', () => {
+  assert.equal(__private.isScfDomainMissingError(new Error('Domain.UnExist: 该域名未找到')), true);
+  assert.equal(__private.isScfDomainMissingError(new Error('ResourceNotFound.Domain: missing')), true);
+  assert.equal(__private.isScfDomainMissingError(new Error('自定义域名不存在')), true);
+  assert.equal(__private.isScfDomainMissingError(new Error('FailedOperation: boom')), false);
+});
+
+test('resolveScfCustomDomain treats off/empty as disabled and defaults when unset', () => {
+  assert.equal(__private.resolveScfCustomDomain(undefined), 'api.demox.site');
+  assert.equal(__private.resolveScfCustomDomain(null), 'api.demox.site');
+  assert.equal(__private.resolveScfCustomDomain(''), '');
+  assert.equal(__private.resolveScfCustomDomain('off'), '');
+  assert.equal(__private.resolveScfCustomDomain('NONE'), '');
+  assert.equal(__private.resolveScfCustomDomain('api.other.site'), 'api.other.site');
+});
+
+test('Domain.UnExist on GetCustomDomain skips SCF without ALERT and keeps EdgeOne not-due path', async () => {
+  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  const warnings = [];
+  const calls = [];
+  const service = __private.createRenewService({
+    config: config(),
+    apis: {
+      teo: async (action) => {
+        calls.push(['teo', action]);
+        return {
+          AccelerationDomains: [{
+            DomainName: '*.demox.site',
+            Certificate: { List: [{ Type: 'upload', CertId: 'cert-old', ExpireTime: future }] }
+          }]
+        };
+      },
+      scf: async (action) => {
+        calls.push(['scf', action]);
+        if (action === 'GetCustomDomain') throw new Error('Domain.UnExist: 该域名未找到');
+        throw new Error(`unexpected scf ${action}`);
+      },
+      ssl: async () => { throw new Error('should not upload'); },
+      dnspod: async () => { throw new Error('should not write dns'); }
+    },
+    logger: { log() {}, warn: (...args) => warnings.push(args.join(' ')) }
+  });
+  const result = await service.renew();
+  assert.equal(result.renewed, false);
+  assert.equal(result.reason, 'not_due');
+  const api = result.targets.find((target) => target.role === 'api');
+  assert.equal(api.present, false);
+  assert.equal(api.due, false);
+  assert.equal(calls.filter((item) => item[0] === 'scf' && item[1] === 'UpdateCustomDomain').length, 0);
+  assert.ok(warnings.some((line) => /api domain missing/.test(line) && /Domain\.UnExist/.test(line)));
+  assert.ok(!warnings.some((line) => /^ALERT /.test(line)));
+});
+
+test('Domain.UnExist does not ALERT through runRenewal', async () => {
+  const future = new Date(Date.now() + 60 * 86_400_000).toISOString();
+  const logged = [];
+  const result = await __private.runRenewal({}, {
+    config: config(),
+    apis: {
+      teo: async () => ({
+        AccelerationDomains: [{
+          DomainName: '*.demox.site',
+          Certificate: { List: [{ Type: 'upload', CertId: 'cert-old', ExpireTime: future }] }
+        }]
+      }),
+      scf: async (action) => {
+        if (action === 'GetCustomDomain') throw new Error('Domain.UnExist: 该域名未找到');
+        throw new Error(`unexpected scf ${action}`);
+      },
+      ssl: async () => { throw new Error('should not upload'); },
+      dnspod: async () => { throw new Error('should not write dns'); }
+    },
+    logger: {
+      log: (...a) => logged.push(a.join(' ')),
+      error: (...a) => logged.push(a.join(' ')),
+      warn: (...a) => logged.push(a.join(' '))
+    }
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.renewed, false);
+  assert.ok(!logged.some((line) => /ALERT cert-renew failed/.test(line)));
+  assert.ok(logged.some((line) => /api domain missing/.test(line)));
+});
+
+test('bindToScf Domain.UnExist returns domain_missing when not required', async () => {
+  const warnings = [];
+  const service = __private.createRenewService({
+    config: config(),
+    apis: {
+      scf: async (action) => {
+        if (action === 'GetCustomDomain') throw new Error('Domain.UnExist: gone');
+        throw new Error(`unexpected ${action}`);
+      },
+      teo: async () => ({}),
+      ssl: async () => ({}),
+      dnspod: async () => ({})
+    },
+    logger: { log() {}, warn: (...args) => warnings.push(args.join(' ')) }
+  });
+  const result = await service.bindToScf('cert-x', { required: false });
+  assert.deepEqual(result, { updated: false, reason: 'domain_missing' });
+  assert.ok(warnings.some((line) => /api domain missing on bind/.test(line)));
+});
