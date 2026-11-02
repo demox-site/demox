@@ -1129,8 +1129,9 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   // 有签名槽时用白名单 Headers（不含 Host），方法仍是 wwwDocumentMethod。
   // 没有签名槽时 www 用 wwwUnsignedDocumentInit：显式 GET/HEAD，不带 body。
   // 用户站点（hardened）保持 #49 的 originFetch(..., req)，不在这里改方法。
-  // 主文档的 range / if-* 只在签得出令牌时带上。SPA 的 index.html 不带这两类头。
-  // 都不按 Host 免裁决。
+  // 主文档的 range / if-*：有令牌时由 signedWwwHeaders 带上；没有令牌时
+  // wwwUnsignedDocumentInit 的白名单同样带上。SPA 的 index.html 和 404.html
+  // 不带这两类头（无令牌时那两次只写 method: GET）。都不按 Host 免裁决。
   const pageUrl = buildOriginUrl(req, originPath, u.search, originHost);
   const signedPage = !hardened ? await signedWwwInit(req, pageUrl, undefined, true) : null;
   let resp;

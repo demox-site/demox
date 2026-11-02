@@ -7,12 +7,19 @@
 //   node scripts/edge/preprod-diff.cjs --calibrate --baseline /tmp/demox-p0-baseline.json
 //   node scripts/edge/preprod-diff.cjs
 //
-// The router under test never opens a socket to *.demox.site. Re-entry goes back
-// into this process. The final origin hop is the COS website host derived from
-// the bucket config (site-N → the Guangzhou bucket in the 2026-10-10 incident;
-// sites.demox.site → LEGACY_BUCKET resource-game / ap-chengdu). Bucket 1's public
-// website endpoint answers AccessDenied; those bytes are a pass-through snapshot
-// captured once as a public client request, not a router subrequest.
+// Router subrequests addressed to *.demox.site re-enter this process. They do not
+// open a socket to the live EdgeOne edge. The final origin hop is the COS website
+// host derived from the bucket config (site-N → the Guangzhou bucket in the
+// 2026-10-10 incident; sites.demox.site → LEGACY_BUCKET resource-game / ap-chengdu).
+// Bucket 1's public website endpoint answers AccessDenied, so that hop uses a
+// snapshot instead of COS.
+//
+// --self-test never dials the network. --calibrate (when it captures a baseline)
+// and the public real-origin diff do send read-only client requests to the
+// allowlisted *.demox.site hosts: GET/HEAD with no body, and POST/PUT/OPTIONS
+// with an empty body. Those are the baseline and the bucket-1 object snapshots,
+// not router subrequests. --calibrate --baseline reuses the saved file and only
+// dials *.demox.site again if a snapshot for a discovered asset is missing.
 //
 // Signing keys are read from the environment and never printed.
 // DEMOX_BANNED_PATH is optional. Rows that need it are skipped when it is unset.
@@ -56,8 +63,35 @@ const NETWORK_ALLOW = new Set([
   SITE3_COS
 ]);
 
-const MAX_REQUESTS = Number(process.env.DEMOX_PREPROD_MAX_REQUESTS || 240);
-const GAP_MS = Number(process.env.DEMOX_PREPROD_GAP_MS || 80);
+function resolvePreprodLimits(env) {
+  const source = env || {};
+  const capGiven = source.DEMOX_PREPROD_MAX_REQUESTS;
+  const gapGiven = source.DEMOX_PREPROD_GAP_MS;
+  let cap = capGiven == null || String(capGiven).trim() === '' ? 240 : Number(capGiven);
+  let gap = gapGiven == null || String(gapGiven).trim() === '' ? 80 : Number(gapGiven);
+  if (!Number.isFinite(cap)) cap = 240;
+  if (!Number.isFinite(gap)) gap = 80;
+  const capEffective = Math.min(cap, 300);
+  const gapEffective = Math.max(gap, 50);
+  return {
+    cap: capEffective,
+    gap: gapEffective,
+    requestedCap: cap,
+    requestedGap: gap,
+    clamped: capEffective !== cap || gapEffective !== gap
+  };
+}
+
+const PREPROD_LIMITS = resolvePreprodLimits(process.env);
+const MAX_REQUESTS = PREPROD_LIMITS.cap;
+const GAP_MS = PREPROD_LIMITS.gap;
+if (PREPROD_LIMITS.clamped) {
+  console.error(
+    'preprod-diff limits clamped: DEMOX_PREPROD_MAX_REQUESTS=' + MAX_REQUESTS +
+    ' (requested ' + PREPROD_LIMITS.requestedCap + ', cap <= 300); DEMOX_PREPROD_GAP_MS=' + GAP_MS +
+    ' (requested ' + PREPROD_LIMITS.requestedGap + ', interval >= 50)'
+  );
+}
 
 let netCount = 0;
 let lastNetAt = 0;
@@ -1115,6 +1149,7 @@ module.exports = {
   formatTable,
   createHandle,
   openNetwork,
+  resolvePreprodLimits,
   outboundMethod,
   isEoHost,
   mapCos,

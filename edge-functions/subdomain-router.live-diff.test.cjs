@@ -9,7 +9,8 @@ const {
   loadNextSource,
   runOfflineMatrix,
   runWwwChain,
-  openNetwork
+  openNetwork,
+  resolvePreprodLimits
 } = require('../scripts/edge/preprod-diff.cjs');
 
 test('www re-entry sends GET to COS and returns the homepage for POST/PUT/OPTIONS', async () => {
@@ -53,6 +54,21 @@ test('www without a guard secret still fetches the document as GET', async () =>
   assert.ok(next.POST.hops.some((hop) => hop.via === 'local-router' && hop.method === 'GET'));
   assert.ok(next.POST.hops.some((hop) => hop.via === 'mock-origin' && hop.host === BUCKET1_COS));
   assert.equal(next.POST.hops.some((hop) => hop.via === 'network'), false);
+});
+
+test('preprod request cap and interval clamp to the allowed range', () => {
+  assert.deepEqual(
+    (({ cap, gap, clamped }) => ({ cap, gap, clamped }))(resolvePreprodLimits({})),
+    { cap: 240, gap: 80, clamped: false }
+  );
+  const high = resolvePreprodLimits({ DEMOX_PREPROD_MAX_REQUESTS: '900', DEMOX_PREPROD_GAP_MS: '10' });
+  assert.equal(high.cap, 300);
+  assert.equal(high.gap, 50);
+  assert.equal(high.clamped, true);
+  const inside = resolvePreprodLimits({ DEMOX_PREPROD_MAX_REQUESTS: '100', DEMOX_PREPROD_GAP_MS: '120' });
+  assert.equal(inside.cap, 100);
+  assert.equal(inside.gap, 120);
+  assert.equal(inside.clamped, false);
 });
 
 test('real-network open refuses EO hosts and unknown hosts', async () => {
