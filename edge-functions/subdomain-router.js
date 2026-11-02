@@ -1037,12 +1037,45 @@ function signedWwwHeaders(source, token, includeConditional) {
   return headers;
 }
 
+// 现网 0e706f11 的 www 回源是 rewriteOriginOnce 里的 fetch(buildOriginUrl(...), req)。
+// EdgeOne 把「入站 Request 当 fetch 的 init」改成 GET（见 2026-10-10 cookie 事故记录）。
+// 普通 init 会按写明的方法发出：POST/PUT 打到 COS 是 405，OPTIONS 是 400。
+// 生产没有源站守卫密钥，签名槽为空，不能只在签得出令牌时改方法。
+// HEAD 保持 HEAD；其余文档方法显式用 GET，不带 body。有密钥和没密钥都走这里。
+function wwwDocumentMethod(method) {
+  const verb = String(method || 'GET').toUpperCase();
+  return verb === 'HEAD' ? 'HEAD' : 'GET';
+}
+
+// 没密钥时不能把入站 req 交给 fetch(url, req)。那是 cc28467 的无密钥路径：
+// 子请求重入 sites 后，守卫的单参数 fetch(req) 不再享受双参数「Request 当 init → GET」，
+// COS 按访客方法回 405/400。这里用普通 init 写明 GET/HEAD，不带 body，不重建 Request。
+// 不抄 Host 和逐跳头。Cookie 仍按 #49 原样带上（COS 不读它）；带和不带 demox_access 只差这一项。
+function wwwUnsignedDocumentInit(req) {
+  const headers = new Headers();
+  const source = req && req.headers;
+  const names = [
+    'accept', 'accept-encoding', 'accept-language', 'user-agent', 'cookie', 'content-type',
+    'range', 'if-none-match', 'if-modified-since'
+  ];
+  for (let i = 0; i < names.length; i += 1) {
+    let value = '';
+    try {
+      if (source && typeof source.get === 'function') value = source.get(names[i]) || '';
+    } catch (e) {
+      value = '';
+    }
+    if (value) headers.set(names[i], value);
+  }
+  return { method: wwwDocumentMethod(req && req.method), headers: headers };
+}
+
 async function signedWwwInit(req, url, method, includeConditional) {
   if (!originGuardSigningSlot()) {
     noteOriginSign(req, 'no-slot');
     return null;
   }
-  const verb = method || (req && req.method) || 'GET';
+  const verb = wwwDocumentMethod(method || (req && req.method) || 'GET');
   let target;
   try { target = new URL(url); } catch (e) {
     warnOriginGuardAttachOnce();
@@ -1093,15 +1126,22 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
   const originFetch = hardened
     ? function (url, init) { return fetchSiteOrigin(url, init, meta); }
     : function (url, init) { return fetch(url, init); };
-  // 没有签名槽时 www 仍把入站 req 交给 originFetch（#49 的调用形状）。
-  // 有签名槽时用白名单 Headers（不含 Host），不改入站头。
-  // 主文档保留 range / if-*。SPA 的 index.html 不带这两类头。404.html 在 serveCustom404 里签，同样不带。
-  // 都不按 Host 免裁决。
+  // 有签名槽时用白名单 Headers（不含 Host），方法仍是 wwwDocumentMethod。
+  // 没有签名槽时 www 用 wwwUnsignedDocumentInit：显式 GET/HEAD，不带 body。
+  // 用户站点（hardened）保持 #49 的 originFetch(..., req)，不在这里改方法。
+  // 主文档的 range / if-*：有令牌时由 signedWwwHeaders 带上；没有令牌时
+  // wwwUnsignedDocumentInit 的白名单同样带上。SPA 的 index.html 和 404.html
+  // 不带这两类头（无令牌时那两次只写 method: GET）。都不按 Host 免裁决。
   const pageUrl = buildOriginUrl(req, originPath, u.search, originHost);
   const signedPage = !hardened ? await signedWwwInit(req, pageUrl, undefined, true) : null;
-  const resp = signedPage
-    ? await originFetch(pageUrl, signedPage)
-    : await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
+  let resp;
+  if (signedPage) {
+    resp = await originFetch(pageUrl, signedPage);
+  } else if (!hardened) {
+    resp = await originFetch(pageUrl, wwwUnsignedDocumentInit(req));
+  } else {
+    resp = await originFetch(buildOriginUrl(req, originPath, u.search, originHost), req);
+  }
   if (resp.status === 404 && sitePath && shouldFallbackToIndex(req, originPath)) {
     // The Demox main site has a finite client-route surface. Unknown document
     // paths must remain real 404s instead of becoming indexable soft 404s.
@@ -2808,8 +2848,8 @@ async function handleOriginGuard(req, event, ctx, u, host) {
 async function originGuardDecision(req, event, ctx, u, host) {
   // 协议不参与裁决。http:// 与 https:// 走同一支，避免 http 上另做方法策略或合成响应。
   const method = String(req.method || 'GET').toUpperCase();
-  // 已签名的内部回源（www → sites）保留入站方法。先认令牌，再谈站点 ID。
-  // 不能在验签前把 OPTIONS 收成 204、把 POST/PUT 收成 405，否则 www 的重入会被改写。
+  // 已签名的内部回源先认令牌。www 签的是文档方法（HEAD 或 GET），不是访客的 POST/OPTIONS。
+  // 不能在验签前把 OPTIONS 收成 204、把 POST/PUT 收成 405。
   if (await verifyOriginInternalToken(req, host)) {
     ctx.siteTraffic = true;
     ctx.resolveState = 'origin';

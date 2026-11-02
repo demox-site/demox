@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DEMOX_TEST_HOST_MAP 非空时拒绝部署 ef-1281msyw。该变量只属于 ef-k2test。
+# DEMOX_TEST_HOST_MAP 非空时拒绝部署 ef-1281msyw。不要为这个变量新建测试边缘函数。
 map_value="${DEMOX_TEST_HOST_MAP-}"
 map_value="${map_value#"${map_value%%[![:space:]]*}"}"
 map_value="${map_value%"${map_value##*[![:space:]]}"}"
@@ -40,8 +40,11 @@ fi
 #     --RuleId rule-fxfyqmn5 --FunctionId ef-7ej45f3q --region ap-guangzhou
 #
 # 更新边缘函数代码（DEMOX_TEST_HOST_MAP 有值时不要执行；本脚本会直接退出）:
-#   tccli teo ModifyFunction --ZoneId zone-3kplfkbflnd6 --FunctionId ef-1281msyw \
-#     --Content "$(cat edge-functions/subdomain-router.js)" --region ap-guangzhou
+#   jq -n --rawfile content edge-functions/subdomain-router.js \
+#     --arg ZoneId zone-3kplfkbflnd6 --arg FunctionId ef-1281msyw \
+#     '{ZoneId:$ZoneId, FunctionId:$FunctionId, Content:$content}' > /tmp/modify-function.json
+#   tccli teo ModifyFunction --region ap-guangzhou --cli-input-json file:///tmp/modify-function.json
+# 不要用 --Content "$(cat …)"：正文超过 argv 上限，而且 cat 替换会吃掉末尾换行。
 #
 # 回滚演练（同一条 ModifyFunction，先换到上一份已发布正文，核对后再写回）：
 #   scripts/edge-router-rollback.sh plan

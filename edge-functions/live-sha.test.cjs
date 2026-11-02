@@ -14,7 +14,7 @@ const text = source.toString('utf8');
 // LIVE.sha256 继续只记录那份已发布正文，回滚对照用它。
 // 仓库里的 subdomain-router.js 现在是 K0–K2 源站守卫，发布核对通过之前不要把新哈希写进 LIVE.sha256。
 const PUBLISHED_EDGE_SHA256 = '0e706f11290e265349ec19a65ef8b18629bd22d47e5c6912131461da015a510b';
-const REPO_ORIGIN_GUARD_SHA256 = '16d942ca171ab1350322a22ca09e0f235bd986b3624cf10f7b2898600b7edb01';
+const REPO_ORIGIN_GUARD_SHA256 = '9f6e3057b4010c1ad51c3b0d8dadbcae51988ae46eec3b7045e7b7d600eca7b3';
 
 test('LIVE.sha256 stays the last published edge body, separate from the repo origin guard', () => {
   const published = fs.readFileSync(path.join(__dirname, 'LIVE.sha256'), 'utf8').trim();
