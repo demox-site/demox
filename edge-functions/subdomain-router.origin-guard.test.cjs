@@ -117,7 +117,7 @@ function makeGuard({ secret = '', secretA = '', secretB = '', kid = '', resolver
   });
   vm.runInContext(
     `${source}\nglobalThis.__now = ${now};\nnowMs = function () { return globalThis.__now; };\n` +
-      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, originPathUnsafe, classifyPassthroughOriginPath, isOriginGuardHost, ORIGIN_RESOLVE_BAN_TTL, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, RESOLVE_CACHE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS, ORIGIN_TOKEN_CLOCK_SKEW_MS, ORIGIN_OBJECT_MAX_AGE, ORIGIN_GUARD_MIN_SECRET_BYTES, ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE };',
+      'globalThis.__testHooks = { handle, signOriginInternalToken, verifyOriginInternalToken, timingSafeEqual, parseOriginSitePath, originPathUnsafe, classifyPassthroughOriginPath, isOriginGuardHost, nullBodyStatus, cloneResponse, streamSiteResponse, capOriginObjectCache, stampGuardHop, withRouteHeader, withExpiredAuthCookie, stampOriginSign, stampTestEnv, ORIGIN_RESOLVE_BAN_TTL, ORIGIN_RESOLVE_FOUND_TTL, ORIGIN_RESOLVE_NEGATIVE_TTL, RESOLVE_CACHE_TTL, ORIGIN_RESOLVE_BUDGET_MS, ORIGIN_GUARD_ALLOWLIST, ORIGIN_GUARD_HOSTS, ORIGIN_GUARD_HOST_RE, ORIGIN_INTERNAL_TOKEN_TTL_MS, ORIGIN_TOKEN_CLOCK_SKEW_MS, ORIGIN_OBJECT_MAX_AGE, ORIGIN_GUARD_MIN_SECRET_BYTES, ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE };',
     ctx
   );
   if (budget) {
@@ -1043,7 +1043,7 @@ test('M4: origin hosts keep the caller method; OPTIONS does not resolve; a ban i
   assert.equal(head.response.status, 403);
   assertNoCors(head.response, 'HEAD 403');
   assert.equal(r.calls.origin.length, originBeforeHead, 'HEAD on a banned path does not fetch origin');
-  const beforeOptions = r.calls.resolve.length;
+  const beforeSignedOptions = r.calls.resolve.length;
   const optionsToken = await r.ctx.__testHooks.signOriginInternalToken('OPTIONS', 'sites-eclick.demox.site', bannedPath, '');
   const options = await r.call('https://sites-eclick.demox.site/sites/owner-1/BANNED1/dist/index.html', {
     method: 'OPTIONS',
@@ -1051,13 +1051,16 @@ test('M4: origin hosts keep the caller method; OPTIONS does not resolve; a ban i
   });
   assert.equal(options.response.status, 200);
   assert.equal(options.response.headers.get('x-demox-route'), 'origin-guard=internal');
-  assert.equal(r.calls.resolve.length, beforeOptions);
+  assert.equal(r.calls.resolve.length, beforeSignedOptions);
+  const originBeforeBare = r.calls.origin.length;
   const bareOptions = await r.call('https://sites.demox.site/sites/owner-1/BANNED1/dist/index.html', {
     method: 'OPTIONS',
     headers: { Accept: 'text/html' }
   });
-  assert.equal(bareOptions.response.status, 200);
-  assert.equal(r.calls.resolve.length, beforeOptions, 'preflight does not resolve');
+  assert.equal(bareOptions.response.status, 403);
+  assert.equal(bareOptions.response.headers.get('cache-control'), 'no-store');
+  assert.equal(bareOptions.html.includes('Public body'), false);
+  assert.equal(r.calls.origin.length, originBeforeBare, 'banned OPTIONS does not fetch origin');
   const pub = await r.visit('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html');
   assert.equal(pub.response.status, 200);
   assertNoCors(pub.response, 'GET 200');
@@ -1120,8 +1123,9 @@ test('complete CORS on origin hosts: OPTIONS, allowed GET/HEAD, and no headers o
     headers: evil
   });
   assert.equal(options.response.status, 200);
-  assert.equal(r.calls.resolve.length, 0, 'preflight does not resolve');
+  assert.ok(r.calls.resolve.some((payload) => payload.websiteId === 'PUBLIC1'), 'public OPTIONS is judged by id');
   assert.equal(r.calls.origin.length, 1);
+  assertObjectCors(options.response);
 
   for (const method of ['GET', 'HEAD']) {
     const { response } = await r.call('https://sites.demox.site/sites/owner-1/PUBLIC1/dist/index.html', { method, headers: evil });
@@ -2741,6 +2745,7 @@ function p0Guard() {
     kid: 'A',
     resolver: (payload) => {
       if (payload.websiteId === 'EPX2UU43') return json(allow('EPX2UU43', '1985655011013808129'));
+      if (payload.websiteId === 'HGSBPOX6') return json(allow('HGSBPOX6', '1985655011013808129'));
       if (payload.websiteId && P0_PHISHING_IDS.indexOf(payload.websiteId) !== -1) {
         return json({ success: true, allow: false, reason: 'blocked' });
       }
@@ -2813,9 +2818,11 @@ test('p0 matrix: site-object bans, asset passthrough, OPTIONS, www methods, and 
     const before = coverage.calls.resolve.length;
     const { response } = await coverage.call('https://coverage.demox.site/', { method: 'OPTIONS', headers });
     assert.equal(response.status, 200, cookie ? 'coverage OPTIONS cookie' : 'coverage OPTIONS');
-    assert.notEqual(response.headers.get('x-demox-route'), 'origin-guard=options');
-    const idLookups = coverage.calls.resolve.slice(before).filter((payload) => payload.websiteId);
-    assert.equal(idLookups.length, 0, 'OPTIONS must not resolve by id');
+    assert.match(response.headers.get('x-demox-route') || '', /origin=ok/, cookie ? 'coverage OPTIONS cookie' : 'coverage OPTIONS');
+    if (!cookie) {
+      const idLookups = coverage.calls.resolve.slice(before).filter((payload) => payload.websiteId === 'HGSBPOX6');
+      assert.ok(idLookups.length >= 1, 'public OPTIONS is judged by id');
+    }
     if (cookie) assert.match(response.headers.get('set-cookie') || '', /demox_access=/);
   }
   for (const host of ['https://www.demox.site/', 'https://sites.demox.site/']) {
@@ -2843,4 +2850,114 @@ test('p0 matrix: site-object bans, asset passthrough, OPTIONS, www methods, and 
     assert.notEqual(response.headers.get('x-demox-route'), 'origin-guard=options', method);
     assert.match(response.headers.get('x-demox-route') || '', /^origin-guard=(internal|allow)$/, method);
   }
+});
+
+test('site-object OPTIONS uses the same ID verdict on http and https', async () => {
+  const r = makeGuard({
+    resolver: (payload) => {
+      if (payload.websiteId === 'BANNED1') return json({ success: true, allow: false, reason: 'blocked' });
+      if (payload.websiteId === 'PRIV8') {
+        return json({ success: true, allow: true, visibility: 'private', path: 'sites/owner-1/PRIV8/dist' });
+      }
+      if (payload.websiteId === 'DOWN1') throw new Error('resolve down');
+      throw new Error('unexpected id ' + payload.websiteId);
+    }
+  });
+  const bannedPath = '/sites/owner-1/BANNED1/dist/index.html';
+  for (const scheme of ['https', 'http']) {
+    for (const host of ['sites.demox.site', 'site-3.demox.site']) {
+      for (const cookie of [undefined, 'demox_access=fake']) {
+        const headers = { Accept: 'text/html' };
+        if (cookie) headers.Cookie = cookie;
+        const before = r.calls.origin.length;
+        const { response, html } = await r.call(`${scheme}://${host}${bannedPath}`, { method: 'OPTIONS', headers });
+        assert.equal(response.status, 403, `${scheme} ${host} ${cookie || 'nocookie'}`);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        assert.equal(html.includes('Public body'), false);
+        assert.equal(r.calls.origin.length, before, 'banned OPTIONS does not fetch origin');
+      }
+    }
+  }
+  assert.ok(r.calls.resolve.some((payload) => payload.websiteId === 'BANNED1'), 'banned OPTIONS resolves by id');
+  const encodedBefore = r.calls.origin.length;
+  const encoded = await r.call('https://sites.demox.site/%73ites/owner-1/BANNED1/dist/index.html', {
+    method: 'OPTIONS',
+    headers: { Accept: 'text/html', Cookie: 'demox_access=fake' }
+  });
+  assert.equal(encoded.response.status, 403);
+  assert.equal(encoded.response.headers.get('cache-control'), 'no-store');
+  assert.equal(r.calls.origin.length, encodedBefore);
+
+  const privateBefore = r.calls.origin.length;
+  const priv = await r.call('http://site-3.demox.site/sites/owner-1/PRIV8/dist/index.html', {
+    method: 'OPTIONS',
+    headers: { Accept: 'text/html', Cookie: 'demox_access=fake' }
+  });
+  assert.equal(priv.response.status, 403);
+  assert.equal(priv.response.headers.get('cache-control'), 'no-store');
+  assert.equal(priv.html.includes('Public body'), false);
+  assert.equal(r.calls.origin.length, privateBefore, 'private OPTIONS does not fetch origin');
+
+  const downBefore = r.calls.origin.length;
+  const down = await r.call('https://sites.demox.site/sites/owner-1/DOWN1/dist/index.html', { method: 'OPTIONS' });
+  assert.equal(down.response.status, 503);
+  assert.equal(down.response.headers.get('cache-control'), 'no-store');
+  assert.equal(r.calls.origin.length, downBefore, 'failed OPTIONS lookup does not fetch origin');
+});
+
+test('rebuilding 204 and 304 responses never throws when the source body is set', async () => {
+  const r = makeGuard({ resolver: () => json({ success: false, message: 'not found' }) });
+  const hooks = r.ctx.__testHooks;
+  const secret = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('banned-page'));
+      controller.close();
+    }
+  });
+  assert.throws(() => new Response(secret, { status: 204 }), /status code|Invalid response status/i);
+  assert.throws(() => new Response('banned-page', { status: 304 }), /status code|Invalid response status/i);
+
+  function sourceWithBody(status) {
+    return {
+      status: status,
+      statusText: '',
+      headers: new Headers({ 'cache-control': 'no-store', 'x-demox-route': 'origin-guard=allow' }),
+      body: 'banned-page'
+    };
+  }
+
+  for (const status of [204, 205, 304]) {
+    const cloned = hooks.cloneResponse(sourceWithBody(status), new Headers({ 'cache-control': 'no-store' }));
+    assert.equal(cloned.status, status);
+    assert.equal(await cloned.text(), '');
+
+    const streamed = hooks.streamSiteResponse(sourceWithBody(status), { visibility: 'public' });
+    assert.equal(streamed.status, status);
+    assert.equal(await streamed.text(), '');
+
+    const capped = hooks.capOriginObjectCache(sourceWithBody(status), 'origin-guard=allow');
+    assert.equal(capped.status, status);
+    assert.equal(await capped.text(), '');
+
+    const stamped = hooks.stampGuardHop(sourceWithBody(status));
+    assert.equal(stamped.status, status);
+    assert.equal(stamped.headers.get('x-demox-edge-hop'), 'guard');
+    assert.equal(await stamped.text(), '');
+
+    const expired = hooks.withExpiredAuthCookie(sourceWithBody(status), 'demox.site');
+    assert.equal(expired.status, status);
+    assert.match(expired.headers.get('set-cookie') || '', /demox_access=/);
+    assert.equal(await expired.text(), '');
+  }
+
+  const immutable = sourceWithBody(204);
+  for (const name of ['set', 'append', 'delete']) {
+    Object.defineProperty(immutable.headers, name, {
+      value() { throw new TypeError('immutable headers'); }
+    });
+  }
+  const routed = hooks.withRouteHeader(immutable, 'resolve=hit; origin=ok');
+  assert.equal(routed.status, 204);
+  assert.equal(routed.headers.get('x-demox-route'), 'resolve=hit; origin=ok');
+  assert.equal(await routed.text(), '');
 });

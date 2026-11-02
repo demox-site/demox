@@ -199,6 +199,17 @@ function nullBodyStatus(status) {
   return status === 101 || status === 204 || status === 205 || status === 304;
 }
 
+// 204/205/304/101 带 body 时 Response 构造会抛。coverage 的 OPTIONS 曾因此被收成 503。
+function cloneResponse(resp, headers) {
+  const status = resp && resp.status;
+  const body = !resp || nullBodyStatus(status) ? null : resp.body;
+  return new Response(body, {
+    status: status,
+    statusText: resp ? resp.statusText : '',
+    headers: headers
+  });
+}
+
 function withExpiredAuthCookie(resp, domain) {
   if (!resp || !domain) return resp;
   try {
@@ -776,9 +787,9 @@ function stampTestEnv(resp) {
     return resp;
   } catch (e) {
     try {
-      const copy = new Response(resp.body, resp);
-      copy.headers.set('x-demox-env', 'nonprod');
-      return copy;
+      const headers = new Headers(resp.headers);
+      headers.set('x-demox-env', 'nonprod');
+      return cloneResponse(resp, headers);
     } catch (err) {
       return resp;
     }
@@ -998,9 +1009,9 @@ function stampOriginSign(resp, req) {
     return resp;
   } catch (e) {
     try {
-      const copy = new Response(resp.body, resp);
-      copy.headers.set(ORIGIN_SIGN_HEADER, sign);
-      return copy;
+      const headers = new Headers(resp.headers);
+      headers.set(ORIGIN_SIGN_HEADER, sign);
+      return cloneResponse(resp, headers);
     } catch (err) {
       return resp;
     }
@@ -1232,9 +1243,9 @@ function withRouteHeader(resp, route) {
     return resp;
   } catch (e) {
     try {
-      const copy = new Response(resp.body, resp);
-      copy.headers.set('x-demox-route', route);
-      return copy;
+      const headers = new Headers(resp.headers);
+      headers.set('x-demox-route', route);
+      return cloneResponse(resp, headers);
     } catch (err) {
       return resp;
     }
@@ -1739,12 +1750,7 @@ function htmlContentLength(resp) {
 
 function streamSiteResponse(resp, meta) {
   // 204/205/304 带 body 时，Response 构造会抛。外层加固回源会把这个异常收成 503。
-  const body = nullBodyStatus(resp.status) ? null : resp.body;
-  return new Response(body, {
-    status: resp.status,
-    statusText: resp.statusText,
-    headers: applySiteCacheHeaders(new Headers(resp.headers), meta, resp.status)
-  });
+  return cloneResponse(resp, applySiteCacheHeaders(new Headers(resp.headers), meta, resp.status));
 }
 
 async function withDemoxBadge(req, event, resp, meta) {
@@ -2765,8 +2771,7 @@ function capOriginObjectCache(resp, route) {
     }
     if (route) headers.set('x-demox-route', route);
     applyOriginObjectCors(headers, resp.status);
-    const body = nullBodyStatus(resp.status) ? null : resp.body;
-    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: headers });
+    return cloneResponse(resp, headers);
   } catch (e) {
     return resp;
   }
@@ -2786,8 +2791,7 @@ function stampGuardHop(resp) {
   try {
     const headers = new Headers(resp.headers);
     headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
-    const body = nullBodyStatus(resp.status) ? null : resp.body;
-    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: headers });
+    return cloneResponse(resp, headers);
   } catch (e) {
     return resp;
   }
@@ -2827,8 +2831,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
     if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
     return fetch(req);
   }
-  // 预检不查站点 ID。解析过的用户站重入到 site-N 时也走这里，必须回到源站，不能 204/503。
-  if (method === 'OPTIONS') return fetch(req);
+  // 站点对象上 OPTIONS 和 GET/POST 用同一套 ID 裁决。跳过裁决会把封禁页正文从预检漏出去。
   ctx.siteTraffic = true;
   ctx.resolveState = 'origin';
   let resolution;
