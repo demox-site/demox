@@ -5,8 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'subdomain-router.js'), 'utf8');
-// 现网 subdomain-router.js 与 release/edge-3dea4e0@172095b 逐字节相同，不含 K2。
-// 这些用例留在仓库里，但不要对着现网文件跑：现网没有 origin guard / k2t-* 映射。
+// 源站守卫在文件里时跑全部用例。若有人把 subdomain-router.js 换回
+// LIVE.sha256 那份已发布正文（没有 resolve-k2test），整组跳过，避免对那份快照误报。
 const LIVE_WITHOUT_K2 = !source.includes('resolve-k2test.demox.site');
 const test = LIVE_WITHOUT_K2
   ? (name, opts, fn) => {
