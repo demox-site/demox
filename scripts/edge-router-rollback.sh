@@ -2,8 +2,9 @@
 # Roll the edge router back to a previous published Content, verify, then forward again.
 #
 # This is the same release path as scf-code/deploy-edge-functions.sh:
-#   tccli teo ModifyFunction --ZoneId zone-3kplfkbflnd6 --FunctionId ef-1281msyw \
-#     --Content "$(cat <file>)" --region ap-guangzhou
+#   jq -n --rawfile content <file> '{ZoneId,FunctionId,Content}' \
+#     | tccli teo ModifyFunction --region ap-guangzhou --cli-input-json file://...
+# "$(cat file)" 会吃掉末尾换行，而且正文已经超过单次 argv 上限。
 # There is no second publisher. The script does not print function Content.
 #
 #   scripts/edge-router-rollback.sh plan
@@ -36,21 +37,47 @@ refuse_test_host_map
 
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
+write_modify_json() {
+  local file="$1" json="$2"
+  jq -n --rawfile content "$file" \
+    --arg ZoneId "$ZONE_ID" \
+    --arg FunctionId "$FUNCTION_ID" \
+    '{ZoneId:$ZoneId, FunctionId:$FunctionId, Content:$content}' >"$json"
+  node - "$json" "$file" <<'JS'
+const fs = require('fs');
+const crypto = require('crypto');
+const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const want = fs.readFileSync(process.argv[3]);
+const got = Buffer.from(payload.Content, 'utf8');
+if (!got.equals(want)) {
+  const hex = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+  console.error('ModifyFunction Content does not round-trip');
+  console.error('file ' + hex(want));
+  console.error('json ' + hex(got));
+  process.exit(1);
+}
+JS
+}
+
 modify_argv() {
-  printf 'tccli teo ModifyFunction --ZoneId %s --FunctionId %s --region %s --Content-File %s\n' \
-    "$ZONE_ID" "$FUNCTION_ID" "$REGION" "$1"
+  printf 'jq -n --rawfile content %s --arg ZoneId %s --arg FunctionId %s '\''{ZoneId:$ZoneId,FunctionId:$FunctionId,Content:$content}'\'' | tccli teo ModifyFunction --region %s --cli-input-json file://<json>\n' \
+    "$1" "$ZONE_ID" "$FUNCTION_ID" "$REGION"
 }
 
 run_modify() {
-  local file="$1"
+  local file="$1" dir json
   refuse_test_host_map
+  dir="$(mktemp -d)"
+  json="$dir/$(basename "$file").input.json"
+  write_modify_json "$file" "$json"
+  local rc=0
   if [ "${TCCLI_BIN:-tccli}" = "tccli" ]; then
-    tccli teo ModifyFunction --ZoneId "$ZONE_ID" --FunctionId "$FUNCTION_ID" \
-      --Content "$(cat "$file")" --region "$REGION" >/dev/null
+    tccli teo ModifyFunction --region "$REGION" --cli-input-json "file://$json" >/dev/null || rc=$?
   else
-    "$TCCLI_BIN" teo ModifyFunction --ZoneId "$ZONE_ID" --FunctionId "$FUNCTION_ID" \
-      --Content-File "$file" --region "$REGION" >/dev/null
+    "$TCCLI_BIN" teo ModifyFunction --region "$REGION" --cli-input-json "file://$json" >/dev/null || rc=$?
   fi
+  rm -rf "$dir"
+  return "$rc"
 }
 
 save_live() {
@@ -358,6 +385,25 @@ JS
     echo "deploy script without the map must stay a non-executable record" >&2
     exit 1
   fi
+  # Content 往返：末尾换行必须还在，sha256 与原文件一致。
+  printf 'router-bytes\n' >"$work/with-nl.js"
+  printf 'router-bytes' >"$work/no-nl.js"
+  write_modify_json "$work/with-nl.js" "$work/with-nl.json"
+  write_modify_json "$work/no-nl.js" "$work/no-nl.json"
+  write_modify_json "$ROUTER" "$work/router.json"
+  node - "$work/with-nl.js" "$work/with-nl.json" "$work/no-nl.js" "$work/no-nl.json" "$ROUTER" "$work/router.json" <<'JS'
+const fs = require('fs');
+const crypto = require('crypto');
+const hex = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+for (let i = 2; i < process.argv.length; i += 2) {
+  const want = fs.readFileSync(process.argv[i]);
+  const got = Buffer.from(JSON.parse(fs.readFileSync(process.argv[i + 1], 'utf8')).Content, 'utf8');
+  if (!got.equals(want)) {
+    console.error('round-trip mismatch ' + process.argv[i] + ' ' + hex(want) + ' vs ' + hex(got));
+    process.exit(1);
+  }
+}
+JS
   echo "ROLLBACK SELF-TEST OK"
 }
 

@@ -1037,12 +1037,21 @@ function signedWwwHeaders(source, token, includeConditional) {
   return headers;
 }
 
+// 现网 0e706f11 的 www 回源是 rewriteOriginOnce 里的 fetch(buildOriginUrl(...), req)，
+// 不另建 { method: 入站方法 }。HEAD 保持 HEAD；其余文档方法按 GET 发给源站。
+// 把 POST/PUT/OPTIONS 写进新的 init 后，重入 sites.demox.site 会原样打到 COS：
+// 对象 POST/PUT 是 405，OPTIONS 是 400。现网这三种方法在 www 上都是 200 首页。
+function wwwDocumentMethod(method) {
+  const verb = String(method || 'GET').toUpperCase();
+  return verb === 'HEAD' ? 'HEAD' : 'GET';
+}
+
 async function signedWwwInit(req, url, method, includeConditional) {
   if (!originGuardSigningSlot()) {
     noteOriginSign(req, 'no-slot');
     return null;
   }
-  const verb = method || (req && req.method) || 'GET';
+  const verb = wwwDocumentMethod(method || (req && req.method) || 'GET');
   let target;
   try { target = new URL(url); } catch (e) {
     warnOriginGuardAttachOnce();
@@ -2808,8 +2817,8 @@ async function handleOriginGuard(req, event, ctx, u, host) {
 async function originGuardDecision(req, event, ctx, u, host) {
   // 协议不参与裁决。http:// 与 https:// 走同一支，避免 http 上另做方法策略或合成响应。
   const method = String(req.method || 'GET').toUpperCase();
-  // 已签名的内部回源（www → sites）保留入站方法。先认令牌，再谈站点 ID。
-  // 不能在验签前把 OPTIONS 收成 204、把 POST/PUT 收成 405，否则 www 的重入会被改写。
+  // 已签名的内部回源先认令牌。www 签的是文档方法（HEAD 或 GET），不是访客的 POST/OPTIONS。
+  // 不能在验签前把 OPTIONS 收成 204、把 POST/PUT 收成 405。
   if (await verifyOriginInternalToken(req, host)) {
     ctx.siteTraffic = true;
     ctx.resolveState = 'origin';

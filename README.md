@@ -269,6 +269,17 @@ Demox 的源码是开放的，用于：
 
 ---
 
+## 边缘路由上线前对照
+
+`scripts/edge/preprod-diff.cjs` 在本机跑两份 `subdomain-router.js`：工作区和 `LIVE.sha256` 指向的现网正文。`--self-test` 用模拟源站，退出码非 0 表示出现了封禁 403 / 查询失败 503 以外的差异。
+
+```bash
+node scripts/edge/preprod-diff.cjs --self-test
+DEMOX_BANNED_PATH='/sites/<uid>/<id>/dist/index.html' node scripts/edge/preprod-diff.cjs
+```
+
+线上对照会真实请求源站。签名密钥从 `DEMOX_ORIGIN_GUARD_SECRET_A` 读取，脚本不打印它。可选 `--allowlist diffs.txt`，一行一条已经接受的差异。
+
 ## 📄 License
 
 - 代码协议以仓库声明为准
