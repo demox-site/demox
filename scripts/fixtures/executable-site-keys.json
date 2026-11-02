@@ -1,0 +1,21 @@
+{
+  "note": "离线夹具，不是线上存量。用来核对只读统计的计数，不访问 COS，也不删除对象。",
+  "keys": [
+    "sites/u1/SITE0001/dist/index.html",
+    "sites/u1/SITE0001/dist/app.EXE",
+    "sites/u1/SITE0001/dist/tool.PS1",
+    "sites/u1/SITE0002/dist/index.html",
+    "sites/u2/SITE0003/dist/bin/setup.msi",
+    "sites/u2/SITE0003/dist/other.MSI",
+    "sites/u2/SITE0004/dist/readme.txt",
+    "sites/u2/SITE0004/dist/file.exe.txt",
+    "sites/u2/SITE0004/dist/run.BAT.bak",
+    "sites/u9/SITE0005/pkg.dmg",
+    "sites/u9/SITE0005/app.apk",
+    "sites/u9/SITE0006/run.bat",
+    "sites/u9/SITE0006/app.exe/index.html",
+    "analytics/raw/x.exe",
+    "sites/not-a-site/file.exe",
+    "_deploy_uploads/u/id/00000000.part"
+  ]
+}

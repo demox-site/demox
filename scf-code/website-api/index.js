@@ -9694,6 +9694,139 @@ async function assignWebsiteProject(userId, websiteId, projectId) {
   }
 }
 
+// 可执行文件拒收。与 shared/executable-files.js 从 const EXECUTABLE_SUFFIXES 到 summarizeExecutableKeys 逐字相同
+// （functions push 只上传入口，不能再 require 一份新的 shared 文件）。
+const EXECUTABLE_SUFFIXES = ['.exe', '.msi', '.dmg', '.apk', '.bat', '.ps1'];
+const EXECUTABLE_SUFFIX_SET = new Set(EXECUTABLE_SUFFIXES);
+const EXECUTABLE_FILE_CODE = 'EXECUTABLE_FILE_REJECTED';
+
+function normalizeExecutableBase(fileName) {
+  let base = String(fileName || '').replace(/\\/g, '/').split('/').pop() || '';
+  base = base.trim().replace(/\uFF0E/g, '.');
+  if (base.includes('%')) {
+    try {
+      const decoded = decodeURIComponent(base).replace(/\uFF0E/g, '.');
+      if (decoded && !decoded.includes('/') && !decoded.includes('\\')) base = decoded;
+    } catch (e) {
+      // 不完整的百分号编码保持原样，避免把合法文件名判丢。
+    }
+  }
+  return base.split('\0')[0].replace(/[. ]+$/g, '');
+}
+
+function executableSuffix(fileName) {
+  const base = normalizeExecutableBase(fileName);
+  const dot = base.lastIndexOf('.');
+  if (dot < 0) return '';
+  const ext = base.slice(dot).toLowerCase();
+  return EXECUTABLE_SUFFIX_SET.has(ext) ? ext : '';
+}
+
+function findExecutableFile(fileName) {
+  const suffix = executableSuffix(fileName);
+  if (!suffix) return null;
+  return {
+    fileName: String(fileName || '').slice(0, 180),
+    suffix,
+    inArchive: false
+  };
+}
+
+function findExecutableZipEntry(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  for (const entry of list) {
+    if (!entry || entry.isDirectory) continue;
+    const name = String(entry.entryName || entry.name || '').replace(/\\/g, '/');
+    if (!name || name.endsWith('/')) continue;
+    const suffix = executableSuffix(name);
+    if (!suffix) continue;
+    return {
+      fileName: name.slice(0, 180),
+      suffix,
+      inArchive: true
+    };
+  }
+  return null;
+}
+
+function executableRejectMessage(hit) {
+  const suffix = (hit && hit.suffix) || '';
+  const raw = String((hit && hit.fileName) || '')
+    .replace(/\\/g, '/')
+    .split('\0')[0]
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[<>]/g, '')
+    .trim();
+  const shown = (raw || '文件').slice(-80);
+  const target = hit && hit.inArchive ? `压缩包内的 ${shown}` : shown;
+  return `发布失败：${target} 是可执行文件（${suffix}），Demox 不托管。请把安装包放到 GitHub Releases，在站点里只放外部下载链接。`;
+}
+
+function siteIdentityFromObjectKey(key) {
+  const parts = String(key || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length < 4 || parts[0] !== 'sites') return null;
+  if (!parts[1] || !parts[2] || parts[1].includes('..') || parts[2].includes('..')) return null;
+  return {
+    userId: parts[1],
+    websiteId: parts[2],
+    prefix: `sites/${parts[1]}/${parts[2]}/`
+  };
+}
+
+function orderedSuffixCounts(counts) {
+  const ordered = {};
+  for (const suffix of EXECUTABLE_SUFFIXES) {
+    if (counts[suffix]) ordered[suffix] = counts[suffix];
+  }
+  return ordered;
+}
+
+function summarizeExecutableKeys(keys) {
+  const sites = new Map();
+  const suffixCounts = {};
+  let objectCount = 0;
+  let ignoredNonSite = 0;
+  for (const key of keys || []) {
+    const suffix = executableSuffix(key);
+    if (!suffix) continue;
+    const site = siteIdentityFromObjectKey(key);
+    if (!site) {
+      ignoredNonSite += 1;
+      continue;
+    }
+    objectCount += 1;
+    suffixCounts[suffix] = (suffixCounts[suffix] || 0) + 1;
+    const id = `${site.userId}/${site.websiteId}`;
+    let row = sites.get(id);
+    if (!row) {
+      row = {
+        websiteId: site.websiteId,
+        userId: site.userId,
+        prefix: site.prefix,
+        objectCount: 0,
+        suffixCounts: {},
+        sampleKeys: []
+      };
+      sites.set(id, row);
+    }
+    row.objectCount += 1;
+    row.suffixCounts[suffix] = (row.suffixCounts[suffix] || 0) + 1;
+    if (row.sampleKeys.length < 5) row.sampleKeys.push(String(key));
+  }
+  const siteRows = [...sites.values()]
+    .map((row) => ({ ...row, suffixCounts: orderedSuffixCounts(row.suffixCounts) }))
+    .sort((a, b) => a.prefix.localeCompare(b.prefix));
+  return {
+    mutate: false,
+    suffixes: EXECUTABLE_SUFFIXES.slice(),
+    siteCount: siteRows.length,
+    objectCount,
+    suffixCounts: orderedSuffixCounts(suffixCounts),
+    sites: siteRows,
+    ignoredNonSite
+  };
+}
+
 function isSafeZipEntry(entry) {
   if (!entry || entry.isDirectory) return false;
   const name = String(entry.entryName || '').replace(/\\/g, '/');
@@ -10233,16 +10366,19 @@ async function handleInitDeployUpload(event) {
   if (!userId) return deployUploadError(401, 'UNAUTHORIZED', '未登录或token已过期');
 
   try {
-    await ensureDeployUploadSessionsTable();
-    await cleanupExpiredDeployUploads();
-
     const body = event.body || event;
     const fileName = String(body.fileName || '').trim();
-    const totalSize = Number(body.totalSize);
-    const fileSha256 = normalizeSha256(body.sha256);
     if (!fileName || fileName.length > 255) {
       return deployUploadError(400, 'INVALID_FILE_NAME', 'fileName 必须为 1-255 个字符');
     }
+    const outerExecutable = findExecutableFile(fileName);
+    if (outerExecutable) return executableHttpReject(outerExecutable);
+
+    await ensureDeployUploadSessionsTable();
+    await cleanupExpiredDeployUploads();
+
+    const totalSize = Number(body.totalSize);
+    const fileSha256 = normalizeSha256(body.sha256);
     if (!Number.isSafeInteger(totalSize) || totalSize <= 0) {
       return deployUploadError(400, 'INVALID_TOTAL_SIZE', 'totalSize 必须为正整数');
     }
@@ -10472,7 +10608,8 @@ async function handleCompleteDeployUpload(event) {
       errorCode: payload.code || (deployResponse.statusCode !== 200 ? `HTTP_${deployResponse.statusCode}` : 'DEPLOY_FAILED')
     });
     if (!payload.success) {
-      const terminal = payload.code === 'INVALID_STATIC_SITE' || payload.code === 'CONTENT_BLOCKED';
+      // 终态失败只清理本次会话的 _deploy_uploads 暂存分块，不列出、不删除 sites/ 下已有对象。
+      const terminal = payload.code === 'INVALID_STATIC_SITE' || payload.code === 'CONTENT_BLOCKED' || payload.code === EXECUTABLE_FILE_CODE;
       if (terminal) {
         await markDeployUploadFailed(session, payload.code, payload.message);
       } else {
@@ -10639,16 +10776,30 @@ async function releaseWebsiteDeployLock(lock) {
   }
 }
 
+function executableHttpReject(hit) {
+  return ok({
+    success: false,
+    code: EXECUTABLE_FILE_CODE,
+    message: executableRejectMessage(hit),
+    fileName: hit.fileName || ''
+  });
+}
+
 async function deployZipBuffer({ userId, buffer, inputWebsiteId, fileName, inputProjectId }) {
   let deployLock = null;
   try {
+    const outerExecutable = findExecutableFile(fileName);
+    if (outerExecutable) return executableHttpReject(outerExecutable);
+
+    // 先看 ZIP 条目名，不拆开内层压缩包。拒收发生在读库、加锁和上传之前，已有站点对象不会被 prune。
+    const zip = new AdmZip(buffer);
+    const zipEntries = zip.getEntries();
+    const packedExecutable = findExecutableZipEntry(zipEntries);
+    if (packedExecutable) return executableHttpReject(packedExecutable);
+
     // 获取用户角色配置（从数据库读取）
     const roleConfig = await getUserLimits(userId);
     console.log(`用户 ${userId} 的角色配置:`, roleConfig);
-
-    // 解析 ZIP
-    const zip = new AdmZip(buffer);
-    const zipEntries = zip.getEntries();
 
     // 检查文件数量限制
     const validEntries = zipEntries.filter(isSafeZipEntry);
@@ -10969,6 +11120,13 @@ async function pruneWebsiteStorage(provider, websitePrefix, keepKeys) {
  * 浏览器还会请求上一版 chunk。清理失败不影响部署成功。
  */
 async function deployZipToBucket(bucketCfg, zipEntries, targetPrefix, opts = {}) {
+  const packedExecutable = findExecutableZipEntry(zipEntries);
+  if (packedExecutable) {
+    const error = new Error(executableRejectMessage(packedExecutable));
+    error.code = EXECUTABLE_FILE_CODE;
+    error.fileName = packedExecutable.fileName;
+    throw error;
+  }
   const provider = opts.provider || providerFor(bucketCfg);
   const records = getDeployEntryRecords(zipEntries);
   const normalizedPrefix = String(targetPrefix || '').replace(/\/+$/, '');

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const AdmZip = require('adm-zip');
 const logGuard = require('../../scripts/log-leak-guard.cjs').installLogLeakGuard();
 
 const { randomTestSecret } = require('../../scripts/test-jwt.cjs');
@@ -2246,6 +2247,97 @@ test('deploy still succeeds when optional prune fails', async () => {
     ownerId: 'u1', websiteId: 'SITEA001', provider: deleteError
   });
   assert.equal(afterDelete, 1);
+});
+
+test('deploy of an executable member does not upload or delete existing site objects', async () => {
+  const calls = [];
+  const store = new Map([['sites/u1/SITEA001/dist/legacy.exe', Buffer.from('stock')]]);
+  const provider = {
+    put: async (key) => { calls.push(['put', key]); store.set(key, Buffer.from('new')); },
+    list: async () => { calls.push(['list']); return [...store.keys()].map((key) => ({ key })); },
+    delete: async (key) => { calls.push(['delete', key]); store.delete(key); }
+  };
+  await assert.rejects(
+    () => websiteApi.deployZipToBucket({}, [
+      ...zipEntries(['index.html', 'bin/Setup.EXE']),
+      { entryName: 'tools.exe/', isDirectory: true, getData: () => Buffer.from('') }
+    ], 'sites/u1/SITEA001/dist', { ownerId: 'u1', websiteId: 'SITEA001', provider }),
+    (err) => {
+      assert.equal(err.code, 'EXECUTABLE_FILE_REJECTED');
+      assert.match(err.message, /压缩包内的 bin\/Setup\.EXE/);
+      assert.match(err.message, /GitHub Releases/);
+      return true;
+    }
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(store.get('sites/u1/SITEA001/dist/legacy.exe').toString(), 'stock');
+});
+
+test('a directory whose name ends in .exe is not an executable file', async () => {
+  let puts = 0;
+  const provider = {
+    put: async () => { puts += 1; },
+    list: async () => [],
+    delete: async () => { throw new Error('should not delete'); }
+  };
+  const uploaded = await websiteApi.deployZipToBucket({}, [
+    { entryName: 'tools.exe/', isDirectory: true, getData: () => Buffer.from('') },
+    ...zipEntries(['index.html'])
+  ], 'sites/u1/SITEA001/dist', { ownerId: 'u1', websiteId: 'SITEA001', provider });
+  assert.equal(uploaded, 1);
+  assert.equal(puts, 1);
+});
+
+test('init and upload reject executable names and zip members before publishing', async () => {
+  const previousQuery = queryImpl;
+  let queries = 0;
+  queryImpl = async (sql) => {
+    queries += 1;
+    if (String(sql).includes('product_events')) return { affectedRows: 1 };
+    throw new Error(`unexpected query: ${sql}`);
+  };
+
+  try {
+    const named = await request('init_deploy_upload', {
+      fileName: 'Setup.EXE',
+      totalSize: 12,
+      sha256: 'ab'.repeat(32)
+    });
+    const namedBody = JSON.parse(named.body);
+    assert.equal(named.statusCode, 200);
+    assert.equal(namedBody.success, false);
+    assert.equal(namedBody.code, 'EXECUTABLE_FILE_REJECTED');
+    assert.match(namedBody.message, /Setup\.EXE/);
+    assert.match(namedBody.message, /可执行文件（\.exe）/);
+    assert.match(namedBody.message, /GitHub Releases/);
+    assert.equal(queries, 0);
+
+    const zip = new AdmZip();
+    zip.addFile('index.html', Buffer.from('<!doctype html><title>ok</title>'));
+    zip.addFile('payload/setup.msi', Buffer.from('not-a-real-installer'));
+    const packed = await request('upload_and_deploy', {
+      fileName: 'dist.zip',
+      fileContentBase64: zip.toBuffer().toString('base64')
+    });
+    const packedBody = JSON.parse(packed.body);
+    assert.equal(packedBody.success, false);
+    assert.equal(packedBody.code, 'EXECUTABLE_FILE_REJECTED');
+    assert.match(packedBody.message, /压缩包内的 payload\/setup\.msi/);
+    assert.match(packedBody.message, /GitHub Releases/);
+
+    const plain = new AdmZip();
+    plain.addFile('index.html', Buffer.from('<!doctype html><title>ok</title>'));
+    plain.addFile('app.js', Buffer.from('console.log(1)'));
+    const allowed = await request('upload_and_deploy', {
+      fileName: 'dist.zip',
+      fileContentBase64: plain.toBuffer().toString('base64')
+    });
+    const allowedBody = JSON.parse(allowed.body);
+    assert.notEqual(allowedBody.code, 'EXECUTABLE_FILE_REJECTED');
+    assert.equal(String(allowedBody.message || '').includes('可执行文件'), false);
+  } finally {
+    queryImpl = previousQuery;
+  }
 });
 
 test('an expired deploy lock (crashed instance) can be taken over after TTL', async () => {
