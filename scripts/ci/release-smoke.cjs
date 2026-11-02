@@ -5,7 +5,8 @@
  * 发布冒烟。易点（api.demox.site，主）和磷（备源站）各跑一遍：
  *   GET /health → 200
  *   https://www.demox.site/ → 200，并且页面引用的当前 bundle 也是 200
- *   非管理员测试账号登录后，把同一个测试站点重新发布，再把站点页面抓下来核对
+ *   非管理员测试账号登录后，init_deploy_upload 拒收 x.exe / Setup.MSI，
+ *   再把同一个测试站点重新发布，再把站点页面抓下来核对
  *
  * 账号密码只来自环境变量 DEMOX_SMOKE_EMAIL / DEMOX_SMOKE_PASSWORD（GitHub secrets）。
  * 本文件不写死任何口令、令牌或邮箱。日志先打 ::add-mask::，再打印其它内容。
@@ -283,6 +284,30 @@ async function assertNotAdmin(account, token, deps) {
   if (res.status !== 403) throw new Error(`${account.label} 无法确认测试账号不是管理员：HTTP ${res.status}`);
 }
 
+async function rejectExecutableUploads(account, token, deps) {
+  // handleInitDeployUpload 在建会话、写库、COS 上传之前按外层文件名拒收。
+  // executableHttpReject 走 ok()：HTTP 200，success=false，code=EXECUTABLE_FILE_REJECTED。
+  // 只带 fileName，不带 totalSize / sha256 / websiteId，避免这次检查自己创建上传会话。
+  for (const fileName of ['x.exe', 'Setup.MSI']) {
+    const res = await fetchText(deps.fetchImpl, `${account.base}/deploy`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ action: 'init_deploy_upload', fileName })
+    });
+    const body = parseJson(res.text);
+    const code = body && body.code ? String(body.code).slice(0, 80) : '';
+    deps.log(`  ${account.label} reject ${fileName}: HTTP ${res.status}${code ? ` code=${code}` : ''}`);
+    const rejected = res.status === 200 && body && body.success === false && body.code === 'EXECUTABLE_FILE_REJECTED';
+    if (!rejected) {
+      throw new Error(`${account.label} 可执行文件拒收失败：${fileName} HTTP ${res.status}${code ? ` ${code}` : ''}`);
+    }
+  }
+}
+
 async function publishSite(account, config, token, deps) {
   const zip = storeZip([{ name: 'index.html', data: smokeHtml(config.marker) }]);
   const res = await fetchText(deps.fetchImpl, `${account.base}/deploy`, {
@@ -323,6 +348,7 @@ async function checkAccount(account, config, deps) {
   await checkWww(config, deps);
   const token = await login(account, config, deps);
   await assertNotAdmin(account, token, deps);
+  await rejectExecutableUploads(account, token, deps);
   await publishSite(account, config, token, deps);
 }
 
