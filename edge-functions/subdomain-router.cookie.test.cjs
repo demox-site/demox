@@ -411,6 +411,8 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
     'const custom404 = await fetch(missingUrl, signed);',
     "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
     "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
+    'return fetch(req);',
+    "if (method === 'OPTIONS') return fetch(req);",
     "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');"
   ]);
 });

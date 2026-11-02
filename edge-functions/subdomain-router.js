@@ -7,9 +7,11 @@
  *   (demox.site 下 label 可匹配 websites.subdomain 或 LOWER(website_id))→ 回源 /{path}/{rest}
  * 结果走边缘 Cache(命中 60s、不存在 15s、出错不缓存，见 cachedResolve)。旧的 sites-{userId}-{fileId}-{dir} 格式已废弃。
  *
- * 源站路径（K2）：sites.demox.site、site-N、sites-*、origin-* 在回源前按站点 ID 裁决。
+ * 源站路径（K2）：sites.demox.site、site-N、sites-*、origin-* 上，只有
+ * /sites/<uid>/<ID>/… 这种站点对象在回源前按站点 ID 裁决。
+ * 没有站点 ID 的路径（例如 /assets/index-*.js、/robots.txt）原样透传，跟守卫上线前一样。
  * 其它 host 上，解码一次（百分号或 UTF-8 失败则 400）、去掉 Cf 格式字符并忽略大小写后，
- * 第一段以 sites 开头的路径在两条透传之前也进入同一裁决。
+ * 第一段以 sites 开头的路径在两条透传之前也进入同一裁决；对不上站点对象形状的仍然透传。
  * 允许和封禁都只新鲜 15s：新封禁约 15s 内 403，解封约 15s 内回到 200。没有 stale 宽限。
  * 子域名和自定义域不走这支，它们的解析缓存仍是命中 60s / 负缓存 15s / stale-if-error 600s。
  * 放行对象的 max-age 只写给客户端，不改变 EdgeOne 节点缓存 TTL。
@@ -87,9 +89,9 @@ var ORIGIN_INTERNAL_TOKEN_HEADER = 'x-demox-origin-token';
 var ORIGIN_INTERNAL_TOKEN_TTL_MS = 20000;
 var ORIGIN_TOKEN_CLOCK_SKEW_MS = 5000;
 var ORIGIN_UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-// 不符合 /sites/<uid>/<ID>/ 的源站路径默认 403。www 的兜底路径本身就是
-// sites/1985655011013808129/EPX2UU43/dist，走正常 ID 裁决，不是例外。
-// robots.txt、favicon、health、/_/ 没有被边缘函数或 website-api 当成平台路径去拉，所以名单为空。
+// 只有 /sites/<uid>/<ID> 才按站点 ID 裁决。对不上这个形状的路径原样 fetch(req)，
+// 不 403。www 的兜底路径本身就是 sites/1985655011013808129/EPX2UU43/dist，走正常 ID 裁决。
+// 名单仍为空：robots.txt、favicon、health、/_/、/assets 都不是例外，而是透传。
 var ORIGIN_GUARD_ALLOWLIST = [];
 // 与 website-api RESERVED_LABELS 一致：这些 label 不可能是用户站点（sites.demox.site 是 www 的回源域）。
 var INFRA_LABELS = ['www', 'sites', 'kv-admin', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'static', 'assets', 'blog', 'demox'];
@@ -193,9 +195,19 @@ function expireAuthCookieHeaders(domain) {
   ];
 }
 
+function nullBodyStatus(status) {
+  return status === 101 || status === 204 || status === 205 || status === 304;
+}
+
 function withExpiredAuthCookie(resp, domain) {
   if (!resp || !domain) return resp;
   try {
+    if (nullBodyStatus(resp.status)) {
+      const out = new Response(null, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
+      const values = expireAuthCookieHeaders(domain);
+      for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
+      return out;
+    }
     const out = new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: new Headers(resp.headers) });
     const values = expireAuthCookieHeaders(domain);
     for (let i = 0; i < values.length; i += 1) out.headers.append('Set-Cookie', values[i]);
@@ -1726,7 +1738,9 @@ function htmlContentLength(resp) {
 }
 
 function streamSiteResponse(resp, meta) {
-  return new Response(resp.body, {
+  // 204/205/304 带 body 时，Response 构造会抛。外层加固回源会把这个异常收成 503。
+  const body = nullBodyStatus(resp.status) ? null : resp.body;
+  return new Response(body, {
     status: resp.status,
     statusText: resp.statusText,
     headers: applySiteCacheHeaders(new Headers(resp.headers), meta, resp.status)
@@ -2664,6 +2678,30 @@ function parseOriginSitePath(pathname) {
   return { uid: uid, websiteId: websiteId, needsSlash: matched[3] == null };
 }
 
+function foldSitePrefix(pathname) {
+  return String(pathname || '').replace(/^\/sites(?=\/)/i, '/sites');
+}
+
+// 字面 /sites/<uid>/<ID> 优先。百分号或 Cf 把同一形状藏起来时，解码一次再裁决，
+// 避免 %73ites/<uid>/<ID> 绕过封禁。对不上形状的返回 null，调用方原样透传。
+function originSiteTarget(pathname) {
+  const direct = parseOriginSitePath(pathname);
+  if (direct) return direct;
+  let decoded = String(pathname || '');
+  try {
+    const once = decodeURIComponent(decoded);
+    if (once !== decoded) decoded = once;
+  } catch (e) {
+    return { reject: true };
+  }
+  decoded = stripUnicodeFormatChars(decoded);
+  try { decoded = decoded.normalize('NFKC'); } catch (e) {}
+  decoded = foldSitePrefix(decoded);
+  if (decoded === String(pathname || '')) return null;
+  if (originPathUnsafe(decoded)) return { reject: true };
+  return parseOriginSitePath(decoded);
+}
+
 function isOriginAllowlisted(pathname) {
   const path = String(pathname || '');
   for (let i = 0; i < ORIGIN_GUARD_ALLOWLIST.length; i += 1) {
@@ -2727,7 +2765,8 @@ function capOriginObjectCache(resp, route) {
     }
     if (route) headers.set('x-demox-route', route);
     applyOriginObjectCors(headers, resp.status);
-    return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: headers });
+    const body = nullBodyStatus(resp.status) ? null : resp.body;
+    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: headers });
   } catch (e) {
     return resp;
   }
@@ -2742,52 +2781,56 @@ var ORIGIN_GUARD_HOP_VALUE = 'guard';
 
 function stampGuardHop(resp) {
   if (!resp) return resp;
+  // 入站头在边缘上是不可变的。响应头同样不要原地 set：失败时用带 body 的 204/304
+  // 再构造一次会抛，http 上这个异常会变成 500，而不是守卫自己的 403。
   try {
-    resp.headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
-    return resp;
+    const headers = new Headers(resp.headers);
+    headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
+    const body = nullBodyStatus(resp.status) ? null : resp.body;
+    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: headers });
   } catch (e) {
-    try {
-      const copy = new Response(resp.body, resp);
-      copy.headers.set(ORIGIN_GUARD_HOP_HEADER, ORIGIN_GUARD_HOP_VALUE);
-      return copy;
-    } catch (err) {
-      return resp;
-    }
+    return resp;
   }
 }
 
 async function handleOriginGuard(req, event, ctx, u, host) {
-  return stampGuardHop(await originGuardDecision(req, event, ctx, u, host));
+  const resp = await originGuardDecision(req, event, ctx, u, host);
+  // 透传是 fetch(req) 的原始响应，不盖 hop、不重建。只有守卫自己的裁决才打标。
+  const route = resp && resp.headers ? (resp.headers.get('x-demox-route') || '') : '';
+  if (route.indexOf('origin-guard=') !== 0) return resp;
+  return stampGuardHop(resp);
 }
 
 async function originGuardDecision(req, event, ctx, u, host) {
-  ctx.siteTraffic = true;
-  ctx.resolveState = 'origin';
+  // 协议不参与裁决。http:// 与 https:// 走同一支，避免 http 上另做方法策略或合成响应。
   const method = String(req.method || 'GET').toUpperCase();
-  if (method === 'OPTIONS') return originOptionsResponse();
-  if (method !== 'GET' && method !== 'HEAD') {
-    return new Response('Method Not Allowed', {
-      status: 405,
-      headers: {
-        Allow: 'GET, HEAD',
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'x-demox-route': 'origin-guard=method'
-      }
-    });
-  }
+  // 已签名的内部回源（www → sites）保留入站方法。先认令牌，再谈站点 ID。
+  // 不能在验签前把 OPTIONS 收成 204、把 POST/PUT 收成 405，否则 www 的重入会被改写。
   if (await verifyOriginInternalToken(req, host)) {
+    ctx.siteTraffic = true;
+    ctx.resolveState = 'origin';
     const stripped = stripOriginInternalToken(req);
     return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');
   }
-  const parsed = parseOriginSitePath(u.pathname);
-  if (parsed && parsed.reject) return originPathRejectResponse();
+  const parsed = originSiteTarget(u.pathname);
+  if (parsed && parsed.reject) {
+    ctx.siteTraffic = true;
+    ctx.resolveState = 'origin';
+    return originPathRejectResponse();
+  }
+  // 没有站点 ID：跟守卫上线前的 fetch(req) 一样透传。不查库、不 403。
+  // static / cdn / 未知子域名 / 未绑定自定义域的 OPTIONS 仍是边缘 204，不回源。
   if (!parsed) {
     if (isOriginAllowlisted(u.pathname)) {
       return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
     }
-    return originGuardForbidden('origin-guard=unparsed');
+    if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
+    return fetch(req);
   }
+  // 预检不查站点 ID。解析过的用户站重入到 site-N 时也走这里，必须回到源站，不能 204/503。
+  if (method === 'OPTIONS') return fetch(req);
+  ctx.siteTraffic = true;
+  ctx.resolveState = 'origin';
   let resolution;
   try {
     resolution = await resolveSiteById(parsed.websiteId, parsed.uid);
@@ -3072,7 +3115,8 @@ function applyOriginObjectCors(headers, status) {
   headers.set('Access-Control-Expose-Headers', ORIGIN_CORS_EXPOSE_HEADERS);
 }
 
-// 源站 host，以及本来要透传的 host，OPTIONS 都在边缘本地 204。不查库、不回源。
+// 只给「本来就在边缘本地结束」的 host：static、cdn、未知官方子域名、未绑定自定义域。
+// 源站 host 和已解析的 www / 用户站不走这里，OPTIONS 继续回源。
 // 默认不附任何 Access-Control-*。完整模式只在 originCorsEnabled() 时附上固定头。
 function originOptionsResponse() {
   const headers = {
