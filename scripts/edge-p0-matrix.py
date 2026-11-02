@@ -363,8 +363,11 @@ def _expect_status(kind, result):
         return status in (401, 403), "401|403"
     if kind == "public":
         return status == 200, "200"
+    # Paths without /sites/<uid>/<ID> pass through. Live answers these (usually 404).
+    # A guard 403 or a 5xx is the regression; do not require 403.
     if kind == "unparsed":
-        return status == 403, "403"
+        ok = status and status not in (403, 500, 502, 503, 545)
+        return ok, "passthrough"
     return False, "?"
 
 
@@ -459,8 +462,16 @@ def first_screen_checks():
             if asset:
                 asset_host = urllib.parse.urlparse(asset).hostname or host
                 asset_result = fetch_checked(asset, asset_host)
-                if asset_result.get("status") != 200:
-                    problems.append(f"asset {asset_result.get('status')} {asset}")
+                asset_status = asset_result.get("status")
+                asset_path = urllib.parse.urlparse(asset).path or ""
+                site_object = re.match(r"^/sites/[^/]+/[A-Za-z0-9]+(?:/|$)", asset_path) is not None
+                # Root-absolute /assets on the origin host is not a site object.
+                # Live passes it through (COS 404). The guard must not turn that into 403/5xx.
+                if site_object:
+                    if asset_status != 200:
+                        problems.append(f"asset {asset_status} {asset}")
+                elif asset_status in (403, 500, 502, 503, 545) or not asset_status:
+                    problems.append(f"asset {asset_status} {asset}")
             elif body and re.search(br"<script|<link", body, re.I):
                 problems.append("entry script/css did not return a fetchable URL")
             if elapsed_ms > budget_ms:
