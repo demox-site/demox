@@ -1734,6 +1734,43 @@ test('cross-host origin re-entry that keeps the visitor Host returns 200', async
   }
 });
 
+test('www without a guard secret fetches documents as GET or HEAD and sends no body', async () => {
+  const r = makeGuard({
+    secret: '',
+    resolver: (payload) => {
+      if (payload.websiteId === 'EPX2UU43') return json(allow('EPX2UU43', '1985655011013808129'));
+      if (payload.subdomain === 'www') {
+        return json({
+          success: true,
+          path: 'sites/1985655011013808129/EPX2UU43/dist',
+          websiteId: 'EPX2UU43',
+          origin: 'sites.demox.site',
+          visibility: 'public',
+          hideWatermark: true
+        });
+      }
+      throw new Error('unexpected resolve ' + JSON.stringify(payload));
+    }
+  });
+  for (const method of ['POST', 'PUT', 'OPTIONS', 'DELETE', 'PATCH']) {
+    r.calls.origin.length = 0;
+    const { response, html } = await r.call('https://www.demox.site/', {
+      method,
+      headers: { Accept: 'text/html' },
+      body: 'visitor-body'
+    });
+    assert.equal(response.status, 200, method);
+    assert.match(html, /Public body/, method);
+    assert.ok(r.calls.origin.length >= 1, method);
+    assert.equal(r.calls.origin[0].method, 'GET', method);
+    assert.equal(r.calls.origin[0].token, '', method);
+    assert.equal(r.calls.origin[0].hostHeader, null, method);
+  }
+  r.calls.origin.length = 0;
+  await r.call('https://www.demox.site/', { method: 'HEAD', headers: { Accept: 'text/html' } });
+  assert.equal(r.calls.origin[0].method, 'HEAD');
+});
+
 test('a decoded C0 or DEL control character is 400 and does not fetch origin', async () => {
   const r = makeGuard({
     resolver: () => { throw new Error('must not look up'); }

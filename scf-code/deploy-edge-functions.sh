@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# DEMOX_TEST_HOST_MAP 非空时拒绝部署 ef-1281msyw。该变量只属于 ef-k2test。
+# DEMOX_TEST_HOST_MAP 非空时拒绝部署 ef-1281msyw。不要为这个变量新建测试边缘函数。
 map_value="${DEMOX_TEST_HOST_MAP-}"
 map_value="${map_value#"${map_value%%[![:space:]]*}"}"
 map_value="${map_value%"${map_value##*[![:space:]]}"}"

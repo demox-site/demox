@@ -20,32 +20,22 @@ EdgeOne 写明的「子请求走节点缓存 / 回源、而不是按另一个 ho
 
 ## 修复
 
-www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`accept`、`accept-encoding`、`accept-language`、`user-agent`，再加上 `x-demox-origin-token`。`range`、`if-none-match`、`if-modified-since` 只跟主文档那一次回源。SPA 的 `index.html` 和 `404.html` 不带这两类头。不带 Host、Cookie、Authorization、Proxy-Authorization、逐跳头（`connection`、`keep-alive`、`te`、`trailer`、`transfer-encoding`、`upgrade`、`proxy-*`）、`eo-*`、`x-forwarded-*`、`cdn-loop`。没有签名槽时仍把原来的 `req` 交给 `originFetch`。不按 Host 免裁决。www 的响应带固定值 `x-demox-origin-sign: signed|no-slot|sign-failed`，里面没有密钥、KID 或令牌。15s TTL 和 503 超时响应不动。
+www 的页面、SPA `index.html`、www 的 `404.html` 只从白名单抄头：`accept`、`accept-encoding`、`accept-language`、`user-agent`，再加上 `x-demox-origin-token`。`range`、`if-none-match`、`if-modified-since` 只跟主文档那一次回源。SPA 的 `index.html` 和 `404.html` 不带这两类头。不带 Host、Cookie、Authorization、Proxy-Authorization、逐跳头（`connection`、`keep-alive`、`te`、`trailer`、`transfer-encoding`、`upgrade`、`proxy-*`）、`eo-*`、`x-forwarded-*`、`cdn-loop`。没有签名槽时，用户站点仍把原来的 `req` 交给 `originFetch`。www 的文档回源在没有密钥时也显式用 GET/HEAD，不把入站 `req` 交出去。不按 Host 免裁决。www 的响应带固定值 `x-demox-origin-sign: signed|no-slot|sign-failed`，里面没有密钥、KID 或令牌。15s TTL 和 503 超时响应不动。
 
 ## 上线前核对（不要动 ef-1281msyw）
 
-测试函数和将要发布的文件必须是同一份字节。`DEMOX_TEST_HOST_MAP` 只配在 `ef-k2test` 上。生产不设这个变量。触发规则只匹配 `k2t-www`、`k2t-sites`、`k2t-apex`、`k2t-pub`、`k2t-ban`，并且排在 `rule-fxfyqmn5` 前面。不要改 `ef-1281msyw`。`DEMOX_TEST_HOST_MAP` 有任何非空值时，`scripts/edge-router-rollback.sh` 和 `scf-code/deploy-edge-functions.sh` 拒绝部署 `ef-1281msyw`。
+没有单独的测试边缘函数，也不会新建。不要把 `DEMOX_TEST_HOST_MAP` 配到生产函数上。这个变量只要非空，`scripts/edge-router-rollback.sh` 和 `scf-code/deploy-edge-functions.sh` 就拒绝 `ModifyFunction`。
 
-内层那一跳打的是 `k2t-sites`，仍然进这份测试代码，所以 www 的 `/`、`/pricing` 和未知路径必须是 `origin-guard=internal`。`REQUIRE_INTERNAL=1` 是强制的，脚本拒绝把它关掉。
-
-脚本只发公开 GET，带的 Host 和 URL host 相同。`BASE` 必须匹配 `^k2t(-[a-z0-9]+)*$`，主机由这个标签拼出来。不用通配：`*` 会吃掉 `@`、`/`、`?`、`#`、`:`，curl 会连上生产 www。会打到生产主机时，`REQUIRE_INTERNAL=0` 不能得到 PASS。日志写在仓库外（默认 `/tmp/demox-origin-guard-verify/`），因为路径里可能有 uid。每个响应都要有 `x-demox-env: nonprod`。除了状态码，还核对 www `/` 和 `/pricing` 的页面标记、404 正文是 HTML，以及 403 里没有被封禁站点的内容。出现 423、503、5xx、599 或 `origin-guard=error` 即失败。
-
-| 请求 URL | 期望 |
-| --- | --- |
-| `https://k2t-www.demox.site/` | 200，`origin-guard=internal`，`x-demox-env: nonprod` |
-| `https://k2t-www.demox.site/pricing` | 200，`origin-guard=internal` |
-| `https://k2t-www.demox.site/k2t-nope-<rand>` | 404，`origin-guard=internal` |
-| `https://k2t-sites.demox.site/sites/1985655011013808129/EPX2UU43/dist/index.html` | 200，`origin-guard=allow` |
-| `https://k2t-sites.demox.site/sites/<uid>/<封禁 ID>/…` | 403，`origin-guard=blocked`，no-store；再请求一次仍是 403 |
-| `https://k2t-ban.demox.site/` | 403 |
-| `https://k2t-sites.demox.site/sites/<uid>/<私有 ID>/…` | 403，`origin-guard=blocked` |
-| `https://k2t-pub.demox.site/` | 200 |
+对照在本机做。子请求重入本地这份正文，最后一跳才去 COS，不会把 `*.demox.site` 打到线上边缘（那样会跑到现网旧正文，看起来全绿）。
 
 ```bash
-BANNED_PATH='/sites/<uid>/<ID>/dist/index.html' \
-PRIVATE_PATH='/sites/<uid>/<私有 ID>/dist/index.html' \
-bash scripts/origin-guard-www-verify.sh
+node scripts/edge/preprod-diff.cjs --self-test
+node scripts/edge/preprod-diff.cjs --calibrate --save-baseline /tmp/demox-p0-baseline.json
+node scripts/edge/preprod-diff.cjs --calibrate --baseline /tmp/demox-p0-baseline.json
+node scripts/edge/preprod-diff.cjs
 ```
+
+`--calibrate` 先确认现网正文和公开基线一致，再看工作区正文的差分。封禁路径没放进环境变量就跳过那一行。出现非预期差异、或有一跳出网打到 `*.demox.site`，退出码非 0，不要 `ModifyFunction`。
 
 ## 回滚
 

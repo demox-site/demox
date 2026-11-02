@@ -271,14 +271,18 @@ Demox 的源码是开放的，用于：
 
 ## 边缘路由上线前对照
 
-`scripts/edge/preprod-diff.cjs` 在本机跑两份 `subdomain-router.js`：工作区和 `LIVE.sha256` 指向的现网正文。`--self-test` 用模拟源站，退出码非 0 表示出现了封禁 403 / 查询失败 503 以外的差异。
+`scripts/edge/preprod-diff.cjs` 在本机跑两份 `subdomain-router.js`：工作区和 `LIVE.sha256` 指向的现网正文（`0e706f11`）。两边都不配源站守卫密钥，和生产一致。子请求里指向 `*.demox.site` 的回源会重入这一份本地函数，不会打到线上 EdgeOne。最后一跳才出网，主机是代码里的 COS 网站域名（`site-N` 用广州桶，`sites.demox.site` 用 `LEGACY_BUCKET` 的成都桶）。桶 1 的公开网站域名现在是 AccessDenied，这一跳用事先抓的公开对象快照，不当成路由器子请求打回边缘。任何一跳出网打到 `*.demox.site` 或白名单以外的主机，退出码非 0。请求数有上限（`DEMOX_PREPROD_MAX_REQUESTS`，默认 240），相邻请求间隔 `DEMOX_PREPROD_GAP_MS`（默认 80）。
+
+不要为了对照去建测试边缘函数。`DEMOX_TEST_HOST_MAP` 仍然只用来拦住对 `ef-1281msyw` 的 `ModifyFunction`。
 
 ```bash
 node scripts/edge/preprod-diff.cjs --self-test
-DEMOX_BANNED_PATH='/sites/<uid>/<id>/dist/index.html' node scripts/edge/preprod-diff.cjs
+node scripts/edge/preprod-diff.cjs --calibrate --save-baseline /tmp/demox-p0-baseline.json
+node scripts/edge/preprod-diff.cjs --calibrate --baseline /tmp/demox-p0-baseline.json
+node scripts/edge/preprod-diff.cjs
 ```
 
-线上对照会真实请求源站。签名密钥从 `DEMOX_ORIGIN_GUARD_SECRET_A` 读取，脚本不打印它。可选 `--allowlist diffs.txt`，一行一条已经接受的差异。
+`--calibrate` 用现网正文对公开请求做逐行对照（状态码、`x-demox-route`、`cache-control`、`content-type`、正文长度和 sha256）。`DEMOX_BANNED_PATH` 或密钥没有就不跑那几行，并在输出里写 SKIP。`--self-test` 用模拟源站，退出码非 0 表示出现了封禁 403 / 查询失败 503 以外的差异。最后一条是同一套公开矩阵上的新旧正文差分，同样不配密钥。可选 `--allowlist diffs.txt`，一行一条已经接受的差异。密钥如果另外要跑，从 `DEMOX_ORIGIN_GUARD_SECRET_A` 读取，脚本不打印它。
 
 ## 📄 License
 
