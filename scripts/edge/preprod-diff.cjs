@@ -540,7 +540,10 @@ async function invoke(handle, url, method, cookie) {
     length: body.length,
     sha: sha256(body),
     body: body.toString('utf8'),
-    hops: handle.__hops.map((hop) => Object.assign({}, hop))
+    hops: handle.__hops.map((hop) => Object.assign({}, hop)),
+    cdnCache: response.headers.get('cdn-cache-control') || '',
+    surrogate: response.headers.get('surrogate-control') || '',
+    expires: response.headers.get('expires') || ''
   };
 }
 
@@ -580,16 +583,31 @@ function rowKey(row) {
   return [row.scheme, row.host, row.method, row.path, row.cookie ? 'cookie' : 'nocookie', row.kind].join(' ');
 }
 
+function noStoreOnly(result) {
+  const parts = String(result && result.cache || '').toLowerCase().split(',').map((part) => part.trim()).filter(Boolean);
+  if (!parts.includes('no-store')) return false;
+  if (parts.some((part) => /s-maxage|max-age|public/.test(part))) return false;
+  if (result.cdnCache || result.surrogate || result.expires) return false;
+  return true;
+}
+
 function verdict(row, oldR, newR, allow) {
+  // 库里没有这个站点 ID：边缘 404，且必须 no-store，否则新发布的站点会被节点缓存成 404。
+  if (row.kind === 'nosuch') {
+    if (newR.status === 404 && noStoreOnly(newR)) return 'missing-site-404';
+    return 'unexpected';
+  }
   const same = oldR.status === newR.status && oldR.sha === newR.sha;
   if (same) return 'same';
   const allowed = allow.some((item) => item === rowKey(row));
   if (allowed) return 'expected';
   if ((row.kind === 'banned' || row.kind === 'private') && newR.status === 403 && oldR.status !== 403) return 'expected';
   if (row.kind === 'lookup' && newR.status === 503 && oldR.status !== 503) return 'expected';
-  // 未知站点 ID：守卫直接 404，不再把 POST/OPTIONS 交给 COS（405/400）。
-  if (row.kind === 'nosuch' && newR.status === 404 && (oldR.status !== 404 || oldR.sha !== newR.sha)) return 'expected';
   return 'unexpected';
+}
+
+function isExpectedMark(mark) {
+  return mark === 'expected' || mark === 'missing-site-404';
 }
 
 function hopSafe(hop) {
@@ -627,8 +645,9 @@ async function runOfflineMatrix(allowlist) {
   return {
     results,
     unexpected: results.filter((item) => item.mark === 'unexpected'),
-    expected: results.filter((item) => item.mark === 'expected'),
+    expected: results.filter((item) => isExpectedMark(item.mark)),
     same: results.filter((item) => item.mark === 'same'),
+    missingSite: results.filter((item) => item.mark === 'missing-site-404'),
     unsafe
   };
 }
@@ -658,7 +677,8 @@ function formatTable(report) {
       .concat((item.newR.hops || []).map((hop) => Object.assign({ side: 'new' }, hop)));
     for (const hop of hops) lines.push('  ' + hop.side + formatHop(hop));
   }
-  lines.push('same=' + report.same.length + ' expected=' + report.expected.length + ' unexpected=' + report.unexpected.length);
+  const missing = report.missingSite ? report.missingSite.length : report.results.filter((item) => item.mark === 'missing-site-404').length;
+  lines.push('same=' + report.same.length + ' expected=' + report.expected.length + ' unexpected=' + report.unexpected.length + ' missing-site-404=' + missing);
   if (report.unsafe && report.unsafe.length) lines.push('unsafe-network=' + report.unsafe.length);
   return lines.join('\n');
 }
@@ -1042,8 +1062,9 @@ async function runLiveDifferential(argv) {
     results: results.filter((item) => item.mark !== 'skipped'),
     skipped: results.filter((item) => item.mark === 'skipped'),
     unexpected: results.filter((item) => item.mark === 'unexpected'),
-    expected: results.filter((item) => item.mark === 'expected'),
+    expected: results.filter((item) => isExpectedMark(item.mark)),
     same: results.filter((item) => item.mark === 'same'),
+    missingSite: results.filter((item) => item.mark === 'missing-site-404'),
     unsafe: collectUnsafe(results.filter((item) => item.oldR))
   };
   return report;

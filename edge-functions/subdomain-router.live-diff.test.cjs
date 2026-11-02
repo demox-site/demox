@@ -71,6 +71,14 @@ test('offline p0 matrix has no unexpected diff against the live body', async () 
   }
   assert.equal(report.unexpected.length, 0);
   assert.ok(report.expected.length > 0, 'banned and lookup rows must differ');
+  const missing = report.results.filter((item) => item.mark === 'missing-site-404');
+  assert.ok(missing.length > 0, 'unknown site ids must be classified missing-site-404');
+  for (const item of missing) {
+    assert.equal(item.newR.status, 404);
+    assert.equal(String(item.newR.cache).toLowerCase(), 'no-store');
+    assert.equal(item.newR.cdnCache || '', '');
+    assert.equal(item.newR.expires || '', '');
+  }
   assert.ok(report.same.some((item) => item.row.host === 'www.demox.site' && item.row.method === 'POST' && item.row.path === '/'));
   assert.ok(report.same.some((item) => item.row.host === 'www.demox.site' && item.row.method === 'OPTIONS' && item.row.path === '/'));
 });
