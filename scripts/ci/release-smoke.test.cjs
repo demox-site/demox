@@ -47,8 +47,23 @@ function fakeFetch(routes) {
   return fn;
 }
 
-function happyRoutes({ adminStatus = 403, health = 200, siteMarker = true } = {}) {
+function bodyOf(opts) {
+  try {
+    return JSON.parse(opts.body || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function happyRoutes({
+  adminStatus = 403,
+  health = 200,
+  siteMarker = true,
+  rejectExe = { status: 200, success: false, code: 'EXECUTABLE_FILE_REJECTED' },
+  rejectMsi = { status: 200, success: false, code: 'EXECUTABLE_FILE_REJECTED' }
+} = {}) {
   const html = '<!doctype html><script src="/assets/index-abc123.js"></script>';
+  const rejectBody = (spec) => JSON.stringify({ success: spec.success, code: spec.code, message: '发布失败：可执行文件' });
   return [
     { match: (url) => url.endsWith('/health'), status: health, body: '{"status":"ok"}' },
     { match: (url) => url === 'https://www.example/' || url === 'https://www.example', status: 200, body: html },
@@ -64,6 +79,16 @@ function happyRoutes({ adminStatus = 403, health = 200, siteMarker = true } = {}
       body: adminStatus === 200 ? JSON.stringify({ success: true, data: [] }) : JSON.stringify({ success: false, error: '仅管理员可访问' })
     },
     {
+      match: (url, opts) => url.endsWith('/deploy') && bodyOf(opts).action === 'init_deploy_upload' && bodyOf(opts).fileName === 'Setup.MSI',
+      status: rejectMsi.status,
+      body: rejectBody(rejectMsi)
+    },
+    {
+      match: (url, opts) => url.endsWith('/deploy') && bodyOf(opts).action === 'init_deploy_upload',
+      status: rejectExe.status,
+      body: rejectBody(rejectExe)
+    },
+    {
       match: (url, opts) => url.endsWith('/deploy'),
       status: 200,
       body: JSON.stringify({ success: true, websiteId: WEBSITE_ID, defaultUrl: `https://${WEBSITE_ID.toLowerCase()}.demox.site/` })
@@ -74,6 +99,16 @@ function happyRoutes({ adminStatus = 403, health = 200, siteMarker = true } = {}
       body: siteMarker ? '<p>demox-smoke-42</p>' : '<p>old</p>'
     }
   ];
+}
+
+function postActions(fetchImpl, urlPrefix) {
+  return fetchImpl.calls
+    .filter((call) => call.url.startsWith(urlPrefix) && (call.method || 'GET') === 'POST')
+    .map((call) => bodyOf(call).action || call.url);
+}
+
+function deployCalls(fetchImpl, action) {
+  return fetchImpl.calls.filter((call) => call.url.endsWith('/deploy') && bodyOf(call).action === action);
 }
 
 test('config names the two accounts and refuses a missing secret', () => {
@@ -121,12 +156,37 @@ test('happy path smokes both accounts and masks the password before any other lo
   assert.equal(text.includes(PASSWORD), false);
   assert.equal(text.includes(EMAIL), false);
   assert.equal(text.includes(TOKEN), false);
-  const deploys = fetchImpl.calls.filter((call) => call.url.endsWith('/deploy'));
-  assert.equal(deploys.length, 2);
+  const publishes = deployCalls(fetchImpl, 'upload_and_deploy');
+  assert.equal(publishes.length, 2);
+  assert.equal(bodyOf(publishes[0]).fileName, 'index.html.zip');
+  assert.equal(bodyOf(publishes[0]).websiteId, WEBSITE_ID);
+  const rejects = deployCalls(fetchImpl, 'init_deploy_upload');
+  assert.equal(rejects.length, 4);
+  for (const call of rejects) {
+    assert.deepEqual(bodyOf(call), { action: 'init_deploy_upload', fileName: bodyOf(call).fileName });
+    assert.equal(call.headers.Authorization, `Bearer ${TOKEN}`);
+  }
+  assert.deepEqual(rejects.map((call) => bodyOf(call).fileName), ['x.exe', 'Setup.MSI', 'x.exe', 'Setup.MSI']);
+  assert.deepEqual(postActions(fetchImpl, 'https://api.demox.site'), [
+    'login',
+    'list_user_roles',
+    'init_deploy_upload',
+    'init_deploy_upload',
+    'upload_and_deploy'
+  ]);
+  assert.deepEqual(postActions(fetchImpl, 'https://lin-backup.example'), [
+    'login',
+    'list_user_roles',
+    'init_deploy_upload',
+    'init_deploy_upload',
+    'upload_and_deploy'
+  ]);
   const login = fetchImpl.calls.find((call) => call.url.endsWith('/auth/login'));
   assert.equal(JSON.parse(login.body).password, PASSWORD);
   assert.match(text, /易点/);
   assert.match(text, /磷/);
+  assert.match(text, /reject x\.exe: HTTP 200 code=EXECUTABLE_FILE_REJECTED/);
+  assert.match(text, /reject Setup\.MSI: HTTP 200 code=EXECUTABLE_FILE_REJECTED/);
 });
 
 test('an admin test account fails before publish', async () => {
@@ -159,6 +219,41 @@ test('homepage without the expected bundle fails', async () => {
     }),
     /www/
   );
+});
+
+test('accepting an executable file fails the smoke before publish', async () => {
+  const fetchImpl = fakeFetch(happyRoutes({
+    rejectExe: { status: 200, success: true, code: '' }
+  }));
+  await assert.rejects(
+    () => runSmoke({ env: env(), fetchImpl, rawLog: () => {}, log: () => {}, secrets: [], wait: async () => {} }),
+    /可执行文件拒收失败：x\.exe HTTP 200/
+  );
+  assert.equal(deployCalls(fetchImpl, 'upload_and_deploy').length, 0);
+  assert.equal(deployCalls(fetchImpl, 'init_deploy_upload').length, 1);
+});
+
+test('Setup.MSI must be rejected with the same code before publish', async () => {
+  const fetchImpl = fakeFetch(happyRoutes({
+    rejectMsi: { status: 400, success: false, code: 'INVALID_TOTAL_SIZE' }
+  }));
+  await assert.rejects(
+    () => runSmoke({ env: env(), fetchImpl, rawLog: () => {}, log: () => {}, secrets: [], wait: async () => {} }),
+    /可执行文件拒收失败：Setup\.MSI HTTP 400 INVALID_TOTAL_SIZE/
+  );
+  assert.equal(deployCalls(fetchImpl, 'upload_and_deploy').length, 0);
+  assert.deepEqual(deployCalls(fetchImpl, 'init_deploy_upload').map((call) => bodyOf(call).fileName), ['x.exe', 'Setup.MSI']);
+});
+
+test('executable rejection with the wrong HTTP status fails the smoke before publish', async () => {
+  const fetchImpl = fakeFetch(happyRoutes({
+    rejectExe: { status: 500, success: false, code: 'EXECUTABLE_FILE_REJECTED' }
+  }));
+  await assert.rejects(
+    () => runSmoke({ env: env(), fetchImpl, rawLog: () => {}, log: () => {}, secrets: [], wait: async () => {} }),
+    /可执行文件拒收失败：x\.exe HTTP 500 EXECUTABLE_FILE_REJECTED/
+  );
+  assert.equal(deployCalls(fetchImpl, 'upload_and_deploy').length, 0);
 });
 
 test('published site must contain this run marker', async () => {
