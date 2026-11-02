@@ -20,6 +20,10 @@
 // with an empty body. Those are the baseline and the bucket-1 object snapshots,
 // not router subrequests. --calibrate --baseline reuses the saved file and only
 // dials *.demox.site again if a snapshot for a discovered asset is missing.
+// Those client requests, and the COS final hop, are pinned to addresses from
+// DNS-over-HTTPS (or --resolve host:ip). System DNS is not used for them unless
+// --no-doh / DEMOX_PREPROD_DOH=0. http:// on EdgeOne hosts is excluded from the
+// calibration score: EO redirects it to https before the function runs.
 //
 // Signing keys are read from the environment and never printed.
 // DEMOX_BANNED_PATH is optional. Rows that need it are skipped when it is unset.
@@ -29,6 +33,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
+const tls = require('tls');
 const vm = require('vm');
 const { execFileSync } = require('child_process');
 
@@ -95,6 +100,87 @@ if (PREPROD_LIMITS.clamped) {
 
 let netCount = 0;
 let lastNetAt = 0;
+const pinnedAddress = new Map();
+
+const HTTP_EXCLUDE_REASON = 'pre-function 301 (EO redirects http→https before the edge function)';
+
+function isReservedIPv4(ip) {
+  const parts = String(ip || '').split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const a = parts[0];
+  const b = parts[1];
+  const c = parts[2];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true;
+  if (a >= 224) return true;
+  return false;
+}
+
+function parseBannedPath(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const matched = text.match(/\/sites\/([^/]+)\/([A-Za-z0-9]+)/);
+  if (!matched) return null;
+  return { uid: matched[1], id: matched[2].toUpperCase() };
+}
+
+function parseHostPin(spec) {
+  const text = String(spec || '').trim();
+  const idx = text.lastIndexOf(':');
+  if (idx <= 0) return null;
+  return { host: text.slice(0, idx).toLowerCase(), ip: text.slice(idx + 1) };
+}
+
+function parseCli(argv) {
+  const pins = new Map();
+  const envPins = String(process.env.DEMOX_PREPROD_RESOLVE || '');
+  for (const part of envPins.split(',')) {
+    const pin = parseHostPin(part);
+    if (pin) pins.set(pin.host, pin.ip);
+  }
+  let doh = process.env.DEMOX_PREPROD_DOH !== '0' && String(process.env.DEMOX_PREPROD_DOH || '').toLowerCase() !== 'off';
+  const rest = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--no-doh') {
+      doh = false;
+      continue;
+    }
+    if (argv[i] === '--doh') {
+      doh = true;
+      continue;
+    }
+    if (argv[i] === '--resolve') {
+      const pin = parseHostPin(argv[i + 1]);
+      if (!pin) throw new Error('--resolve expects host:ip');
+      pins.set(pin.host, pin.ip);
+      i += 1;
+      continue;
+    }
+    rest.push(argv[i]);
+  }
+  return { argv: rest, pins, doh };
+}
+
+function eoFrontedHost(host) {
+  const value = String(host || '').toLowerCase();
+  return value.endsWith('.demox.site') && !/^site-\d+\.demox\.site$/.test(value);
+}
+
+function httpExcludeNote(snap) {
+  if (!snap || !snap.headers) return HTTP_EXCLUDE_REASON + '; not captured';
+  const location = snap.headers.get('location') || '';
+  if (snap.status >= 300 && snap.status < 400 && location.indexOf('https://') === 0) {
+    return HTTP_EXCLUDE_REASON + '; verified ' + snap.status + ' → ' + location;
+  }
+  return HTTP_EXCLUDE_REASON + '; note: response was ' + snap.status + ' not a 301 to https';
+}
 
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -152,7 +238,8 @@ async function pace() {
   lastNetAt = Date.now();
 }
 
-function rawRequest(urlString, method, headers, body) {
+function rawRequest(urlString, method, headers, body, options) {
+  const opts = options || {};
   const u = new URL(urlString);
   const lib = u.protocol === 'http:' ? http : https;
   const headerBag = {};
@@ -162,15 +249,23 @@ function rawRequest(urlString, method, headers, body) {
       if (value != null && value !== '') headerBag[name] = value;
     }
   }
+  if (!headerBag.Host && !headerBag.host) headerBag.Host = u.hostname;
+  const pin = opts.pin === false ? '' : (pinnedAddress.get(u.hostname.toLowerCase()) || '');
+  const connectHost = pin || u.hostname;
   return new Promise((resolve, reject) => {
     const req = lib.request({
       protocol: u.protocol,
-      hostname: u.hostname,
+      host: connectHost,
+      hostname: connectHost,
       port: u.port || (u.protocol === 'http:' ? 80 : 443),
       path: (u.pathname || '/') + u.search,
       method: method,
       headers: headerBag,
-      servername: u.hostname
+      rejectUnauthorized: true,
+      servername: u.hostname,
+      checkServerIdentity: function (_presented, cert) {
+        return tls.checkServerIdentity(u.hostname, cert);
+      }
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -194,6 +289,61 @@ function rawRequest(urlString, method, headers, body) {
     if (body != null && method !== 'GET' && method !== 'HEAD') req.write(body);
     req.end();
   });
+}
+
+function dohEndpoints(name) {
+  const q = encodeURIComponent(name);
+  return [
+    'https://dns.alidns.com/resolve?name=' + q + '&type=A',
+    'https://doh.pub/dns-query?name=' + q + '&type=A'
+  ];
+}
+
+async function dohLookupA(name) {
+  let lastError = null;
+  for (const url of dohEndpoints(name)) {
+    try {
+      const snap = await rawRequest(url, 'GET', { Accept: 'application/dns-json' }, null, { pin: false });
+      const data = JSON.parse(snap.body.toString('utf8'));
+      const answers = (data.Answer || []).filter((item) => item && item.type === 1 && item.data);
+      if (!answers.length) throw new Error('no A record for ' + name);
+      return { ip: String(answers[0].data), via: new URL(url).hostname };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('DoH failed for ' + name);
+}
+
+async function pinAllowlistedHosts(overrides, doh) {
+  const hosts = Array.from(CLIENT_ALLOW).concat([BUCKET1_COS, SITE3_COS]);
+  const report = [];
+  pinnedAddress.clear();
+  for (const host of hosts) {
+    const key = host.toLowerCase();
+    if (overrides && overrides.has(key)) {
+      const ip = overrides.get(key);
+      if (isReservedIPv4(ip)) throw new Error('refusing reserved resolve ' + host + ' -> ' + ip);
+      pinnedAddress.set(key, ip);
+      report.push({ host: key, ip: ip, via: 'override' });
+      continue;
+    }
+    if (!doh) {
+      report.push({ host: key, ip: '', via: 'system-dns' });
+      continue;
+    }
+    const found = await dohLookupA(key);
+    if (isReservedIPv4(found.ip)) {
+      throw new Error('refusing reserved DoH answer ' + host + ' -> ' + found.ip + ' via ' + found.via);
+    }
+    pinnedAddress.set(key, found.ip);
+    report.push({ host: key, ip: found.ip, via: found.via });
+  }
+  return report;
+}
+
+function formatResolutions(list) {
+  return (list || []).map((item) => 'resolve ' + item.host + ' ' + (item.ip || '-') + ' ' + item.via).join('\n');
 }
 
 async function openNetwork(host, url, method, headers, transport) {
@@ -273,8 +423,11 @@ function hrefOf(input) {
   return String(input && input.url ? input.url : input);
 }
 
-function resolveBody(payload, liveSites) {
-  if (payload.websiteId === 'BANNED1') return { success: true, allow: false, reason: 'blocked' };
+function resolveBody(payload, liveSites, bannedId) {
+  const websiteId = String(payload.websiteId || '').toUpperCase();
+  if (websiteId === 'BANNED1' || (bannedId && websiteId === bannedId)) {
+    return { success: true, allow: false, reason: 'blocked' };
+  }
   if (payload.websiteId === 'PRIV8') {
     return { success: true, allow: true, visibility: 'private', path: 'sites/owner-1/PRIV8/dist' };
   }
@@ -374,6 +527,8 @@ function createHandle(source, options) {
   const secret = !!opts.secret;
   const liveOrigin = !!opts.liveOrigin;
   const liveSites = !!opts.liveSites;
+  const banned = parseBannedPath(opts.bannedPath != null ? opts.bannedPath : process.env.DEMOX_BANNED_PATH);
+  const bannedId = banned ? banned.id : '';
   const snapshots = opts.snapshots || new Map();
   const originCache = opts.originCache || null;
   const onCos = opts.onCos;
@@ -419,7 +574,7 @@ function createHandle(source, options) {
             headers: { 'content-type': 'application/json' }
           });
         }
-        const body = resolveBody(payload, liveSites);
+        const body = resolveBody(payload, liveSites, bannedId);
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { 'content-type': 'application/json' }
@@ -908,7 +1063,9 @@ function restoreView(item) {
   };
 }
 
-async function runCalibration(argv) {
+async function runCalibration(argv, net) {
+  const network = net || { pins: new Map(), doh: true };
+  const resolutions = await pinAllowlistedHosts(network.pins, network.doh);
   const saveAt = argv.includes('--save-baseline') ? argv[argv.indexOf('--save-baseline') + 1] : '';
   const loadAt = argv.includes('--baseline') ? argv[argv.indexOf('--baseline') + 1] : '';
   const liveSource = loadLiveSource();
@@ -985,18 +1142,16 @@ async function runCalibration(argv) {
   const matched = [];
   const mismatched = [];
   const skipped = [];
+  const excluded = [];
   for (const item of baseline) {
     if (item.skipped) {
       skipped.push(item);
       continue;
     }
     const row = item.row;
-    if (row.scheme === 'http') {
-      const location = item.snap.headers.get('location') || '';
-      if (item.snap.status >= 300 && item.snap.status < 400 && location.indexOf('https://') === 0) {
-        skipped.push({ row, skipped: 'edge http→https before the function' });
-        continue;
-      }
+    if (row.scheme === 'http' && eoFrontedHost(row.host)) {
+      excluded.push({ row, skipped: httpExcludeNote(item.snap) });
+      continue;
     }
     const url = row.scheme + '://' + row.host + row.path;
     let local;
@@ -1019,19 +1174,25 @@ async function runCalibration(argv) {
     else matched.push(record);
   }
   const unsafe = collectUnsafe(mismatched.concat(matched));
-  return { matched, mismatched, skipped, unsafe, asset, bucket1Status, netCount };
+  return { matched, mismatched, skipped, excluded, unsafe, asset, bucket1Status, netCount, resolutions };
 }
 
 function formatCalibration(report) {
   const lines = [];
+  const resolved = formatResolutions(report.resolutions);
+  if (resolved) lines.push(resolved);
   lines.push('bucket1-cos-status=' + (report.bucket1Status || 'unknown') + ' asset=' + (report.asset || ''));
-  lines.push('matched=' + report.matched.length + ' mismatched=' + report.mismatched.length + ' skipped=' + report.skipped.length);
+  const excluded = report.excluded || [];
+  lines.push('matched=' + report.matched.length + ' mismatched=' + report.mismatched.length + ' skipped=' + report.skipped.length + ' excluded=' + excluded.length);
   if (!process.env.DEMOX_BANNED_PATH) lines.push('SKIP banned-path DEMOX_BANNED_PATH unset');
   if (!process.env.DEMOX_ORIGIN_GUARD_SECRET_A) lines.push('SKIP secret DEMOX_ORIGIN_GUARD_SECRET_A unset (production has none)');
   for (const item of report.skipped) {
     let why = item.skipped || '';
     if (/certificate|altnames|tls/i.test(why)) why = 'tls certificate name mismatch';
     lines.push('SKIP ' + item.row.scheme + ' ' + item.row.method + ' ' + item.row.host + item.row.path + ' ' + why);
+  }
+  for (const item of report.excluded || []) {
+    lines.push('EXCLUDE ' + item.row.scheme + ' ' + item.row.method + ' ' + item.row.host + item.row.path + ' ' + item.skipped);
   }
   for (const item of report.mismatched) {
     const row = item.row;
@@ -1047,7 +1208,26 @@ function formatCalibration(report) {
   return lines.join('\n');
 }
 
-async function runLiveDifferential(argv) {
+async function runBannedEnvSelfTest(pathValue) {
+  const text = pathValue || '/sites/uid-placeholder/VMPZGKSR/dist/index.html';
+  const parsed = parseBannedPath(text);
+  if (!parsed) throw new Error('banned path is not /sites/<uid>/<ID>/...');
+  const handle = createHandle(loadNextSource(), { secret: false, bannedPath: text });
+  const pathName = text.charAt(0) === '/' ? text : '/' + text;
+  const url = 'https://sites.demox.site' + pathName;
+  for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+    const result = await invoke(handle, url, method, '');
+    if (result.status !== 403) throw new Error('banned ' + parsed.id + ' ' + method + ' status ' + result.status);
+    if (!noStoreOnly(result)) throw new Error('banned ' + parsed.id + ' ' + method + ' missing Cache-Control: no-store');
+    const fetched = (result.hops || []).some((hop) => hop.via === 'mock-origin' || hop.via === 'network' || hop.via === 'origin-snapshot');
+    if (fetched) throw new Error('banned ' + parsed.id + ' ' + method + ' fetched origin');
+  }
+  return parsed;
+}
+
+async function runLiveDifferential(argv, net) {
+  const network = net || { pins: new Map(), doh: true };
+  const resolutions = await pinAllowlistedHosts(network.pins, network.doh);
   const allowFile = argv.includes('--allowlist') ? argv[argv.indexOf('--allowlist') + 1] : '';
   const allow = readAllowlist(allowFile);
   const banned = process.env.DEMOX_BANNED_PATH || '';
@@ -1099,7 +1279,8 @@ async function runLiveDifferential(argv) {
     expected: results.filter((item) => isExpectedMark(item.mark)),
     same: results.filter((item) => item.mark === 'same'),
     missingSite: results.filter((item) => item.mark === 'missing-site-404'),
-    unsafe: collectUnsafe(results.filter((item) => item.oldR))
+    unsafe: collectUnsafe(results.filter((item) => item.oldR)),
+    resolutions
   };
   return report;
 }
@@ -1113,20 +1294,25 @@ function readAllowlist(file) {
 }
 
 async function main(argv) {
-  if (argv.includes('--self-test')) {
-    const allowFile = argv.includes('--allowlist') ? argv[argv.indexOf('--allowlist') + 1] : '';
+  const cli = parseCli(argv);
+  if (cli.argv.includes('--self-test')) {
+    const allowFile = cli.argv.includes('--allowlist') ? cli.argv[cli.argv.indexOf('--allowlist') + 1] : '';
     const report = await runOfflineMatrix(readAllowlist(allowFile));
     process.stdout.write(formatTable(report) + '\n');
+    const bannedProbe = await runBannedEnvSelfTest(process.env.DEMOX_BANNED_PATH || '');
+    process.stdout.write('banned-env-self-test=PASS id=' + bannedProbe.id + '\n');
     if (report.unsafe.length || report.unexpected.length) process.exit(1);
     return;
   }
-  if (argv.includes('--calibrate')) {
-    const report = await runCalibration(argv);
+  if (cli.argv.includes('--calibrate')) {
+    const report = await runCalibration(cli.argv, cli);
     process.stdout.write(formatCalibration(report) + '\n');
     if (report.unsafe.length || report.mismatched.length) process.exit(1);
     return;
   }
-  const report = await runLiveDifferential(argv);
+  const report = await runLiveDifferential(cli.argv, cli);
+  const resolved = formatResolutions(report.resolutions);
+  if (resolved) process.stdout.write(resolved + '\n');
   process.stdout.write(formatTable(report) + '\n');
   if (report.skipped && report.skipped.length) {
     process.stdout.write('skipped=' + report.skipped.length + '\n');
@@ -1150,6 +1336,9 @@ module.exports = {
   createHandle,
   openNetwork,
   resolvePreprodLimits,
+  parseBannedPath,
+  isReservedIPv4,
+  runBannedEnvSelfTest,
   outboundMethod,
   isEoHost,
   mapCos,

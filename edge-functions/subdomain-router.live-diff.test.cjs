@@ -10,7 +10,10 @@ const {
   runOfflineMatrix,
   runWwwChain,
   openNetwork,
-  resolvePreprodLimits
+  resolvePreprodLimits,
+  parseBannedPath,
+  isReservedIPv4,
+  runBannedEnvSelfTest
 } = require('../scripts/edge/preprod-diff.cjs');
 
 test('www re-entry sends GET to COS and returns the homepage for POST/PUT/OPTIONS', async () => {
@@ -69,6 +72,23 @@ test('preprod request cap and interval clamp to the allowed range', () => {
   assert.equal(inside.cap, 100);
   assert.equal(inside.gap, 120);
   assert.equal(inside.clamped, false);
+});
+
+test('reserved resolver answers and a banned id from DEMOX_BANNED_PATH', async () => {
+  assert.equal(isReservedIPv4('198.18.0.1'), true);
+  assert.equal(isReservedIPv4('10.0.0.1'), true);
+  assert.equal(isReservedIPv4('127.0.0.1'), true);
+  assert.equal(isReservedIPv4('43.169.13.139'), false);
+  assert.equal(parseBannedPath('/sites/owner-9/VMPZGKSR/dist/index.html').id, 'VMPZGKSR');
+  const previous = process.env.DEMOX_BANNED_PATH;
+  process.env.DEMOX_BANNED_PATH = '/sites/owner-9/VMPZGKSR/dist/index.html';
+  try {
+    const parsed = await runBannedEnvSelfTest(process.env.DEMOX_BANNED_PATH);
+    assert.equal(parsed.id, 'VMPZGKSR');
+  } finally {
+    if (previous == null) delete process.env.DEMOX_BANNED_PATH;
+    else process.env.DEMOX_BANNED_PATH = previous;
+  }
 });
 
 test('real-network open refuses EO hosts and unknown hosts', async () => {
