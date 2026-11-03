@@ -32,8 +32,10 @@ test('www re-entry sends GET to COS and returns the homepage for POST/PUT/OPTION
   assert.match(next.OPTIONS.route, /origin-guard=(internal|allow)/);
 });
 
-test('live 0e706f11 fetch(url, req) is sent as GET and www POST is the homepage', async () => {
+test('published 9f6e3057 www POST is GET to origin and returns the homepage', async () => {
   const liveSource = loadLiveSource();
+  assert.match(liveSource, /function wwwDocumentMethod/);
+  assert.match(liveSource, /function wwwUnsignedDocumentInit/);
   assert.match(liveSource, /originFetch\(buildOriginUrl\(req, originPath, u\.search, originHost\), req\)/);
   const live = await runWwwChain(liveSource, 'strict');
   for (const method of ['POST', 'PUT', 'OPTIONS']) {
@@ -106,7 +108,9 @@ test('offline p0 matrix has no unexpected diff against the live body', async () 
     assert.fail('unexpected diffs\n' + sample.join('\n'));
   }
   assert.equal(report.unexpected.length, 0);
-  assert.ok(report.expected.length > 0, 'banned and lookup rows must differ');
+  const guarded = report.results.filter((item) => item.row.kind === 'banned' || item.row.kind === 'private' || item.row.kind === 'lookup');
+  assert.ok(guarded.length > 0);
+  assert.ok(guarded.every((item) => item.mark === 'same' && item.oldR.status === item.newR.status));
   const missing = report.results.filter((item) => item.mark === 'missing-site-404');
   assert.ok(missing.length > 0, 'unknown site ids must be classified missing-site-404');
   for (const item of missing) {

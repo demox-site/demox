@@ -271,7 +271,7 @@ Demox 的源码是开放的，用于：
 
 ## 边缘路由上线前对照
 
-`scripts/edge/preprod-diff.cjs` 在本机跑两份 `subdomain-router.js`：工作区和 `LIVE.sha256` 指向的现网正文（`0e706f11`）。两边都不配源站守卫密钥，和生产一致。子请求里指向 `*.demox.site` 的回源会重入这一份本地函数，不会打到线上 EdgeOne。最后一跳才出网，主机是代码里的 COS 网站域名（`site-N` 用广州桶，`sites.demox.site` 用 `LEGACY_BUCKET` 的成都桶）。桶 1 的公开网站域名现在是 AccessDenied，这一跳用事先抓的公开对象快照，不当成路由器子请求打回边缘。任何一跳出网打到 `*.demox.site` 或白名单以外的主机，退出码非 0。请求数有上限（`DEMOX_PREPROD_MAX_REQUESTS`，默认 240，超过 300 会夹到 300），相邻请求间隔 `DEMOX_PREPROD_GAP_MS`（默认 80，小于 50 会夹到 50）。超出范围时脚本把实际生效的值打到 stderr。
+`scripts/edge/preprod-diff.cjs` 在本机跑两份 `subdomain-router.js`：工作区和 `LIVE.sha256` 指向的现网正文（`9f6e3057`）。两边都不配源站守卫密钥，和生产一致。子请求里指向 `*.demox.site` 的回源会重入这一份本地函数，不会打到线上 EdgeOne。最后一跳才出网，主机是代码里的 COS 网站域名（`site-N` 用广州桶，`sites.demox.site` 用 `LEGACY_BUCKET` 的成都桶）。桶 1 的公开网站域名现在是 AccessDenied，这一跳用事先抓的公开对象快照，不当成路由器子请求打回边缘。任何一跳出网打到 `*.demox.site` 或白名单以外的主机，退出码非 0。请求数有上限（`DEMOX_PREPROD_MAX_REQUESTS`，默认 240，超过 300 会夹到 300），相邻请求间隔 `DEMOX_PREPROD_GAP_MS`（默认 80，小于 50 会夹到 50）。超出范围时脚本把实际生效的值打到 stderr。
 
 不要为了对照去建测试边缘函数。`DEMOX_TEST_HOST_MAP` 仍然只用来拦住对 `ef-1281msyw` 的 `ModifyFunction`。
 

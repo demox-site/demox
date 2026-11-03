@@ -54,6 +54,12 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
 
 `PREVIOUS` 指向上一次发布时的 `edge-functions/subdomain-router.js`（git rev 或当时留下的文件）。两边 sha256 相同就停，避免空转。
 
+核对 `DescribeFunctions` 返回的 Content 时，取出正文字节再用 sha256。`jq` 要用 `-j`，不要用 `-r`：`-r` 会在字符串末尾再加一个换行，摘要就和文件字节对不上。
+
+```bash
+jq -j '.Response.Functions[] | select(.FunctionId=="ef-1281msyw") | .Content' describe.json | sha256sum
+```
+
 ## D2：OPTIONS 列
 
 下面四类 host 的 OPTIONS 是边缘本地 **204**，不查库、不回源。已解析站点（www、用户站、函数）的 OPTIONS 仍回源；P0 矩阵那一列继续和 baseline 比状态码和正文。
