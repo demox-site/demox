@@ -35,10 +35,9 @@ const https = require('https');
 const path = require('path');
 const tls = require('tls');
 const vm = require('vm');
-const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..', '..');
-const LIVE_GIT = '4131fb1687ab4874fef739093b9627e03994ac34:edge-functions/subdomain-router.js';
+const LIVE_FIXTURE = path.join(ROOT, 'edge-functions/fixtures/live-subdomain-router.0e706f11.js');
 const HOMEPAGE = '<!doctype html><title>Home</title><h1>homepage</h1>';
 const OBJECT_HTML = '<!doctype html><title>Object</title><h1>object</h1>';
 const SECRET = 'origin-guard-test-slot-a-placeholder';
@@ -192,7 +191,7 @@ function sha256Text(text) {
 
 function loadLiveSource() {
   const expected = fs.readFileSync(path.join(ROOT, 'edge-functions/LIVE.sha256'), 'utf8').trim();
-  const buf = execFileSync('git', ['show', LIVE_GIT], { cwd: ROOT, maxBuffer: 20 * 1024 * 1024 });
+  const buf = fs.readFileSync(LIVE_FIXTURE);
   const got = crypto.createHash('sha256').update(buf).digest('hex');
   if (got !== expected) {
     throw new Error('live subdomain-router.js sha ' + got + ' != LIVE.sha256 ' + expected);
