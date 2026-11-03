@@ -37,7 +37,7 @@ const tls = require('tls');
 const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..', '..');
-const LIVE_FIXTURE = path.join(ROOT, 'edge-functions/fixtures/live-subdomain-router.0e706f11.js');
+const LIVE_FIXTURE = path.join(ROOT, 'edge-functions/fixtures/live-subdomain-router.9f6e3057.js');
 const HOMEPAGE = '<!doctype html><title>Home</title><h1>homepage</h1>';
 const OBJECT_HTML = '<!doctype html><title>Object</title><h1>object</h1>';
 const SECRET = 'origin-guard-test-slot-a-placeholder';

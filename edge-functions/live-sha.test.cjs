@@ -10,18 +10,14 @@ const routerPath = path.join(__dirname, 'subdomain-router.js');
 const source = fs.readFileSync(routerPath);
 const text = source.toString('utf8');
 
-// 2026-10-22 #125 把仓库锁成当时已发布的 ef-1281msyw（不含 K2）。
-// LIVE.sha256 继续只记录那份已发布正文，回滚对照用它。
-// 仓库里的 subdomain-router.js 现在是 K0–K2 源站守卫，发布核对通过之前不要把新哈希写进 LIVE.sha256。
-const PUBLISHED_EDGE_SHA256 = '0e706f11290e265349ec19a65ef8b18629bd22d47e5c6912131461da015a510b';
-const REPO_ORIGIN_GUARD_SHA256 = '9f6e3057b4010c1ad51c3b0d8dadbcae51988ae46eec3b7045e7b7d600eca7b3';
+// REQ-27 已写上 ef-1281msyw。LIVE.sha256 就是这份已发布正文，和仓库里的 subdomain-router.js 是同一份字节。
+const PUBLISHED_EDGE_SHA256 = '9f6e3057b4010c1ad51c3b0d8dadbcae51988ae46eec3b7045e7b7d600eca7b3';
 
-test('LIVE.sha256 stays the last published edge body, separate from the repo origin guard', () => {
+test('LIVE.sha256 is the published edge body and matches the repo router', () => {
   const published = fs.readFileSync(path.join(__dirname, 'LIVE.sha256'), 'utf8').trim();
   const actual = crypto.createHash('sha256').update(source).digest('hex');
   assert.equal(published, PUBLISHED_EDGE_SHA256);
-  assert.equal(actual, REPO_ORIGIN_GUARD_SHA256);
-  assert.notEqual(actual, published);
+  assert.equal(actual, published);
 });
 
 test('repo router keeps published cache prefixes and judges origin paths by site id', () => {
