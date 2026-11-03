@@ -394,7 +394,12 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
   // 行内容冻结在 fixtures/pre-49-fetch-lines.txt，过滤规则与当初对源文件的提取一致。
   const pre = fs.readFileSync(path.join(__dirname, 'fixtures/pre-49-fetch-lines.txt'), 'utf8');
   const fetchLines = (src) => src.split('\n').map((l) => l.trim()).filter((l) => /\bfetch\(/.test(l) && !l.startsWith('//'));
-  const preLines = fetchLines(pre);
+  // 这两行仍是透传，但会先剥掉客户端自带的 x-demox-origin-token。没有这张头时仍是原来的 req。
+  const tokenStripped = new Set([
+    'if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);',
+    'return fetch(req);'
+  ]);
+  const preLines = fetchLines(pre).filter((line) => !tokenStripped.has(line));
   const nowLines = fetchLines(source);
   let cursor = 0;
   for (const line of nowLines) {
@@ -411,8 +416,10 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
     'const custom404 = await fetch(missingUrl, signed);',
     "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
     "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
-    'return fetch(req);',
-    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');"
+    'return fetch(stripOriginInternalToken(req));',
+    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');",
+    'if (!parsedHost && !(customResolved && customResolved.path)) return fetch(stripOriginInternalToken(req));',
+    'return fetch(stripOriginInternalToken(req));'
   ]);
 });
 

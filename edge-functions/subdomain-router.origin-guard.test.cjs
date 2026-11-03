@@ -352,6 +352,161 @@ test('a public origin path passes through with the same body and a client max-ag
   assert.equal(r.calls.resolve[0].subdomain, undefined);
 });
 
+const IMMUTABLE_YEAR = 'public, max-age=31536000, immutable';
+
+function javascriptResponse(body, cacheControl) {
+  const headers = { 'Content-Type': 'application/javascript; charset=utf-8' };
+  if (cacheControl) headers['Cache-Control'] = cacheControl;
+  return new Response(body, { status: 200, headers });
+}
+
+function wwwSiteResolver(payload) {
+  if (payload.subdomain === 'www') {
+    return json({
+      success: true,
+      path: 'sites/1985655011013808129/EPX2UU43/dist',
+      websiteId: 'EPX2UU43',
+      origin: 'sites.demox.site',
+      visibility: 'public',
+      hideWatermark: true
+    });
+  }
+  if (payload.websiteId === 'EPX2UU43') {
+    return json({ success: true, allow: true, path: 'sites/1985655011013808129/EPX2UU43/dist' });
+  }
+  throw new Error('unexpected resolve ' + JSON.stringify(payload));
+}
+
+function reenterWwwObject(inner) {
+  let depth = 0;
+  return async (info, helpers) => {
+    if (depth === 0 && info.href.includes('sites.demox.site/sites/1985655011013808129/EPX2UU43/')) {
+      depth += 1;
+      try {
+        return await helpers.reenter(info.href, info.headers, info.method);
+      } finally {
+        depth -= 1;
+      }
+    }
+    return inner(info);
+  };
+}
+
+test('passthrough keeps an origin Cache-Control, and fills max-age=60 only when it is missing', async () => {
+  const r = makeGuard({ resolver: () => json({ success: false, message: 'unused' }) });
+  const cap = r.ctx.__testHooks.capOriginObjectCache;
+  const kept = cap(javascriptResponse('hashed', IMMUTABLE_YEAR), 'origin-guard=allow');
+  assert.equal(kept.headers.get('cache-control'), IMMUTABLE_YEAR);
+  assert.equal(kept.headers.get('x-demox-route'), 'origin-guard=allow');
+  assert.equal(await kept.text(), 'hashed');
+
+  const shortHtml = cap(new Response(PUBLIC_HTML, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' }
+  }), 'origin-guard=allow');
+  assert.equal(shortHtml.headers.get('cache-control'), 'public, max-age=60');
+
+  const bare = cap(javascriptResponse('plain', ''), 'origin-guard=allow');
+  assert.equal(bare.headers.get('cache-control'), 'public, max-age=60');
+
+  const blank = cap(javascriptResponse('blank', '   '), 'origin-guard=allow');
+  assert.equal(blank.headers.get('cache-control'), 'public, max-age=60');
+
+  const errored = cap(new Response('missing', {
+    status: 404,
+    headers: { 'Cache-Control': IMMUTABLE_YEAR, 'Content-Type': 'application/javascript', Expires: 'Wed, 21 Oct 2099 07:28:00 GMT' }
+  }), 'origin-guard=allow');
+  assert.equal(errored.headers.get('cache-control'), 'no-store');
+  assert.equal(errored.headers.get('expires'), null);
+});
+
+test('www /assets/index-*.js keeps an immutable year origin Cache-Control', async () => {
+  const r = makeGuard({
+    resolver: wwwSiteResolver,
+    origin: reenterWwwObject((info) => {
+      assert.match(info.href, /\/assets\/index-DxCBZomZ\.js$/);
+      return javascriptResponse('console.log(1)', IMMUTABLE_YEAR);
+    })
+  });
+  const { response, html } = await r.visit('https://www.demox.site/assets/index-DxCBZomZ.js');
+  assert.equal(response.status, 200);
+  assert.equal(html, 'console.log(1)');
+  assert.equal(response.headers.get('cache-control'), IMMUTABLE_YEAR);
+  assert.equal(response.headers.get('x-demox-route'), 'origin-guard=allow');
+});
+
+test('www /assets/index-*.js gets public, max-age=60 when the origin sends no Cache-Control', async () => {
+  const r = makeGuard({
+    resolver: wwwSiteResolver,
+    origin: reenterWwwObject(() => javascriptResponse('console.log(1)', ''))
+  });
+  const { response, html } = await r.visit('https://www.demox.site/assets/index-DxCBZomZ.js');
+  assert.equal(response.status, 200);
+  assert.equal(html, 'console.log(1)');
+  assert.equal(response.headers.get('cache-control'), 'public, max-age=60');
+});
+
+test('a banned site stays no-store and does not pass through an origin Cache-Control', async () => {
+  const r = makeGuard({
+    resolver: verdictResolver({
+      BANNED1: { success: true, allow: false, reason: 'blocked' }
+    }),
+    origin: async () => {
+      throw new Error('banned objects must not be fetched');
+    }
+  });
+  const { response, html } = await r.visit('https://sites.demox.site/sites/owner-1/BANNED1/dist/assets/index-DxCBZomZ.js');
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-demox-route'), 'origin-guard=blocked');
+  assert.doesNotMatch(html, /console\.log|immutable/);
+  assert.equal(r.calls.origin.length, 0);
+});
+
+test('passthrough drops a client x-demox-origin-token before the three fetch(req) hops', async () => {
+  const token = 'v1.A.1.client-supplied';
+  const r = makeGuard({
+    resolver: () => json({ success: false, message: 'not found' })
+  });
+  const cases = [
+    ['https://sites.demox.site/assets/index-DxCBZomZ.js', 'origin host without a site id'],
+    ['https://missing-label.demox.site/robots.txt', 'unknown official subdomain'],
+    ['https://unbound.example/robots.txt', 'unbound custom host']
+  ];
+  for (const [url, label] of cases) {
+    const before = r.calls.origin.length;
+    const { response } = await r.call(url, {
+      headers: { Accept: 'text/plain', 'x-demox-origin-token': token }
+    });
+    assert.equal(response.status, 200, label);
+    const fetched = r.calls.origin.slice(before);
+    assert.ok(fetched.length >= 1, label);
+    for (const info of fetched) {
+      assert.equal(info.token, '', label + ' ' + info.href);
+      assert.equal(info.headers.get('x-demox-origin-token') || '', '', label);
+    }
+  }
+  const plain = await r.call('https://sites.demox.site/robots.txt', { headers: { Accept: 'text/plain' } });
+  assert.equal(plain.response.status, 200);
+});
+
+test('a missing site is 404 no-store and does not pass through an origin Cache-Control', async () => {
+  const r = makeGuard({
+    resolver: (payload) => {
+      if (payload.websiteId === 'GONE0001') return json({ success: true, allow: false, reason: 'not_found' });
+      throw new Error('unexpected resolve ' + JSON.stringify(payload));
+    },
+    origin: async () => {
+      throw new Error('missing sites must not be fetched');
+    }
+  });
+  const { response } = await r.visit('https://sites.demox.site/sites/owner-1/GONE0001/dist/assets/index-DxCBZomZ.js');
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-demox-route'), 'origin-guard=not-found');
+  assert.equal(r.calls.origin.length, 0);
+});
+
 test('paths that are not /sites/<uid>/<ID>/ pass through and never 403', async () => {
   const r = makeGuard({
     resolver: () => { throw new Error('unparsed paths must not resolve'); }

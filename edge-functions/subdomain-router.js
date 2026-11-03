@@ -70,8 +70,9 @@ var ORIGIN_RESOLVE_ATTEMPT_MS = 4000;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL，也不写 s-maxage。
 // 节点上的缓存命中绕不过守卫：命中函数规则时函数先执行，封禁在 fetch 之前 403。
-// 浏览器仍可能按这个 max-age 保留副本，最长 60s 不回边缘。边缘封禁时钟是 15s。
-// 若产品要求浏览器也在 15s 内停，要另改这个常量。
+// 源站响应已经带了 Cache-Control 时原样留给客户端（hashed /assets 是
+// public, max-age=31536000, immutable）。源站没带时才补 public, max-age=60。
+// 封禁、缺站、4xx/5xx 仍是 no-store，不看源站头。
 var ORIGIN_OBJECT_MAX_AGE = 60;
 // 上线默认关闭，与现网 baseline 一致（启明 + 云帆，#84）。
 // 只有布尔 true 才打开完整 CORS：OPTIONS 与放行的 GET/HEAD 带齐固定头，
@@ -129,6 +130,8 @@ var DEMOX_SITE_TICKET_MAX_AGE = 60 * 60;
 
 // 2026-10-10 账号令牌 cookie 止血（#53，三次失败后的可发布版本）：
 //   1) 静态 / 源站 / 透传保持 #49 之前的 fetch(req)，不重建请求、不改头、不剥 cookie。
+//      唯一例外：客户端自己带了 x-demox-origin-token 时先剥掉这个头再 fetch。
+//      没有这张头时 stripOriginInternalToken 原样返回入站请求。
 //   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access 和 demox_site。
 //   3) 官方域名请求带着旧账号 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
 //   4) *.demox.site 私有站点不认账号 cookie。登录后只写 host-only 的 demox_site 短期票据。
@@ -2796,9 +2799,16 @@ function originGuardNotFound() {
   });
 }
 
-// 放行对象的 Cache-Control 用 ORIGIN_OBJECT_MAX_AGE。这个 max-age 只影响客户端，
+// 放行对象的 Cache-Control：源站已经带了就原样保留（尤其是 immutable 的一年缓存）。
+// 只有源站没带时才补 ORIGIN_OBJECT_MAX_AGE。这个补上的 max-age 只影响客户端，
 // 不改变 EdgeOne 节点缓存的 TTL。节点缓存命中绕不过守卫，是因为函数先于节点缓存执行。
 // 已经写进节点的 HIT 仍要在发布后 purge，这个头盖不住它们。
+// 4xx/5xx 一律 no-store，不看源站头。封禁和缺站不走这里，它们自己的响应也是 no-store。
+function originSentCacheControl(headers) {
+  const value = headers && headers.get ? headers.get('Cache-Control') : '';
+  return !!(value && String(value).trim());
+}
+
 function capOriginObjectCache(resp, route) {
   if (!resp) return resp;
   try {
@@ -2806,7 +2816,7 @@ function capOriginObjectCache(resp, route) {
     if (isUncacheableStatus(resp.status)) {
       headers.set('Cache-Control', 'no-store');
       headers.delete('Expires');
-    } else {
+    } else if (!originSentCacheControl(headers)) {
       headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
@@ -2869,7 +2879,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
       return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
     }
     if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
-    return fetch(req);
+    return fetch(stripOriginInternalToken(req));
   }
   // 站点对象上 OPTIONS 和 GET/POST 用同一套 ID 裁决。跳过裁决会把封禁页正文从预检漏出去。
   ctx.siteTraffic = true;
@@ -2992,14 +3002,15 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
+  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。
+  // 没有令牌时仍是 #49 的 fetch(req)。客户端自带的 x-demox-origin-token 不传到源站。
   if (!parsedHost && !(customResolved && customResolved.path)) {
     const passthroughKind = classifyPassthroughOriginPath(u.pathname);
     if (passthroughKind === 'reject') return originPathRejectResponse();
     if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
     if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(stripOriginInternalToken(req));
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -3118,7 +3129,7 @@ async function handleRequest(req, event, ctx) {
   if (unknownKind === 'reject') return originPathRejectResponse();
   if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
   if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
-  return fetch(req);
+  return fetch(stripOriginInternalToken(req));
 }
 
 function stripAccessControlHeaders(headers) {

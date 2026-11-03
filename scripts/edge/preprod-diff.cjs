@@ -22,8 +22,9 @@
 // dials *.demox.site again if a snapshot for a discovered asset is missing.
 // Those client requests, and the COS final hop, are pinned to addresses from
 // DNS-over-HTTPS (or --resolve host:ip). System DNS is not used for them unless
-// --no-doh / DEMOX_PREPROD_DOH=0. http:// on EdgeOne hosts is excluded from the
-// calibration score: EO redirects it to https before the function runs.
+// --no-doh / DEMOX_PREPROD_DOH=0. http:// on an EdgeOne host is excluded only
+// when the live response is a 301 to https. Any other http status is a mismatch.
+// site-3.demox.site http is listed separately: that origin never enters the function.
 //
 // Signing keys are read from the environment and never printed.
 // DEMOX_BANNED_PATH is optional. Rows that need it are skipped when it is unset.
@@ -102,6 +103,19 @@ let lastNetAt = 0;
 const pinnedAddress = new Map();
 
 const HTTP_EXCLUDE_REASON = 'pre-function 301 (EO redirects http→https before the edge function)';
+// 按主机名列出。site-3 的 http 是 COS 自定义源站，不进边缘函数；https 仍比对。
+const HTTP_NOT_ON_EDGE = [
+  {
+    host: 'site-3.demox.site',
+    reason: 'site-3 的 http 是 COS 自定义源站（CNAME 到 cos-website），请求不经过边缘函数。https 仍进函数，继续比对。'
+  }
+];
+const WWW_ASSET_CACHE = 'public, max-age=31536000, immutable';
+const WWW_HTML_CACHE = 'public, max-age=60';
+const CACHE_HEADER_NAMES = [
+  'cache-control', 'expires', 'pragma', 'age', 'etag', 'last-modified',
+  'cdn-cache-control', 'surrogate-control'
+];
 
 function isReservedIPv4(ip) {
   const parts = String(ip || '').split('.').map((part) => Number(part));
@@ -167,18 +181,22 @@ function parseCli(argv) {
   return { argv: rest, pins, doh };
 }
 
-function eoFrontedHost(host) {
-  const value = String(host || '').toLowerCase();
-  return value.endsWith('.demox.site') && !/^site-\d+\.demox\.site$/.test(value);
+function httpBypassReason(host) {
+  const name = String(host || '').toLowerCase();
+  const found = HTTP_NOT_ON_EDGE.find((item) => item.host === name);
+  return found ? found.reason : '';
+}
+
+function liveIsPreFunction301(snap) {
+  if (!snap || !snap.headers || snap.status !== 301) return false;
+  const headers = snap.headers instanceof Headers ? snap.headers : new Headers(snap.headers);
+  return (headers.get('location') || '').indexOf('https://') === 0;
 }
 
 function httpExcludeNote(snap) {
-  if (!snap || !snap.headers) return HTTP_EXCLUDE_REASON + '; not captured';
-  const location = snap.headers.get('location') || '';
-  if (snap.status >= 300 && snap.status < 400 && location.indexOf('https://') === 0) {
-    return HTTP_EXCLUDE_REASON + '; verified ' + snap.status + ' → ' + location;
-  }
-  return HTTP_EXCLUDE_REASON + '; note: response was ' + snap.status + ' not a 301 to https';
+  if (!liveIsPreFunction301(snap)) return '';
+  const headers = snap.headers instanceof Headers ? snap.headers : new Headers(snap.headers);
+  return HTTP_EXCLUDE_REASON + '; verified 301 → ' + (headers.get('location') || '');
 }
 
 function sha256(buf) {
@@ -485,19 +503,48 @@ function resolveBody(payload, liveSites, bannedId) {
   return { success: false, message: 'not found' };
 }
 
+function wwwOriginCacheControl(pathname) {
+  const path = String(pathname || '');
+  if (path.indexOf('/EPX2UU43/') === -1) return '';
+  if (/\/assets\/[^/]+\.(?:js|mjs|css|wasm|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot)$/i.test(path)) {
+    return WWW_ASSET_CACHE;
+  }
+  if (/\.html?$/i.test(path) || /\/$/.test(path)) return WWW_HTML_CACHE;
+  return '';
+}
+
+function copyCacheHeaders(from, to) {
+  const source = from instanceof Headers ? from : new Headers(from || {});
+  for (let i = 0; i < CACHE_HEADER_NAMES.length; i += 1) {
+    const name = CACHE_HEADER_NAMES[i];
+    const value = source.get(name);
+    if (value) to.set(name, value);
+  }
+}
+
 function cosResponse(method, href) {
   const pathName = new URL(href).pathname;
   const wwwObject = pathName.includes('/EPX2UU43/');
-  const htmlHeaders = { 'content-type': 'text/html; charset=utf-8' };
+  const headers = { 'content-type': 'text/html; charset=utf-8' };
+  const originCache = wwwOriginCacheControl(pathName);
+  if (originCache) headers['cache-control'] = originCache;
+  if (/\/assets\/[^/]+\.css$/i.test(pathName)) headers['content-type'] = 'text/css; charset=utf-8';
+  else if (/\/assets\/[^/]+\.(?:js|mjs)$/i.test(pathName)) headers['content-type'] = 'application/javascript; charset=utf-8';
+  // HEAD 在 HTTP 上没有正文。NOSUCH01 不能先于这条返回带 body 的 404。
+  if (method === 'HEAD') {
+    if (pathName.includes('/NOSUCH01/') || !pathName.includes('/sites/')) {
+      return new Response(null, { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    }
+    return new Response(null, { status: 200, headers: headers });
+  }
   if (pathName.includes('/NOSUCH01/')) {
     return new Response('Not Found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
-  if (method === 'HEAD') return new Response(null, { status: 200, headers: htmlHeaders });
   if (!pathName.includes('/sites/')) {
     return new Response('missing', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
   if (method === 'GET') {
-    return new Response(wwwObject ? HOMEPAGE : OBJECT_HTML, { status: 200, headers: htmlHeaders });
+    return new Response(wwwObject ? HOMEPAGE : OBJECT_HTML, { status: 200, headers: headers });
   }
   if (method === 'OPTIONS') {
     return new Response('Bad Request', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } });
@@ -719,7 +766,9 @@ async function invoke(handle, url, method, cookie) {
   const init = { method: method, headers: headers };
   if (method !== 'GET' && method !== 'HEAD') init.body = '';
   const response = await handle(new Request(url, init), { waitUntil() {}, passThroughOnException() {} });
-  const body = Buffer.from(await response.arrayBuffer());
+  const raw = Buffer.from(await response.arrayBuffer());
+  // 真实 HTTP 客户端看不到 HEAD 正文。比对仍检查 length 和 sha，不在 viewsDiffer 里跳过。
+  const body = String(method).toUpperCase() === 'HEAD' ? Buffer.alloc(0) : raw;
   return {
     status: response.status,
     route: response.headers.get('x-demox-route') || '',
@@ -779,13 +828,40 @@ function noStoreOnly(result) {
   return true;
 }
 
+function cacheText(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isWwwDocumentOrAsset(row) {
+  if (String(row.host || '').toLowerCase() !== 'www.demox.site') return false;
+  const pathName = String(row.path || '/');
+  if (pathName === '/' || pathName.endsWith('/') || /\.html?$/i.test(pathName)) return true;
+  return pathName.indexOf('/assets/') === 0;
+}
+
+// 9f6e3057 把源站头盖成 public, max-age=60。新路由把它还回去时，只接受 www 的
+// /assets/* 和 HTML。其它任何 Cache-Control 差异都是 unexpected。
+function cacheChangeMark(row, oldR, newR) {
+  const oldCache = cacheText(oldR && oldR.cache);
+  const newCache = cacheText(newR && newR.cache);
+  if (oldCache === newCache) return '';
+  if (isWwwDocumentOrAsset(row) && oldCache === 'public, max-age=60' && newCache && newCache !== 'public, max-age=60') {
+    return 'expected-cache-change';
+  }
+  return 'unexpected';
+}
+
 function verdict(row, oldR, newR, allow) {
+  const cacheMark = cacheChangeMark(row, oldR, newR);
   // 库里没有这个站点 ID：边缘 404，且必须 no-store，否则新发布的站点会被节点缓存成 404。
   if (row.kind === 'nosuch') {
+    if (cacheMark) return 'unexpected';
     if (newR.status === 404 && noStoreOnly(newR)) return 'missing-site-404';
     return 'unexpected';
   }
+  if (cacheMark === 'unexpected') return 'unexpected';
   const same = oldR.status === newR.status && oldR.sha === newR.sha;
+  if (cacheMark === 'expected-cache-change') return same ? 'expected-cache-change' : 'unexpected';
   if (same) return 'same';
   const allowed = allow.some((item) => item === rowKey(row));
   if (allowed) return 'expected';
@@ -795,7 +871,20 @@ function verdict(row, oldR, newR, allow) {
 }
 
 function isExpectedMark(mark) {
-  return mark === 'expected' || mark === 'missing-site-404';
+  return mark === 'expected' || mark === 'missing-site-404' || mark === 'expected-cache-change';
+}
+
+function guardRouteOnlyDifference(live, local) {
+  if (!live || !local) return false;
+  if (live.status !== local.status) return false;
+  if (cacheText(live.cache) !== cacheText(local.cache)) return false;
+  if (live.length !== local.length || live.sha !== local.sha) return false;
+  const liveRoute = normRoute(live.route);
+  const localRoute = normRoute(local.route);
+  if (liveRoute === localRoute) return false;
+  const fold = function (value) { return value.replace(/origin-guard=internal/g, 'origin-guard=allow'); };
+  if (fold(liveRoute) !== fold(localRoute)) return false;
+  return liveRoute.indexOf('origin-guard=internal') !== localRoute.indexOf('origin-guard=internal');
 }
 
 function hopSafe(hop) {
@@ -866,7 +955,8 @@ function formatTable(report) {
     for (const hop of hops) lines.push('  ' + hop.side + formatHop(hop));
   }
   const missing = report.missingSite ? report.missingSite.length : report.results.filter((item) => item.mark === 'missing-site-404').length;
-  lines.push('same=' + report.same.length + ' expected=' + report.expected.length + ' unexpected=' + report.unexpected.length + ' missing-site-404=' + missing);
+  const cacheChanges = report.results.filter((item) => item.mark === 'expected-cache-change').length;
+  lines.push('same=' + report.same.length + ' expected=' + report.expected.length + ' expected-cache-change=' + cacheChanges + ' unexpected=' + report.unexpected.length + ' missing-site-404=' + missing);
   if (report.unsafe && report.unsafe.length) lines.push('unsafe-network=' + report.unsafe.length);
   return lines.join('\n');
 }
@@ -992,9 +1082,32 @@ const SNAP_PATHS = [
   '/sites/1985655011013808129/NOSUCH01/dist/index.html'
 ];
 
+async function readBucket1CacheHeaders(pathName) {
+  if (String(pathName || '').indexOf('/EPX2UU43/') === -1) return null;
+  try {
+    const snap = await rawRequest('https://' + BUCKET1_COS + pathName, 'GET', {
+      Host: 'sites.demox.site',
+      Accept: '*/*',
+      'User-Agent': 'demox-preprod-calibrate'
+    }, null);
+    if (deniedSnapshot(snap)) return null;
+    const cacheControl = snap.headers.get('cache-control') || '';
+    if (!String(cacheControl).trim()) return null;
+    return snap.headers;
+  } catch (err) {
+    return null;
+  }
+}
+
 async function captureSnapshots(extraPaths) {
   const snapshots = new Map();
   const paths = SNAP_PATHS.concat(extraPaths || []);
+  const originHeaders = new Map();
+  for (const pathName of paths) {
+    if (originHeaders.has(pathName)) continue;
+    const fromBucket = await readBucket1CacheHeaders(pathName);
+    originHeaders.set(pathName, fromBucket);
+  }
   for (const pathName of paths) {
     for (const method of METHODS) {
       const url = 'https://sites.demox.site' + pathName;
@@ -1003,6 +1116,12 @@ async function captureSnapshots(extraPaths) {
         Accept: 'text/html',
         'User-Agent': 'demox-preprod-calibrate'
       }, method === 'GET' || method === 'HEAD' ? null : '');
+      const fromBucket = originHeaders.get(pathName);
+      if (fromBucket) copyCacheHeaders(fromBucket, snap.headers);
+      else {
+        const fallback = wwwOriginCacheControl(pathName);
+        if (fallback) snap.headers.set('cache-control', fallback);
+      }
       snapshots.set(snapKey(method, url), snap);
       const httpUrl = 'http://sites.demox.site' + pathName;
       snapshots.set(snapKey(method, httpUrl), snap);
@@ -1142,14 +1261,31 @@ async function runCalibration(argv, net) {
   const mismatched = [];
   const skipped = [];
   const excluded = [];
+  const routeNormalized = [];
   for (const item of baseline) {
     if (item.skipped) {
       skipped.push(item);
       continue;
     }
     const row = item.row;
-    if (row.scheme === 'http' && eoFrontedHost(row.host)) {
-      excluded.push({ row, skipped: httpExcludeNote(item.snap) });
+    if (row.scheme === 'http') {
+      const bypass = httpBypassReason(row.host);
+      if (bypass) {
+        excluded.push({ row, skipped: bypass });
+        continue;
+      }
+      const redirect = httpExcludeNote(item.snap);
+      if (redirect) {
+        excluded.push({ row, skipped: redirect });
+        continue;
+      }
+      mismatched.push({
+        row,
+        fields: ['http-not-301'],
+        live: viewOf(item.snap),
+        local: { status: 0, route: '', cache: '', type: '', length: 0, sha: '', body: Buffer.alloc(0) },
+        hops: []
+      });
       continue;
     }
     const url = row.scheme + '://' + row.host + row.path;
@@ -1169,11 +1305,13 @@ async function runCalibration(argv, net) {
     const live = viewOf(item.snap);
     const fields = viewsDiffer(live, local);
     const record = { row, fields, live, local, hops: local.hops };
-    if (fields.length) mismatched.push(record);
+    if (fields.length === 1 && fields[0] === 'route' && guardRouteOnlyDifference(live, local)) {
+      routeNormalized.push(record);
+    } else if (fields.length) mismatched.push(record);
     else matched.push(record);
   }
-  const unsafe = collectUnsafe(mismatched.concat(matched));
-  return { matched, mismatched, skipped, excluded, unsafe, asset, bucket1Status, netCount, resolutions };
+  const unsafe = collectUnsafe(mismatched.concat(matched).concat(routeNormalized));
+  return { matched, mismatched, skipped, excluded, routeNormalized, unsafe, asset, bucket1Status, netCount, resolutions };
 }
 
 function formatCalibration(report) {
@@ -1182,7 +1320,11 @@ function formatCalibration(report) {
   if (resolved) lines.push(resolved);
   lines.push('bucket1-cos-status=' + (report.bucket1Status || 'unknown') + ' asset=' + (report.asset || ''));
   const excluded = report.excluded || [];
-  lines.push('matched=' + report.matched.length + ' mismatched=' + report.mismatched.length + ' skipped=' + report.skipped.length + ' excluded=' + excluded.length);
+  const routeNormalized = report.routeNormalized || [];
+  lines.push('matched=' + report.matched.length + ' route-normalized=' + routeNormalized.length + ' mismatched=' + report.mismatched.length + ' skipped=' + report.skipped.length + ' excluded=' + excluded.length);
+  if (routeNormalized.length) {
+    lines.push('route-normalized counts origin-guard=internal and origin-guard=allow as the same only when status, cache, length, and sha match. No guard secret is read.');
+  }
   if (!process.env.DEMOX_BANNED_PATH) lines.push('SKIP banned-path DEMOX_BANNED_PATH unset');
   if (!process.env.DEMOX_ORIGIN_GUARD_SECRET_A) lines.push('SKIP secret DEMOX_ORIGIN_GUARD_SECRET_A unset (production has none)');
   for (const item of report.skipped) {
@@ -1333,11 +1475,19 @@ module.exports = {
   runWwwChain,
   formatTable,
   createHandle,
+  invoke,
   openNetwork,
   resolvePreprodLimits,
   parseBannedPath,
   isReservedIPv4,
   runBannedEnvSelfTest,
+  verdict,
+  cacheChangeMark,
+  guardRouteOnlyDifference,
+  httpBypassReason,
+  liveIsPreFunction301,
+  wwwOriginCacheControl,
+  WWW_ASSET_CACHE,
   outboundMethod,
   isEoHost,
   mapCos,

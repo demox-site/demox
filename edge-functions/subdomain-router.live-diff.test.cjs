@@ -13,7 +13,14 @@ const {
   resolvePreprodLimits,
   parseBannedPath,
   isReservedIPv4,
-  runBannedEnvSelfTest
+  runBannedEnvSelfTest,
+  verdict,
+  guardRouteOnlyDifference,
+  httpBypassReason,
+  liveIsPreFunction301,
+  createHandle,
+  invoke,
+  WWW_ASSET_CACHE
 } = require('../scripts/edge/preprod-diff.cjs');
 
 test('www re-entry sends GET to COS and returns the homepage for POST/PUT/OPTIONS', async () => {
@@ -96,6 +103,84 @@ test('reserved resolver answers and a banned id from DEMOX_BANNED_PATH', async (
 test('real-network open refuses EO hosts and unknown hosts', async () => {
   await assert.rejects(() => openNetwork('sites.demox.site', 'https://sites.demox.site/', 'GET', {}), /EO host/);
   await assert.rejects(() => openNetwork('evil.example', 'https://evil.example/', 'GET', {}), /allowlisted/);
+});
+
+test('www asset cache restored from max-age=60 is expected-cache-change; other cache changes are unexpected', async () => {
+  const report = await runOfflineMatrix();
+  const assets = report.results.filter((item) => item.row.host === 'www.demox.site' && item.row.path.indexOf('/assets/') === 0 && item.row.method === 'GET');
+  assert.ok(assets.length > 0);
+  for (const item of assets) {
+    assert.equal(item.mark, 'expected-cache-change', item.row.scheme + ' ' + item.row.path);
+    assert.equal(String(item.oldR.cache).toLowerCase(), 'public, max-age=60');
+    assert.equal(item.newR.cache, WWW_ASSET_CACHE);
+  }
+  const invented = verdict(
+    { scheme: 'https', host: 'coverage.demox.site', method: 'GET', path: '/', cookie: false, kind: 'public' },
+    { status: 200, sha: 'abc', cache: 'public, max-age=60' },
+    { status: 200, sha: 'abc', cache: WWW_ASSET_CACHE },
+    []
+  );
+  assert.equal(invented, 'unexpected');
+  const htmlRestore = verdict(
+    { scheme: 'https', host: 'www.demox.site', method: 'GET', path: '/index.html', cookie: false, kind: 'public' },
+    { status: 200, sha: 'abc', cache: 'public, max-age=60' },
+    { status: 200, sha: 'abc', cache: 'public, max-age=30' },
+    []
+  );
+  assert.equal(htmlRestore, 'expected-cache-change');
+});
+
+test('NOSUCH01 HEAD is an empty body while GET still has one', async () => {
+  const handle = createHandle(loadNextSource(), { secret: false });
+  const head = await invoke(handle, 'https://sites.demox.site/sites/owner-1/NOSUCH01/dist/index.html', 'HEAD', '');
+  assert.equal(head.status, 404);
+  assert.equal(head.length, 0);
+  assert.equal(head.cache, 'no-store');
+  const get = await invoke(handle, 'https://sites.demox.site/sites/owner-1/NOSUCH01/dist/index.html', 'GET', '');
+  assert.equal(get.status, 404);
+  assert.ok(get.length > 0);
+  assert.equal(get.cache, 'no-store');
+});
+
+test('guard internal and allow match only with identical status, cache, length, and sha', () => {
+  const live = {
+    status: 200,
+    route: 'origin-guard=internal',
+    cache: 'public, max-age=60',
+    length: 8,
+    sha: 'abc'
+  };
+  const local = {
+    status: 200,
+    route: 'origin-guard=allow',
+    cache: 'public, max-age=60',
+    length: 8,
+    sha: 'abc'
+  };
+  assert.equal(guardRouteOnlyDifference(live, local), true);
+  assert.equal(guardRouteOnlyDifference(live, Object.assign({}, local, { sha: 'def' })), false);
+  assert.equal(guardRouteOnlyDifference(live, Object.assign({}, local, { cache: 'no-store' })), false);
+  assert.equal(guardRouteOnlyDifference(live, Object.assign({}, local, { length: 9 })), false);
+  assert.equal(guardRouteOnlyDifference(live, Object.assign({}, local, { status: 404 })), false);
+  assert.equal(guardRouteOnlyDifference(live, Object.assign({}, local, { route: 'origin-guard=deny' })), false);
+});
+
+test('site-3 http is excluded by hostname; any other non-301 http row fails closed', () => {
+  assert.match(httpBypassReason('site-3.demox.site'), /不经过边缘函数/);
+  assert.equal(httpBypassReason('www.demox.site'), '');
+  assert.equal(httpBypassReason('sites.demox.site'), '');
+  assert.equal(liveIsPreFunction301({
+    status: 301,
+    headers: new Headers({ location: 'https://www.demox.site/' })
+  }), true);
+  assert.equal(liveIsPreFunction301({
+    status: 200,
+    headers: new Headers({ location: 'https://www.demox.site/' })
+  }), false);
+  assert.equal(liveIsPreFunction301({
+    status: 302,
+    headers: new Headers({ location: 'https://www.demox.site/' })
+  }), false);
 });
 
 test('offline p0 matrix has no unexpected diff against the live body', async () => {
