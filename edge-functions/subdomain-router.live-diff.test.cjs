@@ -39,7 +39,7 @@ test('www re-entry sends GET to COS and returns the homepage for POST/PUT/OPTION
   assert.match(next.OPTIONS.route, /origin-guard=(internal|allow)/);
 });
 
-test('published 9f6e3057 www POST is GET to origin and returns the homepage', async () => {
+test('published router www POST is GET to origin and returns the homepage', async () => {
   const liveSource = loadLiveSource();
   assert.match(liveSource, /function wwwDocumentMethod/);
   assert.match(liveSource, /function wwwUnsignedDocumentInit/);
@@ -105,29 +105,25 @@ test('real-network open refuses EO hosts and unknown hosts', async () => {
   await assert.rejects(() => openNetwork('evil.example', 'https://evil.example/', 'GET', {}), /allowlisted/);
 });
 
-test('www asset cache restored from max-age=60 is expected-cache-change; other cache changes are unexpected', async () => {
-  const report = await runOfflineMatrix();
-  const assets = report.results.filter((item) => item.row.host === 'www.demox.site' && item.row.path.indexOf('/assets/') === 0 && item.row.method === 'GET');
-  assert.ok(assets.length > 0);
-  for (const item of assets) {
-    assert.equal(item.mark, 'expected-cache-change', item.row.scheme + ' ' + item.row.path);
-    assert.equal(String(item.oldR.cache).toLowerCase(), 'public, max-age=60');
-    assert.equal(item.newR.cache, WWW_ASSET_CACHE);
-  }
-  const invented = verdict(
+test('www cache change matches the origin directive set; no-store is unexpected', () => {
+  const asset = {
+    scheme: 'https', host: 'www.demox.site', method: 'GET', path: '/assets/index-DxCBZomZ.js', cookie: false, kind: 'noid'
+  };
+  const old = { status: 200, sha: 'abc', cache: 'public, max-age=60' };
+  assert.equal(verdict(asset, old, { status: 200, sha: 'abc', cache: 'immutable, public, max-age=31536000' }, []), 'expected-cache-change');
+  assert.equal(verdict(asset, old, { status: 200, sha: 'abc', cache: 'no-store' }, []), 'unexpected');
+  assert.equal(verdict(asset, old, { status: 200, sha: 'abc', cache: 'private, max-age=31536000, immutable' }, []), 'unexpected');
+  const html = {
+    scheme: 'https', host: 'www.demox.site', method: 'GET', path: '/index.html', cookie: false, kind: 'public'
+  };
+  assert.equal(verdict(html, { status: 200, sha: 'abc', cache: 'public, max-age=10' }, { status: 200, sha: 'abc', cache: 'max-age=60, public' }, []), 'expected-cache-change');
+  assert.equal(verdict(html, old, { status: 200, sha: 'abc', cache: 'public, max-age=30' }, []), 'unexpected');
+  assert.equal(verdict(
     { scheme: 'https', host: 'coverage.demox.site', method: 'GET', path: '/', cookie: false, kind: 'public' },
-    { status: 200, sha: 'abc', cache: 'public, max-age=60' },
+    old,
     { status: 200, sha: 'abc', cache: WWW_ASSET_CACHE },
     []
-  );
-  assert.equal(invented, 'unexpected');
-  const htmlRestore = verdict(
-    { scheme: 'https', host: 'www.demox.site', method: 'GET', path: '/index.html', cookie: false, kind: 'public' },
-    { status: 200, sha: 'abc', cache: 'public, max-age=60' },
-    { status: 200, sha: 'abc', cache: 'public, max-age=30' },
-    []
-  );
-  assert.equal(htmlRestore, 'expected-cache-change');
+  ), 'unexpected');
 });
 
 test('NOSUCH01 HEAD is an empty body while GET still has one', async () => {

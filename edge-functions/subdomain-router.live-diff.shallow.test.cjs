@@ -11,7 +11,7 @@ const ROOT = path.join(__dirname, '..');
 const FILES = [
   'scripts/edge/preprod-diff.cjs',
   'edge-functions/LIVE.sha256',
-  'edge-functions/fixtures/live-subdomain-router.9f6e3057.js',
+  'edge-functions/fixtures/live-subdomain-router.3165903e.js',
   'edge-functions/subdomain-router.js',
   'edge-functions/subdomain-router.live-diff.test.cjs'
 ];
