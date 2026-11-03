@@ -70,8 +70,9 @@ var ORIGIN_RESOLVE_ATTEMPT_MS = 4000;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL，也不写 s-maxage。
 // 节点上的缓存命中绕不过守卫：命中函数规则时函数先执行，封禁在 fetch 之前 403。
-// 浏览器仍可能按这个 max-age 保留副本，最长 60s 不回边缘。边缘封禁时钟是 15s。
-// 若产品要求浏览器也在 15s 内停，要另改这个常量。
+// 源站响应已经带了 Cache-Control 时原样留给客户端（hashed /assets 是
+// public, max-age=31536000, immutable）。源站没带时才补 public, max-age=60。
+// 封禁、缺站、4xx/5xx 仍是 no-store，不看源站头。
 var ORIGIN_OBJECT_MAX_AGE = 60;
 // 上线默认关闭，与现网 baseline 一致（启明 + 云帆，#84）。
 // 只有布尔 true 才打开完整 CORS：OPTIONS 与放行的 GET/HEAD 带齐固定头，
@@ -2796,9 +2797,16 @@ function originGuardNotFound() {
   });
 }
 
-// 放行对象的 Cache-Control 用 ORIGIN_OBJECT_MAX_AGE。这个 max-age 只影响客户端，
+// 放行对象的 Cache-Control：源站已经带了就原样保留（尤其是 immutable 的一年缓存）。
+// 只有源站没带时才补 ORIGIN_OBJECT_MAX_AGE。这个补上的 max-age 只影响客户端，
 // 不改变 EdgeOne 节点缓存的 TTL。节点缓存命中绕不过守卫，是因为函数先于节点缓存执行。
 // 已经写进节点的 HIT 仍要在发布后 purge，这个头盖不住它们。
+// 4xx/5xx 一律 no-store，不看源站头。封禁和缺站不走这里，它们自己的响应也是 no-store。
+function originSentCacheControl(headers) {
+  const value = headers && headers.get ? headers.get('Cache-Control') : '';
+  return !!(value && String(value).trim());
+}
+
 function capOriginObjectCache(resp, route) {
   if (!resp) return resp;
   try {
@@ -2806,7 +2814,7 @@ function capOriginObjectCache(resp, route) {
     if (isUncacheableStatus(resp.status)) {
       headers.set('Cache-Control', 'no-store');
       headers.delete('Expires');
-    } else {
+    } else if (!originSentCacheControl(headers)) {
       headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
