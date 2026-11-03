@@ -54,6 +54,8 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
 
 `PREVIOUS` 指向上一次发布时的 `edge-functions/subdomain-router.js`（git rev 或当时留下的文件）。两边 sha256 相同就停，避免空转。
 
+当前已发布正文是 `3165903e47815a186479cf84b7a786c2af9e7b8c3f1cd942cb9d416369f37b90`，文件 `edge-functions/fixtures/live-subdomain-router.3165903e.js`，和仓库里的 `subdomain-router.js` 逐字节一致。回滚目标是上一份已发布正文 `9f6e3057b4010c1ad51c3b0d8dadbcae51988ae46eec3b7045e7b7d600eca7b3`，文件 `edge-functions/fixtures/live-subdomain-router.9f6e3057.js`。`0e706f11` 的 fixture 已在换成 `9f6e3057` 时从仓库删除，这里不再保留。
+
 核对 `DescribeFunctions` 返回的 Content 时，取出正文字节再用 sha256。`jq` 要用 `-j`，不要用 `-r`：`-r` 会在字符串末尾再加一个换行，摘要就和文件字节对不上。
 
 ```bash

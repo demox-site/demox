@@ -38,7 +38,7 @@ const tls = require('tls');
 const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..', '..');
-const LIVE_FIXTURE = path.join(ROOT, 'edge-functions/fixtures/live-subdomain-router.9f6e3057.js');
+const LIVE_FIXTURE = path.join(ROOT, 'edge-functions/fixtures/live-subdomain-router.3165903e.js');
 const HOMEPAGE = '<!doctype html><title>Home</title><h1>homepage</h1>';
 const OBJECT_HTML = '<!doctype html><title>Object</title><h1>object</h1>';
 const SECRET = 'origin-guard-test-slot-a-placeholder';
@@ -832,6 +832,37 @@ function cacheText(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+function cacheDirectives(value) {
+  const flags = [];
+  const params = [];
+  for (const part of String(value || '').split(',')) {
+    const text = part.trim().toLowerCase();
+    if (!text) continue;
+    const eq = text.indexOf('=');
+    if (eq === -1) {
+      flags.push(text);
+      continue;
+    }
+    const key = text.slice(0, eq).trim();
+    let raw = text.slice(eq + 1).trim();
+    if (key === 'max-age' && /^\d+$/.test(raw)) raw = String(Number(raw));
+    params.push(key + '=' + raw);
+  }
+  flags.sort();
+  params.sort();
+  return flags.join('\n') + '\n|\n' + params.join('\n');
+}
+
+function sameCachePolicy(a, b) {
+  return cacheDirectives(a) === cacheDirectives(b);
+}
+
+function originCacheForWwwRow(row) {
+  const pathName = String(row && row.path || '/');
+  if (pathName.indexOf('/assets/') === 0) return WWW_ASSET_CACHE;
+  return WWW_HTML_CACHE;
+}
+
 function isWwwDocumentOrAsset(row) {
   if (String(row.host || '').toLowerCase() !== 'www.demox.site') return false;
   const pathName = String(row.path || '/');
@@ -839,15 +870,14 @@ function isWwwDocumentOrAsset(row) {
   return pathName.indexOf('/assets/') === 0;
 }
 
-// 9f6e3057 把源站头盖成 public, max-age=60。新路由把它还回去时，只接受 www 的
-// /assets/* 和 HTML。其它任何 Cache-Control 差异都是 unexpected。
+// www 的 /assets/* 和 HTML 只有在新 Cache-Control 与源站快照是同一组指令时，
+// 才算 expected-cache-change。no-store、private，或任何对不上源站的值都是 unexpected。
 function cacheChangeMark(row, oldR, newR) {
-  const oldCache = cacheText(oldR && oldR.cache);
-  const newCache = cacheText(newR && newR.cache);
-  if (oldCache === newCache) return '';
-  if (isWwwDocumentOrAsset(row) && oldCache === 'public, max-age=60' && newCache && newCache !== 'public, max-age=60') {
-    return 'expected-cache-change';
-  }
+  const oldCache = oldR && oldR.cache;
+  const newCache = newR && newR.cache;
+  if (sameCachePolicy(oldCache, newCache)) return '';
+  if (!isWwwDocumentOrAsset(row)) return 'unexpected';
+  if (sameCachePolicy(newCache, originCacheForWwwRow(row))) return 'expected-cache-change';
   return 'unexpected';
 }
 
