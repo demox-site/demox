@@ -130,6 +130,8 @@ var DEMOX_SITE_TICKET_MAX_AGE = 60 * 60;
 
 // 2026-10-10 账号令牌 cookie 止血（#53，三次失败后的可发布版本）：
 //   1) 静态 / 源站 / 透传保持 #49 之前的 fetch(req)，不重建请求、不改头、不剥 cookie。
+//      唯一例外：客户端自己带了 x-demox-origin-token 时先剥掉这个头再 fetch。
+//      没有这张头时 stripOriginInternalToken 原样返回入站请求。
 //   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access 和 demox_site。
 //   3) 官方域名请求带着旧账号 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
 //   4) *.demox.site 私有站点不认账号 cookie。登录后只写 host-only 的 demox_site 短期票据。
@@ -2877,7 +2879,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
       return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
     }
     if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
-    return fetch(req);
+    return fetch(stripOriginInternalToken(req));
   }
   // 站点对象上 OPTIONS 和 GET/POST 用同一套 ID 裁决。跳过裁决会把封禁页正文从预检漏出去。
   ctx.siteTraffic = true;
@@ -3000,14 +3002,15 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
+  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。
+  // 没有令牌时仍是 #49 的 fetch(req)。客户端自带的 x-demox-origin-token 不传到源站。
   if (!parsedHost && !(customResolved && customResolved.path)) {
     const passthroughKind = classifyPassthroughOriginPath(u.pathname);
     if (passthroughKind === 'reject') return originPathRejectResponse();
     if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
     if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(stripOriginInternalToken(req));
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -3126,7 +3129,7 @@ async function handleRequest(req, event, ctx) {
   if (unknownKind === 'reject') return originPathRejectResponse();
   if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
   if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
-  return fetch(req);
+  return fetch(stripOriginInternalToken(req));
 }
 
 function stripAccessControlHeaders(headers) {

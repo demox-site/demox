@@ -463,6 +463,33 @@ test('a banned site stays no-store and does not pass through an origin Cache-Con
   assert.equal(r.calls.origin.length, 0);
 });
 
+test('passthrough drops a client x-demox-origin-token before the three fetch(req) hops', async () => {
+  const token = 'v1.A.1.client-supplied';
+  const r = makeGuard({
+    resolver: () => json({ success: false, message: 'not found' })
+  });
+  const cases = [
+    ['https://sites.demox.site/assets/index-DxCBZomZ.js', 'origin host without a site id'],
+    ['https://missing-label.demox.site/robots.txt', 'unknown official subdomain'],
+    ['https://unbound.example/robots.txt', 'unbound custom host']
+  ];
+  for (const [url, label] of cases) {
+    const before = r.calls.origin.length;
+    const { response } = await r.call(url, {
+      headers: { Accept: 'text/plain', 'x-demox-origin-token': token }
+    });
+    assert.equal(response.status, 200, label);
+    const fetched = r.calls.origin.slice(before);
+    assert.ok(fetched.length >= 1, label);
+    for (const info of fetched) {
+      assert.equal(info.token, '', label + ' ' + info.href);
+      assert.equal(info.headers.get('x-demox-origin-token') || '', '', label);
+    }
+  }
+  const plain = await r.call('https://sites.demox.site/robots.txt', { headers: { Accept: 'text/plain' } });
+  assert.equal(plain.response.status, 200);
+});
+
 test('a missing site is 404 no-store and does not pass through an origin Cache-Control', async () => {
   const r = makeGuard({
     resolver: (payload) => {
