@@ -100,3 +100,22 @@ jobs:
           EO_ZONE_ID: ${{ vars.EO_ZONE_ID }}
           WWW_ORIGIN_PURGE_PREFIX: ${{ vars.WWW_ORIGIN_PURGE_PREFIX }}
         run: node scripts/ci/www-purge.cjs
+
+  # 边缘正文 3165903e 已上线且 p0 通过。purge 之后核对公开 www 的缓存头。
+  # 按指令集合比较，不整串比较：EO 会调换 immutable 的位置。
+  # 只打公开的 www，不读密钥，不改已有 job 的权限。
+  cache-headers:
+    needs: purge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "20"
+
+      - name: Check www cache headers
+        timeout-minutes: 2
+        run: node scripts/ci/www-cache-headers.cjs
