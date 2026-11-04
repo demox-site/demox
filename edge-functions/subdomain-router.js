@@ -964,6 +964,7 @@ function stripOriginInternalToken(req) {
   if (!req.headers || !req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) return req;
   const headers = new Headers(req.headers);
   headers.delete(ORIGIN_INTERNAL_TOKEN_HEADER);
+  headers.delete('accept-encoding');
   const method = req.method || 'GET';
   const init = { method: method, headers: headers, redirect: 'manual' };
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) init.body = req.body;
@@ -979,7 +980,6 @@ function stripOriginInternalToken(req) {
 // Range 会把整页收成 206 片段，If-None-Match 会把仍有效的路由收成 304/404。
 var WWW_SIGNED_DOCUMENT_HEADERS = [
   'accept',
-  'accept-encoding',
   'accept-language',
   'user-agent'
 ];
@@ -1058,7 +1058,7 @@ function wwwUnsignedDocumentInit(req) {
   const headers = new Headers();
   const source = req && req.headers;
   const names = [
-    'accept', 'accept-encoding', 'accept-language', 'user-agent', 'cookie', 'content-type',
+    'accept', 'accept-language', 'user-agent', 'cookie', 'content-type',
     'range', 'if-none-match', 'if-modified-since'
   ];
   for (let i = 0; i < names.length; i += 1) {
@@ -1168,6 +1168,12 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     }
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
     return serveCustom404(req, event, u, sitePath, originHost, meta);
+  }
+  if (!hardened && resp && resp.headers) {
+    const passHeaders = new Headers(resp.headers);
+    passHeaders.delete('content-encoding');
+    passHeaders.delete('content-length');
+    resp = cloneResponse(resp, passHeaders);
   }
   return stampOriginSign(await withDemoxBadge(req, event, resp, meta), req);
 }
@@ -2821,6 +2827,8 @@ function capOriginObjectCache(resp, route) {
     }
     if (route) headers.set('x-demox-route', route);
     applyOriginObjectCors(headers, resp.status);
+    headers.delete('content-encoding');
+    headers.delete('content-length');
     return cloneResponse(resp, headers);
   } catch (e) {
     return resp;
