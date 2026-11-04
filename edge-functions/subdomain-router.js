@@ -996,7 +996,7 @@ function stripOriginInternalToken(req) {
     const plainInit = { method: plainMethod, headers: plain };
     if (req.redirect) plainInit.redirect = req.redirect;
     if (plainMethod !== 'GET' && plainMethod !== 'HEAD' && req.body != null) plainInit.body = req.body;
-    return markAcceptEncodingStripped(new Request(req.url, plainInit), true);
+    return markAcceptEncodingStripped(rebuildRequest(req.url, plainInit), true);
   }
   const headers = new Headers(req.headers);
   headers.delete(ORIGIN_INTERNAL_TOKEN_HEADER);
@@ -1005,7 +1005,16 @@ function stripOriginInternalToken(req) {
   const init = { method: method, headers: headers, redirect: 'manual' };
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) init.body = req.body;
   const targetUrl = req.url;
-  return markAcceptEncodingStripped(new Request(targetUrl, init), hadAe);
+  return markAcceptEncodingStripped(rebuildRequest(targetUrl, init), hadAe);
+}
+// 带 body 重建：Node/undici 要求 duplex:'half'，EdgeOne 可能不认识该字段；同 /api 代理，先带 duplex，失败再去掉重试。
+function rebuildRequest(url, init) {
+  if (init.body == null) return new Request(url, init);
+  try {
+    return new Request(url, Object.assign({}, init, { duplex: 'half' }));
+  } catch (e) {
+    return new Request(url, init);
+  }
 }
 async function fetchPassthrough(req) {
   const out = stripOriginInternalToken(req);

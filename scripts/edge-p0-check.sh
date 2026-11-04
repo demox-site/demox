@@ -137,6 +137,22 @@ if [ "$SKIP_WWW" != 1 ]; then
   done
 fi
 
+# 2026-11-04 云帆：去 AE 重建后 Cookie 和 body 仍到源站。无令牌透传的未知 host 在公网上不可达，
+# 用回显 Cookie 名的站点函数（FN_URL）做可观测替身：带 AE 和不带 AE，GET/POST 都要看到 p0_cookie。
+if [ -n "$FN_URL" ]; then
+  for m in GET POST; do
+    for e in identity 'gzip, deflate, br'; do
+      if [ $m = POST ]; then d=(--data '{"p0":"cookie-probe"}' -H 'Content-Type: application/json'); else d=(); fi
+      code=$(curl -s -m 20 --compressed -X $m "${d[@]}" -H "Accept-Encoding: $e" -H 'Cookie: p0_cookie=1' -o "$tmp/fn-ck" -w '%{http_code}' "$FN_URL"); rc=$?
+      if [ $rc = 0 ] && [ "$code" = 200 ] && grep -q '"p0_cookie"' "$tmp/fn-ck"; then
+        echo "PASS cookie reaches origin $m AE=$e $FN_URL"
+      else
+        echo "FAIL cookie reaches origin $m AE=$e $FN_URL → exit $rc code $code body $(head -c 120 "$tmp/fn-ck")"; fail=1
+      fi
+    done
+  done
+fi
+
 if [ -n "${BASELINE:-}" ]; then
   python3 "$(dirname "$0")/edge-p0-matrix.py" compare "$BASELINE" || fail=1
 else
