@@ -241,7 +241,9 @@ const HOP_BY_HOP = ['host', 'content-length', 'connection', 'keep-alive', 'proxy
 function edgeOneWireHeaders(input, init, incoming) {
   const target = new URL(input instanceof NativeRequest ? input.url : String(input));
   const viaIncoming = input === incoming || init === incoming;
-  const src = viaIncoming ? incoming.headers : (init && init.headers ? new Headers(init.headers) : new Headers());
+  // fetch(new Request(字符串URL, init))：头取自那个 Request（/api/* 转发一直这么用，生产上 cookie 照常到达）。
+  const rebuiltInput = !viaIncoming && input instanceof NativeRequest && init === undefined;
+  const src = viaIncoming ? incoming.headers : (rebuiltInput ? input.headers : (init && init.headers ? new Headers(init.headers) : new Headers()));
   const out = {};
   for (const [k, v] of src.entries()) {
     if (viaIncoming && HOP_BY_HOP.includes(k)) continue;
@@ -412,15 +414,16 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
     if (cursor < preLines.length && line === preLines[cursor]) cursor += 1;
     else extras.push(line);
   }
+  // #164（2026-11-04 白屏）：三处透传改走 fetchPassthrough(req)，内部是剥令牌/AE 后的 fetch(out)；
+  // 守卫三条回源把 outbound 传给 capOriginObjectCache，只对去掉了 AE 的请求删 content-encoding/content-length。
   assert.deepEqual(extras, [
+    'const resp = await fetch(out);',
     'const custom404 = await fetch(missingUrl, signed);',
-    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
-    "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
-    'return fetch(stripOriginInternalToken(req));',
-    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');",
-    'if (!parsedHost && !(customResolved && customResolved.path)) return fetch(stripOriginInternalToken(req));',
-    'return fetch(stripOriginInternalToken(req));'
+    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal', stripped);",
+    "return capOriginObjectCache(await fetch(listed), 'origin-guard=allowlist', listed);",
+    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow', outbound);"
   ]);
+  assert.equal((source.match(/return fetchPassthrough\(req\);/g) || []).length, 3);
 });
 
 

@@ -2335,7 +2335,7 @@ function assertAllowlistedOrigin(info) {
   }
   assert.equal(names.some(function (name) { return name.startsWith('proxy-'); }), false, names.join(','));
   assert.equal(info.headers.get('accept'), 'text/html');
-  assert.equal(info.headers.get('accept-encoding'), 'gzip, br');
+  assert.equal(info.headers.get('accept-encoding'), null);
   assert.equal(info.headers.get('accept-language'), 'zh-CN');
   assert.equal(info.headers.get('user-agent'), 'DemoxVerify/1.0');
   assert.ok(info.token, info.href);
