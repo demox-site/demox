@@ -957,15 +957,61 @@ async function verifyOriginInternalToken(req, host) {
 // URL host 和 Host 头都跟客户端请求一致。删掉 Host 会离开这个条件，可能造成第二次进入。
 // 没有令牌时原样返回，避免无谓地重建请求。
 // 跨 host 回源（访客 Host → sites / site-N）仍在 attachOriginToken 里去掉 Host，否则 COS 会 400 UserCnameInvalid。
+// 回源子请求一律不带 Accept-Encoding：源站（COS）按 AE 回 br/gzip 后，EdgeOne 把解开的正文
+// 和原 content-encoding/content-length 一起交给客户端，www 白屏（curl 92）。去掉 AE 的子请求记在
+// AE_STRIPPED_REQUESTS，只有这些请求的响应才删 content-encoding/content-length。
+var AE_STRIPPED_REQUESTS = typeof WeakSet === 'function' ? new WeakSet() : null;
+function markAcceptEncodingStripped(out, hadAe) {
+  if (hadAe && AE_STRIPPED_REQUESTS && out && typeof out === 'object') AE_STRIPPED_REQUESTS.add(out);
+  return out;
+}
+function acceptEncodingStripped(out) {
+  return !!(AE_STRIPPED_REQUESTS && out && typeof out === 'object' && AE_STRIPPED_REQUESTS.has(out));
+}
+function dropBodyEncoding(resp) {
+  if (!resp || !resp.headers) return resp;
+  if (!resp.headers.has('content-encoding') && !resp.headers.has('content-length')) return resp;
+  try {
+    const headers = new Headers(resp.headers);
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+    return cloneResponse(resp, headers);
+  } catch (e) {
+    return resp;
+  }
+}
 function stripOriginInternalToken(req) {
-  if (!req.headers || !req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) return req;
+  if (!req || !req.headers) return req;
+  const hadAe = req.headers.has('accept-encoding');
+  if (!req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) {
+    if (!hadAe) return req;
+    // 无令牌透传：只去 AE。EdgeOne 不支持 Request(Request, init)，按 URL 重建，
+    // method/body 照抄，redirect 沿用入站请求（默认 follow），不改透传的重定向语义。
+    const plain = new Headers(req.headers);
+    plain.delete('accept-encoding');
+    const plainMethod = req.method || 'GET';
+    const plainInit = { method: plainMethod, headers: plain };
+    if (req.redirect) plainInit.redirect = req.redirect;
+    if (plainMethod !== 'GET' && plainMethod !== 'HEAD' && req.body != null) plainInit.body = req.body;
+    return markAcceptEncodingStripped(rebuildRequest(req.url, plainInit), true);
+  }
   const headers = new Headers(req.headers);
   headers.delete(ORIGIN_INTERNAL_TOKEN_HEADER);
+  headers.delete('accept-encoding');
   const method = req.method || 'GET';
   const init = { method: method, headers: headers, redirect: 'manual' };
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) init.body = req.body;
   const targetUrl = req.url;
-  return new Request(targetUrl, init);
+  return markAcceptEncodingStripped(rebuildRequest(targetUrl, init), hadAe);
+}
+// 带 body 重建：Node/undici 要求 duplex:'half'，EdgeOne 可能不认识该字段；同 /api 代理，先带 duplex，失败再去掉重试。
+function rebuildRequest(url, init) {
+  if (init.body == null) return new Request(url, init);
+  try {
+    return new Request(url, Object.assign({}, init, { duplex: 'half' }));
+  } catch (e) {
+    return new Request(url, init);
+  }
 }
 
 // www 签过名的子请求只带源站需要的头，外加内部令牌。
@@ -976,7 +1022,6 @@ function stripOriginInternalToken(req) {
 // Range 会把整页收成 206 片段，If-None-Match 会把仍有效的路由收成 304/404。
 var WWW_SIGNED_DOCUMENT_HEADERS = [
   'accept',
-  'accept-encoding',
   'accept-language',
   'user-agent'
 ];
@@ -1055,7 +1100,7 @@ function wwwUnsignedDocumentInit(req) {
   const headers = new Headers();
   const source = req && req.headers;
   const names = [
-    'accept', 'accept-encoding', 'accept-language', 'user-agent', 'cookie', 'content-type',
+    'accept', 'accept-language', 'user-agent', 'cookie', 'content-type',
     'range', 'if-none-match', 'if-modified-since'
   ];
   for (let i = 0; i < names.length; i += 1) {
@@ -1166,6 +1211,7 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
     return serveCustom404(req, event, u, sitePath, originHost, meta);
   }
+  if (!hardened && req && req.headers && req.headers.has('accept-encoding')) resp = dropBodyEncoding(resp);
   return stampOriginSign(await withDemoxBadge(req, event, resp, meta), req);
 }
 
@@ -2799,7 +2845,7 @@ function originGuardNotFound() {
 // 放行对象的 Cache-Control 用 ORIGIN_OBJECT_MAX_AGE。这个 max-age 只影响客户端，
 // 不改变 EdgeOne 节点缓存的 TTL。节点缓存命中绕不过守卫，是因为函数先于节点缓存执行。
 // 已经写进节点的 HIT 仍要在发布后 purge，这个头盖不住它们。
-function capOriginObjectCache(resp, route) {
+function capOriginObjectCache(resp, route, outbound) {
   if (!resp) return resp;
   try {
     const headers = new Headers(resp.headers);
@@ -2811,6 +2857,10 @@ function capOriginObjectCache(resp, route) {
     }
     if (route) headers.set('x-demox-route', route);
     applyOriginObjectCors(headers, resp.status);
+    if (acceptEncodingStripped(outbound)) {
+      headers.delete('content-encoding');
+      headers.delete('content-length');
+    }
     return cloneResponse(resp, headers);
   } catch (e) {
     return resp;
@@ -2854,7 +2904,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
     ctx.siteTraffic = true;
     ctx.resolveState = 'origin';
     const stripped = stripOriginInternalToken(req);
-    return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');
+    return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal', stripped);
   }
   const parsed = originSiteTarget(u.pathname);
   if (parsed && parsed.reject) {
@@ -2866,7 +2916,8 @@ async function originGuardDecision(req, event, ctx, u, host) {
   // static / cdn / 未知子域名 / 未绑定自定义域的 OPTIONS 仍是边缘 204，不回源。
   if (!parsed) {
     if (isOriginAllowlisted(u.pathname)) {
-      return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
+      const listed = stripOriginInternalToken(req);
+      return capOriginObjectCache(await fetch(listed), 'origin-guard=allowlist', listed);
     }
     if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
     return fetch(req);
@@ -2900,7 +2951,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
     });
   }
   const outbound = stripOriginInternalToken(req);
-  return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');
+  return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow', outbound);
 }
 
 function stripHostPort(host) {
