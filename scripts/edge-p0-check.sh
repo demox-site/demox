@@ -24,6 +24,11 @@
 #   BANNED_PATHS="sites/<uid>/<ID>/dist/index.html ..."   # 封禁 → 403（或连接被拒绝）
 #   PRIVATE_PATHS="sites/<uid>/<ID>/..."                  # 不写死私有站点 uid；未设置则跳过
 #   PUBLIC_PATHS="sites/<uid>/<ID>/dist/index.html ..."   # 公开 → 200
+#   BANNED_OLD_URL=https://sites.demox.site/sites/<uid>/VMPZGKSR/dist/index.html  # 封禁旧站对象：GET/POST/OPTIONS 都 403
+#   MISSING_OLD_URL=https://sites.demox.site/sites/<uid>/ZZZZZZZZ/dist/index.html # 不存在的旧站对象：GET/POST/OPTIONS 都 404
+#   ASSET_URLS="https://www.demox.site/assets/index-*.js https://www.demox.site/assets/index-*.css"
+#       # 2026-11-04 www 白屏（AE 被带进子请求，curl 92）：每个资源 --compressed 用 br、gzip 各取一次，
+#       # 必须 curl exit 0、200、解码后字节数 == Accept-Encoding: identity 的字节数。未设置时从 www 首页里取。
 #   FIRST_SCREEN_BUDGET_MS=3000
 #   ENFORCE_SITE_N=1    # site-N 今天不经 EdgeOne。默认只记录 GAP，不因此失败；K3 之后设 1
 #   SKIP_ORIGIN=1       # 只跑本地封禁缓存模拟，不请求源站
@@ -39,6 +44,10 @@ UNBOUND_URL=${UNBOUND_URL:-https://your-demo.demox.site/}
 FN_URL=${FN_URL-https://uv0fkz31.demox.site/api/cookies}
 POST_URLS=${POST_URLS-https://uv0fkz31.demox.site/}
 SKIP_WWW=${SKIP_WWW:-0}
+P0_UID=${P0_UID:-1985655011013808129}
+BANNED_OLD_URL=${BANNED_OLD_URL-https://sites.demox.site/sites/$P0_UID/VMPZGKSR/dist/index.html}
+MISSING_OLD_URL=${MISSING_OLD_URL-https://sites.demox.site/sites/$P0_UID/ZZZZZZZZ/dist/index.html}
+ASSET_URLS=${ASSET_URLS-}
 FAKE='demox_access=p0-fake-not-a-token; p0_probe=1'
 fail=0
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -96,6 +105,37 @@ for variant in nocookie cookie; do
     req GET "$UNBOUND_URL" "$c"; check "$tag GET unbound $UNBOUND_URL" 404
   fi
 done
+
+# 旧站对象：封禁 403、不存在 404。三种方法一致（守卫先裁决，OPTIONS 不能绕过）。
+for m in GET POST OPTIONS; do
+  if [ -n "$BANNED_OLD_URL" ]; then req $m "$BANNED_OLD_URL"; check "$m banned-old $BANNED_OLD_URL" 403; fi
+  if [ -n "$MISSING_OLD_URL" ]; then req $m "$MISSING_OLD_URL"; check "$m missing-old $MISSING_OLD_URL" 404; fi
+done
+
+# Accept-Encoding：资源用 br / gzip 取，解码后必须和 identity 一样大。curl 92（流被重置）= 白屏回归。
+if [ "$SKIP_WWW" != 1 ]; then
+  if [ -z "$ASSET_URLS" ]; then
+    home=$(curl -s -m 30 -H 'Accept-Encoding: identity' "$WWW_URL")
+    for a in $(printf %s "$home" | grep -oE '/assets/index-[A-Za-z0-9_-]+\.(js|css)' | sort -u); do
+      ASSET_URLS="$ASSET_URLS ${WWW_URL%/}$a"
+    done
+  fi
+  [ -n "$ASSET_URLS" ] || { echo "FAIL no /assets/index-*.js|css found on $WWW_URL"; fail=1; }
+  for a in $ASSET_URLS; do
+    ref=$(curl -s -m 60 -o "$tmp/asset-id" -w '%{http_code}' -H 'Accept-Encoding: identity' "$a"); rc=$?
+    idlen=$(wc -c < "$tmp/asset-id")
+    if [ $rc != 0 ] || [ "$ref" != 200 ]; then echo "FAIL AE=identity $a → exit $rc code $ref"; fail=1; continue; fi
+    for e in br gzip; do
+      code=$(curl -s -m 60 --compressed -H "Accept-Encoding: $e" -o "$tmp/asset-$e" -w '%{http_code}' "$a"); rc=$?
+      len=$(wc -c < "$tmp/asset-$e" 2>/dev/null || echo 0)
+      if [ $rc = 0 ] && [ "$code" = 200 ] && [ "$len" = "$idlen" ]; then
+        echo "PASS AE=$e $a → exit 0, 200, decoded $len == identity $idlen"
+      else
+        echo "FAIL AE=$e $a → exit $rc, code $code, decoded $len vs identity $idlen"; fail=1
+      fi
+    done
+  done
+fi
 
 if [ -n "${BASELINE:-}" ]; then
   python3 "$(dirname "$0")/edge-p0-matrix.py" compare "$BASELINE" || fail=1

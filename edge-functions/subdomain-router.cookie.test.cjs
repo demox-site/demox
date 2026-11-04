@@ -241,7 +241,9 @@ const HOP_BY_HOP = ['host', 'content-length', 'connection', 'keep-alive', 'proxy
 function edgeOneWireHeaders(input, init, incoming) {
   const target = new URL(input instanceof NativeRequest ? input.url : String(input));
   const viaIncoming = input === incoming || init === incoming;
-  const src = viaIncoming ? incoming.headers : (init && init.headers ? new Headers(init.headers) : new Headers());
+  // fetch(new Request(字符串URL, init))：头取自那个 Request（/api/* 转发一直这么用，生产上 cookie 照常到达）。
+  const rebuiltInput = !viaIncoming && input instanceof NativeRequest && init === undefined;
+  const src = viaIncoming ? incoming.headers : (rebuiltInput ? input.headers : (init && init.headers ? new Headers(init.headers) : new Headers()));
   const out = {};
   for (const [k, v] of src.entries()) {
     if (viaIncoming && HOP_BY_HOP.includes(k)) continue;
