@@ -32,12 +32,39 @@
 #   FIRST_SCREEN_BUDGET_MS=3000
 #   ENFORCE_SITE_N=1    # site-N 今天不经 EdgeOne。默认只记录 GAP，不因此失败；K3 之后设 1
 #   SKIP_ORIGIN=1       # 只跑本地封禁缓存模拟，不请求源站
+#   P0_RESOLVE_IP=1.2.3.4  # 或 --resolve-ip 1.2.3.4：每个 curl 都加 --resolve host:443/80:IP，直连 EdgeOne 节点，
+#       # 绕开本机代理（2026-11-04 云帆经代理拿到 http 500/超时）。不设置时行为不变。只作用于本脚本的 curl，不作用于 edge-p0-matrix.py。
 # D0 重入探测（只读，不需要密钥）：python3 scripts/edge-reentry-probe.py https://www.demox.site/
 # D2 现场矩阵（封禁 ID、公开站、http2 Host/:authority、缓存键大小写、CORS、15s）：python3 scripts/edge-p0-matrix.py d2
 # 性能：python3 scripts/edge-p0-matrix.py perf-baseline before.json，发布后再 python3 scripts/edge-p0-matrix.py perf before.json
 # 回滚来回：scripts/edge-router-rollback.sh plan ；APPLY=1 才写，见 skills/edge-router/SKILL.md
 # 每个源站 host × path 都会打 http 和 https。site-N 的 https 证书不匹配只记一笔，不单独失败。
 set -u
+P0_RESOLVE_IP=${P0_RESOLVE_IP:-}
+while [ $# -gt 0 ]; do
+  case $1 in
+    --resolve-ip) P0_RESOLVE_IP=${2:?--resolve-ip needs an IP}; shift 2 ;;
+    --resolve-ip=*) P0_RESOLVE_IP=${1#*=}; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$P0_RESOLVE_IP" ]; then
+  # 包一层 curl：把参数里每个 http(s) URL 的主机都钉到 P0_RESOLVE_IP。
+  curl() {
+    local a h port extra=()
+    for a in "$@"; do
+      case $a in
+        https://*|http://*)
+          h=${a#*://}; h=${h%%[/?#]*}
+          case $a in https://*) port=443 ;; *) port=80 ;; esac
+          case $h in *:*) port=${h##*:}; h=${h%:*} ;; esac
+          extra+=(--resolve "$h:$port:$P0_RESOLVE_IP") ;;
+      esac
+    done
+    command curl "${extra[@]}" "$@"
+  }
+  echo "INFO every curl pinned to $P0_RESOLVE_IP via --resolve"
+fi
 WWW_URL=${WWW_URL:-https://www.demox.site/}
 SITE_URLS=${SITE_URLS:-"https://coverage.demox.site/ https://uv0fkz31.demox.site/ https://letters-from-the-hill.demox.site/"}
 UNBOUND_URL=${UNBOUND_URL:-https://your-demo.demox.site/}

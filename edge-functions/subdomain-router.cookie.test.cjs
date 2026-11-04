@@ -414,15 +414,16 @@ test('static origin and passthrough fetches keep the pre-#49 call shape (origina
     if (cursor < preLines.length && line === preLines[cursor]) cursor += 1;
     else extras.push(line);
   }
+  // #164（2026-11-04 白屏）：三处透传改走 fetchPassthrough(req)，内部是剥令牌/AE 后的 fetch(out)；
+  // 守卫三条回源把 outbound 传给 capOriginObjectCache，只对去掉了 AE 的请求删 content-encoding/content-length。
   assert.deepEqual(extras, [
+    'const resp = await fetch(out);',
     'const custom404 = await fetch(missingUrl, signed);',
-    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');",
-    "return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');",
-    'return fetch(stripOriginInternalToken(req));',
-    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');",
-    'if (!parsedHost && !(customResolved && customResolved.path)) return fetch(stripOriginInternalToken(req));',
-    'return fetch(stripOriginInternalToken(req));'
+    "return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal', stripped);",
+    "return capOriginObjectCache(await fetch(listed), 'origin-guard=allowlist', listed);",
+    "return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow', outbound);"
   ]);
+  assert.equal((source.match(/return fetchPassthrough\(req\);/g) || []).length, 3);
 });
 
 

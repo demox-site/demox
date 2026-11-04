@@ -46,10 +46,10 @@ function make(src,secret,mode){const calls=[];const store=new Map();
 
 const BODIES = {
   'subdomain-router.js': fs.readFileSync(path.join(__dirname, 'subdomain-router.js'), 'utf8'),
-  'fixtures/live-subdomain-router.c4e1d339.js': fs.readFileSync(path.join(__dirname, 'fixtures/live-subdomain-router.c4e1d339.js'), 'utf8')
+  'fixtures/live-subdomain-router.71a677cf.js': fs.readFileSync(path.join(__dirname, 'fixtures/live-subdomain-router.71a677cf.js'), 'utf8')
 };
-test('hotfix fixture sha256 is c4e1d339', () => {
-  assert.equal(crypto.createHash('sha256').update(BODIES['fixtures/live-subdomain-router.c4e1d339.js']).digest('hex'), 'c4e1d3393282422ab5ea8b74cc6c9980b0794c0782664130925e9084231760ee');
+test('live fixture sha256 is 71a677cf', () => {
+  assert.equal(crypto.createHash('sha256').update(BODIES['fixtures/live-subdomain-router.71a677cf.js']).digest('hex'), '71a677cfea3ce35ceb4b9a1e5b93993b513aac6d635cc4a1cb536c9a20a45a24');
 });
 for (const [name, src] of Object.entries(BODIES)) {
   for (const secret of [true, false]) {
@@ -70,20 +70,22 @@ for (const [name, src] of Object.entries(BODIES)) {
 }
 
 // 2026-11-04 云帆 gate2：c4e1d339 对无令牌直连 sites.demox.site 仍转发 AE，源站回真 br，
-// 删掉 content-encoding 后客户端拿到压缩字节。只对仓库路由跑（c4e1d339 已知不过）。
-for (const secret of [true, false]) {
-  for (const [type, file] of [['js', 'index-DxCBZomZ.js'], ['css', 'index-DWMADRiU.css']]) {
-    for (const ae of ['gzip, deflate, br', 'br', 'gzip', '']) {
-      test(`subdomain-router.js secret=${secret} direct sites.demox.site ${type} real-compression origin Accept-Encoding=${ae || 'none'}: plain body`, async () => {
-        const run = make(BODIES['subdomain-router.js'], secret, 'real');
-        const r = await run(`https://sites.demox.site/sites/${PUID}/EPX2UU43/dist/assets/${file}`, { headers: ae ? { 'accept-encoding': ae } : {} });
-        assert.equal(r.fwdAE, '-', 'direct origin hit must not forward accept-encoding');
-        assert.equal(r.status, 200);
-        assert.equal(r.ce, null);
-        assert.ok(r.cl == null || Number(r.cl) === r.size, 'content-length ' + r.cl);
-        assert.equal(r.size, SIZES[type]);
-        assert.ok(r.body.every((x) => x === (type === 'js' ? 97 : 99)), 'body must be plain');
-      });
+// 删掉 content-encoding 后客户端拿到压缩字节。c4e1d339 从未上线，fixture 已删除；这里对仓库路由和现网 71a677cf 都跑。
+for (const [name, src] of Object.entries(BODIES)) {
+  for (const secret of [true, false]) {
+    for (const [type, file] of [['js', 'index-DxCBZomZ.js'], ['css', 'index-DWMADRiU.css']]) {
+      for (const ae of ['gzip, deflate, br', 'br', 'gzip', '']) {
+        test(`${name} secret=${secret} direct sites.demox.site ${type} real-compression origin Accept-Encoding=${ae || 'none'}: plain body`, async () => {
+          const run = make(src, secret, 'real');
+          const r = await run(`https://sites.demox.site/sites/${PUID}/EPX2UU43/dist/assets/${file}`, { headers: ae ? { 'accept-encoding': ae } : {} });
+          assert.equal(r.fwdAE, '-', 'direct origin hit must not forward accept-encoding');
+          assert.equal(r.status, 200);
+          assert.equal(r.ce, null);
+          assert.ok(r.cl == null || Number(r.cl) === r.size, 'content-length ' + r.cl);
+          assert.equal(r.size, SIZES[type]);
+          assert.ok(r.body.every((x) => x === (type === 'js' ? 97 : 99)), 'body must be plain');
+        });
+      }
     }
   }
 }

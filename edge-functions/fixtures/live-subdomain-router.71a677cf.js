@@ -70,8 +70,9 @@ var ORIGIN_RESOLVE_ATTEMPT_MS = 4000;
 var ORIGIN_RESOLVE_RETRY_DELAY_MS = 50;
 // 放行对象写给浏览器的 Cache-Control。不设置 EdgeOne 节点缓存 TTL，也不写 s-maxage。
 // 节点上的缓存命中绕不过守卫：命中函数规则时函数先执行，封禁在 fetch 之前 403。
-// 浏览器仍可能按这个 max-age 保留副本，最长 60s 不回边缘。边缘封禁时钟是 15s。
-// 若产品要求浏览器也在 15s 内停，要另改这个常量。
+// 源站响应已经带了 Cache-Control 时原样留给客户端（hashed /assets 是
+// public, max-age=31536000, immutable）。源站没带时才补 public, max-age=60。
+// 封禁、缺站、4xx/5xx 仍是 no-store，不看源站头。
 var ORIGIN_OBJECT_MAX_AGE = 60;
 // 上线默认关闭，与现网 baseline 一致（启明 + 云帆，#84）。
 // 只有布尔 true 才打开完整 CORS：OPTIONS 与放行的 GET/HEAD 带齐固定头，
@@ -129,6 +130,8 @@ var DEMOX_SITE_TICKET_MAX_AGE = 60 * 60;
 
 // 2026-10-10 账号令牌 cookie 止血（#53，三次失败后的可发布版本）：
 //   1) 静态 / 源站 / 透传保持 #49 之前的 fetch(req)，不重建请求、不改头、不剥 cookie。
+//      唯一例外：客户端自己带了 x-demox-origin-token 时先剥掉这个头再 fetch。
+//      没有这张头时 stripOriginInternalToken 原样返回入站请求。
 //   2) 只在 /api/* 函数转发（proxySiteFunction）剥离 demox_access 和 demox_site。
 //   3) 官方域名请求带着旧账号 cookie 时，响应追加两条过期 Set-Cookie（父域 + host-only）。
 //   4) *.demox.site 私有站点不认账号 cookie。登录后只写 host-only 的 demox_site 短期票据。
@@ -957,8 +960,44 @@ async function verifyOriginInternalToken(req, host) {
 // URL host 和 Host 头都跟客户端请求一致。删掉 Host 会离开这个条件，可能造成第二次进入。
 // 没有令牌时原样返回，避免无谓地重建请求。
 // 跨 host 回源（访客 Host → sites / site-N）仍在 attachOriginToken 里去掉 Host，否则 COS 会 400 UserCnameInvalid。
+// 回源子请求一律不带 Accept-Encoding：源站（COS）按 AE 回 br/gzip 后，EdgeOne 把解开的正文
+// 和原 content-encoding/content-length 一起交给客户端，www 白屏（curl 92）。去掉 AE 的子请求记在
+// AE_STRIPPED_REQUESTS，只有这些请求的响应才删 content-encoding/content-length。
+var AE_STRIPPED_REQUESTS = typeof WeakSet === 'function' ? new WeakSet() : null;
+function markAcceptEncodingStripped(out, hadAe) {
+  if (hadAe && AE_STRIPPED_REQUESTS && out && typeof out === 'object') AE_STRIPPED_REQUESTS.add(out);
+  return out;
+}
+function acceptEncodingStripped(out) {
+  return !!(AE_STRIPPED_REQUESTS && out && typeof out === 'object' && AE_STRIPPED_REQUESTS.has(out));
+}
+function dropBodyEncoding(resp) {
+  if (!resp || !resp.headers) return resp;
+  if (!resp.headers.has('content-encoding') && !resp.headers.has('content-length')) return resp;
+  try {
+    const headers = new Headers(resp.headers);
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+    return cloneResponse(resp, headers);
+  } catch (e) {
+    return resp;
+  }
+}
 function stripOriginInternalToken(req) {
-  if (!req.headers || !req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) return req;
+  if (!req || !req.headers) return req;
+  const hadAe = req.headers.has('accept-encoding');
+  if (!req.headers.has(ORIGIN_INTERNAL_TOKEN_HEADER)) {
+    if (!hadAe) return req;
+    // 无令牌透传：只去 AE。EdgeOne 不支持 Request(Request, init)，按 URL 重建，
+    // method/body 照抄，redirect 沿用入站请求（默认 follow），不改透传的重定向语义。
+    const plain = new Headers(req.headers);
+    plain.delete('accept-encoding');
+    const plainMethod = req.method || 'GET';
+    const plainInit = { method: plainMethod, headers: plain };
+    if (req.redirect) plainInit.redirect = req.redirect;
+    if (plainMethod !== 'GET' && plainMethod !== 'HEAD' && req.body != null) plainInit.body = req.body;
+    return markAcceptEncodingStripped(rebuildRequest(req.url, plainInit), true);
+  }
   const headers = new Headers(req.headers);
   headers.delete(ORIGIN_INTERNAL_TOKEN_HEADER);
   headers.delete('accept-encoding');
@@ -966,7 +1005,21 @@ function stripOriginInternalToken(req) {
   const init = { method: method, headers: headers, redirect: 'manual' };
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) init.body = req.body;
   const targetUrl = req.url;
-  return new Request(targetUrl, init);
+  return markAcceptEncodingStripped(rebuildRequest(targetUrl, init), hadAe);
+}
+// 带 body 重建：Node/undici 要求 duplex:'half'，EdgeOne 可能不认识该字段；同 /api 代理，先带 duplex，失败再去掉重试。
+function rebuildRequest(url, init) {
+  if (init.body == null) return new Request(url, init);
+  try {
+    return new Request(url, Object.assign({}, init, { duplex: 'half' }));
+  } catch (e) {
+    return new Request(url, init);
+  }
+}
+async function fetchPassthrough(req) {
+  const out = stripOriginInternalToken(req);
+  const resp = await fetch(out);
+  return acceptEncodingStripped(out) ? dropBodyEncoding(resp) : resp;
 }
 
 // www 签过名的子请求只带源站需要的头，外加内部令牌。
@@ -1166,12 +1219,8 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     // index.html 不存在 → 尝试站点自定义 404.html，再兜底 Demox 默认 404
     return serveCustom404(req, event, u, sitePath, originHost, meta);
   }
-  if (!hardened && resp && resp.headers) {
-    const passHeaders = new Headers(resp.headers);
-    passHeaders.delete('content-encoding');
-    passHeaders.delete('content-length');
-    resp = cloneResponse(resp, passHeaders);
-  }
+  // www 回源不转发访客的 AE（见 WWW_SIGNED_DOCUMENT_HEADERS）。访客带了 AE 时，这次回源就是去掉 AE 的请求。
+  if (!hardened && req && req.headers && req.headers.has('accept-encoding')) resp = dropBodyEncoding(resp);
   return stampOriginSign(await withDemoxBadge(req, event, resp, meta), req);
 }
 
@@ -2802,23 +2851,32 @@ function originGuardNotFound() {
   });
 }
 
-// 放行对象的 Cache-Control 用 ORIGIN_OBJECT_MAX_AGE。这个 max-age 只影响客户端，
+// 放行对象的 Cache-Control：源站已经带了就原样保留（尤其是 immutable 的一年缓存）。
+// 只有源站没带时才补 ORIGIN_OBJECT_MAX_AGE。这个补上的 max-age 只影响客户端，
 // 不改变 EdgeOne 节点缓存的 TTL。节点缓存命中绕不过守卫，是因为函数先于节点缓存执行。
 // 已经写进节点的 HIT 仍要在发布后 purge，这个头盖不住它们。
-function capOriginObjectCache(resp, route) {
+// 4xx/5xx 一律 no-store，不看源站头。封禁和缺站不走这里，它们自己的响应也是 no-store。
+function originSentCacheControl(headers) {
+  const value = headers && headers.get ? headers.get('Cache-Control') : '';
+  return !!(value && String(value).trim());
+}
+
+function capOriginObjectCache(resp, route, outbound) {
   if (!resp) return resp;
   try {
     const headers = new Headers(resp.headers);
     if (isUncacheableStatus(resp.status)) {
       headers.set('Cache-Control', 'no-store');
       headers.delete('Expires');
-    } else {
+    } else if (!originSentCacheControl(headers)) {
       headers.set('Cache-Control', 'public, max-age=' + ORIGIN_OBJECT_MAX_AGE);
     }
     if (route) headers.set('x-demox-route', route);
     applyOriginObjectCors(headers, resp.status);
-    headers.delete('content-encoding');
-    headers.delete('content-length');
+    if (acceptEncodingStripped(outbound)) {
+      headers.delete('content-encoding');
+      headers.delete('content-length');
+    }
     return cloneResponse(resp, headers);
   } catch (e) {
     return resp;
@@ -2862,7 +2920,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
     ctx.siteTraffic = true;
     ctx.resolveState = 'origin';
     const stripped = stripOriginInternalToken(req);
-    return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal');
+    return capOriginObjectCache(await fetch(stripped), 'origin-guard=internal', stripped);
   }
   const parsed = originSiteTarget(u.pathname);
   if (parsed && parsed.reject) {
@@ -2874,10 +2932,11 @@ async function originGuardDecision(req, event, ctx, u, host) {
   // static / cdn / 未知子域名 / 未绑定自定义域的 OPTIONS 仍是边缘 204，不回源。
   if (!parsed) {
     if (isOriginAllowlisted(u.pathname)) {
-      return capOriginObjectCache(await fetch(stripOriginInternalToken(req)), 'origin-guard=allowlist');
+      const listed = stripOriginInternalToken(req);
+      return capOriginObjectCache(await fetch(listed), 'origin-guard=allowlist', listed);
     }
     if (!isOriginGuardHost(host) && method === 'OPTIONS') return originOptionsResponse();
-    return fetch(req);
+    return fetchPassthrough(req);
   }
   // 站点对象上 OPTIONS 和 GET/POST 用同一套 ID 裁决。跳过裁决会把封禁页正文从预检漏出去。
   ctx.siteTraffic = true;
@@ -2908,7 +2967,7 @@ async function originGuardDecision(req, event, ctx, u, host) {
     });
   }
   const outbound = stripOriginInternalToken(req);
-  return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow');
+  return capOriginObjectCache(await fetch(outbound), 'origin-guard=allow', outbound);
 }
 
 function stripHostPort(host) {
@@ -3000,14 +3059,15 @@ async function handleRequest(req, event, ctx) {
     ctx.resolveState = 'error';
     return siteUnavailableResponse('resolve=error; origin=none');
   }
-  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。下一行必须保持 #49 之前的写法。
+  // 未绑定自定义域：解码失败 400；第一段以 sites 开头的路径不能原样回源。
+  // 没有令牌时仍是 #49 的 fetch(req)。客户端自带的 x-demox-origin-token 不传到源站。
   if (!parsedHost && !(customResolved && customResolved.path)) {
     const passthroughKind = classifyPassthroughOriginPath(u.pathname);
     if (passthroughKind === 'reject') return originPathRejectResponse();
     if (passthroughKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
     if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
   }
-  if (!parsedHost && !(customResolved && customResolved.path)) return fetch(req);
+  if (!parsedHost && !(customResolved && customResolved.path)) return fetchPassthrough(req);
 
   const label = parsedHost ? parsedHost.label : host;
   const domain = parsedHost ? parsedHost.domain : host;
@@ -3126,7 +3186,7 @@ async function handleRequest(req, event, ctx) {
   if (unknownKind === 'reject') return originPathRejectResponse();
   if (unknownKind === 'sites') return handleOriginGuard(req, event, ctx, u, urlHost);
   if (String(req.method || 'GET').toUpperCase() === 'OPTIONS') return originOptionsResponse();
-  return fetch(req);
+  return fetchPassthrough(req);
 }
 
 function stripAccessControlHeaders(headers) {
