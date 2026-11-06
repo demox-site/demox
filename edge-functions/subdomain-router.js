@@ -560,17 +560,69 @@ function originDelay(ms) {
   };
 }
 
+// 入站 Request 当 fetch 的 init 时，EdgeOne 把非 HEAD 收成 GET、不带 body，并改写 Host、丢掉逐跳头。
+// 见 docs/incidents/2026-10-10-edge-cookie-strip-503.md。普通 init 会原样发出：带上访客 Host 是 400，
+// POST/PUT/OPTIONS 打到 COS 是 405。没有 Accept-Encoding 时仍把原来的 init 交回去，不重建。
+// 有 Accept-Encoding 时不能改入站头（边缘上不可变），也不能把重建的 Request 当 init（EdgeOne 会抛）。
+var ORIGIN_REQUEST_INIT_DROP = [
+  'accept-encoding', 'host', 'content-length', 'connection', 'keep-alive',
+  'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade',
+  'proxy-authorization', 'proxy-authenticate'
+];
+
+function originInitHasAcceptEncoding(init) {
+  try {
+    if (!init || !init.headers) return false;
+    if (typeof init.headers.has === 'function') return init.headers.has('accept-encoding');
+    return new Headers(init.headers).has('accept-encoding');
+  } catch (e) {
+    return false;
+  }
+}
+
+// 子请求禁止转发 Accept-Encoding。入站 Request（有 url）改成普通 init：非 HEAD 写明 GET，不带 body，
+// 去掉 Host 和逐跳头，Cookie 和其他头保留。已经是普通 init（attachOriginToken 签过令牌，
+// redirect:'manual'）时只删 AE，方法、body、redirect 不动。
+function originInitWithoutAcceptEncoding(init) {
+  if (!originInitHasAcceptEncoding(init)) return { init: init, stripped: false };
+  const headers = new Headers(init.headers);
+  if (typeof init.url === 'string') {
+    for (let i = 0; i < ORIGIN_REQUEST_INIT_DROP.length; i += 1) headers.delete(ORIGIN_REQUEST_INIT_DROP[i]);
+    const verb = String(init.method || 'GET').toUpperCase();
+    const method = verb === 'HEAD' ? 'HEAD' : 'GET';
+    return { init: { method: method, headers: headers }, stripped: true };
+  }
+  headers.delete('accept-encoding');
+  const method = String(init.method || 'GET').toUpperCase();
+  const next = { method: method, headers: headers };
+  if (init.redirect) next.redirect = init.redirect;
+  if (method !== 'GET' && method !== 'HEAD' && init.body != null) next.body = init.body;
+  return { init: next, stripped: true };
+}
+
 // 站点文件回源：单次 ORIGIN_TIMEOUT_MS 超时，GET/HEAD 失败(抛错或超时)再试一次。
 // 成功后在 meta.originState 记 'ok' 或 'retry'；全部失败抛错（由调用方映射成 503）。
+// 去掉了 Accept-Encoding 的响应在返回前删 content-encoding / content-length（dropBodyEncoding），
+// 避免源站或边缘把压缩头套在已经解开的正文上。带 body 的普通 init 先加 duplex:'half'，
+// 这一跳失败再去掉 duplex 重试一次（与 /api 的 Request 重建相同，但不把重建的 Request 当 init）。
 async function fetchSiteOrigin(url, init, meta) {
   const method = String((init && init.method) || 'GET').toUpperCase();
-  const attempts = (method === 'GET' || method === 'HEAD') ? Math.max(1, ORIGIN_ATTEMPTS) : 1;
+  let attempts = (method === 'GET' || method === 'HEAD') ? Math.max(1, ORIGIN_ATTEMPTS) : 1;
   let lastError = null;
+  let aeStripped = false;
+  let duplexState = 'maybe';
   for (let i = 0; i < attempts; i += 1) {
     const delay = originDelay(ORIGIN_TIMEOUT_MS);
     try {
       // 密钥为空时 attach 返回原来的 init（用户站点就是入站 req）。有密钥才换成带令牌、不带 Host 的普通 init。
       init = await attachOriginToken(url, init);
+      const prepared = originInitWithoutAcceptEncoding(init);
+      init = prepared.init;
+      if (prepared.stripped) aeStripped = true;
+      if (duplexState === 'maybe' && init && init.body != null && typeof init.url !== 'string') {
+        init = Object.assign({}, init, { duplex: 'half' });
+        duplexState = 'sent';
+      }
       const attempt = fetch(url, init);
       const resp = delay
         ? await Promise.race([
@@ -579,10 +631,17 @@ async function fetchSiteOrigin(url, init, meta) {
         ])
         : await attempt;
       if (meta && meta.originState !== 'retry') meta.originState = i === 0 ? 'ok' : 'retry';
-      return resp;
+      return aeStripped ? dropBodyEncoding(resp) : resp;
     } catch (e) {
       lastError = e;
       if (meta) meta.originState = 'retry';
+      if (duplexState === 'sent' && init && init.duplex) {
+        const plain = Object.assign({}, init);
+        delete plain.duplex;
+        init = plain;
+        duplexState = 'stripped';
+        if (i + 1 >= attempts) attempts += 1;
+      }
     } finally {
       if (delay) delay.cancel();
     }
@@ -1181,7 +1240,9 @@ async function rewriteOriginOnce(req, event, u, originPath, sitePath, originHost
     : function (url, init) { return fetch(url, init); };
   // 有签名槽时用白名单 Headers（不含 Host），方法仍是 wwwDocumentMethod。
   // 没有签名槽时 www 用 wwwUnsignedDocumentInit：显式 GET/HEAD，不带 body。
-  // 用户站点（hardened）保持 #49 的 originFetch(..., req)，不在这里改方法。
+  // 用户站点（hardened）保持 #49 的 originFetch(..., req)，调用点不改方法。
+  // 访客带了 Accept-Encoding 时，fetchSiteOrigin 再改成不带 AE 的普通 init，并按
+  // 「Request 当 init → 非 HEAD 为 GET」写明方法；没有 AE 时仍然是这个 req。
   // 主文档的 range / if-*：有令牌时由 signedWwwHeaders 带上；没有令牌时
   // wwwUnsignedDocumentInit 的白名单同样带上。SPA 的 index.html 和 404.html
   // 不带这两类头（无令牌时那两次只写 method: GET）。都不按 Host 免裁决。
