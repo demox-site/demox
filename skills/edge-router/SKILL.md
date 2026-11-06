@@ -9,6 +9,10 @@ description: Mandatory guard for Demox EdgeOne subdomain-router. Use when editin
 
 `subdomain-router` 挂整个 `*.demox.site`，包括 `www`。改 404 等于改全网入口。
 
+## 硬规则
+
+**子请求禁止转发 Accept-Encoding（AE）；重建 Response 前必须删除 Content-Encoding 与 Content-Length（CE/CL）。** 浏览器 AE 被转到 `sites.demox.site` 后，重建的 Response 仍留着 CE/CL、正文已经对不上，www 白屏（curl 92）；www 路径已在 #164 修掉（线上 sha `71a677cf`）。
+
 ## 两件不同的事
 
 | 情况 | 判断 | 允许的处理 |
