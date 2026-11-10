@@ -58,7 +58,7 @@ const BODIES = {
   'subdomain-router.js': fs.readFileSync(path.join(__dirname, 'subdomain-router.js'), 'utf8'),
   'fixtures/live-subdomain-router.71a677cf.js': fs.readFileSync(path.join(__dirname, 'fixtures/live-subdomain-router.71a677cf.js'), 'utf8')
 };
-test('live fixture sha256 is 71a677cf', () => {
+test('rollback fixture sha256 is 71a677cf', () => {
   assert.equal(crypto.createHash('sha256').update(BODIES['fixtures/live-subdomain-router.71a677cf.js']).digest('hex'), '71a677cfea3ce35ceb4b9a1e5b93993b513aac6d635cc4a1cb536c9a20a45a24');
 });
 for (const [name, src] of Object.entries(BODIES)) {
@@ -80,7 +80,7 @@ for (const [name, src] of Object.entries(BODIES)) {
 }
 
 // 2026-11-04 云帆 gate2：c4e1d339 对无令牌直连 sites.demox.site 仍转发 AE，源站回真 br，
-// 删掉 content-encoding 后客户端拿到压缩字节。c4e1d339 从未上线，fixture 已删除；这里对仓库路由和现网 71a677cf 都跑。
+// 删掉 content-encoding 后客户端拿到压缩字节。c4e1d339 从未上线，fixture 已删除；这里对仓库路由和回滚正文 71a677cf 都跑。
 for (const [name, src] of Object.entries(BODIES)) {
   for (const secret of [true, false]) {
     for (const [type, file] of [['js', 'index-DxCBZomZ.js'], ['css', 'index-DWMADRiU.css']]) {
@@ -100,10 +100,10 @@ for (const [name, src] of Object.entries(BODIES)) {
   }
 }
 
-// 用户站走 fetchSiteOrigin。现网 71a677cf 仍把访客 Accept-Encoding 带进回源；仓库这一份去掉 AE，
-// 重建响应前删 content-encoding / content-length。live fixture 不跑通过用例，只锁住缺口还在。
+// 用户站走 fetchSiteOrigin。已发布的 53ea7300 与仓库路由相同，会去掉 AE。
+// 回滚正文 71a677cf 仍把访客 Accept-Encoding 带进用户站回源；这里锁住那个缺口，避免把它当成回滚后的行为。
 const repoSrc = BODIES['subdomain-router.js'];
-const liveSrc = BODIES['fixtures/live-subdomain-router.71a677cf.js'];
+const rollbackSrc = BODIES['fixtures/live-subdomain-router.71a677cf.js'];
 
 function assertPlainAsset(r, type) {
   assert.equal(r.fwdAE, '-', 'user-site subrequest must not carry accept-encoding');
@@ -231,8 +231,8 @@ test('repo secret https user-site POST retries without duplex when the runtime r
   assert.equal(ok.redirect, 'manual');
 });
 
-test('live 71a677cf still forwards Accept-Encoding on coverage assets', async () => {
-  const run = make(liveSrc, false, 'real');
+test('rollback fixture 71a677cf still forwards Accept-Encoding on coverage assets', async () => {
+  const run = make(rollbackSrc, false, 'real');
   const r = await run('https://coverage.demox.site/assets/index-DxCBZomZ.js', { headers: { 'accept-encoding': 'br', cookie: 'a=1' } });
   assert.equal(r.fwdAE, 'br');
   assert.notEqual(r.size, SIZES.js);
