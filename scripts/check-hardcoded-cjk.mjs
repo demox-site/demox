@@ -35,6 +35,7 @@ export const ENFORCED_FILES = [
   "src/components/marketing/HeroStage.tsx",
   "src/components/marketing/GlobeStage.tsx",
   "src/components/marketing/GalleryStage.tsx",
+  "src/components/marketing/WorksWall.tsx",
   "src/components/marketing/TaskGuides.tsx",
   "src/components/marketing/gallery-cards.ts",
   "src/components/marketing/engine-s1.ts",
