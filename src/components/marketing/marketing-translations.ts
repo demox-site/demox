@@ -73,6 +73,20 @@ export const MARKETING_TRANSLATIONS = {
       miniWww: { login: "登录", titleA: "免费静态网站发布平台，", titleB: "支持 CLI 和 MCP", btn: "立即上传", success: "成功！已部署至：" },
       miniPreview: "一键发布为公网网站",
     },
+    works: {
+      title: "用 Demox 发布的作品",
+      srIntro: "七个站点。点卡片在新标签页打开。",
+      srNewTab: "在新标签页打开",
+      names: {
+        guangzhouta: "一塔临江一城花开",
+        gebii: "隔壁·她有自己的生活",
+        botcamp: "BotCamp 专业团队",
+        "yuanshan-design": "茶铺品牌视觉作品集",
+        coffee: "好咖啡慢慢来",
+        "beixian-lighting": "北线灯具客户预览",
+        "letters-from-the-hill": "山间来信秋日随笔",
+      },
+    },
   },
   en: {
     s1: {
@@ -140,6 +154,20 @@ export const MARKETING_TRANSLATIONS = {
       viewExample: "View example: ",
       miniWww: { login: "Log in", titleA: "Free static site hosting", titleB: "with CLI & MCP", btn: "Upload now", success: "Success! Deployed to:" },
       miniPreview: "Publish to the web in one click",
+    },
+    works: {
+      title: "Built with Demox",
+      srIntro: "Seven sites. Click a card to open it in a new tab.",
+      srNewTab: "Opens in a new tab",
+      names: {
+        guangzhouta: "A tower by the river, a city in bloom",
+        gebii: "Next door, she has her own life",
+        botcamp: "BotCamp, a professional team",
+        "yuanshan-design": "Tea shop brand portfolio",
+        coffee: "Good coffee, take it slow",
+        "beixian-lighting": "Northline lighting preview",
+        "letters-from-the-hill": "Letters from the hill",
+      },
     },
   },
 };

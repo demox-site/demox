@@ -9,6 +9,7 @@ import { siteConfig } from "@/configs/env";
 import { MainLayout } from "@/layouts/MainLayout";
 import { track } from "@/lib/track";
 import { TaskGuides } from "@/components/marketing/TaskGuides";
+import { WorksWall } from "@/components/marketing/WorksWall";
 
 // 编辑器、地球和画廊是首页下半屏。标题和按钮先出来，这三块再加载。
 const HeroStage = React.lazy(() => import("@/components/marketing/HeroStage"));
@@ -154,6 +155,9 @@ const CloudHostLanding: React.FC = () => {
           <HeroStage lang={lang} />
         </React.Suspense>
       </section>
+
+      {/* 首屏以下。卡片比例先占好，截图滚进视口再请求。 */}
+      <WorksWall lang={lang} />
 
       {/* Screen 2 — global edge nodes */}
       <React.Suspense fallback={<div className="min-h-[24rem]" />}>
