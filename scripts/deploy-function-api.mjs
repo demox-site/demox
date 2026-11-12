@@ -102,10 +102,34 @@ function pickCopiedEnv(source) {
   return Object.fromEntries(keys.map((key) => [key, source[key]]));
 }
 
+/** 禁止再把业务密钥从旧四支函数合并进网关（硬化步骤 1）。 */
+const MERGE_LIVE_DENY = new Set([
+  "ACME_EMAIL",
+  "ANALYTICS_HASH_SALT",
+  "ENCRYPTION_KEY",
+  "FEISHU_APP_ID",
+  "FEISHU_APP_SECRET",
+  "FEISHU_REDIRECT_URI",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "JWT_SECRET",
+  "MYSQL_DATABASE",
+  "MYSQL_HOST",
+  "MYSQL_PASSWORD",
+  "MYSQL_PORT",
+  "MYSQL_USER",
+  "RENEW_THRESHOLD_DAYS",
+  "EDGEONE_ZONE_ID"
+]);
+
 async function mergeLiveEnv() {
   const merged = {};
   for (const name of ["demox-website-api", "demox-auth-api", "demox-mcp-api", "demox-cert-renew"]) {
-    Object.assign(merged, envMap(await scf.GetFunction({ FunctionName: name, Namespace: namespace })));
+    const env = envMap(await scf.GetFunction({ FunctionName: name, Namespace: namespace }));
+    for (const [key, value] of Object.entries(env)) {
+      if (MERGE_LIVE_DENY.has(key)) continue;
+      merged[key] = value;
+    }
   }
   return merged;
 }

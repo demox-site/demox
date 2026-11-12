@@ -2,14 +2,15 @@
 
 const jwt = require('jsonwebtoken');
 const { unauthorized } = require('./errors.js');
+const { gatewayJwtSecret } = require('../website-api/shared/env-pairs.js');
 
 function getAuthorizationHeader(event) {
   const headers = event?.headers || {};
   return headers.authorization || headers.Authorization || '';
 }
 
-function createJwtAuthenticator({ secret = process.env.JWT_SECRET, algorithms = ['HS256'] } = {}) {
-  if (!secret) throw new Error('函数管理接口缺少 JWT_SECRET');
+function createJwtAuthenticator({ secret = gatewayJwtSecret(), algorithms = ['HS256'] } = {}) {
+  if (!secret) throw new Error('函数管理接口缺少 GATEWAY_JWT_SECRET 或 JWT_SECRET');
   return (event) => {
     const header = getAuthorizationHeader(event);
     if (!header.startsWith('Bearer ')) throw unauthorized();

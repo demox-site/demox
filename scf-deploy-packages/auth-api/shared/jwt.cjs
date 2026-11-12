@@ -1,18 +1,19 @@
 const jwt = require('jsonwebtoken');
+const { businessJwtSecret } = require('./env-pairs.cjs');
 
 const MIN_SECRET_LENGTH = 32;
 
 /**
- * 读取 JWT 签名密钥。没有配置或长度不足时直接报错，绝不回退到代码里的默认值
- * （仓库是公开的，任何写在代码里的默认密钥都等于没有密钥）。
+ * 读取业务 JWT 签名密钥。优先 BUSINESS_JWT_SECRET，否则 JWT_SECRET。
+ * 没有配置或长度不足时直接报错，绝不回退到代码里的默认值。
  */
 function getJwtSecret(env = process.env) {
-  const secret = typeof env.JWT_SECRET === 'string' ? env.JWT_SECRET.trim() : '';
+  const secret = businessJwtSecret(env);
   if (!secret) {
-    throw new Error('缺少 JWT_SECRET 环境变量，拒绝签发或校验 token');
+    throw new Error('缺少 BUSINESS_JWT_SECRET 或 JWT_SECRET 环境变量，拒绝签发或校验 token');
   }
   if (secret.length < MIN_SECRET_LENGTH) {
-    throw new Error(`JWT_SECRET 长度不足 ${MIN_SECRET_LENGTH} 位，拒绝签发或校验 token`);
+    throw new Error(`JWT 密钥长度不足 ${MIN_SECRET_LENGTH} 位，拒绝签发或校验 token`);
   }
   return secret;
 }
