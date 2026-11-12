@@ -16,3 +16,9 @@ The checked-in `index.js` is **not** a byte-for-byte copy of live `$LATEST`. It 
 - HTTP error text no longer includes the Tencent Cloud response body.
 
 Do not treat this file as proof that production `demox-cert-renew` already runs the refactored copy. Production still serves the live hash above until a later, explicit function update.
+
+## 2026-11-01 Domain.UnExist / account-moved API domain
+
+- `readApiTarget` / `bindToScf` treat `Domain.UnExist` (and similar) as missing: WARN, no ALERT.
+- Prefer `DEMOX_API_CUSTOM_DOMAIN` (SCF_ env prefix is rejected by Tencent SCF). Values `off`/`none`/empty disable SCF custom-domain bind.
+- Live 磷 `demox-cert-job` production was published to version **2** with `DEMOX_API_CUSTOM_DOMAIN=off` the same day (EdgeOne renew stays on 磷; api.demox.site SCF domain is on 易点).
