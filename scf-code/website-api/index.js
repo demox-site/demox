@@ -1818,6 +1818,42 @@ const BAN_NOTICE_TEMPLATE_ID = 226012;
 const BAN_NOTICE_REPLY_DAYS = '3';
 const BAN_NOTICE_REPLY_TO = 'phosa@qq.com';
 
+function banNoticeInvalid() {
+  const error = new Error('停用通知变量不合格');
+  error.code = 'BAN_NOTICE_INVALID';
+  return error;
+}
+
+function assertBanNoticeData(templateData) {
+  const data = templateData && typeof templateData === 'object' ? templateData : {};
+  const siteId = data.siteId;
+  const siteName = data.siteName;
+  const reason = data.reason;
+  const replyDays = data.replyDays;
+  for (const value of [siteId, siteName, reason, replyDays]) {
+    if (typeof value !== 'string' || !value.trim() || value.includes('{{') || value.includes('}}')) {
+      throw banNoticeInvalid();
+    }
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(siteId) || siteId.includes(',') || /\s/.test(siteId)) {
+    throw banNoticeInvalid();
+  }
+  if (replyDays !== '3') throw banNoticeInvalid();
+}
+
+function banNoticeReplyTo() {
+  const configured = typeof process.env.BAN_NOTICE_REPLY_TO === 'string'
+    ? process.env.BAN_NOTICE_REPLY_TO.trim()
+    : '';
+  return configured || BAN_NOTICE_REPLY_TO;
+}
+
+function logBanNoticeDryRun(templateId, templateData) {
+  const raw = templateData && typeof templateData.siteId === 'string' ? templateData.siteId : '';
+  const siteId = /^[A-Za-z0-9_-]+$/.test(raw) ? raw : '';
+  console.info(`ban-notice dry-run siteId=${siteId} template=${Number(templateId)}`);
+}
+
 function readPlatformSesCredentials() {
   const als = globalThis[Symbol.for('demox.platformSes.als')];
   if (!als || typeof als.getStore !== 'function') return null;
@@ -1830,7 +1866,7 @@ function readPlatformSesCredentials() {
   };
 }
 
-async function sendSesEmail({ to, subject, templateId, templateData }) {
+async function sendSesEmail({ to, subject, templateId, templateData, replyTo }) {
   const creds = readPlatformSesCredentials();
   if (!creds) {
     const error = new Error('平台发信角色未配置');
@@ -1839,7 +1875,22 @@ async function sendSesEmail({ to, subject, templateId, templateData }) {
   }
   const from = String(process.env.SES_FROM_EMAIL || 'Demox <noreply@mail.demox.site>').trim();
   assertPlatformSesSend({ from, templateId });
+  if (Number(templateId) === BAN_NOTICE_TEMPLATE_ID) assertBanNoticeData(templateData);
+  if (process.env.BAN_NOTICE_DRY_RUN === '1') {
+    logBanNoticeDryRun(templateId, templateData);
+    return { dryRun: true, MessageId: null };
+  }
   const region = String(process.env.SES_REGION || 'ap-hongkong').trim() || 'ap-hongkong';
+  const payload = {
+    FromEmailAddress: from,
+    Destination: [to],
+    Subject: subject,
+    Template: {
+      TemplateID: Number(templateId),
+      TemplateData: JSON.stringify(templateData || {})
+    }
+  };
+  if (typeof replyTo === 'string' && replyTo.trim()) payload.ReplyToAddresses = replyTo.trim();
   return callTencentCloudApi({
     secretId: creds.secretId,
     secretKey: creds.secretKey,
@@ -1849,16 +1900,7 @@ async function sendSesEmail({ to, subject, templateId, templateData }) {
     version: '2020-10-02',
     action: 'SendEmail',
     region,
-    payload: {
-      FromEmailAddress: from,
-      Destination: [to],
-      Subject: subject,
-      ReplyToAddresses: BAN_NOTICE_REPLY_TO,
-      Template: {
-        TemplateID: Number(templateId),
-        TemplateData: JSON.stringify(templateData || {})
-      }
-    }
+    payload
   });
 }
 
@@ -1868,6 +1910,7 @@ function buildSiteDisabledNotice({ siteName, websiteId, reason }) {
   return {
     subject: `【Demox】站点 ${id} 已停用，可申诉`,
     templateId: BAN_NOTICE_TEMPLATE_ID,
+    replyTo: banNoticeReplyTo(),
     templateData: {
       siteId: id,
       siteName: name,
@@ -3350,7 +3393,8 @@ async function handleUpdateWebsiteVisibility(event) {
           to: ownerEmail,
           subject: notice.subject,
           templateId: notice.templateId,
-          templateData: notice.templateData
+          templateData: notice.templateData,
+          replyTo: notice.replyTo
         });
         emailed = true;
       } catch (mailErr) {
@@ -11572,7 +11616,12 @@ exports._deployBackfillForTest = { rows: DEPLOY_LOG_BACKFILL_ROWS, reset: () => 
 exports._logRedactForTest = { redactLogText, redactLogValue, installLogRedaction };
 exports.checkCustomDomainIcp = checkCustomDomainIcp;
 exports._cookieDomainForTest = { cookieDomainScope, customDomainAuthCookieHeader };
-exports._sesMailForTest = { sendSesEmail, readPlatformSesCredentials };
+exports._sesMailForTest = {
+  sendSesEmail,
+  readPlatformSesCredentials,
+  buildSiteDisabledNotice,
+  assertBanNoticeData
+};
 exports._galleryForTest = {
   isDemoxHttpsUrl,
   parseGalleryCardInput,
