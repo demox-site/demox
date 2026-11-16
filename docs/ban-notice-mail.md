@@ -94,6 +94,8 @@ Demox
 | `{{停用原因}}` | `{{reason}}` |
 | `{{答复工作日}}` | `{{replyDays}}` |
 
+发信前 `assertBanNoticeData` 会检查这四个变量：空值、没替换干净的 `{{` / `}}`、一封里出现多个站点、`replyDays` 不是 `3`，都拒绝且不调用 SES。`BAN_NOTICE_DRY_RUN=1` 时做完白名单和这项校验后直接返回，不发信。停用通知的 Reply-To 读 `BAN_NOTICE_REPLY_TO`，未设置时仍是 `phosa@qq.com`。
+
 **申诉邮箱不写进正文，走 Reply-To。** 两个原因：
 
 1. 腾讯云模板审核禁止 URL，并对「加 QQ / 加微信」类联系方式敏感，正文里写邮箱是给自己找审核麻烦；
