@@ -282,7 +282,8 @@ function customDomainAuthCookieHeader(hostname, token, maxAge) {
 
 const { query, transaction, withConnection } = require('./shared/db.js');
 const { createProjectData, deleteProjectData } = require('./project-data.js');
-const projectData = createProjectData(query);
+const { createProjectDataQuota } = require('./project-data-quota.js');
+const projectData = createProjectData(query, createProjectDataQuota(withConnection));
 const { getUserId, authenticate, sign, verify, extractToken } = require('./shared/jwt.js');
 const { AsyncLocalStorage } = require('async_hooks');
 const { createProvider } = require('./shared/storage.js');
@@ -4870,7 +4871,7 @@ async function handleArchiveProject(event) {
   }
 }
 
-const PROJECT_DATA_CODES = new Set(['bad_name', 'bad_schema', 'exists', 'quota', 'not_found', 'bad_row']);
+const PROJECT_DATA_CODES = new Set(['bad_name', 'bad_schema', 'exists', 'quota', 'quota_unavailable', 'not_found', 'bad_row']);
 
 async function projectDataContext(event, mode) {
   const body = event.body || event;

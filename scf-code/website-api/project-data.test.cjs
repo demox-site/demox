@@ -93,7 +93,11 @@ function memoryQuery() {
     }
     throw new Error(`Unexpected query: ${text}`);
   };
-  return { query, tables, rows };
+  const withQuota = async (projectId, write) => write({
+    query,
+    checkRow: async (tableId, pk) => rows.some((r) => r.project_id === projectId && r.table_id === tableId && r.pk === pk)
+  });
+  return { query, tables, rows, withQuota };
 }
 
 const columns = [
@@ -104,7 +108,7 @@ const columns = [
 
 test('rows stay inside the project that owns the table', async () => {
   const db = memoryQuery();
-  const data = createProjectData(db.query);
+  const data = createProjectData(db.query, db.withQuota);
   await data.createTable(7, { name: 'notes', columns });
   await data.createTable(8, { name: 'notes', columns });
   await data.putRow(7, 'notes', { title: 'a', count: 1, open: true });
@@ -122,7 +126,7 @@ test('rows stay inside the project that owns the table', async () => {
 
 test('a table needs one text primary key and a fresh name', async () => {
   const db = memoryQuery();
-  const data = createProjectData(db.query);
+  const data = createProjectData(db.query, db.withQuota);
   await assert.rejects(
     data.createTable(7, { name: 'Notes', columns }),
     (error) => error.code === 'bad_name'
@@ -137,7 +141,7 @@ test('a table needs one text primary key and a fresh name', async () => {
 
 test('putting the same primary key replaces the row', async () => {
   const db = memoryQuery();
-  const data = createProjectData(db.query);
+  const data = createProjectData(db.query, db.withQuota);
   await data.createTable(7, { name: 'notes', columns });
   const created = await data.putRow(7, 'notes', { title: 'a', count: 1, open: false });
   const replaced = await data.putRow(7, 'notes', { title: 'a', count: 2, open: true });
@@ -152,7 +156,7 @@ test('putting the same primary key replaces the row', async () => {
 
 test('a row cannot carry a column the table does not have', async () => {
   const db = memoryQuery();
-  const data = createProjectData(db.query);
+  const data = createProjectData(db.query, db.withQuota);
   await data.createTable(7, { name: 'notes', columns });
   await assert.rejects(
     data.putRow(7, 'notes', { title: 'a', extra: 1 }),
@@ -162,7 +166,7 @@ test('a row cannot carry a column the table does not have', async () => {
 
 test('deleting a project removes its tables and rows only', async () => {
   const db = memoryQuery();
-  const data = createProjectData(db.query);
+  const data = createProjectData(db.query, db.withQuota);
   await data.createTable(7, { name: 'notes', columns });
   await data.createTable(8, { name: 'notes', columns });
   await data.putRow(7, 'notes', { title: 'a', count: 1, open: true });
