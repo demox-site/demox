@@ -9,7 +9,8 @@ REMOTE="/opt/demox-mysql-gateway"
 
 ssh -o IdentitiesOnly=yes "$HOST" "mkdir -p '$REMOTE'"
 scp -o IdentitiesOnly=yes \
-  "$ROOT/server.py" "$ROOT/store.py" "$ROOT/crypto_util.py" \
+  "$ROOT/server.py" "$ROOT/store.py" "$ROOT/crypto_util.py" "$ROOT/quota.py" \
+  "$ROOT/../../scf-code/website-api/project-data-quota.json" \
   "$ROOT/requirements.txt" "$ROOT/demox-mysql-gateway.service" \
   "$HOST:$REMOTE/"
 

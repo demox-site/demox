@@ -24,6 +24,44 @@ Clients speak MySQL protocol. The gateway authenticates with `project_db_credent
 
 Unsupported: joins across projects, DDL via MySQL, `INSERT … SELECT`, bulk `UPDATE`/`DELETE` without primary key.
 
+## Account data quotas
+
+All projects owned by an account share **50 MiB** for ordinary users or **500 MiB**
+for active pro/admin users. Membership expiry and disabled roles fall back to the
+ordinary allowance. Archived projects count; collaborators use the owner's allowance.
+The measured payload is `OCTET_LENGTH(CAST(doc AS CHAR CHARACTER SET utf8mb4))`,
+not physical disk allocation. Existing over-limit data remains readable/deletable;
+non-growing updates remain allowed. A multi-row INSERT commits or rolls back as a unit.
+
+`quota.py` and website-api share `project-data-quota.json` and lock the same `users`
+row in a READ COMMITTED transaction. The deployment script copies that contract
+from website-api. Both runtimes must be upgraded; rolling either one back removes
+the hard guarantee. No schema migration or historical data deletion is needed.
+
+The first growing write in each transaction scans the owner's rows to calculate
+usage. This is a correctness-first implementation; measure latency on larger
+accounts before increasing caps. Database/query/lock failures reject the write.
+
+### Local quota verification
+
+Use an isolated MySQL 8 instance, never production credentials. For example:
+
+```bash
+docker run --detach --name demox-quota-test \
+  --publish 127.0.0.1:13387:3306 \
+  --env MYSQL_ALLOW_EMPTY_PASSWORD=yes --env MYSQL_DATABASE=demox_quota_test mysql:8.4
+# After MySQL is ready, from repository root; requires mysql2 and Python pymysql.
+DEMOX_QUOTA_TEST_MYSQL_PORT=13387 node --test \
+  scf-code/website-api/project-data.test.cjs \
+  scf-code/website-api/project-data-quota.integration.test.cjs
+docker rm -f -v demox-quota-test
+```
+
+The integration test recreates only fixture tables in `demox_quota_test` on
+127.0.0.1. It checks cross-project usage, UTF-8, exact boundaries, expiry,
+disabled/missing roles, shrinking/deletion, batch rollback and concurrent Node/Python
+writes. It uses smaller injected test caps; production constants are checked separately.
+
 ## Deploy (aigc / `119.91.123.2`)
 
 Same VPC as CDB (`10.0.100.9`). Reuses `/opt/demox-customer-proxy/.env` for `MYSQL_*`; needs `ENCRYPTION_KEY` (same as website-api).

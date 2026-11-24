@@ -1,0 +1,11 @@
+{
+  "userBytes": 52428800,
+  "proBytes": 524288000,
+  "ownerSql": "SELECT user_id FROM projects WHERE id = ?",
+  "lockOwnerSql": "SELECT id FROM users WHERE id = ? FOR UPDATE",
+  "lockProjectSql": "SELECT user_id FROM projects WHERE id = ? FOR UPDATE",
+  "planSql": "SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.enabled = 1 AND r.id IN ('pro', 'admin') WHERE ur.user_id = ? AND JSON_CONTAINS(ur.roles, JSON_QUOTE(r.id)) AND (r.id = 'admin' OR ur.pro_expires_at IS NULL OR ur.pro_expires_at > UTC_TIMESTAMP())) AS is_pro",
+  "usageSql": "SELECT COALESCE(SUM(OCTET_LENGTH(CAST(r.doc AS CHAR CHARACTER SET utf8mb4))), 0) AS used_bytes FROM project_rows r JOIN projects p ON p.id = r.project_id WHERE p.user_id = ?",
+  "rowSql": "SELECT pk, OCTET_LENGTH(CAST(doc AS CHAR CHARACTER SET utf8mb4)) AS row_bytes FROM project_rows WHERE project_id = ? AND table_id = ? AND pk = ? FOR UPDATE",
+  "sizeSql": "SELECT OCTET_LENGTH(CAST(CAST(? AS JSON) AS CHAR CHARACTER SET utf8mb4)) AS row_bytes"
+}

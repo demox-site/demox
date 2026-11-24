@@ -106,13 +106,13 @@ function publicRow(row) {
   };
 }
 
-function createProjectData(query) {
+function createProjectData(query, withQuota) {
   async function ensure() {
     // Tables are created by migrations/028_add_project_data_tables.sql.
   }
 
-  async function getTableRow(projectId, name) {
-    const rows = await query(
+  async function getTableRow(projectId, name, exec = query) {
+    const rows = await exec(
       'SELECT id, name, columns_json, created_at FROM project_tables WHERE project_id = ? AND name = ? LIMIT 1',
       [projectId, name]
     );
@@ -197,26 +197,26 @@ function createProjectData(query) {
 
   async function putRow(projectId, name, values) {
     await ensure();
-    const table = await getTableRow(projectId, name);
-    if (!table) throw dataError('not_found', '没有这张表');
-    const columns = parseJson(table.columns_json, []);
-    const row = normalizeRow(columns, values);
-    const existing = await query(
-      'SELECT pk FROM project_rows WHERE project_id = ? AND table_id = ? AND pk = ? LIMIT 1',
-      [projectId, table.id, row.pk]
-    );
-    if (existing[0]) {
-      await query(
-        'UPDATE project_rows SET doc = ? WHERE project_id = ? AND table_id = ? AND pk = ?',
-        [JSON.stringify(row.doc), projectId, table.id, row.pk]
+    if (typeof withQuota !== 'function') throw dataError('quota_unavailable', '数据库额度服务不可用');
+    return withQuota(projectId, async ({ query: exec, checkRow }) => {
+      const table = await getTableRow(projectId, name, exec);
+      if (!table) throw dataError('not_found', '没有这张表');
+      const columns = parseJson(table.columns_json, []);
+      const row = normalizeRow(columns, values);
+      const existing = await checkRow(table.id, row.pk, JSON.stringify(row.doc));
+      if (existing) {
+        await exec(
+          'UPDATE project_rows SET doc = ? WHERE project_id = ? AND table_id = ? AND pk = ?',
+          [JSON.stringify(row.doc), projectId, table.id, row.pk]
+        );
+        return { created: false, pk: row.pk, values: row.doc };
+      }
+      await exec(
+        'INSERT INTO project_rows (project_id, table_id, pk, doc) VALUES (?, ?, ?, ?)',
+        [projectId, table.id, row.pk, JSON.stringify(row.doc)]
       );
-      return { created: false, pk: row.pk, values: row.doc };
-    }
-    await query(
-      'INSERT INTO project_rows (project_id, table_id, pk, doc) VALUES (?, ?, ?, ?)',
-      [projectId, table.id, row.pk, JSON.stringify(row.doc)]
-    );
-    return { created: true, pk: row.pk, values: row.doc };
+      return { created: true, pk: row.pk, values: row.doc };
+    });
   }
 
   async function deleteRow(projectId, name, pk) {

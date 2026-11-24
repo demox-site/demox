@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import pymysql
+from quota import quota_transaction
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 TYPE_MAP = {"text": "TEXT", "number": "DOUBLE", "boolean": "TINYINT"}
@@ -116,10 +117,13 @@ def load_table_rows(project_id: int, table_name: str) -> tuple[list[str], list[d
     return names, rows
 
 
-def get_table(project_id: int, table_name: str) -> dict[str, Any]:
+def get_table(project_id: int, table_name: str, cur=None) -> dict[str, Any]:
     if not NAME_RE.match(table_name or ""):
         raise KeyError(table_name)
-    with cursor() as cur:
+    if cur is None:
+        with cursor() as own_cur:
+            return get_table(project_id, table_name, own_cur)
+    else:
         cur.execute(
             "SELECT id, name, columns_json FROM project_tables WHERE project_id = %s AND name = %s LIMIT 1",
             (project_id, table_name),
@@ -140,8 +144,7 @@ def primary_column(columns: list[dict]) -> str:
     raise ValueError("no primary key")
 
 
-def put_row(project_id: int, table_name: str, values: dict[str, Any]) -> None:
-    table = get_table(project_id, table_name)
+def normalize_row(table, values):
     columns = table["columns"]
     known = {c["name"] for c in columns}
     for key in values:
@@ -152,6 +155,8 @@ def put_row(project_id: int, table_name: str, values: dict[str, Any]) -> None:
     if pk is None or str(pk).strip() == "":
         raise ValueError("primary key required")
     pk = str(pk)
+    if len(pk) > 255:
+        raise ValueError('primary key must not exceed 255 characters')
     doc = {}
     for col in columns:
         name = col["name"]
@@ -164,21 +169,30 @@ def put_row(project_id: int, table_name: str, values: dict[str, Any]) -> None:
             elif str(val).lower() in ("0", "false"):
                 val = False
         doc[name] = val
-    with cursor() as cur:
-        cur.execute(
-            "SELECT pk FROM project_rows WHERE project_id = %s AND table_id = %s AND pk = %s LIMIT 1",
-            (project_id, table["id"], pk),
-        )
-        if cur.fetchone():
-            cur.execute(
-                "UPDATE project_rows SET doc = %s WHERE project_id = %s AND table_id = %s AND pk = %s",
-                (json.dumps(doc, ensure_ascii=False), project_id, table["id"], pk),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO project_rows (project_id, table_id, pk, doc) VALUES (%s, %s, %s, %s)",
-                (project_id, table["id"], pk, json.dumps(doc, ensure_ascii=False)),
-            )
+    encoded = json.dumps(doc, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+    return pk, encoded
+
+
+def put_rows(project_id: int, table_name: str, values_list: list[dict[str, Any]]) -> None:
+    # A multi-row INSERT is all-or-nothing, including when its final row exceeds quota.
+    with quota_transaction(connect, project_id) as (cur, check_row):
+        table = get_table(project_id, table_name, cur)
+        for values in values_list:
+            pk, encoded = normalize_row(table, values)
+            if check_row(table['id'], pk, encoded):
+                cur.execute(
+                    "UPDATE project_rows SET doc = %s WHERE project_id = %s AND table_id = %s AND pk = %s",
+                    (encoded, project_id, table['id'], pk),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO project_rows (project_id, table_id, pk, doc) VALUES (%s, %s, %s, %s)",
+                    (project_id, table['id'], pk, encoded),
+                )
+
+
+def put_row(project_id: int, table_name: str, values: dict[str, Any]) -> None:
+    put_rows(project_id, table_name, [values])
 
 
 def delete_row(project_id: int, table_name: str, pk: str) -> int:

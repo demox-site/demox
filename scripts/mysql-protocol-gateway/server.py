@@ -154,8 +154,7 @@ class ProjectSession(Session):
             raise MysqlError("INSERT ... SELECT is not supported", code=ErrorCode.NOT_SUPPORTED_YET)
         else:
             raise MysqlError("Unsupported INSERT form", code=ErrorCode.NOT_SUPPORTED_YET)
-        for row in rows_to_write:
-            store.put_row(self.project_id, table_name, row)
+        store.put_rows(self.project_id, table_name, rows_to_write)
         return [], []
 
     async def _update(self, expression: exp.Update):
