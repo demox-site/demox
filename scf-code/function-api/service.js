@@ -22,7 +22,7 @@ const {
   platformDispatchPool,
   publicEnvView
 } = require('./platform-secrets.js');
-const { clientIpInfo } = require('./client-ip.js');
+const { eventClientIp } = require('./client-ip.js');
 const {
   badRequest,
   forbidden,
@@ -42,7 +42,6 @@ class FunctionService {
     this.publicBaseUrl = String(publicBaseUrl).replace(/\/+$/, '');
     this.clock = clock;
     this.logger = logger;
-    this.rateBuckets = new Map();
     this.businessCredentials = businessCredentials || createBusinessCredentialProvider({
       clock: () => this.clock(),
       logger: this.logger
@@ -442,8 +441,9 @@ class FunctionService {
     if (request.bodyBytes > functionRecord.limits.maxBodyBytes) {
       throw badRequest('请求体超过大小限制', 'REQUEST_TOO_LARGE', { maxBodyBytes: functionRecord.limits.maxBodyBytes });
     }
-    // 每个来源 key 各扣一次：只伪造 XFF 或只伪造 x-scf-remote-addr 都绕不过（见 client-ip.js clientIpInfo）。
-    this.consumeRateLimits((request.clientKeys || [request.clientKey]).map((key) => `${functionId}:${key}`), functionRecord.limits.maxInvocationsPerMinute);
+    if (!await this.repository.reserveInvocation(functionId, request.clientKey, functionRecord.limits.maxInvocationsPerMinute, this.clock)) {
+      throw tooManyRequests('函数调用超过每分钟配额');
+    }
 
     const version = await this.repository.getVersion(functionId, versionNumber);
     if (!version || version.status === 'failed' || version.status === 'draft') {
@@ -487,25 +487,6 @@ class FunctionService {
       this.recordInvocation({ functionRecord, version, status, startedAt, requestBytes: request.bodyBytes, responseBytes: 0, errorCode });
       throw error;
     }
-  }
-
-  /** 先检查全部 key，任一超额就 429 且都不记；都没超才各记一次。 */
-  consumeRateLimits(keys, limit) {
-    const now = this.clock();
-    const cutoff = now - 60_000;
-    const unique = [...new Set(keys)];
-    const buckets = unique.map((key) => [key, (this.rateBuckets.get(key) || []).filter((timestamp) => timestamp > cutoff)]);
-    if (buckets.some(([, recent]) => recent.length >= limit)) throw tooManyRequests('函数调用超过每分钟配额');
-    for (const [key, recent] of buckets) { recent.push(now); this.rateBuckets.set(key, recent); }
-  }
-
-  consumeRateLimit(key, limit) {
-    const now = this.clock();
-    const cutoff = now - 60_000;
-    const recent = (this.rateBuckets.get(key) || []).filter((timestamp) => timestamp > cutoff);
-    if (recent.length >= limit) throw tooManyRequests('函数调用超过每分钟配额');
-    recent.push(now);
-    this.rateBuckets.set(key, recent);
   }
 
   async getOwnedFunction(ownerId, functionId) {
@@ -743,17 +724,6 @@ function normalizeTriggers(triggers, timerName) {
   return [...output];
 }
 
-function invocationClientKeys(event, headers, scfRemoteAddr) {
-  const ctx = event.requestContext || {};
-  if (ctx.sourceIp) {
-    const extra = Array.isArray(ctx.rateKeys) ? ctx.rateKeys.map(String).filter(Boolean) : [];
-    const clientKeys = [String(ctx.sourceIp), ...extra.filter((k) => k !== String(ctx.sourceIp))];
-    return { clientKey: String(ctx.sourceIp), clientKeys };
-  }
-  const info = clientIpInfo(headers, null, scfRemoteAddr);
-  return { clientKey: info.primary || 'anonymous', clientKeys: info.keys.length ? info.keys : ['anonymous'] };
-}
-
 function normalizeInvocationRequest(event = {}) {
   if (isTimerEvent(event)) {
     const name = String(event.TriggerName || event.triggerName || '').trim();
@@ -777,11 +747,9 @@ function normalizeInvocationRequest(event = {}) {
     const name = String(key).toLowerCase();
     // x-scf-* 一律不转给用户函数：事件入口（API 网关/自定义域名）下客户端自带的 x-scf-remote-addr 等会原样到达，
     // 平台的 X-Scf-Secret-* 是运行角色临时密钥。Web 入口已在 web-server.js 去掉，这里对所有入口兜底。
-    // remote-addr 单独留下做 clientKey（在 strip 之前读），不进入转给用户函数的 headers。
-    if (name.startsWith('x-scf-')) {
-      if (name === 'x-scf-remote-addr') scfRemoteAddr = String(value);
-      continue;
-    }
+    // 事件函数 URL 使用的平台地址保留在入口内，不传给用户函数。
+    if (name === 'x-scf-remote-addr') scfRemoteAddr = value;
+    if (name.startsWith('x-scf-')) continue;
     headers[name] = String(value);
   }
   const method = String(event.httpMethod || event.requestContext?.http?.method || 'GET').toUpperCase();
@@ -800,9 +768,7 @@ function normalizeInvocationRequest(event = {}) {
   const host = headers.host || 'function.local';
   return {
     bodyBytes: bodyBuffer.length,
-    // 见 client-ip.js clientIpInfo：clientKey 是 XFF 优先的主地址；clientKeys 是限流要扣的全部 key（XFF 与 remote-addr 去重）。
-    // Web 入口已在 web-server.js 算好放进 requestContext（sourceIp + rateKeys）；API 网关的 sourceIp 是平台给的，单独一个 key。
-    ...invocationClientKeys(event, headers, scfRemoteAddr),
+    clientKey: eventClientIp(event.requestContext, scfRemoteAddr) || 'anonymous',
     value: {
       method,
       url: `https://${host}${path}${queryString ? `?${queryString}` : ''}`,

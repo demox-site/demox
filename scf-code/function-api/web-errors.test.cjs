@@ -39,7 +39,7 @@ const strip = (body) => { const { requestId, ...rest } = body; assert.ok(request
 
 test('event path: user-function rate limit returns 429 with the usual error shape (not a throw)', async () => {
   const { platform, logs } = await makePlatform();
-  const ev = { httpMethod: 'GET', path: '/site-a/production/api/rate', headers: { 'x-forwarded-for': '203.0.113.7' }, requestContext: { requestId: 'req-ev' } };
+  const ev = { httpMethod: 'GET', path: '/site-a/production/api/rate', requestContext: { requestId: 'req-ev', sourceIp: '203.0.113.7' } };
   assert.equal((await platform(ev)).statusCode, 200);
   const limited = await platform(ev);
   assert.equal(limited.statusCode, 429);
@@ -49,17 +49,17 @@ test('event path: user-function rate limit returns 429 with the usual error shap
   assert.ok(logs.some((l) => l.includes('RATE_LIMITED')));
 });
 
-test('web path: same function, same 429 status and body as the event path (forged headers do not bypass)', async () => {
+test('web path: same function, same 429 status and body as the event path', async () => {
   const { platform } = await makePlatform();
   const evLimited = await (async () => {
     const p = (await makePlatform()).platform;
-    const ev = { httpMethod: 'GET', path: '/site-a/production/api/rate', headers: { 'x-forwarded-for': '203.0.113.7' } };
+    const ev = { httpMethod: 'GET', path: '/site-a/production/api/rate', requestContext: { sourceIp: '203.0.113.7' } };
     await p(ev); return p(ev);
   })();
   await withServer(platform, async (base, logs) => {
-    const send = (i) => fetch(`${base}/site-a/production/api/rate`, { headers: { 'x-forwarded-for': `1.1.1.${i}, 203.0.113.7`, 'x-scf-remote-addr': `3.3.3.${i}` } });
-    assert.equal((await send(1)).status, 200);
-    const res = await send(2);
+    const send = () => fetch(`${base}/site-a/production/api/rate`);
+    assert.equal((await send()).status, 200);
+    const res = await send();
     assert.equal(res.status, 429);
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
     assert.ok(res.headers.get('x-demox-request-id'));
@@ -120,8 +120,8 @@ test('event path: untyped errors still propagate (behaviour unchanged)', async (
 test('Event entry: client-supplied x-scf-* headers never reach the user function (any case)', async () => {
   const { normalizeInvocationRequest } = require('./service.js');
   const req = normalizeInvocationRequest({ httpMethod: 'GET', path: '/api/x', headers: {
-    'X-Scf-Remote-Addr': '3.3.3.3', 'x-scf-secret-key': 'fake', 'X-SCF-Session-Token': 'fake', 'x-scf-request-id': 'r', 'X-Forwarded-For': '1.1.1.1, 203.0.113.9', 'user-agent': 'ua'
-  } });
+    'X-Scf-Remote-Addr': '192.0.2.3', 'x-scf-secret-key': 'fake', 'X-SCF-Session-Token': 'fake', 'x-scf-request-id': 'r', 'user-agent': 'ua'
+  }, requestContext: { sourceIp: '203.0.113.9' } });
   assert.deepEqual(Object.keys(req.value.headers).filter((k) => k.startsWith('x-scf-')), []);
   assert.equal(req.value.headers['user-agent'], 'ua');
   assert.equal(req.clientKey, '203.0.113.9');

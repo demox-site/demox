@@ -16,22 +16,13 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { clientIpFrom: resolveClientIp, clientIpInfo } = require('./client-ip.js');
+const { webClientIp } = require('./client-ip.js');
 const { isClientError, typedErrorResponse } = require('./errors.js');
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 
 function firstHeader(value) {
   return Array.isArray(value) ? value[0] : value;
-}
-
-/**
- * 客户端 IP：见 client-ip.js clientIpFrom。
- * 必须在 stripPlatformHeaders 之前读出 x-scf-remote-addr（或显式传入），strip 之后头里就没了。
- * 永不信任 X-Real-IP。
- */
-function clientIpFrom(headers, socket, remoteAddr) {
-  return resolveClientIp(headers, socket, remoteAddr);
 }
 
 /**
@@ -65,14 +56,12 @@ function eventFromRequest(req, rawBody) {
     headerNamesLogged = true; // 每个实例只记一次，只记名字不记值，用来核对平台实际传了哪些头
     console.log(`web-server: request header names: ${Object.keys(headers).sort().join(',')}`);
   }
-  // 例外：取平台请求 ID（只认 UUID）和 x-scf-remote-addr（IP 解析用），之后立刻去掉全部 x-scf-*。
+  // 只保留 UUID 格式的平台请求 ID，用于关联日志。
   const scfRequestId = String(headers['x-scf-request-id'] || '').trim();
-  const scfRemoteAddr = headers['x-scf-remote-addr'];
   stripPlatformHeaders(headers);
   const text = isTextContentType(headers['content-type']);
   const requestId = (SCF_REQUEST_ID_PATTERN.test(scfRequestId) ? scfRequestId : '') || firstHeader(headers['x-request-id']) || crypto.randomBytes(8).toString('hex');
-  const ipInfo = clientIpInfo(headers, req.socket, scfRemoteAddr);
-  const sourceIp = ipInfo.primary;
+  const sourceIp = webClientIp(headers, req.socket);
   return {
     httpMethod: String(req.method || 'GET').toUpperCase(),
     path: url.pathname,
@@ -81,7 +70,7 @@ function eventFromRequest(req, rawBody) {
     queryString: query,
     body: rawBody.length ? (text ? rawBody.toString('utf8') : rawBody.toString('base64')) : '',
     isBase64Encoded: rawBody.length > 0 && !text,
-    requestContext: { requestId, sourceIp, rateKeys: ipInfo.keys, path: url.pathname, httpMethod: String(req.method || 'GET').toUpperCase() },
+    requestContext: { requestId, sourceIp, path: url.pathname, httpMethod: String(req.method || 'GET').toUpperCase() },
     requestId
   };
 }
@@ -155,4 +144,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createWebServer, eventFromRequest, writeResult, clientIpFrom, stripPlatformHeaders };
+module.exports = { createWebServer, eventFromRequest, writeResult, stripPlatformHeaders };
