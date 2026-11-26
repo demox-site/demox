@@ -78,48 +78,24 @@ test('eventFromRequest handles empty bodies', () => {
   assert.equal(ev.requestContext.sourceIp, '9.9.9.9');
 });
 
-test('client IP: XFF walk is the primary IP; untrusted x-scf-remote-addr is an extra rate key, never overrides XFF', () => {
-  const ev = eventFromRequest({ method: 'POST', url: '/auth/login', headers: { 'x-forwarded-for': '6.6.6.6, 1.1.1.1', 'x-scf-remote-addr': '1.2.3.4' }, socket: { remoteAddress: '127.0.0.1' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '1.1.1.1', 'XFF walk is primary; a forged remote-addr must not pick the bucket');
-  assert.deepEqual(ev.requestContext.rateKeys, ['1.1.1.1', '1.2.3.4'], 'both sources are rate-limited');
-  assert.equal(ev.headers['x-forwarded-for'], '6.6.6.6, 1.1.1.1', 'XFF still visible to apps');
-  assert.deepEqual(Object.keys(ev.headers).filter((k) => k.startsWith('x-scf-')), [], 'x-scf-* stripped from event headers after IP read');
+test('Web trusts the client address appended by the SCF proxy', () => {
+  const event = eventFromRequest({
+    method: 'GET',
+    url: '/health',
+    headers: { 'X-Forwarded-For': ['203.0.113.50', '11.163.17.81, 10.132.167.112'] },
+    socket: { remoteAddress: '10.0.0.1' }
+  }, Buffer.alloc(0));
+  assert.equal(event.requestContext.sourceIp, '203.0.113.50');
+  assert.equal(event.headers['x-forwarded-for'], '203.0.113.50, 11.163.17.81, 10.132.167.112');
 });
 
-test('client IP: valid x-scf-remote-addr alone is used (function URL path; no XFF)', () => {
-  const ev = eventFromRequest({ method: 'GET', url: '/health', headers: { 'X-Scf-Remote-Addr': '203.0.113.50' }, socket: { remoteAddress: '10.9.8.7' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
-});
-
-test('client IP: trusted x-scf-remote-addr reads XFF (rightmost non-trusted)', () => {
-  const ev = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 203.0.113.50, 11.163.17.81, 10.132.167.112', 'x-scf-remote-addr': '10.132.167.112' }, socket: { remoteAddress: '10.0.0.1' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
-});
-
-test('client IP: forged leftmost X-Forwarded-For entries are ignored', () => {
-  const { clientIpFrom } = require('./web-server.js');
-  assert.equal(clientIpFrom({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8, 203.0.113.50' }, null), '203.0.113.50');
-  const ev = eventFromRequest({ method: 'GET', url: '/', headers: { 'x-forwarded-for': '1.2.3.4,203.0.113.50' }, socket: {} }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
-});
-
-test('client IP: x-real-ip is never trusted (no option)', () => {
-  const { clientIpFrom } = require('./web-server.js');
-  const headers = { 'x-real-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9, 203.0.113.50' };
-  assert.equal(clientIpFrom(headers, null), '203.0.113.50');
-  assert.equal(clientIpFrom({ 'x-real-ip': '1.2.3.4' }, { remoteAddress: '10.0.0.3' }), '10.0.0.3');
-  const ev = eventFromRequest({ method: 'GET', url: '/', headers, socket: {} }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '203.0.113.50');
-});
-
-test('IP reads x-scf-remote-addr before strip; invalid remote-addr falls back; secrets still stripped', () => {
-  const { clientIpFrom } = require('./web-server.js');
-  // helper without third arg: if header still present it is used; after strip, callers pass remote explicitly
-  assert.equal(clientIpFrom({ 'x-scf-remote-addr': 'not-an-ip' }, { remoteAddress: '10.0.0.2' }), '10.0.0.2');
-  const ev = eventFromRequest({ method: 'GET', url: '/', headers: { 'X-SCF-Remote-Addr': '203.0.113.9', 'x-scf-request-id': 'not-a-uuid' }, socket: { remoteAddress: '10.0.0.2' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '203.0.113.9');
-  assert.notEqual(ev.requestId, 'not-a-uuid', 'non-UUID x-scf-request-id is not trusted');
-  assert.deepEqual(Object.keys(ev.headers).filter((k) => k.startsWith('x-scf-')), []);
+test('the Web socket address supplies the client when there is no verified proxy chain', () => {
+  const event = eventFromRequest({
+    method: 'GET', url: '/health',
+    headers: { 'x-forwarded-for': '203.0.113.50' },
+    socket: { remoteAddress: '198.51.100.1' }
+  }, Buffer.alloc(0));
+  assert.equal(event.requestContext.sourceIp, '198.51.100.1');
 });
 
 test('platform X-Scf-* headers (runtime-role temp credentials) never reach the handler', async () => {
@@ -130,56 +106,25 @@ test('platform X-Scf-* headers (runtime-role temp credentials) never reach the h
   assert.deepEqual(Object.keys(seen.headers).filter((k) => k.startsWith('x-scf-')), []);
   assert.ok(!JSON.stringify(seen).includes('fakekey') && !JSON.stringify(seen).includes('faketoken') && !JSON.stringify(seen).includes('AKIDfake'));
   assert.equal(seen.headers['x-keep'], 'yes');
-  assert.equal(seen.requestContext.sourceIp, '198.51.100.9', 'valid remote-addr used for IP (may be forged on custom domain)');
+  assert.equal(seen.requestContext.sourceIp, '127.0.0.1');
   assert.equal(seen.requestId, '17aa3abd-c47a-11f1-a139-525400ba74cf');
 });
 
-test('client IP falls back to the socket address when no proxy headers exist', () => {
-  const { clientIpFrom } = require('./web-server.js');
-  assert.equal(clientIpFrom({}, { remoteAddress: '9.9.9.9' }), '9.9.9.9');
-  assert.equal(clientIpFrom({ 'x-forwarded-for': ' 1.1.1.1 , 2.2.2.2 ' }, null), '2.2.2.2');
-});
+test('Event selects one client address for each supported ingress', () => {
+  const { normalizeInvocationRequest } = require('./service.js');
+  const direct = normalizeInvocationRequest({
+    httpMethod: 'GET',
+    headers: { 'X-Scf-Remote-Addr': '203.0.113.20', 'X-Forwarded-For': ['203.0.113.20', '10.132.167.112'] }
+  });
+  assert.equal(direct.clientKey, '203.0.113.20');
+  assert.equal(direct.value.headers['x-scf-remote-addr'], undefined);
 
-test('rate limiter keys on the derived IP: forged X-Scf-Remote-Addr / leftmost XFF cannot bypass it', async () => {
-  const { InMemoryBundleStore } = require('./bundle-store.js');
-  const { InMemoryFunctionRepository } = require('./repository.js');
-  const { FunctionService } = require('./service.js');
-  const runtime = { async execute() { return { status: 200, headers: {}, body: 'ok' }; } };
-  const service = new FunctionService({ repository: new InMemoryFunctionRepository(), bundleStore: new InMemoryBundleStore(), runtime });
-  const fn = await service.createFunction({ ownerId: 'owner', websiteId: 'site-a', name: 'Rate', slug: 'rate', limits: { maxInvocationsPerMinute: 1 } });
-  await service.createVersion({ ownerId: 'owner', functionId: fn.functionId, source: 'module.exports = () => "ok"' });
-  await service.publishVersion({ ownerId: 'owner', functionId: fn.functionId, version: 1 });
-  // function-URL style: stable remote-addr; forged XFF must not open a new bucket
-  const fromFnUrl = (forgedXff) => eventFromRequest({ method: 'GET', url: '/api/rate', headers: { 'x-forwarded-for': forgedXff, 'x-scf-remote-addr': '203.0.113.50' }, socket: { remoteAddress: '10.0.0.1' } }, Buffer.alloc(0));
-  await service.invoke({ functionId: fn.functionId, event: fromFnUrl('1.1.1.1') });
-  await assert.rejects(service.invoke({ functionId: fn.functionId, event: fromFnUrl('2.2.2.2') }), (error) => error.code === 'RATE_LIMITED', 'forged XFF must not reset the limit when remote-addr is stable');
-  const other = eventFromRequest({ method: 'GET', url: '/api/rate', headers: { 'x-scf-remote-addr': '203.0.113.99' }, socket: {} }, Buffer.alloc(0));
-  await service.invoke({ functionId: fn.functionId, event: other });
-});
-
-test('Event entry without sourceIp keys the rate limit on the rightmost non-trusted XFF hop (forged leftmost cannot bypass)', async () => {
-  const { normalizeInvocationRequest, FunctionService } = require('./service.js');
-  const { clientIpFromForwardedFor } = require('./client-ip.js');
-  assert.equal(clientIpFromForwardedFor(' 1.1.1.1 , 203.0.113.50 '), '203.0.113.50');
-  assert.equal(clientIpFromForwardedFor(''), '');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112' } }).clientKey, '140.248.50.98', 'no remote-addr: XFF walk');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60' } }).clientKey, '140.248.52.60', 'function URL: remote-addr alone (no anonymous)');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60', 'x-forwarded-for': '203.0.113.7' } }).clientKey, '203.0.113.7', 'XFF primary');
-  assert.deepEqual(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '140.248.52.60', 'x-forwarded-for': '203.0.113.7' } }).clientKeys, ['203.0.113.7', '140.248.52.60'], 'both keys limited: forging XFF alone cannot reset the remote-addr bucket');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'x-scf-remote-addr': '10.132.167.112', 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112' } }).clientKey, '140.248.50.98', 'trusted remote reads XFF');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: { 'X-Forwarded-For': '1.2.3.4, 203.0.113.50' } }).clientKey, '203.0.113.50');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {}, requestContext: { sourceIp: '198.51.100.1' } }).clientKey, '198.51.100.1', 'gateway sourceIp still wins');
-  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET', headers: {} }).clientKey, 'anonymous');
-  const { InMemoryBundleStore } = require('./bundle-store.js');
-  const { InMemoryFunctionRepository } = require('./repository.js');
-  const runtime = { async execute() { return { status: 200, headers: {}, body: 'ok' }; } };
-  const service = new FunctionService({ repository: new InMemoryFunctionRepository(), bundleStore: new InMemoryBundleStore(), runtime });
-  const fn = await service.createFunction({ ownerId: 'owner', websiteId: 'site-a', name: 'RateEv', slug: 'rate-ev', limits: { maxInvocationsPerMinute: 1 } });
-  await service.createVersion({ ownerId: 'owner', functionId: fn.functionId, source: 'module.exports = () => "ok"' });
-  await service.publishVersion({ ownerId: 'owner', functionId: fn.functionId, version: 1 });
-  const ev = (forged) => ({ httpMethod: 'GET', headers: { 'x-forwarded-for': `${forged}, 203.0.113.50` } });
-  await service.invoke({ functionId: fn.functionId, event: ev('1.1.1.1') });
-  await assert.rejects(service.invoke({ functionId: fn.functionId, event: ev('2.2.2.2') }), (error) => error.code === 'RATE_LIMITED');
+  const gateway = normalizeInvocationRequest({
+    httpMethod: 'GET',
+    requestContext: { identity: { sourceIp: '2001:0DB8:0000:0000:0000:0000:0000:0001' } }
+  });
+  assert.equal(gateway.clientKey, '2001:db8::1');
+  assert.equal(normalizeInvocationRequest({ httpMethod: 'GET' }).clientKey, 'anonymous');
 });
 
 // ---- 受信任代理网段（client-ip.js）。真实链来自 2026-10-10 api-web 实测（CLS DEBUG client-ip 行）。
@@ -190,16 +135,6 @@ test('trusted list is exactly the 云架构 15:25 list (code constant)', () => {
   assert.ok(Object.isFrozen(TRUSTED_PROXY_CIDRS));
   for (const ip of ['10.132.167.112', '11.163.17.81', '9.1.2.3', '100.64.0.1', '100.127.255.255', '127.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.1.1', '::1', 'fd00::1', 'fc00::1', 'fe80::1']) assert.equal(isTrustedProxy(ip), true, ip);
   for (const ip of ['140.248.50.98', '30.0.0.1', '100.128.0.1', '172.32.0.1', '8.8.8.8', '2001:db8::1', 'unknown', '']) assert.equal(isTrustedProxy(ip), false, ip);
-});
-
-test('real function-URL chain → real client (140.248.50.98)', () => {
-  assert.equal(clientIpFromForwardedFor('1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112'), '140.248.50.98');
-  // XFF walk is primary; x-real-ip ignored; a forged public remote-addr is only an extra rate key
-  const ev = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112', 'x-real-ip': '11.163.17.81', 'x-scf-remote-addr': '10.132.167.112' }, socket: { remoteAddress: '10.0.0.9' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '140.248.50.98');
-  const forged = eventFromRequest({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': '1.1.1.1, 140.248.50.98, 11.163.17.81, 10.132.167.112', 'x-scf-remote-addr': '3.3.3.3' }, socket: { remoteAddress: '10.0.0.9' } }, Buffer.alloc(0));
-  assert.equal(forged.requestContext.sourceIp, '140.248.50.98', 'forged remote-addr on custom domain must not override the gateway XFF chain');
-  assert.deepEqual(forged.requestContext.rateKeys, ['140.248.50.98', '3.3.3.3']);
 });
 
 test('real api.demox.site domain chains → real client', () => {
@@ -214,6 +149,7 @@ test('forged entries left of the real client are ignored, including forged priva
 });
 
 test('IPv4-mapped IPv6 is normalized before comparing', () => {
+  assert.equal(normalizeIp('::ffff:c000:201'), '192.0.2.1');
   assert.equal(normalizeIp('::ffff:10.1.2.3'), '10.1.2.3');
   assert.equal(isTrustedProxy('::ffff:11.163.17.81'), true);
   assert.equal(clientIpFromForwardedFor('::ffff:140.248.50.98, ::ffff:11.163.17.81, ::ffff:10.132.167.112'), '140.248.50.98');
@@ -224,11 +160,13 @@ test('IPv6 chains: trusted v6 proxies skipped, public v6 client returned', () =>
   assert.equal(clientIpFromForwardedFor('2001:db8::1, fe80::1'), '2001:db8::1');
 });
 
-test('all-trusted chain falls back to the RIGHTMOST address (never leftmost, never socket)', () => {
-  assert.equal(clientIpFromForwardedFor('10.1.1.1, 11.163.17.81, 10.132.167.112'), '10.132.167.112');
-  assert.equal(clientIpFromForwardedFor('192.168.1.5, ::ffff:10.0.0.7'), '10.0.0.7');
-  const ev = eventFromRequest({ method: 'GET', url: '/', headers: { 'x-forwarded-for': '10.1.1.1, 10.132.167.112' }, socket: { remoteAddress: '127.0.0.1' } }, Buffer.alloc(0));
-  assert.equal(ev.requestContext.sourceIp, '10.132.167.112');
+test('a proxy-only chain leaves the Web peer as the fallback', () => {
+  assert.equal(clientIpFromForwardedFor('11.163.17.81, 10.132.167.112'), '');
+  const event = eventFromRequest({
+    method: 'GET', url: '/', headers: { 'x-forwarded-for': '10.1.1.1, 10.132.167.112' },
+    socket: { remoteAddress: '127.0.0.1' }
+  }, Buffer.alloc(0));
+  assert.equal(event.requestContext.sourceIp, '127.0.0.1');
 });
 
 test('debug client-ip log code is gone', () => {

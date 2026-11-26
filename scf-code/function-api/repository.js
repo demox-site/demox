@@ -1,6 +1,10 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { DEFAULT_LIMITS, normalizeLimits } = require('./limits.js');
+
+const RATE_WINDOW_MS = 60_000;
+const MAX_LOCAL_RATE_BUCKETS = 10_000;
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -21,7 +25,28 @@ class InMemoryFunctionRepository {
     this.websiteOwners = new Map();
     this.aliases = new Map();
     this.functionSecrets = new Map();
+    this.rateBuckets = new Map();
+    this.nextRateCleanup = 0;
     this.nextVersionId = 1;
+  }
+
+  async reserveInvocation(functionId, clientKey, limit, clock) {
+    const now = clock();
+    const cutoff = now - RATE_WINDOW_MS;
+    if (now >= this.nextRateCleanup) {
+      for (const [key, timestamps] of this.rateBuckets) {
+        if (timestamps.at(-1) <= cutoff) this.rateBuckets.delete(key);
+      }
+      this.nextRateCleanup = now + RATE_WINDOW_MS;
+    }
+    const key = `${functionId}:${clientKey}`;
+    const bucket = this.rateBuckets.get(key);
+    if (!bucket && this.rateBuckets.size >= MAX_LOCAL_RATE_BUCKETS) return false;
+    const recent = (bucket || []).filter((timestamp) => timestamp > cutoff);
+    if (recent.length >= limit) return false;
+    recent.push(now);
+    this.rateBuckets.set(key, recent);
+    return true;
   }
 
   async createFunction(record) {
@@ -270,6 +295,55 @@ function createMysqlFunctionRepository({ query, transaction }) {
   }
 
   return {
+    async reserveInvocation(functionId, clientKey, limit, clock) {
+      const key = createHash('sha256').update(`${functionId}:${clientKey}`).digest();
+      if (Math.random() < 0.01) {
+        // Read the expiry index without locks, then delete by primary key and recheck expiry.
+        const cutoff = clock();
+        try {
+          const expired = await query(
+            'SELECT bucket_key FROM demox_function_rate_buckets WHERE expires_at_ms <= ? ORDER BY expires_at_ms LIMIT 1000',
+            [cutoff]
+          );
+          if (expired.length) {
+            await query(
+              'DELETE FROM demox_function_rate_buckets WHERE bucket_key IN (?) AND expires_at_ms <= ?',
+              [expired.map((row) => row.bucket_key), cutoff]
+            );
+          }
+        } catch (error) {
+          console.warn('函数限流桶清理失败:', error.code || error.name);
+        }
+      }
+      const reserve = async (connection) => {
+        await connection.query(
+          `INSERT INTO demox_function_rate_buckets (bucket_key, timestamps_json, expires_at_ms)
+           VALUES (?, JSON_ARRAY(), 0) ON DUPLICATE KEY UPDATE bucket_key = bucket_key`,
+          [key]
+        );
+        const [[row]] = await connection.query(
+          'SELECT timestamps_json FROM demox_function_rate_buckets WHERE bucket_key = ? FOR UPDATE',
+          [key]
+        );
+        const now = clock();
+        const timestamps = typeof row.timestamps_json === 'string' ? JSON.parse(row.timestamps_json) : row.timestamps_json;
+        const recent = timestamps.filter((timestamp) => timestamp > now - RATE_WINDOW_MS);
+        if (recent.length >= limit) return false;
+        recent.push(now);
+        await connection.query(
+          'UPDATE demox_function_rate_buckets SET timestamps_json = ?, expires_at_ms = ? WHERE bucket_key = ?',
+          [JSON.stringify(recent), Math.max(...recent) + RATE_WINDOW_MS, key]
+        );
+        return true;
+      };
+      try {
+        return await transaction(reserve);
+      } catch (error) {
+        if (error.code !== 'ER_LOCK_DEADLOCK') throw error;
+        return transaction(reserve);
+      }
+    },
+
     async createFunction(record) {
       await query(
         `INSERT INTO demox_functions

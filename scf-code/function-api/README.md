@@ -92,9 +92,11 @@ POST|GET /functions/:functionId/invoke
 
 站点域名上的 `/api/{slug}` 走 `production` 别名。上传失败的版本会标为 `failed`，不能被别名引用。
 
+函数调用额度按函数和客户端在滚动 60 秒内计数。连接同一个 MySQL 库的网关实例共享计数。
+
 ## 接入现有 Demox
 
-1. 在确认表结构和资源标签后，单独执行 `migrations/001_create_function_tables.sql`。
+1. 在确认表结构和资源标签后，执行 `migrations/` 下需要的迁移。发布调用限流前，在网关使用的各个库执行 `007_create_function_rate_buckets.sql`。运行时账号需要此表的 SELECT、INSERT、UPDATE、DELETE 权限。
 2. 用现有 `website-api/shared/db.js` 的 `query`、`transaction` 创建 `createMysqlFunctionRepository`。
 3. 用 `CosBundleStore` 指向统一函数代码桶；建议 COS 前缀固定为 `functions/{functionId}/{version}/bundle.mjs`。
 4. 以独立 SCF 函数部署 `index.js`，将 `JWT_SECRET`、COS/CAM 角色和 `FUNCTION_PUBLIC_BASE_URL` 作为环境配置。
